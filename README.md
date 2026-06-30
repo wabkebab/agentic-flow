@@ -26,9 +26,11 @@ AGENTS.md                         executor (Codex) contract + commit format
 Makefile                          the Stack profile: make check / test / test-one / build / run
 .claude/settings.json             enforced hooks (Stop→make check; block git add -A)
 .claude/skills/plan-to-issues/    skill: approved brief → GitHub tracking issue + sub-issues
+scripts/export.sh                 copy the standard into a target project (non-destructive)
 scripts/plan-to-issues.sh         the deterministic gh/jq driver the skill calls
 scripts/docs-index.sh             regenerate docs/README.md's index from TRIAGE headers
 scripts/hooks/                    the two hook scripts settings.json calls
+ROADMAP.md                        planned evolution of the standard (Tier 2 / Tier 3)
 docs/
 ├── README.md                     docs index + naming conventions
 ├── accepted_risks.md             living register of accepted risks / declined features
@@ -43,8 +45,14 @@ docs/
 
 ## Bootstrap a new project
 
-1. **Copy** `METHODOLOGY.md`, `CLAUDE.md`, `AGENTS.md`, `Makefile`, `.claude/`, `scripts/`,
-   and `docs/` into the new repo's root.
+1. **Export the standard** into the new repo:
+   ```bash
+   scripts/export.sh /path/to/target-project        # non-destructive; --dry-run to preview
+   ```
+   It copies the allow-list (METHODOLOGY/CLAUDE/AGENTS/Makefile, `.claude/settings.json`,
+   `.claude/skills`, `scripts`, `docs`) and leaves this repo's own meta behind. It never
+   clobbers an existing harness file — a differing file is written as `<file>.agentic-new`
+   for you to merge (use `--force` to overwrite). (Or copy by hand if you prefer.)
 2. **Fill in the `Makefile`** — the `check` / `test` / `test-one` / `build` / `run` recipes.
    This is the *only* project-specific wiring; every template and hook calls these targets.
    Then explain them + their gotchas in `CLAUDE.md`'s **Stack profile** section.
