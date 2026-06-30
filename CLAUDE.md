@@ -24,24 +24,33 @@
 
 ---
 
-## Stack profile  ⚠️ FILL THIS IN
+## Stack profile  ⚠️ WIRE THIS UP
 
-> **This is the one project-specific section the whole methodology depends on.** Every
-> template and the implementation briefs refer to these commands as placeholders
-> (`<build>`, `<type-check>`, `<test>`, `<lint>`, `<run>`). Define them once here.
+> **The whole methodology depends on this.** The actual commands live in the
+> [`Makefile`](Makefile) — the one executable source of truth that humans, agents, hooks,
+> and CI all call. **Fill in the Makefile recipes.** This section just *explains* the
+> targets and records the gotchas, so prose can't drift from what actually runs.
 
-| Placeholder | Command | Notes |
-|-------------|---------|-------|
-| `<build>` | `<e.g. npm run build / cargo build / make>` | |
-| `<type-check>` | `<e.g. npx tsc --noEmit / mypy . / cargo check>` | |
-| `<test>` | `<e.g. npm run test / pytest / go test ./...>` | how to run the full suite |
-| `<test one>` | `<e.g. npx vitest run path / pytest path::test>` | how to run a single targeted test |
-| `<lint>` | `<e.g. eslint . / ruff check / golangci-lint run>` | |
-| `<run>` | `<how to start the app locally>` | for `/run` and `/verify` |
+| Target | What it does on this project | Notes / gotchas |
+|--------|------------------------------|-----------------|
+| `make check` | <type-check + lint> | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
+| `make test` | <full test suite> | |
+| `make test-one F=…` | <one targeted test> | |
+| `make build` | <production build> | |
+| `make run` | <start the app locally> | for `/run` and `/verify` |
 
 - **Languages / runtimes:** <…>
 - **Package / build layout:** <e.g. monorepo packages/*, single module, …>
-- **CI gate:** <what must be green before merge>
+- **CI gate:** <what must be green before merge — ideally `make check && make test`>
+- **`check` gotchas:** <e.g. cross-package type-check needs `--incremental false`; lint
+  scope; anything non-obvious belongs *inside the Makefile recipe* so everyone gets it>
+
+### Hooks (enforced, not optional)
+This project ships `.claude/settings.json` with:
+- **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`) — blocks ending a
+  turn while type-check/lint is red. No-ops until `make check` is filled in.
+- **PreToolUse(Bash) → block `git add -A` / `.` / `--all`** (`scripts/hooks/block-git-add-all.sh`)
+  — enforces "stage files by name" mechanically.
 
 ## Architecture (orient an agent fast)
 <!-- The map: top-level components, where the domain logic lives, the data model, the

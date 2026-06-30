@@ -20,11 +20,15 @@ The full standard is in **[`METHODOLOGY.md`](METHODOLOGY.md)**.
 
 ```
 README.md                         this file
-METHODOLOGY.md                    the standard: roles, loop, lifecycle, conventions
-CLAUDE.md                         planner/reviewer contract + the per-project Stack profile
+METHODOLOGY.md                    the standard: roles, loop, lifecycle, conventions, enforcement
+CLAUDE.md                         planner/reviewer contract + the Stack-profile explainer
 AGENTS.md                         executor (Codex) contract + commit format
+Makefile                          the Stack profile: make check / test / test-one / build / run
+.claude/settings.json             enforced hooks (Stop→make check; block git add -A)
 .claude/skills/plan-to-issues/    skill: approved brief → GitHub tracking issue + sub-issues
 scripts/plan-to-issues.sh         the deterministic gh/jq driver the skill calls
+scripts/docs-index.sh             regenerate docs/README.md's index from TRIAGE headers
+scripts/hooks/                    the two hook scripts settings.json calls
 docs/
 ├── README.md                     docs index + naming conventions
 ├── accepted_risks.md             living register of accepted risks / declined features
@@ -39,15 +43,16 @@ docs/
 
 ## Bootstrap a new project
 
-1. **Copy** `METHODOLOGY.md`, `CLAUDE.md`, `AGENTS.md`, `.claude/`, `scripts/`, and `docs/`
-   into the new repo's root.
-2. **Fill in the Stack profile** in `CLAUDE.md` — the build / type-check / test / lint / run
-   commands. This is the *only* project-specific wiring; every template references these as
-   placeholders (`<type-check>`, `<test>`, …).
+1. **Copy** `METHODOLOGY.md`, `CLAUDE.md`, `AGENTS.md`, `Makefile`, `.claude/`, `scripts/`,
+   and `docs/` into the new repo's root.
+2. **Fill in the `Makefile`** — the `check` / `test` / `test-one` / `build` / `run` recipes.
+   This is the *only* project-specific wiring; every template and hook calls these targets.
+   Then explain them + their gotchas in `CLAUDE.md`'s **Stack profile** section.
 3. Fill in `CLAUDE.md`'s **Architecture** and **Gotchas** as you learn the codebase.
 4. Make sure `git-claude` / `git-codex` are on `PATH` (or note the opt-out in `CLAUDE.md` for
-   a Claude-only project).
-5. Start a doc: copy a template from `docs/templates/` into `docs/inprogress/`.
+   a Claude-only project). The hooks in `.claude/settings.json` are active on copy.
+5. Start a doc: copy a template from `docs/templates/` into `docs/inprogress/`, then keep the
+   index current with `scripts/docs-index.sh`.
 
 ## Opt-outs
 

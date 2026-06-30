@@ -19,8 +19,9 @@ order, edge cases — not finished code. Read the brief for the step before writ
 2. **Branch** as the brief specifies; work one step at a time, in the brief's order.
 3. **Implement** the step. Add the regression test the brief asks for — it must fail against
    the old code and pass after.
-4. **Verify** with the project's commands (from `CLAUDE.md` → Stack profile):
-   `<type-check>`, `<test one>` for the step, `<lint>`; run the full `<test>` at the end.
+4. **Verify** with the project's `make` targets (defined in the `Makefile`; explained in
+   `CLAUDE.md` → Stack profile): `make check` and `make test-one F=<the step's test>` per
+   step; run the full `make test` at the end. (The Stop hook runs `make check` regardless.)
 5. **Commit** (see contract below), one logical commit for the step, with `Fixes #N`.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.

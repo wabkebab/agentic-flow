@@ -77,16 +77,15 @@
 `security-<topic>` off <base branch>. (Confirm the base with the human.)
 
 ## Definition of done (whole brief)
-Every step's per-step DoD met; `<type-check>`, `<lint>`, and `<test>` all green; each fix
-has a regression test that fails against old code and passes after.
+Every step's per-step DoD met; `make check` and `make test` green; each fix has a
+regression test that fails against old code and passes after.
 
 ## Verification commands
-<!-- Pull these verbatim from CLAUDE.md "Stack profile". Run per step; full suite once at the end. -->
+<!-- These call the project's Makefile targets (see CLAUDE.md "Stack profile"). -->
 ```bash
-<type-check>
-<test for the targeted area>
-<lint>
-<full test suite>   # end of brief
+make check                # per step (type-check + lint; also enforced by the Stop hook)
+make test-one F=<file>    # the step's targeted test
+make test                 # end of brief: full suite
 ```
 
 ---

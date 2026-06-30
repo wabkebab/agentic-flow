@@ -4,9 +4,11 @@
 > conventions that make agentic work repeatable across projects. This file is the
 > source of truth; templates in `docs/templates/` are the fill-in-the-blanks forms.
 >
-> Stack-agnostic by design. The only project-specific thing is the **Stack profile**
-> in `CLAUDE.md` (build / type-check / test / verify commands). Everything here refers
-> to those commands as placeholders like `<type-check>`, `<test>`, `<build>`.
+> Stack-agnostic by design. The only project-specific thing is the **Stack profile** — the
+> [`Makefile`](Makefile), the one executable source of truth for build/test/run commands.
+> Everything here, in the templates, and in the hooks calls its targets: `make check`
+> (fast type-check + lint gate), `make test`, `make test-one F=…`, `make build`, `make run`.
+> `CLAUDE.md` explains those targets and their gotchas; the `Makefile` runs them.
 
 ---
 
@@ -196,9 +198,20 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ---
 
-## 8. Harness capabilities that map onto the loop
+## 8. Enforcement & harness capabilities
 
-Optional, but they make the handoff explicit and parallel instead of sequential:
+### Shipped guardrails (in the scaffold, enforced — not convention)
+`.claude/settings.json` wires hooks that mechanize the contract so it can't be quietly missed:
+- **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`): an agent can't end a
+  turn with a red type-check/lint. Scoped to the *fast* gate, not the full suite. No-ops until
+  `make check` is filled in.
+- **PreToolUse(Bash) → block `git add -A` / `git add .` / `--all`**
+  (`scripts/hooks/block-git-add-all.sh`): enforces §7's "stage files by name" mechanically.
+- **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
+  header (run it, or `--check` in CI) so the index can't go stale by hand.
+
+### Optional capabilities
+These make the handoff explicit and parallel instead of sequential:
 
 - **Plan mode** (`EnterPlanMode` / `ExitPlanMode`) — design and get approval *before* any
   file changes. Matches "Claude designs, then hands off."
@@ -211,7 +224,7 @@ Optional, but they make the handoff explicit and parallel instead of sequential:
 - **`/security-review`** — a security pass on the pending branch diff; complements a
   Security doc.
 - **`/verify` and `/run`** — drive the app to confirm a fix behaves, not just that tests pass.
-- **Hooks** — e.g. a Stop-hook `<type-check>` + `<lint>` gate so an agent can't end a turn
-  red; a PreToolUse guard rejecting `git add -A`.
+- **More hooks** — beyond the shipped two: a PostToolUse reminder on shared-type edits, a
+  commit-message-format check, etc.
 - **Memory** — persist durable decisions (this methodology, the commit contract, recurring
   review themes) so each session doesn't re-derive them.

@@ -44,6 +44,12 @@ the user accepts the risk / declines the feature — in which case add an entry 
 `accepted_risks.md` and link it before moving the doc.
 
 ## Current docs
-<!-- Keep this list current: one line per active doc, newest first. -->
 
-_None yet._
+This table is **generated** — run `scripts/docs-index.sh` to refresh it from each doc's
+TRIAGE header. Don't edit between the markers by hand.
+
+<!-- BEGIN: generated index — do not edit by hand (scripts/docs-index.sh) -->
+| Doc | Type | Status | Stage |
+|-----|------|--------|-------|
+| _none yet_ | | | |
+<!-- END: generated index -->
