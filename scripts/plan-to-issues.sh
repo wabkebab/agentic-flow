@@ -36,6 +36,11 @@ die() { echo "error: $*" >&2; exit 1; }
 command -v gh >/dev/null || die "gh not found"
 command -v jq >/dev/null || die "jq not found"
 jq -e . "$SPEC" >/dev/null 2>&1 || die "spec is not valid JSON: $SPEC"
+jq -e '
+  (.tracking.title | type == "string" and length > 0) and
+  (.steps | type == "array" and length > 0) and
+  all(.steps[]; (.title | type == "string" and length > 0))
+' "$SPEC" >/dev/null 2>&1 || die "spec must include tracking.title and at least one step with a title"
 gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login)"
 
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) || die "not in a GitHub repo"

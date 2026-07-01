@@ -11,10 +11,10 @@
 help:           ## list available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-10s %s\n",$$1,$$2}'
 
-check:          ## fast sanity gate: type-check + lint (seconds). Run by the Stop hook.
-	@echo "TODO: define 'check' (type-check + lint) in the Makefile."
-#	npx tsc --noEmit
-#	npx eslint .
+check:          ## fast sanity gate for this scaffold. Run by the Stop hook.
+	@bash -n scripts/export.sh scripts/plan-to-issues.sh scripts/docs-index.sh scripts/doctor.sh scripts/self-test.sh scripts/hooks/check-gate.sh scripts/hooks/block-git-add-all.sh
+	@scripts/docs-index.sh --check
+	@scripts/self-test.sh
 
 test:           ## full test suite
 	@echo "TODO: define 'test' in the Makefile."

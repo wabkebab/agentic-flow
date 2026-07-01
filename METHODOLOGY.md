@@ -209,6 +209,10 @@ Co-Authored-By: Claude <noreply@anthropic.com>
   (`scripts/hooks/block-git-add-all.sh`): enforces §7's "stage files by name" mechanically.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
+- **`scripts/doctor.sh`** is the adoption checklist for a copied scaffold: required files,
+  hook wiring, required tools, real Make targets, and docs-index freshness.
+- **`scripts/self-test.sh`** exercises the scaffold's offline invariants, especially export
+  behavior and hook behavior.
 
 ### Optional capabilities
 These make the handoff explicit and parallel instead of sequential:

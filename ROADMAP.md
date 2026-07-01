@@ -95,11 +95,11 @@ adopt each piece when the pain is real.
 - **Problem:** because agentic-flow is **copy-paste**, projects diverge from the canonical
   standard over time; there's no way to tell which version a project started from or whether
   it still conforms.
-- **Fix:** a **version stamp** in `METHODOLOGY.md` (e.g. `Standard version: 1.x`) and a small
-  **`doctor`** script (`scripts/doctor.sh`) that checks a project conforms: required files
-  present, hooks wired, `make` targets defined (not still `TODO`), docs index not stale,
-  templates not hand-edited in `docs/templates/`. Optionally a re-sync helper that diffs a
-  project's harness against the current standard.
+- **Fix:** a **version stamp** in `METHODOLOGY.md` (e.g. `Standard version: 1.x`) and continued
+  expansion of **`scripts/doctor.sh`**, which now checks required files, hook wiring, required
+  tools, real `make` targets, and docs-index freshness. Future work: detect hand-edited
+  templates and add a re-sync helper that diffs a project's harness against the current
+  standard.
 - **Artifacts:** version line in `METHODOLOGY.md`; `scripts/doctor.sh`; a CI/`--check` entry.
 - **Done when:** `scripts/doctor.sh` passes on a conformant project and names the gaps on a drifted one.
 

@@ -37,6 +37,7 @@ die() { echo "error: $*" >&2; exit 1; }
 # Allow-list of items to export (files copied as-is; dirs copied file-by-file).
 ITEMS=(
   METHODOLOGY.md
+  ADOPTION.md
   CLAUDE.md
   AGENTS.md
   Makefile

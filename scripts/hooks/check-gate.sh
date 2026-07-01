@@ -8,7 +8,11 @@
 set -uo pipefail
 
 input=$(cat 2>/dev/null || true)
-active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null || echo false)
+if command -v jq >/dev/null 2>&1; then
+  active=$(printf '%s' "$input" | jq -r '.stop_hook_active // false' 2>/dev/null || echo false)
+else
+  active=false
+fi
 
 # No Makefile / no real `check` target → nothing to gate on; allow.
 if [ ! -f Makefile ] || ! grep -Eq '^check:' Makefile; then

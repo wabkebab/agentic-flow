@@ -50,6 +50,15 @@
 - **`check` gotchas:** <e.g. cross-package type-check needs `--incremental false`; lint
   scope; anything non-obvious belongs *inside the Makefile recipe* so everyone gets it>
 
+## Required local tools
+
+- **Required for the scaffold:** `bash`, `make`, `git`, `jq`, `gh`.
+- **Required unless opted out:** `git-claude` for planner/reviewer commits and `git-codex`
+  for executor commits.
+- **Recommended:** `shellcheck`.
+- **Adoption check:** run `scripts/doctor.sh --check` after exporting the scaffold and before
+  committing it in a target project.
+
 ### Hooks (enforced, not optional)
 This project ships `.claude/settings.json` with:
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`) — blocks ending a

@@ -12,6 +12,13 @@ Implement the GitHub issues generated from an approved plan. Each issue is one
 or Feature doc (`docs/inprogress/<doc>.md`). The brief contains the *approach* — files,
 order, edge cases — not finished code. Read the brief for the step before writing code.
 
+## Required local tools
+
+- Required for this harness: `bash`, `make`, `git`, `jq`, `gh`.
+- Required for Codex execution unless the project opts out: `git-codex`.
+- Run `scripts/doctor.sh --check` if the scaffold was just adopted or hook/build wiring looks
+  suspicious.
+
 ## How to work a step
 
 1. **Read the implementation brief** for the issue (linked from the issue / tracking issue).

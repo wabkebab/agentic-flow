@@ -21,6 +21,7 @@ The full standard is in **[`METHODOLOGY.md`](METHODOLOGY.md)**.
 ```
 README.md                         this file
 METHODOLOGY.md                    the standard: roles, loop, lifecycle, conventions, enforcement
+ADOPTION.md                       tool requirements + checklist for exported projects
 CLAUDE.md                         planner/reviewer contract + the Stack-profile explainer
 AGENTS.md                         executor (Codex) contract + commit format
 Makefile                          the Stack profile: make check / test / test-one / build / run
@@ -29,6 +30,8 @@ Makefile                          the Stack profile: make check / test / test-on
 scripts/export.sh                 copy the standard into a target project (non-destructive)
 scripts/plan-to-issues.sh         the deterministic gh/jq driver the skill calls
 scripts/docs-index.sh             regenerate docs/README.md's index from TRIAGE headers
+scripts/doctor.sh                 adoption checklist / scaffold health check
+scripts/self-test.sh              offline regression checks for this scaffold
 scripts/hooks/                    the two hook scripts settings.json calls
 ROADMAP.md                        planned evolution of the standard (Tier 2 / Tier 3)
 docs/
@@ -61,6 +64,18 @@ docs/
    a Claude-only project). The hooks in `.claude/settings.json` are active on copy.
 5. Start a doc: copy a template from `docs/templates/` into `docs/inprogress/`, then keep the
    index current with `scripts/docs-index.sh`.
+6. Run `scripts/doctor.sh --check` in the target repo before committing the harness. It checks
+   required files, hook wiring, required tools, real Make targets, and docs-index freshness.
+
+See [`ADOPTION.md`](ADOPTION.md) for the full checklist.
+
+## Required tools
+
+- **Required:** `bash`, `make`, `git`, `jq`, `gh`.
+- **Project wrappers:** `git-claude` and `git-codex` unless the project explicitly opts out.
+- **Recommended:** `shellcheck` for stricter shell linting.
+
+For exported projects, `scripts/doctor.sh` is the adoption checklist and can be used in CI.
 
 ## Opt-outs
 

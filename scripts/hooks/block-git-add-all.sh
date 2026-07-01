@@ -5,6 +5,11 @@
 # Exit 2 = block the call and show stderr to the agent; exit 0 = allow.
 set -uo pipefail
 
+if ! command -v jq >/dev/null 2>&1; then
+  echo "Warning: jq not found; cannot inspect Bash command for blocked git add patterns." >&2
+  exit 0
+fi
+
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null) || cmd=""
 [ -n "$cmd" ] || exit 0
 

@@ -50,6 +50,7 @@ grep -qF "$END" "$README"   || { echo "error: END marker not found in $README" >
 # Splice the table between the markers. The table is multi-line, and macOS awk rejects
 # newlines in -v assignments, so pass it via a temp file and getline it in.
 TMPTBL=$(mktemp)
+trap 'rm -f "$TMPTBL"' EXIT
 printf '%s\n' "$TABLE" > "$TMPTBL"
 NEW=$(awk -v b="$BEGIN" -v e="$END" -v tf="$TMPTBL" '
   $0==b {print; while ((getline line < tf) > 0) print line; close(tf); skip=1; next}
@@ -57,6 +58,7 @@ NEW=$(awk -v b="$BEGIN" -v e="$END" -v tf="$TMPTBL" '
   skip!=1 {print}
 ' "$README")
 rm -f "$TMPTBL"
+trap - EXIT
 
 if [ "${1:-}" = "--check" ]; then
   if [ "$NEW" = "$(cat "$README")" ]; then
