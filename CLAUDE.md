@@ -30,6 +30,11 @@
 > [`Makefile`](Makefile) — the one executable source of truth that humans, agents, hooks,
 > and CI all call. **Fill in the Makefile recipes.** This section just *explains* the
 > targets and records the gotchas, so prose can't drift from what actually runs.
+>
+> **Before picking languages, frameworks, or libraries here, check current stable
+> versions** (release notes, changelogs, official docs — not training-data recall, which
+> skews stale). Pin the versions actually chosen in the Makefile / lockfiles, not just
+> in prose here.
 
 | Target | What it does on this project | Notes / gotchas |
 |--------|------------------------------|-----------------|
