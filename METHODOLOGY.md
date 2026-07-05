@@ -207,6 +207,8 @@ Co-Authored-By: Claude <noreply@anthropic.com>
   ships prefilled with harness sanity checks; extend it with the stack's type-check + lint.
 - **PreToolUse(Bash) → block `git add -A` / `git add .` / `--all`**
   (`scripts/hooks/block-git-add-all.sh`): enforces §7's "stage files by name" mechanically.
+- **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`):
+  enforces §7's "never push — the human controls all pushes and merges" mechanically.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
 - **`scripts/doctor.sh`** is the adoption checklist for a copied scaffold: required files,

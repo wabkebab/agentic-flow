@@ -77,6 +77,18 @@ must_block "$ADD_GUARD" 'git-claude add --all'
 must_allow "$ADD_GUARD" 'git add README.md'
 must_allow "$ADD_GUARD" 'git add docs/inprogress/feature-x.md scripts/doctor.sh'
 
+PUSH_GUARD="$ROOT/scripts/hooks/block-push.sh"
+
+must_block "$PUSH_GUARD" 'git push'
+must_block "$PUSH_GUARD" 'git push origin main --force'
+must_block "$PUSH_GUARD" 'git -C /some/path push'
+must_block "$PUSH_GUARD" 'git-claude push origin HEAD'
+must_block "$PUSH_GUARD" 'git status && git push'
+must_block "$PUSH_GUARD" 'gh pr merge 12'
+must_allow "$PUSH_GUARD" 'git pull --rebase'
+must_allow "$PUSH_GUARD" 'gh pr view 12'
+must_allow "$PUSH_GUARD" 'echo push'
+
 # --- plan-to-issues spec validation ------------------------------------------------------
 INVALID_SPEC="$TMP/invalid-spec.json"
 printf '%s\n' '{"tracking":{"title":"Plan: bad"},"steps":[]}' > "$INVALID_SPEC"

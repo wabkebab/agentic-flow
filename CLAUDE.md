@@ -66,6 +66,8 @@ This project ships `.claude/settings.json` with:
   extend it with the stack's type-check + lint.
 - **PreToolUse(Bash) → block `git add -A` / `.` / `--all`** (`scripts/hooks/block-git-add-all.sh`)
   — enforces "stage files by name" mechanically.
+- **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)
+  — enforces "never push; the human controls pushes and merges" mechanically.
 
 ## Architecture (orient an agent fast)
 <!-- The map: top-level components, where the domain logic lives, the data model, the

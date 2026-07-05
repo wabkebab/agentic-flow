@@ -25,7 +25,7 @@ ADOPTION.md                       tool requirements + checklist for exported pro
 CLAUDE.md                         planner/reviewer contract + the Stack-profile explainer
 AGENTS.md                         executor (Codex) contract + commit format
 Makefile                          the Stack profile: make check / test / test-one / build / run
-.claude/settings.json             enforced hooks (Stop→make check; block git add -A)
+.claude/settings.json             enforced hooks (Stop→make check; block git add -A; block git push)
 .claude/skills/plan-to-issues/    skill: approved brief → GitHub tracking issue + sub-issues
 scripts/export.sh                 copy the standard into a target project (non-destructive)
 scripts/plan-to-issues.sh         the deterministic gh/jq driver the skill calls

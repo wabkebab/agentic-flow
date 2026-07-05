@@ -23,8 +23,8 @@ Recommended: `shellcheck`.
 3. Update `CLAUDE.md` with the project name, Stack profile, Architecture, Gotchas, and any
    opt-outs.
 4. Update `AGENTS.md` with the project name and any executor-specific opt-outs.
-5. Confirm `.claude/settings.json` wires `scripts/hooks/check-gate.sh` and
-   `scripts/hooks/block-git-add-all.sh`.
+5. Confirm `.claude/settings.json` wires `scripts/hooks/check-gate.sh`,
+   `scripts/hooks/block-git-add-all.sh`, and `scripts/hooks/block-push.sh`.
 6. Run `scripts/docs-index.sh --check`.
 7. Run `scripts/doctor.sh --check`.
 8. Add `make check`, `make test`, and `scripts/docs-index.sh --check` to CI where practical.

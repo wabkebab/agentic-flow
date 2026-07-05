@@ -82,6 +82,7 @@ require_file scripts/doctor.sh
 require_file scripts/self-test.sh
 require_file scripts/hooks/check-gate.sh
 require_file scripts/hooks/block-git-add-all.sh
+require_file scripts/hooks/block-push.sh
 require_file docs/README.md
 require_file docs/accepted_risks.md
 
@@ -91,6 +92,7 @@ require_executable scripts/doctor.sh
 require_executable scripts/self-test.sh
 require_executable scripts/hooks/check-gate.sh
 require_executable scripts/hooks/block-git-add-all.sh
+require_executable scripts/hooks/block-push.sh
 
 echo
 real_make_target check
@@ -109,6 +111,12 @@ if grep -q "scripts/hooks/block-git-add-all.sh" "$ROOT/.claude/settings.json" 2>
   ok "git-add guard hook wired"
 else
   fail "PreToolUse hook wired to scripts/hooks/block-git-add-all.sh"
+fi
+
+if grep -q "scripts/hooks/block-push.sh" "$ROOT/.claude/settings.json" 2>/dev/null; then
+  ok "push guard hook wired"
+else
+  fail "PreToolUse hook wired to scripts/hooks/block-push.sh"
 fi
 
 if "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
