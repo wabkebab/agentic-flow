@@ -125,6 +125,13 @@ else
   fail "docs index up to date (run scripts/docs-index.sh)"
 fi
 
+# Behavior-derived, not text-derived: a `check` recipe can look wired yet still be red.
+if (cd "$ROOT" && make check) >/dev/null 2>&1; then
+  ok "make check passes"
+else
+  fail "make check passes (run 'make check' to see why)"
+fi
+
 echo
 echo "Summary: $failures missing/failed, $warnings warning(s)."
 

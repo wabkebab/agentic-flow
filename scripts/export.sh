@@ -8,7 +8,7 @@
 #
 # Copies the allow-list (METHODOLOGY/CLAUDE/AGENTS/Makefile, .claude/settings.json,
 # .claude/skills, scripts, docs) and deliberately leaves behind this repo's own meta:
-# README.md, ROADMAP.md, the draft, .git, .claude/settings.local.json, and export.sh itself.
+# README.md, ROADMAP.md, .git, .claude/settings.local.json, and export.sh itself.
 #
 # Default mode never overwrites: a file that already exists in the target and differs is
 # written next to it as `<file>.agentic-new` so you can diff and MERGE (important for a
