@@ -57,9 +57,10 @@ three routers into requireAdmin; per-row deletes are unchanged.
 Adds a regression test asserting 403 for role:user and 200 for admin.
 
 Fixes #71
-
-Co-Authored-By: Codex <noreply@openai.com>
 ```
+
+(`git-codex` appends `Co-Authored-By: Codex <noreply@openai.com>` automatically when the
+message doesn't already carry a `Co-Authored-By:` trailer — don't hand-maintain it.)
 
 <!-- OPT-OUT: if this project is Claude-only, there is no Codex executor and this file is
      informational only. -->

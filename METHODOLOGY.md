@@ -179,7 +179,8 @@ Rules (both agents):
   radius. A reviewer months later should understand the change from the message alone.
 - **Reference the issue** — `Fixes #N` in the PR (or commit) so merge closes it.
 - **Never push.** The human controls all pushes and merges.
-- End the body with the `Co-Authored-By:` trailer for the committing agent.
+- The `Co-Authored-By:` trailer is **appended by the wrapper** when the message lacks one —
+  don't hand-maintain it (model names in prose go stale); a trailer you write is kept as-is.
 
 Example body:
 
@@ -192,9 +193,9 @@ payload and reject mismatches in requireAuth. Legacy missing-claim cookies
 are treated as the default tenant for one release to ease rollout.
 
 Fixes #73
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 ```
+
+(The wrapper appends `Co-Authored-By: Claude <noreply@anthropic.com>` on commit.)
 
 ---
 
