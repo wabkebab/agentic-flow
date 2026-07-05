@@ -9,13 +9,13 @@
 # Feature — init script + template/instance split
 
 ## Tracker
-- [ ] F-1 Export only the docs skeleton, never working docs — open (#1)
-- [ ] F-2 Stamp the export version; doctor reports it — open (#2)
-- [ ] F-3 Split pristine harness templates from the repo's live files — open (#3)
-- [ ] F-4 Fill in this repo's own instance so it passes its own doctor — open (#4)
-- [ ] F-5 `init.sh` non-interactive core (flags, token fill, presets, doctor) — open (#5)
-- [ ] F-6 `init.sh` interactive layer for human runs — open (#6)
-- [ ] F-7 Trim ADOPTION.md to a pointer; update README / METHODOLOGY — open (#7)
+- [x] F-1 Export only the docs skeleton, never working docs — fixed in 40cc412 (#1)
+- [x] F-2 Stamp the export version; doctor reports it — fixed in 1886388 (#2)
+- [x] F-3 Split pristine harness templates from the repo's live files — fixed in 7fee63d (#3)
+- [x] F-4 Fill in this repo's own instance so it passes its own doctor — fixed in 91935eb (#4)
+- [x] F-5 `init.sh` non-interactive core (flags, token fill, presets, doctor) — fixed in 9995d1a (#5)
+- [x] F-6 `init.sh` interactive layer for human runs — fixed in db8912a (#6)
+- [x] F-7 Trim ADOPTION.md to a pointer; update README / METHODOLOGY — fixed in 3e37983 (#7)
 
 ---
 
@@ -344,5 +344,5 @@ checklist survives.
   F-1 #1 · F-2 #2 · F-3 #3 · F-4 #4 · F-5 #5 · F-6 #6 · F-7 #7.
 - **Approved:** issues created via `plan-to-issues --apply` (the approval event). Base branch
   `main`.
-- Steps not yet started. Executor closes each via a PR with `Fixes #N`, records the commit
-  SHA per step here, and ticks the matching F-N box in the Tracker above.
+- Execution commits recorded in the tracker above. Awaiting review/PR merge to close the
+  GitHub issues.
