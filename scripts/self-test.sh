@@ -122,6 +122,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     && fail "init accepted --yes without --name"
   grep -q -- "--name is required" "$TMP/init-missing.err" \
     || fail "init missing-name error did not explain --name requirement"
+
+  INIT_NONTty="$TMP/init-nontty"
+  "$ROOT/scripts/init.sh" "$INIT_NONTty" --name pipe-proj --stack none < /dev/null >"$TMP/init-nontty.log" 2>&1 \
+    || { cat "$TMP/init-nontty.log" >&2; fail "init non-TTY fallback failed"; }
+  grep -q "pipe-proj" "$INIT_NONTty/CLAUDE.md" || fail "non-TTY init did not stamp project name"
+  if grep -R "$TOKEN_OPEN" "$INIT_NONTty" >/dev/null 2>&1; then
+    fail "non-TTY init left unfilled template tokens"
+  fi
 fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------

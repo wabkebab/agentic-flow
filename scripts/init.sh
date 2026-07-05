@@ -4,18 +4,20 @@
 # Usage:
 #   scripts/init.sh <target-dir> --name <kebab> [--stack none|node] [--claude-only] [--git-init] [--yes] [--dry-run]
 #
-# Non-interactive core: every promptable choice has a flag. The interactive layer is a
-# thin wrapper added separately; this core must stay scriptable for agents and CI.
+# Every promptable choice has a matching flag. Non-TTY runs never prompt.
 set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/.." && pwd -P)
 PROJECT_NAME=""
-STACK="none"
+STACK=""
 CLAUDE_ONLY=false
 GIT_INIT=false
 YES=false
 DRY=false
 DST=""
+STACK_SET=false
+CLAUDE_ONLY_SET=false
+GIT_INIT_SET=false
 TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 TOKEN_OPEN="$(printf '{%s' '{')"
 
@@ -26,6 +28,62 @@ usage() {
 die() {
   echo "error: $*" >&2
   exit 1
+}
+
+detect_stack() {
+  local target="$1"
+  if [ -f "$target/package.json" ]; then
+    printf '%s\n' node
+  else
+    printf '%s\n' none
+  fi
+}
+
+target_in_git_repo() {
+  local target="$1"
+  [ -d "$target" ] || return 1
+  git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+prompt_required_name() {
+  local value
+  while true; do
+    printf 'Project name (--name): ' >&2
+    IFS= read -r value || die "failed to read --name"
+    if is_kebab "$value"; then
+      PROJECT_NAME="$value"
+      return
+    fi
+    echo "Enter kebab-case lowercase letters, numbers, and hyphens." >&2
+  done
+}
+
+prompt_stack() {
+  local default value
+  default=$(detect_stack "$TARGET_ABS")
+  while true; do
+    printf 'Stack preset (--stack) [none|node, default: %s]: ' "$default" >&2
+    IFS= read -r value || die "failed to read --stack"
+    [ -n "$value" ] || value="$default"
+    case "$value" in
+      none|node) STACK="$value"; return ;;
+      *) echo "Enter 'none' or 'node'." >&2 ;;
+    esac
+  done
+}
+
+prompt_yes_no() {
+  local prompt="$1" default="$2" value
+  while true; do
+    printf '%s ' "$prompt" >&2
+    IFS= read -r value || die "failed to read prompt"
+    [ -n "$value" ] || value="$default"
+    case "$value" in
+      y|Y|yes|YES) return 0 ;;
+      n|N|no|NO) return 1 ;;
+      *) echo "Enter yes or no." >&2 ;;
+    esac
+  done
 }
 
 is_kebab() {
@@ -47,13 +105,13 @@ while [ "$#" -gt 0 ]; do
       PROJECT_NAME="${1#--name=}"; shift ;;
     --stack)
       [ "$#" -ge 2 ] || die "--stack requires a value"
-      STACK="$2"; shift 2 ;;
+      STACK="$2"; STACK_SET=true; shift 2 ;;
     --stack=*)
-      STACK="${1#--stack=}"; shift ;;
+      STACK="${1#--stack=}"; STACK_SET=true; shift ;;
     --claude-only)
-      CLAUDE_ONLY=true; shift ;;
+      CLAUDE_ONLY=true; CLAUDE_ONLY_SET=true; shift ;;
     --git-init)
-      GIT_INIT=true; shift ;;
+      GIT_INIT=true; GIT_INIT_SET=true; shift ;;
     --yes)
       YES=true; shift ;;
     --dry-run|-n)
@@ -69,19 +127,44 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$DST" ] || { usage; die "no target dir provided"; }
-[ -n "$PROJECT_NAME" ] || { usage; die "--name is required in non-interactive mode"; }
-is_kebab "$PROJECT_NAME" || die "--name must be kebab-case lowercase letters, numbers, and hyphens"
-case "$STACK" in
-  none|node) ;;
-  *) die "--stack must be 'none' or 'node'" ;;
-esac
-
 if [ ! -d "$DST" ]; then
   TARGET_ABS="$DST"
 else
   TARGET_ABS=$(cd "$DST" && pwd -P)
 fi
 [ "$TARGET_ABS" != "$SRC" ] || die "target is the agentic-flow repo itself"
+
+if [ "$YES" = false ] && [ ! -t 0 ]; then
+  YES=true
+fi
+
+if [ "$YES" = false ]; then
+  [ -n "$PROJECT_NAME" ] || prompt_required_name
+  if [ "$STACK_SET" = false ]; then
+    prompt_stack
+  fi
+  if [ "$CLAUDE_ONLY_SET" = false ]; then
+    if prompt_yes_no "Claude-only mode (--claude-only)? [y/N]:" "n"; then
+      CLAUDE_ONLY=true
+    fi
+  fi
+  if [ "$GIT_INIT_SET" = false ] && ! target_in_git_repo "$TARGET_ABS"; then
+    if prompt_yes_no "Initialize git repo (--git-init)? [y/N]:" "n"; then
+      GIT_INIT=true
+    fi
+  fi
+else
+  [ -n "$PROJECT_NAME" ] || { usage; die "--name is required in non-interactive mode"; }
+  if [ "$STACK_SET" = false ]; then
+    STACK=$(detect_stack "$TARGET_ABS")
+  fi
+fi
+
+is_kebab "$PROJECT_NAME" || die "--name must be kebab-case lowercase letters, numbers, and hyphens"
+case "$STACK" in
+  none|node) ;;
+  *) die "--stack must be 'none' or 'node'" ;;
+esac
 
 if [ "$DRY" = true ]; then
   "$SRC/scripts/export.sh" --dry-run "$DST"
