@@ -62,8 +62,9 @@
 ### Hooks (enforced, not optional)
 This project ships `.claude/settings.json` with:
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`) — blocks ending a
-  turn while type-check/lint is red. `check` ships prefilled with harness sanity checks;
-  extend it with the stack's type-check + lint.
+  turn while type-check/lint is red (one blocked retry, then warn-and-allow; skipped when
+  the working tree is clean). `check` ships prefilled with harness sanity checks; extend
+  it with the stack's type-check + lint.
 - **PreToolUse(Bash) → block `git add -A` / `.` / `--all`** (`scripts/hooks/block-git-add-all.sh`)
   — enforces "stage files by name" mechanically.
 - **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)

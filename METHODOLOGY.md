@@ -203,9 +203,12 @@ Fixes #73
 
 ### Shipped guardrails (in the scaffold, enforced — not convention)
 `.claude/settings.json` wires hooks that mechanize the contract so it can't be quietly missed:
-- **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`): an agent can't end a
-  turn with a red type-check/lint. Scoped to the *fast* gate, not the full suite. `check`
-  ships prefilled with harness sanity checks; extend it with the stack's type-check + lint.
+- **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`): blocks a turn from
+  ending while the fast gate is red, feeding the failure back to the agent; if the retry is
+  still red it warns and allows rather than looping forever. Skipped when the working tree
+  is clean (nothing uncommitted to gate — spares no-edit turns and read-only subagents).
+  Scoped to the *fast* gate, not the full suite. `check` ships prefilled with harness sanity
+  checks; extend it with the stack's type-check + lint.
 - **PreToolUse(Bash) → block `git add -A` / `git add .` / `--all`**
   (`scripts/hooks/block-git-add-all.sh`): enforces §7's "stage files by name" mechanically.
 - **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`):

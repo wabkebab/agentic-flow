@@ -14,6 +14,14 @@ else
   active=false
 fi
 
+# Clean working tree → nothing uncommitted that this turn could have broken; skip. This
+# keeps pre-existing red state (someone else's broken commit) from holding unrelated,
+# no-edit turns hostage, and spares read-only subagents a pointless gate run.
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+   && [ -z "$(git status --porcelain 2>/dev/null)" ]; then
+  exit 0
+fi
+
 # No Makefile / no real `check` target → nothing to gate on; allow.
 if [ ! -f Makefile ] || ! grep -Eq '^check:' Makefile; then
   exit 0
