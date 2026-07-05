@@ -139,7 +139,9 @@ else
 fi
 
 # Behavior-derived, not text-derived: a `check` recipe can look wired yet still be red.
-if (cd "$ROOT" && make check) >/dev/null 2>&1; then
+if [ "${AGENTIC_SELFTEST:-}" = "1" ]; then
+  ok "make check passes (skipped inside self-test recursion guard)"
+elif (cd "$ROOT" && make check) >/dev/null 2>&1; then
   ok "make check passes"
 else
   fail "make check passes (run 'make check' to see why)"

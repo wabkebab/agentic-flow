@@ -1,4 +1,4 @@
-# CLAUDE.md — <project name>
+# CLAUDE.md — agentic-flow
 
 > Project guidance for Claude (the **Plan / Review** role). Override-authoritative: these
 > instructions win over defaults. Keep this dense and gotcha-rich — it is the source of
@@ -24,31 +24,27 @@
 
 ---
 
-## Stack profile  ⚠️ WIRE THIS UP
+## Stack profile
 
 > **The whole methodology depends on this.** The actual commands live in the
 > [`Makefile`](Makefile) — the one executable source of truth that humans, agents, hooks,
-> and CI all call. **Fill in the Makefile recipes.** This section just *explains* the
+> and CI all call. This section just *explains* the
 > targets and records the gotchas, so prose can't drift from what actually runs.
->
-> **Before picking languages, frameworks, or libraries here, check current stable
-> versions** (release notes, changelogs, official docs — not training-data recall, which
-> skews stale). Pin the versions actually chosen in the Makefile / lockfiles, not just
-> in prose here.
 
 | Target | What it does on this project | Notes / gotchas |
 |--------|------------------------------|-----------------|
-| `make check` | harness sanity (prefilled) + <type-check + lint> | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
-| `make test` | <full test suite> | |
-| `make test-one F=…` | <one targeted test> | |
-| `make build` | <production build> | |
-| `make run` | <start the app locally> | for `/run` and `/verify` |
+| `make check` | Bash syntax for shipped scripts, docs index freshness, and `scripts/self-test.sh` | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
+| `make test` | full offline scaffold regression suite, plus `shellcheck` over `scripts/` when installed | no network or GitHub writes |
+| `make test-one F=…` | same offline suite; this harness has no finer-grained test runner yet | accepts `F` for interface compatibility and prints it |
+| `make build` | dry-run export into a temporary directory | validates the payload assembles without writing a real target |
+| `make run` | `scripts/doctor.sh` report mode | the scaffold's "app" is its adoption report |
 
-- **Languages / runtimes:** <…>
-- **Package / build layout:** <e.g. monorepo packages/*, single module, …>
-- **CI gate:** <what must be green before merge — ideally `make check && make test`>
-- **`check` gotchas:** <e.g. cross-package type-check needs `--incremental false`; lint
-  scope; anything non-obvious belongs *inside the Makefile recipe* so everyone gets it>
+- **Languages / runtimes:** POSIX-ish shell with Bash 3.2 compatibility for shipped scripts.
+- **Package / build layout:** single scaffold repo; reusable payload lives in scripts,
+  docs skeleton, hooks, and `templates/harness/`.
+- **CI gate:** `make check && make test`.
+- **`check` gotchas:** `scripts/self-test.sh` mutates root `CLAUDE.md` briefly to prove
+  exports come from `templates/harness/`; do not run multiple self-tests in parallel.
 
 ## Required local tools
 
@@ -71,13 +67,23 @@ This project ships `.claude/settings.json` with:
   — enforces "never push; the human controls pushes and merges" mechanically.
 
 ## Architecture (orient an agent fast)
-<!-- The map: top-level components, where the domain logic lives, the data model, the
-     boundaries. Enough that an agent knows where to look without grepping blind. -->
+
+`scripts/export.sh` copies the allow-listed scaffold payload into a target project.
+Pristine root harness files are sourced from `templates/harness/`, while this repo's root
+`CLAUDE.md`, `AGENTS.md`, and `Makefile` are its own filled-in instance. `scripts/doctor.sh`
+reports adoption gaps, `scripts/self-test.sh` covers offline regressions, and the hooks in
+`scripts/hooks/` enforce the local stop gate, named staging, and no-push contract.
 
 ## Gotchas (the top traps)
-<!-- The non-obvious things that bite. Migration ordering, caches, cross-module type quirks,
-     env vars that fail-hard, "never run X". This section pays for itself. -->
-- <…>
+
+- Contract changes to `CLAUDE.md`, `AGENTS.md`, or `Makefile` usually need matching edits
+  in both the repo-root instance and `templates/harness/`.
+- Keep scripts Bash 3.2 compatible for macOS: no `mapfile`, no associative arrays, and be
+  careful with empty arrays under `set -u`.
+- `export.sh --help` prints a fixed `sed -n` header range; update that range when changing
+  the help comment.
+- The Stop hook runs `make check`, which runs `self-test.sh`; export behavior and its tests
+  need to stay consistent within the same commit.
 
 ---
 

@@ -83,6 +83,11 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   "$ROOT/scripts/export.sh" "$TARGET" >/dev/null
   assert_file "$TARGET/CLAUDE.md.agentic-new"
   grep -q "# local edits" "$TARGET/CLAUDE.md" || fail "export clobbered an existing file"
+
+  rm -f "$DOC_LEAK_SENTINEL"
+  cp "$TMP/CLAUDE.md.orig" "$ROOT/CLAUDE.md"
+  (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >"$TMP/doctor.log" 2>&1 \
+    || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
 fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------

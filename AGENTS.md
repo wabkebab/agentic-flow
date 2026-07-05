@@ -1,4 +1,4 @@
-# AGENTS.md — <project name>
+# AGENTS.md — agentic-flow
 
 > Guidance for the **Execute** role (**Codex** by default). This is the executor's contract.
 > The planner/reviewer's file is [`CLAUDE.md`](CLAUDE.md); the full process is in
