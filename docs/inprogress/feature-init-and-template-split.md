@@ -1,20 +1,21 @@
 <!-- TRIAGE (first pass · 2026-07-05) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > Split the harness into pristine templates (`templates/harness/`) vs this repo's own
 > filled-in instance, and add `scripts/init.sh` — a flag-driven (optionally interactive)
-> adopter that replaces ADOPTION.md's manual checklist. Unblocks dogfooding. Next: human
-> approval → `plan-to-issues`.
+> adopter that replaces ADOPTION.md's manual checklist. Unblocks dogfooding. Approved and
+> issued ([tracker #8](https://github.com/wabkebab/agentic-flow/issues/8)); base branch
+> `main`. Next: executor works F-1 → F-7 in order.
 
 # Feature — init script + template/instance split
 
 ## Tracker
-- [ ] F-1 Export only the docs skeleton, never working docs — open
-- [ ] F-2 Stamp the export version; doctor reports it — open
-- [ ] F-3 Split pristine harness templates from the repo's live files — open
-- [ ] F-4 Fill in this repo's own instance so it passes its own doctor — open
-- [ ] F-5 `init.sh` non-interactive core (flags, token fill, presets, doctor) — open
-- [ ] F-6 `init.sh` interactive layer for human runs — open
-- [ ] F-7 Trim ADOPTION.md to a pointer; update README / METHODOLOGY — open
+- [ ] F-1 Export only the docs skeleton, never working docs — open (#1)
+- [ ] F-2 Stamp the export version; doctor reports it — open (#2)
+- [ ] F-3 Split pristine harness templates from the repo's live files — open (#3)
+- [ ] F-4 Fill in this repo's own instance so it passes its own doctor — open (#4)
+- [ ] F-5 `init.sh` non-interactive core (flags, token fill, presets, doctor) — open (#5)
+- [ ] F-6 `init.sh` interactive layer for human runs — open (#6)
+- [ ] F-7 Trim ADOPTION.md to a pointer; update README / METHODOLOGY — open (#7)
 
 ---
 
@@ -88,8 +89,12 @@ what makes the split pay for itself (ADOPTION.md becomes executable; ROADMAP 1.5
 
 ## Open questions
 
-- **[BLOCKING] Base branch:** `tier1-enforcement` or `main`? The brief assumes
-  `tier1-enforcement` (where the Tier 1 + hardening work lives, unmerged).
+- **Base branch: `main`** (resolved — human chose `main` over `tier1-enforcement` at
+  approval). ⚠️ The Tier 1 + hardening work (including the `244486b` export fix and the
+  push-guard hook) currently lives only on `tier1-enforcement`, unmerged. F-1 and F-3 build
+  directly on that export behavior — so either `tier1-enforcement` must merge to `main`
+  before/at the start of execution, or the executor branches from a `main` that already
+  contains it. Flag to the human if `main` still lacks the Tier 1 commits when execution starts.
 - Instance Makefile semantics for this repo (F-4) — proposal, confirm or amend:
   `test` = full `self-test.sh` (+ `shellcheck` over `scripts/` when installed);
   `test-one` = the same suite (no finer offline granularity exists; recipe says so);
@@ -107,8 +112,8 @@ what makes the split pay for itself (ADOPTION.md becomes executable; ROADMAP 1.5
 > **approach and insights — not the code.**
 
 ## Branch
-`feature-init-and-template-split` off `tier1-enforcement` (confirm base with the human —
-see Open questions).
+`feature-init-and-template-split` off `main` (confirmed at approval — but see the base-branch
+note in Part A's Open questions: `main` must contain the Tier 1 work before execution).
 
 ## Definition of done (whole brief)
 
@@ -335,6 +340,9 @@ checklist survives.
 ---
 
 ## Status / Implementation status
-- **Tracking issue:** _not yet created — run `plan-to-issues` after human approval._
+- **Tracking issue:** [#8](https://github.com/wabkebab/agentic-flow/issues/8) — sub-issues:
+  F-1 #1 · F-2 #2 · F-3 #3 · F-4 #4 · F-5 #5 · F-6 #6 · F-7 #7.
+- **Approved:** issues created via `plan-to-issues --apply` (the approval event). Base branch
+  `main`.
 - Steps not yet started. Executor closes each via a PR with `Fixes #N`, records the commit
   SHA per step here, and ticks the matching F-N box in the Tracker above.
