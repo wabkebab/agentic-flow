@@ -10,6 +10,8 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
 DOC_LEAK_SENTINEL="$ROOT/docs/inprogress/self-test-export-leak.md"
+PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
+TOKEN_OPEN="$(printf '{%s' '{')"
 trap 'if [ -f "$TMP/CLAUDE.md.orig" ]; then cp "$TMP/CLAUDE.md.orig" "$ROOT/CLAUDE.md"; fi; rm -rf "$TMP"; rm -f "$DOC_LEAK_SENTINEL"' EXIT
 
 fail() {
@@ -62,7 +64,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/.agentic-flow-version"
   grep -qx "$expected_version" "$TARGET/.agentic-flow-version" \
     || fail "export version stamp did not match source HEAD"
-  grep -q "{{PROJECT_NAME}}" "$TARGET/CLAUDE.md" \
+  grep -q "$PROJECT_TOKEN" "$TARGET/CLAUDE.md" \
     || fail "exported CLAUDE.md did not come from the tokenized harness template"
   if grep -q "# self-test root sentinel" "$TARGET/CLAUDE.md"; then
     fail "exported CLAUDE.md came from the repo root instead of templates/harness"
@@ -88,6 +90,38 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   cp "$TMP/CLAUDE.md.orig" "$ROOT/CLAUDE.md"
   (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >"$TMP/doctor.log" 2>&1 \
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
+
+  INIT_TARGET="$TMP/init-empty"
+  "$ROOT/scripts/init.sh" "$INIT_TARGET" --name demo-proj --stack none --yes >"$TMP/init-empty.log" 2>&1 \
+    || { cat "$TMP/init-empty.log" >&2; fail "init failed for an empty target"; }
+  if grep -R "$TOKEN_OPEN" "$INIT_TARGET" >/dev/null 2>&1; then
+    grep -R "$TOKEN_OPEN" "$INIT_TARGET" >&2 || true
+    fail "init left unfilled template tokens in an empty target"
+  fi
+  grep -q "demo-proj" "$INIT_TARGET/CLAUDE.md" || fail "init did not stamp project name in CLAUDE.md"
+  grep -q "demo-proj" "$INIT_TARGET/AGENTS.md" || fail "init did not stamp project name in AGENTS.md"
+  assert_file "$INIT_TARGET/.agentic-flow-version"
+  (cd "$INIT_TARGET" && make check) >"$TMP/init-empty-check.log" 2>&1 \
+    || { cat "$TMP/init-empty-check.log" >&2; fail "make check failed in initialized target"; }
+
+  INIT_EXISTING="$TMP/init-existing"
+  mkdir -p "$INIT_EXISTING"
+  printf '%s\n' "# Existing project guidance" > "$INIT_EXISTING/CLAUDE.md"
+  "$ROOT/scripts/init.sh" "$INIT_EXISTING" --name demo-proj --stack none --yes >"$TMP/init-existing.log" 2>&1 \
+    || { cat "$TMP/init-existing.log" >&2; fail "init failed for a target with existing CLAUDE.md"; }
+  grep -qx "# Existing project guidance" "$INIT_EXISTING/CLAUDE.md" \
+    || fail "init modified a pre-existing CLAUDE.md"
+  assert_file "$INIT_EXISTING/CLAUDE.md.agentic-new"
+  grep -q "demo-proj" "$INIT_EXISTING/CLAUDE.md.agentic-new" \
+    || fail "init did not fill project name in CLAUDE.md.agentic-new"
+  if grep -q "$TOKEN_OPEN" "$INIT_EXISTING/CLAUDE.md.agentic-new"; then
+    fail "init left an unfilled token in CLAUDE.md.agentic-new"
+  fi
+
+  "$ROOT/scripts/init.sh" "$TMP/init-missing-name" --yes >"$TMP/init-missing.out" 2>"$TMP/init-missing.err" \
+    && fail "init accepted --yes without --name"
+  grep -q -- "--name is required" "$TMP/init-missing.err" \
+    || fail "init missing-name error did not explain --name requirement"
 fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------
