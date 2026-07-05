@@ -9,7 +9,8 @@ set -euo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT
+DOC_LEAK_SENTINEL="$ROOT/docs/inprogress/self-test-export-leak.md"
+trap 'rm -rf "$TMP"; rm -f "$DOC_LEAK_SENTINEL"' EXIT
 
 fail() {
   echo "self-test failed: $*" >&2
@@ -37,6 +38,7 @@ must_allow() { # <hook> <command>
 # --- export invariants (scaffold repo only) ---------------------------------------------
 if [ -f "$ROOT/scripts/export.sh" ]; then
   TARGET="$TMP/target"
+  printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
   "$ROOT/scripts/export.sh" "$TARGET" >/dev/null
 
   assert_file "$TARGET/METHODOLOGY.md"
@@ -48,6 +50,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/scripts/plan-to-issues.sh"
   assert_file "$TARGET/scripts/doctor.sh"
   assert_file "$TARGET/docs/README.md"
+  assert_file "$TARGET/docs/templates/feature-analysis.md"
+  assert_file "$TARGET/docs/accepted_risks.md"
+  assert_file "$TARGET/docs/backlog/.gitkeep"
+  assert_file "$TARGET/docs/inprogress/.gitkeep"
+  assert_file "$TARGET/docs/done/.gitkeep"
+  assert_file "$TARGET/docs/done/security/.gitkeep"
+  assert_no_file "$TARGET/docs/inprogress/feature-init-and-template-split.md"
+  assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"
 
   (cd "$TARGET" && scripts/docs-index.sh --check) >/dev/null

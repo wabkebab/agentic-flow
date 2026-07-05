@@ -7,7 +7,7 @@
 #   scripts/export.sh --force <target-dir>    overwrite existing files (destructive)
 #
 # Copies the allow-list (METHODOLOGY/CLAUDE/AGENTS/Makefile, .claude/settings.json,
-# .claude/skills, scripts, docs) and deliberately leaves behind this repo's own meta:
+# .claude/skills, scripts, docs skeleton) and deliberately leaves behind this repo's own meta:
 # README.md, ROADMAP.md, .git, .claude/settings.local.json, and export.sh itself.
 #
 # Default mode never overwrites: a file that already exists in the target and differs is
@@ -44,7 +44,13 @@ ITEMS=(
   .claude/settings.json
   .claude/skills
   scripts
-  docs
+  docs/templates
+  docs/README.md
+  docs/accepted_risks.md
+  docs/backlog/.gitkeep
+  docs/inprogress/.gitkeep
+  docs/done/.gitkeep
+  docs/done/security/.gitkeep
 )
 # Never export these (basenames anywhere, or exact relative paths).
 EXCLUDE_BASENAMES=( settings.local.json .DS_Store )
