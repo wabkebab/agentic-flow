@@ -10,7 +10,7 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
 DOC_LEAK_SENTINEL="$ROOT/docs/inprogress/self-test-export-leak.md"
-trap 'rm -rf "$TMP"; rm -f "$DOC_LEAK_SENTINEL"' EXIT
+trap 'if [ -f "$TMP/CLAUDE.md.orig" ]; then cp "$TMP/CLAUDE.md.orig" "$ROOT/CLAUDE.md"; fi; rm -rf "$TMP"; rm -f "$DOC_LEAK_SENTINEL"' EXIT
 
 fail() {
   echo "self-test failed: $*" >&2
@@ -38,7 +38,9 @@ must_allow() { # <hook> <command>
 # --- export invariants (scaffold repo only) ---------------------------------------------
 if [ -f "$ROOT/scripts/export.sh" ]; then
   TARGET="$TMP/target"
+  cp "$ROOT/CLAUDE.md" "$TMP/CLAUDE.md.orig"
   printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
+  printf '%s\n' "# self-test root sentinel" >> "$ROOT/CLAUDE.md"
   "$ROOT/scripts/export.sh" "$TARGET" >/dev/null
   expected_version=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
 
@@ -60,6 +62,11 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/.agentic-flow-version"
   grep -qx "$expected_version" "$TARGET/.agentic-flow-version" \
     || fail "export version stamp did not match source HEAD"
+  grep -q "{{PROJECT_NAME}}" "$TARGET/CLAUDE.md" \
+    || fail "exported CLAUDE.md did not come from the tokenized harness template"
+  if grep -q "# self-test root sentinel" "$TARGET/CLAUDE.md"; then
+    fail "exported CLAUDE.md came from the repo root instead of templates/harness"
+  fi
   assert_no_file "$TARGET/docs/inprogress/feature-init-and-template-split.md"
   assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"

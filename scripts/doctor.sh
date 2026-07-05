@@ -86,6 +86,12 @@ require_file scripts/hooks/block-push.sh
 require_file docs/README.md
 require_file docs/accepted_risks.md
 
+if grep -q "{{" "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" 2>/dev/null; then
+  fail "unfilled template tokens in CLAUDE.md or AGENTS.md"
+else
+  ok "CLAUDE.md and AGENTS.md tokens filled"
+fi
+
 if [ -f "$ROOT/.agentic-flow-version" ]; then
   version=$(sed -n '1p' "$ROOT/.agentic-flow-version")
   ok "scaffold version: $version"

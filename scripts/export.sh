@@ -38,9 +38,9 @@ die() { echo "error: $*" >&2; exit 1; }
 ITEMS=(
   METHODOLOGY.md
   ADOPTION.md
-  CLAUDE.md
-  AGENTS.md
-  Makefile
+  templates/harness/CLAUDE.md=CLAUDE.md
+  templates/harness/AGENTS.md=AGENTS.md
+  templates/harness/Makefile=Makefile
   .claude/settings.json
   .claude/skills
   scripts
@@ -71,13 +71,31 @@ fi
 DST=$(cd "$DST" 2>/dev/null && pwd -P || echo "$DST")
 [ "$DST" != "$SRC" ] || die "target is the agentic-flow repo itself"
 
-# Expand the allow-list into a flat file list (bash 3.2 safe — no mapfile).
+# Expand the allow-list into parallel source/destination file lists (bash 3.2 safe — no mapfile).
 FILES=()
+DESTS=()
 for item in "${ITEMS[@]}"; do
-  if [ -f "$SRC/$item" ]; then
-    FILES+=("$item")
-  elif [ -d "$SRC/$item" ]; then
-    while IFS= read -r f; do FILES+=("${f#"$SRC"/}"); done < <(find "$SRC/$item" -type f)
+  src_item="${item%%=*}"
+  if [ "$src_item" = "$item" ]; then
+    dst_item="$src_item"
+  else
+    dst_item="${item#*=}"
+  fi
+
+  if [ -f "$SRC/$src_item" ]; then
+    FILES+=("$src_item")
+    DESTS+=("$dst_item")
+  elif [ -d "$SRC/$src_item" ]; then
+    while IFS= read -r f; do
+      rel="${f#"$SRC"/}"
+      FILES+=("$rel")
+      if [ "$src_item" = "$dst_item" ]; then
+        DESTS+=("$rel")
+      else
+        suffix="${rel#"$src_item"/}"
+        DESTS+=("$dst_item/$suffix")
+      fi
+    done < <(find "$SRC/$src_item" -type f)
   fi
 done
 
@@ -88,23 +106,28 @@ echo "  mode: $([ "$FORCE" = true ] && echo FORCE-overwrite || echo non-destruct
 echo
 
 created=0; overwritten=0; merge=0; same=0
-for rel in "${FILES[@]}"; do
+i=0
+while [ "$i" -lt "${#FILES[@]}" ]; do
+  rel="${FILES[$i]}"
+  dest="${DESTS[$i]}"
+  i=$((i + 1))
+
   is_excluded "$rel" && continue
-  s="$SRC/$rel"; d="$DST/$rel"
+  s="$SRC/$rel"; d="$DST/$dest"
   if [ -e "$d" ]; then
     if cmp -s "$s" "$d"; then
       same=$((same + 1)); continue
     fi
     if [ "$FORCE" = true ]; then
       $DRY || { mkdir -p "$(dirname "$d")"; cp -p "$s" "$d"; }
-      echo "  overwrite   $rel"; overwritten=$((overwritten + 1))
+      echo "  overwrite   $dest"; overwritten=$((overwritten + 1))
     else
       $DRY || cp -p "$s" "$d.agentic-new"
-      echo "  exists →    $rel.agentic-new   (differs — merge by hand)"; merge=$((merge + 1))
+      echo "  exists →    $dest.agentic-new   (differs — merge by hand)"; merge=$((merge + 1))
     fi
   else
     $DRY || { mkdir -p "$(dirname "$d")"; cp -p "$s" "$d"; }
-    echo "  create      $rel"; created=$((created + 1))
+    echo "  create      $dest"; created=$((created + 1))
   fi
 done
 
