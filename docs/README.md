@@ -51,5 +51,5 @@ TRIAGE header. Don't edit between the markers by hand.
 <!-- BEGIN: generated index — do not edit by hand (scripts/docs-index.sh) -->
 | Doc | Type | Status | Stage |
 |-----|------|--------|-------|
-| _none yet_ | | | |
+| feature-init-and-template-split | Feature | 🟦 Proposal | inprogress |
 <!-- END: generated index -->
