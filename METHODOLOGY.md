@@ -215,6 +215,8 @@ Fixes #73
   enforces §7's "never push — the human controls all pushes and merges" mechanically.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
+- **`scripts/init.sh`** is the adoption path: export the scaffold, fill machine tokens,
+  apply stack/opt-out flags, stamp the source version, and print the doctor report.
 - **`scripts/doctor.sh`** is the adoption checklist for a copied scaffold: required files,
   hook wiring, required tools, real Make targets, and docs-index freshness.
 - **`scripts/self-test.sh`** exercises the scaffold's offline invariants, especially export

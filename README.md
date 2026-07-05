@@ -21,18 +21,20 @@ The full standard is in **[`METHODOLOGY.md`](METHODOLOGY.md)**.
 ```
 README.md                         this file
 METHODOLOGY.md                    the standard: roles, loop, lifecycle, conventions, enforcement
-ADOPTION.md                       tool requirements + checklist for exported projects
+ADOPTION.md                       init.sh usage, flags, and verification notes
 CLAUDE.md                         planner/reviewer contract + the Stack-profile explainer
 AGENTS.md                         executor (Codex) contract + commit format
 Makefile                          the Stack profile: make check / test / test-one / build / run
 .claude/settings.json             enforced hooks (Stop→make check; block git add -A; block git push)
 .claude/skills/plan-to-issues/    skill: approved brief → GitHub tracking issue + sub-issues
 scripts/export.sh                 copy the standard into a target project (non-destructive)
+scripts/init.sh                   one-command scaffold adoption; wraps export + token fill + doctor
 scripts/plan-to-issues.sh         the deterministic gh/jq driver the skill calls
 scripts/docs-index.sh             regenerate docs/README.md's index from TRIAGE headers
 scripts/doctor.sh                 adoption checklist / scaffold health check
 scripts/self-test.sh              offline regression checks for this scaffold
 scripts/hooks/                    the two hook scripts settings.json calls
+templates/harness/                pristine CLAUDE/AGENTS/Makefile forms shipped by export.sh
 ROADMAP.md                        planned evolution of the standard (Tier 2 / Tier 3)
 docs/
 ├── README.md                     docs index + naming conventions
@@ -48,26 +50,25 @@ docs/
 
 ## Bootstrap a new project
 
-1. **Export the standard** into the new repo:
-   ```bash
-   scripts/export.sh /path/to/target-project        # non-destructive; --dry-run to preview
-   ```
-   It copies the allow-list (METHODOLOGY/CLAUDE/AGENTS/Makefile, `.claude/settings.json`,
-   `.claude/skills`, `scripts`, `docs`) and leaves this repo's own meta behind. It never
-   clobbers an existing harness file — a differing file is written as `<file>.agentic-new`
-   for you to merge (use `--force` to overwrite). (Or copy by hand if you prefer.)
-2. **Fill in the `Makefile`** — the `check` / `test` / `test-one` / `build` / `run` recipes.
-   This is the *only* project-specific wiring; every template and hook calls these targets.
-   Then explain them + their gotchas in `CLAUDE.md`'s **Stack profile** section.
-3. Fill in `CLAUDE.md`'s **Architecture** and **Gotchas** as you learn the codebase.
-4. Make sure `git-claude` / `git-codex` are on `PATH` (or note the opt-out in `CLAUDE.md` for
-   a Claude-only project). The hooks in `.claude/settings.json` are active on copy.
-5. Start a doc: copy a template from `docs/templates/` into `docs/inprogress/`, then keep the
-   index current with `scripts/docs-index.sh`.
-6. Run `scripts/doctor.sh --check` in the target repo before committing the harness. It checks
-   required files, hook wiring, required tools, real Make targets, and docs-index freshness.
+Run `init.sh` from this scaffold repo:
 
-See [`ADOPTION.md`](ADOPTION.md) for the full checklist.
+```bash
+scripts/init.sh /path/to/target-project --name my-project --stack none --yes
+```
+
+It copies the allow-list, fills the project name, preserves differing existing files as
+`<file>.agentic-new`, applies the requested stack/opt-out flags, writes the scaffold version
+stamp, and prints the doctor report. The hooks in `.claude/settings.json` are active on copy.
+
+Use `--stack node` for npm-oriented Makefile recipes, `--claude-only` for projects that opt
+out of Codex execution, and omit `--yes` in a terminal for prompts. `scripts/export.sh`
+remains the low-level non-destructive copy command for manual or unusual adoptions.
+
+After adoption, fill in `CLAUDE.md`'s **Architecture** and **Gotchas** as you learn the
+codebase, start a doc from `docs/templates/`, and keep the index current with
+`scripts/docs-index.sh`.
+
+See [`ADOPTION.md`](ADOPTION.md) for flags and verification.
 
 ## Required tools
 
@@ -75,7 +76,7 @@ See [`ADOPTION.md`](ADOPTION.md) for the full checklist.
 - **Project wrappers:** `git-claude` and `git-codex` unless the project explicitly opts out.
 - **Recommended:** `shellcheck` for stricter shell linting.
 
-For exported projects, `scripts/doctor.sh` is the adoption checklist and can be used in CI.
+For adopted projects, `scripts/doctor.sh` is the verifier and can be used in CI.
 
 ## Opt-outs
 

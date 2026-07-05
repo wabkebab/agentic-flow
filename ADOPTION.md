@@ -1,9 +1,10 @@
-# Adoption Checklist
+# Adopt agentic-flow
 
-Use this after exporting `agentic-flow` into a target project and before committing the
-harness.
+Use `scripts/init.sh` from this scaffold repo to install the harness into a target project.
+It wraps the low-level exporter, fills the project token, preserves existing files with
+`.agentic-new` copies, and prints the doctor report when it finishes.
 
-## Required tools
+## Required Tools
 
 - `bash`
 - `make`
@@ -15,19 +16,38 @@ harness.
 
 Recommended: `shellcheck`.
 
-## Checklist
+## Usage
 
-1. Run `scripts/export.sh /path/to/target-project` from this scaffold repo.
-2. Fill in the target project's `Makefile` targets: `check`, `test`, `test-one`, `build`,
-   and `run`.
-3. Update `CLAUDE.md` with the project name, Stack profile, Architecture, Gotchas, and any
-   opt-outs.
-4. Update `AGENTS.md` with the project name and any executor-specific opt-outs.
-5. Confirm `.claude/settings.json` wires `scripts/hooks/check-gate.sh`,
-   `scripts/hooks/block-git-add-all.sh`, and `scripts/hooks/block-push.sh`.
-6. Run `scripts/docs-index.sh --check`.
-7. Run `scripts/doctor.sh --check`.
-8. Add `make check`, `make test`, and `scripts/docs-index.sh --check` to CI where practical.
+```bash
+scripts/init.sh /path/to/target-project --name my-project --stack none --yes
+```
 
-`scripts/doctor.sh` is the machine-readable version of this checklist. It reports missing
-tools, required files, hook wiring, placeholder Make targets, and stale docs indexes.
+Flags:
+
+- `--name <kebab>`: required for non-interactive runs; fills `CLAUDE.md` and `AGENTS.md`.
+- `--stack none|node`: chooses Makefile recipes. `none` keeps the generic scaffold recipes;
+  `node` writes npm-oriented recipes and prints a reminder to verify `package.json`.
+- `--claude-only`: records the opt-out from the default Claude/Codex split.
+- `--git-init`: runs `git init` when the target is not already inside a git repo.
+- `--yes`: non-interactive mode. Missing required flags fail instead of being guessed.
+- `--dry-run`: delegates to `scripts/export.sh --dry-run` and writes nothing.
+
+When stdin is a TTY and `--yes` is absent, `init.sh` prompts for missing flags. Each prompt
+names the flag it fills, so an interactive run teaches the scriptable form.
+
+## Verify
+
+`scripts/doctor.sh` is the verifier. It reports required tools, required files, hook wiring,
+placeholder Make targets, the scaffold version stamp, and docs-index freshness.
+
+Run this in the target before committing the harness:
+
+```bash
+scripts/doctor.sh --check
+make check
+```
+
+Add `make check`, `make test`, and `scripts/docs-index.sh --check` to CI where practical.
+
+`scripts/export.sh` remains available as the low-level non-destructive copy operation for
+manual or unusual adoptions.
