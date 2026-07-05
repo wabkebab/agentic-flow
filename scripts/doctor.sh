@@ -86,6 +86,13 @@ require_file scripts/hooks/block-push.sh
 require_file docs/README.md
 require_file docs/accepted_risks.md
 
+if [ -f "$ROOT/.agentic-flow-version" ]; then
+  version=$(sed -n '1p' "$ROOT/.agentic-flow-version")
+  ok "scaffold version: $version"
+else
+  warn "scaffold version stamp not found: .agentic-flow-version"
+fi
+
 require_executable scripts/docs-index.sh
 require_executable scripts/plan-to-issues.sh
 require_executable scripts/doctor.sh

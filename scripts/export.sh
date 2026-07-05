@@ -108,6 +108,12 @@ for rel in "${FILES[@]}"; do
   fi
 done
 
+version=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
+if [ "$DRY" = false ]; then
+  printf '%s\n' "$version" > "$DST/.agentic-flow-version"
+fi
+echo "  stamp       .agentic-flow-version ($version)"
+
 echo
 echo "Summary: $created created, $overwritten overwritten, $merge to-merge (.agentic-new), $same already up to date."
 

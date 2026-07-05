@@ -40,6 +40,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   TARGET="$TMP/target"
   printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
   "$ROOT/scripts/export.sh" "$TARGET" >/dev/null
+  expected_version=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
 
   assert_file "$TARGET/METHODOLOGY.md"
   assert_file "$TARGET/ADOPTION.md"
@@ -56,6 +57,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/docs/inprogress/.gitkeep"
   assert_file "$TARGET/docs/done/.gitkeep"
   assert_file "$TARGET/docs/done/security/.gitkeep"
+  assert_file "$TARGET/.agentic-flow-version"
+  grep -qx "$expected_version" "$TARGET/.agentic-flow-version" \
+    || fail "export version stamp did not match source HEAD"
   assert_no_file "$TARGET/docs/inprogress/feature-init-and-template-split.md"
   assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"
