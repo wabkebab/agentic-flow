@@ -38,7 +38,7 @@
 
 | Target | What it does on this project | Notes / gotchas |
 |--------|------------------------------|-----------------|
-| `make check` | <type-check + lint> | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
+| `make check` | harness sanity (prefilled) + <type-check + lint> | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
 | `make test` | <full test suite> | |
 | `make test-one F=…` | <one targeted test> | |
 | `make build` | <production build> | |
@@ -62,7 +62,8 @@
 ### Hooks (enforced, not optional)
 This project ships `.claude/settings.json` with:
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`) — blocks ending a
-  turn while type-check/lint is red. No-ops until `make check` is filled in.
+  turn while type-check/lint is red. `check` ships prefilled with harness sanity checks;
+  extend it with the stack's type-check + lint.
 - **PreToolUse(Bash) → block `git add -A` / `.` / `--all`** (`scripts/hooks/block-git-add-all.sh`)
   — enforces "stage files by name" mechanically.
 

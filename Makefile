@@ -2,19 +2,21 @@
 # Humans, agents, hooks, and CI all call these targets; never hard-code raw commands
 # elsewhere. See METHODOLOGY.md §1 and CLAUDE.md "Stack profile".
 #
-# Fill in each recipe for your stack (TS/Node examples shown commented). Until a recipe is
-# filled in it no-ops with a reminder, so a fresh scaffold doesn't block work — but note the
-# Stop hook's `make check` gate is only meaningful once `check` is real.
+# `check` ships working — harness sanity (script syntax, docs-index freshness, self-test) —
+# and is what the Stop hook runs, so keep it fast. Extend it with your stack's type-check +
+# lint. The other recipes no-op with a reminder until filled in for your stack (TS/Node
+# examples shown commented), so a fresh scaffold doesn't block work.
 
 .PHONY: check test test-one build run help
 
 help:           ## list available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-10s %s\n",$$1,$$2}'
 
-check:          ## fast sanity gate for this scaffold. Run by the Stop hook.
-	@bash -n scripts/export.sh scripts/plan-to-issues.sh scripts/docs-index.sh scripts/doctor.sh scripts/self-test.sh scripts/hooks/check-gate.sh scripts/hooks/block-git-add-all.sh
+check:          ## fast sanity gate: harness checks + your type-check/lint. Run by the Stop hook.
+	@for f in scripts/*.sh scripts/hooks/*.sh; do bash -n "$$f" || exit 1; done
 	@scripts/docs-index.sh --check
 	@scripts/self-test.sh
+#	npm run typecheck && npm run lint
 
 test:           ## full test suite
 	@echo "TODO: define 'test' in the Makefile."

@@ -203,8 +203,8 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 ### Shipped guardrails (in the scaffold, enforced — not convention)
 `.claude/settings.json` wires hooks that mechanize the contract so it can't be quietly missed:
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`): an agent can't end a
-  turn with a red type-check/lint. Scoped to the *fast* gate, not the full suite. No-ops until
-  `make check` is filled in.
+  turn with a red type-check/lint. Scoped to the *fast* gate, not the full suite. `check`
+  ships prefilled with harness sanity checks; extend it with the stack's type-check + lint.
 - **PreToolUse(Bash) → block `git add -A` / `git add .` / `--all`**
   (`scripts/hooks/block-git-add-all.sh`): enforces §7's "stage files by name" mechanically.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
