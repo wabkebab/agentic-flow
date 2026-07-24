@@ -249,6 +249,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"
   assert_no_file "$TARGET/scripts/init.sh"
+  # templates/harness holds the pristine forms, which export to project-root destinations
+  # (CLAUDE.md, AGENTS.md, Makefile) — never to templates/harness in the target. So the whole
+  # subtree must be absent, which also keeps its maintainer-only README out of adopters.
+  # Deliberately NOT derived from the manifest's source-only rows: a derived check stops
+  # looking the moment someone flips a disposition to `export`, and passes. Stating the
+  # invariant here makes that flip fail instead.
+  assert_no_file "$TARGET/templates/harness/README.md"
+  assert_no_file "$TARGET/templates/harness"
 
   (cd "$TARGET" && scripts/docs-index.sh --check) >/dev/null
 
