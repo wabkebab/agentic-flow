@@ -7,19 +7,19 @@
 
 ## Tracker
 - [x] F-1 Drive the payload from one manifest and ship every enabled agent adapter —
-  implemented on `codex/harness-integrity-and-lifecycle` (#9)
+  fixed in `9f9aad9` and hardened in `47a6039` (#9)
 - [x] F-2 Make scaffold regression tests hermetic and parallel-safe —
-  implemented on `codex/harness-integrity-and-lifecycle` (#10)
+  fixed in `451a8e8` (#10)
 - [x] F-3 Preserve merge candidates and represent installed versions truthfully —
-  implemented on `codex/harness-integrity-and-lifecycle` (#11)
+  fixed in `9049a93` (#11)
 - [x] F-4 Separate source-only commands and strengthen adoption diagnostics —
-  implemented on `codex/harness-integrity-and-lifecycle` (#12)
+  fixed in `9eda324` (#12)
 - [x] F-5 Make plan-to-issues idempotent, resumable, and Bash 3.2-safe —
-  implemented on `codex/harness-integrity-and-lifecycle` (#13)
+  fixed in `202b099` (#13)
 - [x] F-6 Clarify workflow lanes and make lifecycle qualification derivable —
-  implemented on `codex/harness-integrity-and-lifecycle` (#14)
+  fixed in `5f1484e` (#14)
 - [x] F-7 Add modular stack profiles and finish the documentation —
-  implemented on `codex/harness-integrity-and-lifecycle` (#15)
+  fixed in `375957d` (#15)
 
 ---
 
@@ -238,4 +238,6 @@ requiring the target runtime when only rendering.
 - **Verification evidence:** local commands recorded in each signed execution commit;
   final full-suite evidence pending below.
 - **Review verdict:** pending.
-- F-1 through F-7 implemented and verified locally; final full-suite and review remain.
+- **Execution commits:** F-1 `9f9aad9`, `47a6039` · F-2 `451a8e8` · F-3 `9049a93` ·
+  F-4 `9eda324` · F-5 `202b099` · F-6 `5f1484e` · F-7 `375957d`.
+- F-1 through F-7 implemented and verified locally; independent review remains.

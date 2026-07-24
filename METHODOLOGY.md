@@ -240,6 +240,8 @@ Fixes #73
   `AGENTIC_ALLOW_SECRET=1` overrides a false positive, visibly.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
+- **`scripts/check-payload-manifest.sh`** fails when an agent adapter, harness template, or
+  stack profile exists outside the canonical payload manifest.
 - **`scripts/lifecycle-status.sh`** derives whether active trackers are still active, ready
   to close, or blocked on approval, tracking, CI evidence, or review. `--check` makes missing
   closure evidence fatal without moving files automatically.

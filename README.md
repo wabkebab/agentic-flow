@@ -35,6 +35,7 @@ scripts/export.sh                 copy the standard into a target project (non-d
 scripts/init.sh                   one-command scaffold adoption; wraps export + token fill + doctor
 scripts/plan-to-issues.sh         the deterministic gh/jq driver the skill calls
 scripts/docs-index.sh             regenerate docs/README.md's index from TRIAGE headers
+scripts/check-payload-manifest.sh  reject unclassified adapter/template/profile files
 scripts/lifecycle-status.sh       derive ACTIVE / READY / BLOCKED document state
 scripts/doctor.sh                 adoption checklist / scaffold health check
 scripts/self-test.sh              offline regression checks for this scaffold
