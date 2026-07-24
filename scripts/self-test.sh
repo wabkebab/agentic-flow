@@ -228,8 +228,79 @@ grep -q "Blocked:" "$TMP/hook.err" || fail "block hook did not explain the block
 
 must_block "$ADD_GUARD" 'git add .'
 must_block "$ADD_GUARD" 'git-claude add --all'
+# Flags between `git` and `add` are everyday usage, not evasion — the guard used to require
+# `add` to follow `git` immediately and let these through (ROADMAP 1.5.3).
+must_block "$ADD_GUARD" 'git -C /some/path add -A'
+must_block "$ADD_GUARD" 'git -c user.name=x add .'
+must_block "$ADD_GUARD" 'git -C /some/path -c core.pager=cat add --all'
 must_allow "$ADD_GUARD" 'git add README.md'
+must_allow "$ADD_GUARD" 'git -C /some/path add README.md'
 must_allow "$ADD_GUARD" 'git add docs/inprogress/feature-x.md scripts/doctor.sh'
+
+# --- Stop gate (check-gate.sh) -----------------------------------------------------------
+# The highest-leverage hook and previously untested (ROADMAP 1.5.4). All four paths matter:
+# a green check must not block, a red one must, the loop-safety escape must fire on the
+# retry, and both no-op paths (no Makefile, clean tree) must stay out of the way.
+GATE="$ROOT/scripts/hooks/check-gate.sh"
+if [ -x "$GATE" ]; then
+  GATEFIX="$TMP/gate-fixture"
+  mkdir -p "$GATEFIX"
+  # Hermetic: the fixture must not inherit the developer's global git config. With
+  # commit.gpgsign=true set globally, the fixture commit below signs — which succeeds in an
+  # interactive shell with an agent loaded and fails with git's exit 128 under the Stop
+  # hook. That made this suite pass by hand and fail from the hook, for reasons having
+  # nothing to do with what it tests.
+  (
+    cd "$GATEFIX"
+    git init -q .
+    git config user.email selftest@example.invalid
+    git config user.name selftest
+    git config commit.gpgsign false
+  ) >/dev/null 2>&1
+
+  gate_makefile() { # <shell-command-for-check>
+    printf 'check:\n\t@%s\n' "$1" > "$GATEFIX/Makefile"
+  }
+  gate_run() { # <stop_hook_active> -> exit status
+    (cd "$GATEFIX" && printf '{"stop_hook_active":%s}' "$1" | "$GATE") >/dev/null 2>&1
+  }
+
+  # Dirty tree (untracked Makefile) + passing check → allow.
+  gate_makefile true
+  gate_run false || fail "Stop gate blocked a turn while 'make check' was green"
+
+  # Dirty tree + failing check → block, so the turn can't end red.
+  gate_makefile 'exit 1'
+  gate_run false && fail "Stop gate allowed a turn while 'make check' was red"
+
+  # Same failure, but already inside a stop-hook continuation → warn and allow, or the
+  # agent is stuck in a loop it cannot exit.
+  gate_run true || fail "Stop gate did not warn-and-allow on the stop_hook_active retry"
+
+  # No `check` target → nothing to gate on.
+  printf 'other:\n\t@true\n' > "$GATEFIX/Makefile"
+  gate_run false || fail "Stop gate blocked with no 'check' target in the Makefile"
+  rm -f "$GATEFIX/Makefile"
+  gate_run false || fail "Stop gate blocked with no Makefile at all"
+
+  # Clean tree → skip even with a red check: pre-existing breakage must not hold an
+  # unrelated, no-edit turn hostage.
+  gate_makefile 'exit 1'
+  (cd "$GATEFIX" && git add Makefile && git commit -q --no-gpg-sign -m "fixture") >/dev/null 2>&1 \
+    || fail "gate fixture commit failed (git exit $?) — fixture is not hermetic"
+  gate_run false || fail "Stop gate blocked a no-edit turn on a clean working tree"
+
+  # Failure output must go somewhere unique per run, not a fixed shared path
+  # (ROADMAP 1.5.2) — two sessions sharing one log show each other's errors.
+  #
+  # Assert the MECHANISM, not a filename: an earlier version of this check grepped for the
+  # old path and matched the comment that documents having moved away from it. A guard that
+  # a file's own changelog can trip is a guard that fails on correct code.
+  grep -q 'mktemp' "$GATE" || fail "check-gate.sh does not create a per-run log with mktemp"
+  if grep -qE '>[[:space:]]*"?/tmp/' "$GATE"; then
+    fail "check-gate.sh still redirects output to a fixed /tmp path"
+  fi
+fi
 
 SECRET_GUARD="$ROOT/scripts/hooks/scan-secrets.sh"
 
