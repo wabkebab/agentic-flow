@@ -54,5 +54,6 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-init-and-template-split | Feature | ✅ Done | done |
 | feature-ci-as-authority | Feature | 🚧 In progress | inprogress |
+| feature-export-banner-leak | Feature | 🚧 In progress | inprogress |
 | feature-opencode-reviewer-role | Feature | 🚧 In progress | inprogress |
 <!-- END: generated index -->

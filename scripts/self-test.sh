@@ -29,6 +29,22 @@ assert_no_file() {
   [ ! -e "$1" ] || fail "unexpected file: $1"
 }
 
+assert_exported_harness_file() { # <file> <expected-first-non-empty-line>
+  file="$1"
+  expected_heading="$2"
+  assert_file "$file"
+  actual_heading=$(sed -n '/[^[:space:]]/{p;q;}' "$file")
+  [ "$actual_heading" = "$expected_heading" ] \
+    || fail "$file first non-empty line was '$actual_heading', expected '$expected_heading'"
+  # Case-insensitive net over the note's recurring markers, not just its two most literal
+  # phrases — a rewording that drops "export.sh"/"repo-root copy" but keeps "pristine form"
+  # or "maintainer" still trips this. An arbitrary paraphrase avoiding all four can still slip
+  # past; that residual gap is accepted, not solved, by a grep-based test.
+  if grep -Eqi 'export\.sh|repo-root copy|pristine form|maintainer' "$file"; then
+    fail "$file contains scaffold-maintainer export note text"
+  fi
+}
+
 assert_active_ci_workflow() { # <workflow.yml>
   workflow="$1"
   assert_file "$workflow"
@@ -200,9 +216,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
 
   assert_file "$TARGET/METHODOLOGY.md"
   assert_file "$TARGET/ADOPTION.md"
-  assert_file "$TARGET/CLAUDE.md"
-  assert_file "$TARGET/AGENTS.md"
-  assert_file "$TARGET/Makefile"
+  assert_exported_harness_file "$TARGET/CLAUDE.md" "# CLAUDE.md — $PROJECT_TOKEN"
+  assert_exported_harness_file "$TARGET/AGENTS.md" "# AGENTS.md — $PROJECT_TOKEN"
+  assert_exported_harness_file "$TARGET/Makefile" "# Stack profile — the ONE place this project's build/test/run commands live."
   assert_file "$TARGET/.claude/settings.json"
   assert_file "$TARGET/.codex/hooks.json"
   assert_file "$TARGET/.agents/skills/plan-to-issues/SKILL.md"
@@ -248,6 +264,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"
   assert_no_file "$TARGET/scripts/init.sh"
+  # templates/harness holds the pristine forms, which export to project-root destinations
+  # (CLAUDE.md, AGENTS.md, Makefile) — never to templates/harness in the target. So the whole
+  # subtree must be absent, which also keeps its maintainer-only README out of adopters.
+  # Deliberately NOT derived from the manifest's source-only rows: a derived check stops
+  # looking the moment someone flips a disposition to `export`, and passes. Stating the
+  # invariant here makes that flip fail instead.
+  assert_no_file "$TARGET/templates/harness/README.md"
+  assert_no_file "$TARGET/templates/harness"
 
   (cd "$TARGET" && scripts/docs-index.sh --check) >/dev/null
 

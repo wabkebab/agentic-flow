@@ -1,6 +1,3 @@
-# Pristine form - shipped by export.sh; the repo-root copy is this repo's own instance;
-# contract changes must land in both.
-
 # AGENTS.md — {{PROJECT_NAME}}
 
 > Guidance for the **Execute** role (**Codex** by default). This is the executor's contract.
