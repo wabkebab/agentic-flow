@@ -29,6 +29,29 @@ assert_no_file() {
   [ ! -e "$1" ] || fail "unexpected file: $1"
 }
 
+path_without_tools() { # <output-dir> <tool>...
+  out_dir="$1"
+  shift
+  mkdir -p "$out_dir"
+  old_ifs=$IFS
+  IFS=:
+  for path_dir in $PATH; do
+    [ -d "$path_dir" ] || continue
+    for candidate in "$path_dir"/*; do
+      [ -f "$candidate" ] && [ -x "$candidate" ] || continue
+      name=${candidate##*/}
+      skip=false
+      for blocked in "$@"; do
+        [ "$name" = "$blocked" ] && skip=true
+      done
+      [ "$skip" = true ] && continue
+      [ -e "$out_dir/$name" ] || ln -s "$candidate" "$out_dir/$name"
+    done
+  done
+  IFS=$old_ifs
+  printf '%s\n' "$out_dir"
+}
+
 # Feed a PreToolUse hook a Bash tool call and assert it blocks / allows.
 must_block() { # <hook> <command>
   printf '{"tool_input":{"command":"%s"}}' "$2" | "$1" >/dev/null 2>&1 && fail "hook allowed: $2"
@@ -101,6 +124,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   printf '%s\n' '{"hooks":{}}' > "$SOURCE_FIXTURE/.codex/hooks.json"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
     && fail "doctor accepted a structurally unwired Codex hook configuration"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >/dev/null 2>&1 \
+    && fail "repo-scope doctor accepted a structurally unwired Codex hook configuration"
   cp "$TMP/codex-hooks.orig" "$SOURCE_FIXTURE/.codex/hooks.json"
 
   printf '%s\n' unresolved > "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
@@ -108,6 +133,29 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     && fail "doctor accepted an unresolved scaffold merge candidate"
   rm -f "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
 
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) > "$TMP/doctor-default.out"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope all) > "$TMP/doctor-scope-all.out"
+  cmp -s "$TMP/doctor-default.out" "$TMP/doctor-scope-all.out" \
+    || fail "doctor --scope all output differed from the default all-scope run"
+
+  STRIPPED_BIN=$(path_without_tools "$TMP/stripped-bin" gitleaks git-claude git-codex gh shellcheck)
+  STRIPPED_PATH="$STRIPPED_BIN"
+  PATH="$STRIPPED_PATH" command -v git >/dev/null 2>&1 \
+    || fail "stripped PATH accidentally removed ordinary git"
+  for removed_tool in gitleaks git-claude git-codex gh shellcheck; do
+    PATH="$STRIPPED_PATH" command -v "$removed_tool" >/dev/null 2>&1 \
+      && fail "stripped PATH still contains $removed_tool"
+  done
+  (cd "$SOURCE_FIXTURE" && PATH="$STRIPPED_PATH" AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) \
+    > "$TMP/doctor-repo-stripped.out" 2>&1 \
+    || { cat "$TMP/doctor-repo-stripped.out" >&2; fail "repo-scope doctor failed on stripped PATH"; }
+  grep -q "scope: repo" "$TMP/doctor-repo-stripped.out" \
+    || fail "repo-scope doctor did not print its active scope"
+  (cd "$SOURCE_FIXTURE" && PATH="$STRIPPED_PATH" AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope env) \
+    > "$TMP/doctor-env-stripped.out" 2>&1 \
+    && fail "env-scope doctor passed on stripped PATH without env tools"
+  grep -q "scope: env" "$TMP/doctor-env-stripped.out" \
+    || fail "env-scope doctor did not print its active scope"
   DOC_LEAK_SENTINEL="$SOURCE_FIXTURE/docs/inprogress/self-test-export-leak.md"
   TARGET="$TMP/target"
   printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
@@ -172,6 +220,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # made the Stop gate block from turn one).
   (cd "$TARGET" && make check) >"$TMP/target-check.log" 2>&1 \
     || { cat "$TMP/target-check.log" >&2; fail "make check failed in a fresh export"; }
+  (cd "$TARGET" && PATH="$STRIPPED_PATH" make check) > "$TMP/target-check-stripped.log" 2>&1 \
+    || { cat "$TMP/target-check-stripped.log" >&2; fail "make check failed in a fresh export on stripped PATH"; }
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
   # Simulate an older installed scaffold so a conflict can prove that invoking a newer
@@ -195,7 +245,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q "# second candidate content" "$second_candidate" \
     || fail "versioned merge candidate does not contain the new source content"
 
-  (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >"$TMP/doctor.log" 2>&1 \
+  (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >"$TMP/doctor.log" 2>&1 \
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
 
   INIT_TARGET="$TMP/init-empty"
