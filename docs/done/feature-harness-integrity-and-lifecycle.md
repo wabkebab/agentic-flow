@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-07-24) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > Harden installation and upgrades, make agent support explicit, and close the workflow
-> with derived evidence. Approved by the user on 2026-07-24; execution is in progress.
+> with derived evidence. Approved by the user on 2026-07-24; merged via PR #27 on 2026-07-24.
 
 # Feature — harness integrity and lifecycle
 
@@ -251,5 +251,5 @@ requiring the target runtime when only rendering.
   today — every current source-only entry is a file and no new adapter exists.
 - **Execution commits:** F-1 `9f9aad9`, `47a6039` · F-2 `451a8e8` · F-3 `9049a93` ·
   F-4 `9eda324` · F-5 `202b099` · F-6 `5f1484e` · F-7 `375957d`.
-- F-1 through F-7 implemented, verified, and independently reviewed. Eligible to move to
-  `docs/done/` once this branch merges.
+- F-1 through F-7 implemented, verified, and independently reviewed. Merged to `main` via
+  PR #27 on 2026-07-24; moved to `docs/done/` and tracking issue #16 closed accordingly.
