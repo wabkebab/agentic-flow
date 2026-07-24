@@ -141,7 +141,11 @@ scripts/lifecycle-status.sh [--check] [--verify-evidence]
   default        → current behavior: evidence field must contain a URL (offline, deterministic)
   --verify-evidence → if the URL is a GitHub Actions run, resolve its conclusion:
                       gh run view <id> --repo <owner/repo> --json conclusion --jq .conclusion
-  States: READY (verified success) · UNVERIFIED (URL present, not resolvable) · BLOCKED
+  States, by what we actually learned:
+    READY      → resolved, conclusion == success
+    BLOCKED    → resolved, conclusion != success  ← a known-red run is a hard block
+    UNVERIFIED → could NOT resolve (no gh, no network, not a run URL). Absence of an
+                 answer, never a negative answer. Non-fatal under --check.
 
 # F-5 — CI setup from the stack profile
 profiles/<name>.tsv gains rows:   ci-setup<TAB><YAML line>
@@ -200,9 +204,13 @@ loop is bounded by its `needs` list; CI concurrency cancels superseded runs per 
   environment scope move to `make run` (which already calls doctor)? Leaning yes-keep — the
   repo scope is cheap and catches unwired hooks early — but the executor should raise it if the
   runtime becomes noticeable.
-- Does `ubuntu-24.04` ship a `jq` and `shellcheck` new enough for the suite? The template
-  already notes shellcheck will be *older* than local (`templates/ci/ci.yml:106-109`); confirm
-  on the first real run rather than guessing.
+- **Resolved — do not leave this to the first run.** Earlier drafts said "confirm on the first
+  real run" whether the runner has `jq`/`shellcheck`. That makes CI activation trial-and-error,
+  and `make test` hard-fails without `shellcheck` by design (`Makefile:19`). F-2 step 4 now
+  asserts and installs the required tools explicitly. What genuinely remains unknown is only
+  the shellcheck *version* — the template already notes CI's will be older than local
+  (`templates/ci/ci.yml:106-109`), so local green stays the stricter claim. If the older
+  release flags something local does not, fix the finding rather than pinning CI backwards.
 
 ---
 
@@ -260,12 +268,25 @@ and a non-zero `make check`.
 
 **Test:** extend `self-test.sh`'s doctor section. **Failure path first:** a fixture with a
 deliberately unwired hook must still fail under `--scope repo` (proving the split didn't
-silently drop a check). Then: `--scope repo` succeeds with `PATH` stripped of `gitleaks`,
-`git-claude`, and `git-codex`; `--scope env` fails on that same PATH; `--scope all` equals
-today's behavior. Build the stripped PATH inside the test — do not mutate the real one.
+silently drop a check). Then: `--scope repo` succeeds on the stripped PATH defined below;
+`--scope env` fails on that same PATH; `--scope all` equals today's behavior. Build the
+stripped PATH inside the test — do not mutate the real one.
 
-**DoD:** `scripts/doctor.sh --check --scope repo` exits 0 on a PATH containing only
-`bash make git jq`; `--scope all` is unchanged; `make check` passes on that same stripped PATH.
+**Define "stripped PATH" by subtraction, not by enumeration.** It is a normal PATH with
+exactly these removed: `gitleaks`, `git-claude`, `git-codex`, `gh`, `shellcheck`. It is *not*
+"only `bash make git jq`" — the harness scripts legitimately use ordinary Unix tools
+(`sed`, `awk`, `grep`, `find`, `date`, `mktemp`, `wc`, `tr`, `sort`, `cmp`), and
+`check-action-pins.sh:66` optionally uses `python3` for date arithmetic. Enumerating an
+allow-list would produce a test that fails for reasons having nothing to do with this change.
+
+**Note:** `make check` does **not** need the `shellcheck` binary — `self-test.sh:230-242`
+asserts the Makefile *recipe text* runs shellcheck rather than invoking it, deliberately, to
+avoid unbounded recursion. Only `make test` needs the tool. Keep it out of the stripped PATH
+anyway: that asymmetry is worth having a test pin down.
+
+**DoD:** `scripts/doctor.sh --check --scope repo` and `make check` both exit 0 on the stripped
+PATH above; `scripts/doctor.sh --check --scope env` exits non-zero on it; `--scope all` is
+byte-identical to today's behavior on a full PATH.
 **Commit:** `Separate doctor's portable repository checks from its workstation checks`
 
 ---
@@ -276,8 +297,10 @@ today's behavior. Build the stripped PATH inside the test — do not mutate the 
 first is the cheapest possible dogfood — the Make targets are already real and green.
 
 **Approach:**
-1. Copy `templates/ci/ci.yml` to `.github/workflows/ci.yml`. Do **not** edit the template in
-   this step (F-5 does that) — the two files legitimately diverge for now.
+1. Copy `templates/ci/ci.yml` to `.github/workflows/ci.yml`. Do **not** edit the template's
+   *content* in this step (F-5 does that) — the two files legitimately diverge for now. One
+   deliberate exception, see point 7: `--stamp` will rewrite the template's date line, and
+   that is allowed.
 2. **Delete the Node runtime setup block** (`templates/ci/ci.yml:89-102`) from the copy. This
    repo is bash/make; it has no runtime to set up, no lockfile, and no `npm audit`. Leave a
    one-line comment saying so, because an empty section invites someone to "restore" it.
@@ -285,13 +308,35 @@ first is the cheapest possible dogfood — the Make targets are already real and
    `profiles/**`, `templates/**`, `.claude/**`, `.codex/**`, `.agents/**`; `docs`: `docs/**`,
    `*.md`. Keep `.github/workflows/ci.yml` in **both** filters as the template does, so
    editing CI re-runs everything it gates.
-4. Add `scripts/doctor.sh --check --scope repo` to the `app` job, after `make check`.
-5. Add `scripts/lifecycle-status.sh` as a **non-fatal reporting** step (`|| true`) with a
+4. **Preflight the runner's tools explicitly — do not discover them by failing.** Add a step
+   *before* `make check` that asserts `bash make git jq shellcheck` are present and prints
+   their versions, and installs anything missing (`apt-get install -y`). Reasons this is not
+   optional:
+   - `make test` **hard-fails** without `shellcheck` by design (`Makefile:19`) — the recipe
+     refuses to skip a lint whose tool is absent, because that reports green for the wrong
+     reason. On a runner that lacks it, CI is red for a reason unrelated to the change.
+   - `self-test.sh` needs `jq` (the fake-`gh` fixture builds JSON with it).
+   - `gitleaks` is **not** required: the secrets scan runs as its own `trufflehog` job, and
+     after F-1 the repo scope no longer asks for it. Do not install it.
+   - `git-claude` / `git-codex` must **never** be installed on a runner. They are commit
+     identity wrappers; a runner does not commit. F-1 is what makes their absence fine.
+   `ubuntu-24.04` is believed to preinstall `jq` and `shellcheck`
+   (`templates/ci/ci.yml:106-109` asserts the latter), but *assert it in the workflow* rather
+   than relying on the claim — an image's preinstalled set changes without notice, and the
+   failure mode is a confusing red on an unrelated PR.
+5. Add `scripts/doctor.sh --check --scope repo` to the `app` job, after `make check`.
+6. Add `scripts/lifecycle-status.sh` as a **non-fatal reporting** step (`|| true`) with a
    comment explaining why it must never gate — see Out of scope. Getting this wrong deadlocks
    the final PR of every future plan.
-6. Re-verify the pinned action SHAs against current releases before the first run
-   (`scripts/check-action-pins.sh --online`), then `--stamp`. An inherited pin is not a chosen one.
-7. Add `.github/` to `config/payload.tsv` as **`source-only`** — this workflow is this repo's
+7. Re-verify the pinned action SHAs against current releases before the first run
+   (`scripts/check-action-pins.sh --online`), then `--stamp`. An inherited pin is not a chosen
+   one. **Expect this to modify `templates/ci/*.yml` as well as `.github/workflows/*.yml`** —
+   `check-action-pins.sh:53-58` scans both directories and `:96-99` rewrites every stamped
+   file it finds. That is intended and allowed here: the stamp records *when the pins were
+   last verified*, and they were verified for both copies by the same act. Stage both files by
+   name and say so in the commit body. Do **not** add a scope flag to `check-action-pins.sh`
+   to avoid this — a stamp that lies about the template is worse than a two-file diff.
+8. Add `.github/` to `config/payload.tsv` as **`source-only`** — this workflow is this repo's
    own instance, not payload. Adopters get the inert template. (Note issue #17: source-only
    directories don't currently exclude correctly. If #17 has not landed, use the exact file
    path `.github/workflows/ci.yml`, and add a comment pointing at #17.)
@@ -301,10 +346,24 @@ first is the cheapest possible dogfood — the Make targets are already real and
 same jobs — the drift `templates/ci/ci.yml:132-133` warns about. Assert the workflow does not
 leak into an export.
 
-**DoD:** a PR against this repo runs CI; the `app` job executes `make check`, `make test`,
-`make build`, and repo-scope doctor; `doctor.sh` reports CI **active** instead of inert.
-**Human action, then record it here:** in branch protection, set **`CI gate`** as the *only*
-required status check on `main`.
+**DoD (executor — all verifiable locally, no push):**
+- `.github/workflows/ci.yml` exists, is valid YAML, contains no `<ANGLE-BRACKET>` placeholders,
+  and its `ci-gate` `needs` list matches its result loop.
+- Every command the workflow runs passes locally: `make check`, `make test`, `make build`,
+  `scripts/doctor.sh --check --scope repo`.
+- `scripts/check-action-pins.sh` passes; both the workflow and the template carry a refreshed
+  stamp, staged by name.
+- `scripts/doctor.sh` reports CI **active** instead of inert.
+- The workflow does not appear in an export (`config/payload.tsv` marks it source-only).
+- `self-test.sh` covers the assertions above.
+
+**Acceptance (human, post-merge — this step is not "done" until these hold, but the executor
+cannot perform them under the never-push contract):**
+1. Push the branch and open a PR; confirm CI actually runs and is red on a deliberate break.
+2. In branch protection on `main`, set **`CI gate`** as the *only* required status check.
+3. Record the first green run's URL in this doc's Status block — it is the first genuinely
+   derived verification evidence this project has produced, and F-4 consumes exactly this.
+
 **Commit:** `Run this scaffold's own CI gate instead of only shipping the template`
 
 ---
@@ -351,11 +410,17 @@ difference between "a URL was pasted" and "the checks were green."
 2. When on: parse a GitHub Actions run URL out of the evidence field, resolve it with
    `gh run view <id> --repo <owner/repo> --json conclusion --jq .conclusion`, and require
    `success`.
-3. Introduce **`UNVERIFIED`** as distinct from both READY and BLOCKED: a URL is present but
-   could not be resolved (no `gh`, no network, not a run URL, non-`success` conclusion). Never
-   let an absent network turn into a false BLOCKED — that is the #19 lesson restated.
-4. Under `--check`, `UNVERIFIED` is **not** fatal; only BLOCKED is. Failing on an unreachable
-   network would make the check untrustworthy in exactly the situations it matters.
+3. Introduce **`UNVERIFIED`** as distinct from both READY and BLOCKED, and split strictly on
+   *did we get an answer*, not *was the answer good*:
+   - resolved + `success` → **READY**
+   - resolved + anything else (`failure`, `cancelled`, `timed_out`) → **BLOCKED**. A run we
+     queried and found red is the strongest possible evidence that the doc is not done;
+     treating it as merely unverified would be a downgrade of real information.
+   - could not resolve — no `gh`, no network, URL is not an Actions run → **UNVERIFIED**.
+   The rule in one line: **UNVERIFIED means "no answer", never "a bad answer".**
+4. Under `--check`, `UNVERIFIED` is **not** fatal; BLOCKED is. Failing on an unreachable
+   network would make the check untrustworthy in exactly the situations it matters — but a
+   resolved red run must fail, or `--verify-evidence` is decorative.
 5. Fold in the field-name and continuation-line handling from **#19** if that issue has not
    already landed — this step touches the same parsing code, and doing it twice is waste.
 
