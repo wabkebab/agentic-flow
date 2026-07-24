@@ -1,10 +1,10 @@
 <!-- TRIAGE (first pass · 2026-07-05) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > Split the harness into pristine templates (`templates/harness/`) vs this repo's own
 > filled-in instance, and add `scripts/init.sh` — a flag-driven (optionally interactive)
-> adopter that replaces ADOPTION.md's manual checklist. Unblocks dogfooding. Approved and
-> issued ([tracker #8](https://github.com/wabkebab/agentic-flow/issues/8)); base branch
-> `main`. Next: executor works F-1 → F-7 in order.
+> adopter that replaces ADOPTION.md's manual checklist. Unblocked dogfooding. Shipped and
+> merged 2026-07-05 ([tracker #8](https://github.com/wabkebab/agentic-flow/issues/8),
+> F-1 → F-7 all closed); closed retrospectively on 2026-07-24.
 
 # Feature — init script + template/instance split
 
@@ -342,7 +342,20 @@ checklist survives.
 ## Status / Implementation status
 - **Tracking issue:** [#8](https://github.com/wabkebab/agentic-flow/issues/8) — sub-issues:
   F-1 #1 · F-2 #2 · F-3 #3 · F-4 #4 · F-5 #5 · F-6 #6 · F-7 #7.
-- **Approved:** issues created via `plan-to-issues --apply` (the approval event). Base branch
-  `main`.
-- Execution commits recorded in the tracker above. Awaiting review/PR merge to close the
-  GitHub issues.
+- **Approval:** approved by the user on 2026-07-05; issues created via
+  `plan-to-issues --apply` (the approval event). Base branch `main`.
+- **Verification evidence:** https://github.com/wabkebab/agentic-flow/issues/8 — all seven
+  sub-issues closed 2026-07-05, and every execution commit is an ancestor of `main`:
+  F-1 `40cc412` · F-2 `1886388` · F-3 `7fee63d` · F-4 `91935eb` · F-5 `9995d1a` ·
+  F-6 `db8912a` · F-7 `3e37983`. Confirmed with `git merge-base --is-ancestor <sha> main`.
+- **Review verdict:** closed retrospectively on 2026-07-24 — **no independent review was
+  performed at the time**. The work shipped and merged on 2026-07-05; only the document was
+  left behind in `docs/inprogress/`, which is the manual-closure gap F-6 of the
+  harness-integrity plan ([#16](https://github.com/wabkebab/agentic-flow/issues/16)) was
+  written to expose. Recording this honestly rather than backdating a verdict that never
+  happened. Much of this doc's surface — `export.sh`, `init.sh`, `templates/harness/`,
+  `ADOPTION.md` — was subsequently reviewed in depth under #16, which found and fixed real
+  defects in it (notably the exported `init.sh` calling an excluded `export.sh`, #12).
+- This document predates the lifecycle schema and used an `**Approved:**` field that
+  `scripts/lifecycle-status.sh` does not recognize; renamed to `**Approval:**` to match
+  `docs/templates/feature-analysis.md`.
