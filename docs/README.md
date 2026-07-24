@@ -55,5 +55,5 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-export-banner-leak | Feature | ✅ Done | done |
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-init-and-template-split | Feature | ✅ Done | done |
-| feature-opencode-reviewer-role | Feature | 🚧 In progress | inprogress |
+| feature-opencode-reviewer-role | Feature | ✅ Done | done |
 <!-- END: generated index -->
