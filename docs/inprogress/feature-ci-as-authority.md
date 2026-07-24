@@ -309,8 +309,29 @@ first is the cheapest possible dogfood — the Make targets are already real and
    `*.md`. Keep `.github/workflows/ci.yml` in **both** filters as the template does, so
    editing CI re-runs everything it gates.
 4. **Preflight the runner's tools explicitly — do not discover them by failing.** Add a step
-   *before* `make check` that asserts `bash make git jq shellcheck` are present and prints
-   their versions, and installs anything missing (`apt-get install -y`). Reasons this is not
+   *before* `make check` that asserts `bash make git jq shellcheck` are present, prints their
+   versions, and installs only what is actually missing. **Name the command shape exactly** —
+   GitHub-hosted runners execute as a non-root user with passwordless `sudo`, and the package
+   index is stale on a fresh image, so bare `apt-get install` either fails on permissions or
+   installs from a stale index:
+
+   ```bash
+   missing=""
+   for t in bash make git jq shellcheck; do
+     command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+   done
+   if [ -n "$missing" ]; then
+     sudo apt-get update -qq
+     # shellcheck disable=SC2086  # word splitting is intended here
+     sudo apt-get install -y $missing
+   fi
+   for t in bash make git jq shellcheck; do
+     command -v "$t" >/dev/null || { echo "preflight: $t still missing" >&2; exit 1; }
+   done
+   ```
+
+   Install *conditionally*, not unconditionally: on an image that already has everything, an
+   unconditional `apt-get update` adds ~15s to every run for nothing. Reasons this step is not
    optional:
    - `make test` **hard-fails** without `shellcheck` by design (`Makefile:19`) — the recipe
      refuses to skip a lint whose tool is absent, because that reports green for the wrong
@@ -341,14 +362,35 @@ first is the cheapest possible dogfood — the Make targets are already real and
    directories don't currently exclude correctly. If #17 has not landed, use the exact file
    path `.github/workflows/ci.yml`, and add a comment pointing at #17.)
 
-**Test:** `self-test.sh` asserts `.github/workflows/ci.yml` exists, is valid YAML, contains no
+**Test:** `self-test.sh` asserts `.github/workflows/ci.yml` exists, contains no
 `<ANGLE-BRACKET>` placeholders, and that `ci-gate`'s `needs` list and its result loop name the
-same jobs — the drift `templates/ci/ci.yml:132-133` warns about. Assert the workflow does not
-leak into an export.
+same jobs — the drift `templates/ci/ci.yml:132-133` warns about, already covered at
+`self-test.sh:113+` for the template. Assert the workflow does not leak into an export.
+
+**"Valid YAML" — assert structure, not a parse.** The repo's required tools are `bash make git
+jq gh shellcheck gitleaks`; **no YAML parser is among them**, and none may be added for this.
+`yq` is absent here, and while `python3`+PyYAML happens to exist on this machine and on
+GitHub's images, depending on it would make the suite pass or fail based on what a developer
+happens to have installed — the opposite of the hermetic property #16 just bought. So assert
+what `bash`/`grep`/`awk` can actually check:
+- no literal tab characters (YAML forbids tabs for indentation — and the profiles are **TSV**,
+  so a stray tab surviving into rendered output is a live risk in F-5, not a theoretical one);
+- required top-level keys present (`name:`, `on:`, `permissions:`, `jobs:`);
+- every `uses:` pinned to a 40-char SHA with a version comment (`check-action-pins.sh` already
+  does this — call it rather than reimplementing);
+- the `ci-gate` needs↔loop parity check above;
+- indentation is spaces-only and the setup-block markers are balanced (both present, or both
+  absent for `generic`).
+
+If a parser *is* present, use it opportunistically behind `command -v` as an extra assertion —
+never as a required one. And note the backstop: **GitHub is the real parser.** An invalid
+workflow does not run at all, which surfaces immediately on the first PR and is precisely the
+kind of feedback F-2 exists to obtain.
 
 **DoD (executor — all verifiable locally, no push):**
-- `.github/workflows/ci.yml` exists, is valid YAML, contains no `<ANGLE-BRACKET>` placeholders,
-  and its `ci-gate` `needs` list matches its result loop.
+- `.github/workflows/ci.yml` exists, passes the structural assertions defined in this step's
+  Test section (no tabs, required top-level keys, pinned `uses:`, no `<ANGLE-BRACKET>`
+  placeholders), and its `ci-gate` `needs` list matches its result loop.
 - Every command the workflow runs passes locally: `make check`, `make test`, `make build`,
   `scripts/doctor.sh --check --scope repo`.
 - `scripts/check-action-pins.sh` passes; both the workflow and the template carry a refreshed
@@ -449,18 +491,37 @@ Node block that the profile system could have omitted. Independent of F-3 and F-
    graph, pins, filters, and `ci-gate` fixed; only the setup block varies.
 3. Extend the profile validator (`render-stack-profile.sh:17-23`) to accept `ci-setup` — it
    currently rejects unknown keys, so the profiles will fail validation until this lands.
-4. `init.sh` renders the CI template alongside the Makefile, honouring the existing
-   pre-existing-file guard (`init.sh:258-265`): never overwrite a workflow the project has.
+4. `init.sh` renders the profile's setup block into the adopted project's
+   **`templates/ci/ci.yml`** — the inert copy — and **never** into `.github/workflows/`.
+   Honour the existing pre-existing-file guard (`init.sh:258-265`) exactly as the Makefile
+   path does.
+
+   **This is a hard constraint, not a preference.** `self-test.sh:109-112` asserts that
+   adoption creates neither `.github/workflows/ci.yml` nor `deploy.yml`, with the reasoning
+   in the comment: *"adopting the harness must never activate a workflow — least of all
+   deploy.yml — behind the adopter's back."* `templates/ci/README.md` makes the same promise.
+   Rendering a *better* template does not earn the right to activate it; a Cargo setup block
+   the adopter never asked to run is still a workflow they did not consent to. F-2 activating
+   CI **on this repo** is a decision this repo's owner made about this repo — it is not
+   precedent for adopters.
+
+   Do **not** add an opt-in activation flag in this step either. If one is ever wanted it is a
+   separate change with its own consent story (what does it do to `deploy.yml`? to a project
+   that already has CI?), and bundling it here would smuggle a policy change into a rendering
+   improvement.
 5. Pins stay in the template, not the profiles. `check-action-pins.sh` must keep working, and
    scattering SHAs across five profile files would guarantee drift.
 
-**Test:** render every profile and assert the output has no `<ANGLE-BRACKET>` placeholders and
-is valid YAML; assert `generic` produces a workflow with no runtime block; assert
-`check-action-pins.sh` passes on each rendered result. **Failure path first:** a profile with a
-malformed `ci-setup` row fails validation loudly rather than emitting a broken workflow.
+**Test:** render every profile and assert, using the structural checks defined below (**not** a
+YAML parser): no `<ANGLE-BRACKET>` placeholders remain; `generic` produces a workflow with no
+runtime block and no orphaned marker comments; `check-action-pins.sh` passes on each rendered
+result; adoption still creates no `.github/workflows/*`. **Failure path first:** a profile with
+a malformed `ci-setup` row fails validation loudly rather than emitting a broken workflow, and
+a `ci-setup` value containing a literal tab is rejected — see the tab note below.
 
-**DoD:** `init.sh --stack rust` produces a CI template whose setup block is Cargo, with no
-angle brackets left to fill, and the pin checker still passes.
+**DoD:** `init.sh --stack rust` produces an **inert** `templates/ci/ci.yml` in the target whose
+setup block is Cargo, with no angle brackets left to fill; `.github/workflows/` is not created;
+the pin checker still passes.
 **Commit:** `Render the CI runtime block from the stack profile like the Makefile`
 
 ---
