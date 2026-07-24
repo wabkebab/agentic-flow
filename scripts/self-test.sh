@@ -36,7 +36,11 @@ assert_exported_harness_file() { # <file> <expected-first-non-empty-line>
   actual_heading=$(sed -n '/[^[:space:]]/{p;q;}' "$file")
   [ "$actual_heading" = "$expected_heading" ] \
     || fail "$file first non-empty line was '$actual_heading', expected '$expected_heading'"
-  if grep -Eq 'export\.sh|repo-root copy' "$file"; then
+  # Case-insensitive net over the note's recurring markers, not just its two most literal
+  # phrases — a rewording that drops "export.sh"/"repo-root copy" but keeps "pristine form"
+  # or "maintainer" still trips this. An arbitrary paraphrase avoiding all four can still slip
+  # past; that residual gap is accepted, not solved, by a grep-based test.
+  if grep -Eqi 'export\.sh|repo-root copy|pristine form|maintainer' "$file"; then
     fail "$file contains scaffold-maintainer export note text"
   fi
 }
@@ -198,9 +202,6 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
 
   assert_file "$TARGET/METHODOLOGY.md"
   assert_file "$TARGET/ADOPTION.md"
-  assert_file "$TARGET/CLAUDE.md"
-  assert_file "$TARGET/AGENTS.md"
-  assert_file "$TARGET/Makefile"
   assert_exported_harness_file "$TARGET/CLAUDE.md" "# CLAUDE.md — $PROJECT_TOKEN"
   assert_exported_harness_file "$TARGET/AGENTS.md" "# AGENTS.md — $PROJECT_TOKEN"
   assert_exported_harness_file "$TARGET/Makefile" "# Stack profile — the ONE place this project's build/test/run commands live."
