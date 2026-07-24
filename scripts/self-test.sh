@@ -688,4 +688,54 @@ mv "$TMP/lifecycle-ready.md" "$LIFEFIX/docs/inprogress/feature-blocked.md"
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
   || fail "strict lifecycle check rejected a tracker with complete closure evidence"
 
+# --- lifecycle: absent vs. misnamed vs. wrapped evidence (#19) ---------------------------
+# A checker that reports "missing" for both "never recorded" and "recorded under the wrong
+# label" trains people to stop trusting it — this bit the project itself: a pre-schema doc
+# recorded its approval as "Approved:" and the checker called it missing, indistinguishable
+# from a doc with no approval line at all.
+cat > "$LIFEFIX/docs/inprogress/lc19-misnamed.md" <<'MD'
+## Tracker
+- [x] F-1 done
+## Status
+- **Approved:** user approved 2026-01-01.
+- **Tracking issue:** https://example.invalid/issues/1
+- **Verification evidence:** https://example.invalid/actions/1
+- **Review verdict:** approved.
+MD
+cat > "$LIFEFIX/docs/inprogress/lc19-absent.md" <<'MD'
+## Tracker
+- [x] F-1 done
+## Status
+- **Tracking issue:** https://example.invalid/issues/1
+- **Verification evidence:** https://example.invalid/actions/1
+- **Review verdict:** approved.
+MD
+cat > "$LIFEFIX/docs/inprogress/lc19-wrapped.md" <<'MD'
+## Tracker
+- [x] F-1 done
+## Status
+- **Approval:** user approved 2026-01-01.
+- **Tracking issue:** https://example.invalid/issues/1
+- **Verification evidence:** see the CI run recorded at
+  https://example.invalid/actions/1
+- **Review verdict:** approved.
+MD
+AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" > "$TMP/lifecycle19.out"
+
+grep -q 'BLOCKED.*lc19-misnamed\.md.*unrecognized: approval (found "Approved:")' \
+  "$TMP/lifecycle19.out" \
+  || fail "lifecycle did not flag a misnamed Approval field as unrecognized, not missing"
+grep -q 'BLOCKED.*lc19-absent\.md.*missing: approval' "$TMP/lifecycle19.out" \
+  || fail "lifecycle did not report a genuinely absent approval field as missing"
+if grep -q 'lc19-absent\.md.*unrecognized' "$TMP/lifecycle19.out"; then
+  fail "lifecycle invented an unrecognized-field match where no similar label exists"
+fi
+grep -q 'READY.*lc19-wrapped\.md' "$TMP/lifecycle19.out" \
+  || fail "lifecycle did not read a Verification evidence value wrapped onto a continuation line"
+
+# The schema stays single-valued: a misnamed field is reported clearly, but it must never
+# silently satisfy the check (that would let the vocabulary fork instead of surfacing it).
+AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
+  && fail "strict lifecycle check accepted a misnamed Approval field as though it were valid"
+
 echo "self-test passed."
