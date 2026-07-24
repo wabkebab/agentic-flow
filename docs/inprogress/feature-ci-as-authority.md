@@ -560,23 +560,36 @@ Node block that the profile system could have omitted. Independent of F-3 and F-
    improvement.
 5. Pins stay in the template, not the profiles. `check-action-pins.sh` must keep working, and
    scattering SHAs across five profile files would guarantee drift.
-6. **Scope: the runtime block only. Path filters stay as placeholders — deliberately.**
-   `templates/ci/ci.yml` has three angle-bracket spots, and they are not the same kind of thing:
-   - `:96` `<MAJOR, e.g. 22>` — **stack-derived.** F-5 renders it.
-   - `:50` `<MANIFEST + LOCKFILE>` — stack-derived in principle (the profiles' `detect` rows
-     already name `Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`).
+6. **Scope: replace the whole runtime setup block; leave only the path-filter placeholders.**
+
+   **The unit of substitution is the BLOCK, not the angle bracket.** Everything between
+   `# ── Replace this block…` (`:89`) and `# ── End runtime setup ──` (`:102`) is discarded and
+   re-emitted from the profile — `actions/setup-node`, `npm ci`, and `npm audit` included. For
+   `--stack rust` the result must contain a Cargo toolchain setup and a `--locked` install and
+   **no trace of Node**. Substituting only the `<MAJOR, e.g. 22>` version placeholder inside a
+   surviving Node block would leave every Rust project running `setup-node` — which is the
+   precise defect this step exists to remove.
+
+   What is *not* rendered is the path-filter block, and only that:
    - `:49` `<SRC DIRS>` — **project-specific and not derivable.** A Rust project may use
      `src/**`, `crates/**`, or workspace members; no profile can know which.
+   - `:50` `<MANIFEST + LOCKFILE>` — stack-derived in principle (the profiles' `detect` rows
+     already name `Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`), but left alone
+     anyway: it is *adjacent* to `:49` in the same block, so the human edits that block either
+     way and pre-filling one line of it saves nothing real. Not worth new profile row types in
+     the last and lowest-risk step.
 
-   Render only `:96`. Rendering `:50` while `:49` must stay is **not** worth new profile rows:
-   the two are *adjacent lines in the same filter block*, so the human edits that block either
-   way and pre-filling one line of it saves nothing real. Leave both, and update the template's
-   header comment (`:3-4`) so it says the runtime block is now filled by the stack profile and
-   the path filters remain the adopter's to complete at activation. This is consistent with
-   the template shipping inert: activation was always a deliberate human step.
+   Update the template's header comment (`:3-4`) to say the runtime block is now filled by the
+   stack profile and the path filters remain the adopter's to complete at activation. This is
+   consistent with the template shipping inert: activation was always a deliberate human step.
 
 **Test:** render every profile and assert, using the structural checks defined in F-2 (**not** a
-YAML parser): **no angle-bracket placeholder remains between the runtime-setup markers**;
+YAML parser). **Failure path first, and make it the cross-contamination case:** a non-Node
+profile's rendered output must contain **no** `setup-node`, `npm`, or `node-version` anywhere —
+that assertion is what distinguishes "replaced the block" from "substituted the version inside
+the Node block", and the second is a plausible misreading that produces working-looking YAML.
+Generalise it: for each profile, no *other* profile's toolchain markers may appear.
+Then: **no angle-bracket placeholder remains between the runtime-setup markers**;
 the two path-filter placeholders (`:49`, `:50`) are still present and unmodified; `generic`
 produces a workflow with no runtime block and no orphaned marker comments;
 `check-action-pins.sh` passes on each rendered result; adoption still creates no
@@ -596,9 +609,10 @@ project has been chosen yet. Activated ⇒ complete; inert ⇒ runtime resolved,
 pending.
 
 **DoD:** `init.sh --stack rust` produces an **inert** `templates/ci/ci.yml` in the target whose
-runtime setup block is Cargo with **no runtime placeholder left**; the path-filter placeholders
-remain for the adopter to complete at activation, and the template's header comment says so;
-`.github/workflows/` is not created; the pin checker still passes.
+runtime setup block is Cargo — **with no Node artifacts surviving anywhere in the file** and no
+runtime placeholder left; the path-filter placeholders remain for the adopter to complete at
+activation, and the template's header comment says so; `.github/workflows/` is not created; the
+pin checker still passes.
 **Commit:** `Render the CI runtime block from the stack profile like the Makefile`
 
 ---
