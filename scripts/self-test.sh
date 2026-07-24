@@ -60,6 +60,19 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/docs/README.md"
   assert_file "$TARGET/docs/templates/feature-analysis.md"
   assert_file "$TARGET/docs/accepted_risks.md"
+  assert_file "$TARGET/templates/ci/ci.yml"
+  assert_file "$TARGET/templates/ci/deploy.yml"
+  assert_file "$TARGET/templates/ci/README.md"
+  # CI templates ship inert: adopting the harness must never activate a workflow —
+  # least of all deploy.yml — behind the adopter's back.
+  assert_no_file "$TARGET/.github/workflows/ci.yml"
+  assert_no_file "$TARGET/.github/workflows/deploy.yml"
+  # Every job in ci-gate's needs must also be asserted in its result loop, or the gate
+  # reports green for a job nothing checked.
+  for job in secrets-scan app docs; do
+    grep -q "needs\.$job\.result" "$TARGET/templates/ci/ci.yml" \
+      || fail "ci.yml gate loop does not assert on job '$job'"
+  done
   assert_file "$TARGET/docs/backlog/.gitkeep"
   assert_file "$TARGET/docs/inprogress/.gitkeep"
   assert_file "$TARGET/docs/done/.gitkeep"

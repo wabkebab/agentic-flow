@@ -47,7 +47,13 @@ scripts/doctor.sh --check
 make check
 ```
 
-Add `make check`, `make test`, and `scripts/docs-index.sh --check` to CI where practical.
+## CI
+
+`templates/ci/ci.yml` is exported **inert** — adoption never activates a workflow on its
+own. Copy it to `.github/workflows/ci.yml`, fill the `<ANGLE-BRACKET>` spots, and make
+**`CI gate`** the only required status check in branch protection. `templates/ci/deploy.yml`
+is the optional deploy counterpart; read its runbook comment before enabling it. See
+`templates/ci/README.md` and `METHODOLOGY.md` §10.
 
 `scripts/export.sh` remains available as the low-level non-destructive copy operation for
 manual or unusual adoptions.

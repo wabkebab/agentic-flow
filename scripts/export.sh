@@ -7,7 +7,7 @@
 #   scripts/export.sh --force <target-dir>    overwrite existing files (destructive)
 #
 # Copies the allow-list (METHODOLOGY/CLAUDE/AGENTS/Makefile, .claude/settings.json,
-# .claude/skills, scripts, docs skeleton) and deliberately leaves behind this repo's own meta:
+# .claude/skills, scripts, templates/ci, docs skeleton) and leaves behind this repo's meta:
 # README.md, ROADMAP.md, .git, .claude/settings.local.json, and export.sh itself.
 #
 # Default mode never overwrites: a file that already exists in the target and differs is
@@ -44,6 +44,7 @@ ITEMS=(
   .claude/settings.json
   .claude/skills
   scripts
+  templates/ci
   docs/templates
   docs/README.md
   docs/accepted_risks.md
@@ -162,6 +163,7 @@ Next, in the target:
   2. Edit CLAUDE.md (project name, Stack-profile explainer + gotchas, architecture, opt-outs)
      and AGENTS.md (project name). Merge any .agentic-new copies.
   3. Ensure git-claude / git-codex are on PATH (or note the Claude-only opt-out in CLAUDE.md).
-  4. Add 'make check && make test' and 'scripts/docs-index.sh --check' to CI if you want.
+  4. Wire up CI: templates/ci/ci.yml is inert until you copy it to .github/workflows/.
+     See templates/ci/README.md — make 'CI gate' the only required status check.
   5. Commit the harness.
 EOF

@@ -1,0 +1,143 @@
+# CI — pull-request gate. See METHODOLOGY.md §10 for the reasoning behind this shape.
+#
+# Shipped INERT: copy to .github/workflows/ci.yml to activate, then fill the two
+# <ANGLE-BRACKET> spots (runtime setup, path filters). Everything else works as-is.
+#
+# Action SHAs below were current when this template shipped. Re-verify them against the
+# latest releases when you adopt it (METHODOLOGY.md §9) — pinning is only useful if the
+# pin is a version you actually chose.
+
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  # dorny/paths-filter calls the GitHub Pulls API to list changed files; without this
+  # scope it errors with "Resource not accessible by integration" on hardened repos
+  # and forked-PR contexts.
+  pull-requests: read
+
+# Cancel superseded runs when a PR is updated — the old run's verdict is already stale.
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Detect what changed ──────────────────────────────────────────────────────
+  # Gates the expensive jobs so a docs-only PR doesn't pay for a full build.
+  # Every filter includes this workflow file, so editing CI re-runs what it gates.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Filter paths
+        id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          filters: |
+            app:
+              - '<SRC DIRS, e.g. src/**>'
+              - '<MANIFEST + LOCKFILE, e.g. package.json, package-lock.json>'
+              - 'Makefile'
+              - 'scripts/**'
+              - '.github/workflows/ci.yml'
+            docs:
+              - 'docs/**'
+              - '.github/workflows/ci.yml'
+
+  # ── Secrets scan ─────────────────────────────────────────────────────────────
+  # Deliberately NOT path-filtered: a credential can land in any file.
+  secrets-scan:
+    name: Secrets scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Scan PR diff for verified leaked secrets
+        uses: trufflesecurity/trufflehog@6bd2d14f7a4bc1e569fa3550efa7ec632a4fa67b # v3.94.2
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          # --only-verified: report a finding only when the credential is confirmed live.
+          # Without it the noise floor trains everyone to ignore this job.
+          extra_args: --only-verified
+
+  # ── The gate itself ──────────────────────────────────────────────────────────
+  # Steps stay thin and call Make targets: CI green must mean the same thing as
+  # local green. If something here can't be a Make target, the Makefile is incomplete.
+  app:
+    name: App checks
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # ── Replace this block with your stack's runtime setup ──────────────────
+      # Node example shown. Always enable dependency caching, and install from the
+      # LOCKFILE (`npm ci`, `poetry install --sync`, `cargo build --locked`) — never a
+      # resolving install, which silently drifts CI away from what you tested locally.
+      - name: Set up Node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: <MAJOR, e.g. 22>
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit dev --audit-level=high
+      # ── End runtime setup ───────────────────────────────────────────────────
+
+      - name: Fast gate (type-check + lint)
+        run: make check
+      - name: Test suite
+        run: make test
+      - name: Build
+        run: make build
+
+  docs:
+    name: Docs index
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Docs index is derived, not hand-edited
+        run: scripts/docs-index.sh --check
+
+  # ── Required-status gate ──────────────────────────────────────────────────────
+  # Make THIS the only required status check in branch protection.
+  #
+  # Path-filtered jobs skip; a skipped job never reports a status; a required check
+  # that never reports blocks the PR forever. So the jobs above cannot be named as
+  # required checks directly. This one always reports: `skipped` passes, `failure`
+  # and `cancelled` fail. Add every new job to `needs` AND to the loop below —
+  # a job missing from the loop is a job nothing enforces.
+  ci-gate:
+    name: CI gate
+    needs: [changes, secrets-scan, app, docs]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Assert no upstream job failed or was cancelled
+        run: |
+          for result in \
+            "${{ needs.secrets-scan.result }}" \
+            "${{ needs.app.result }}" \
+            "${{ needs.docs.result }}"; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "Upstream job ended in '$result'"; exit 1 ;;
+            esac
+          done

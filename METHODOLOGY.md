@@ -273,6 +273,11 @@ rather than typing the one you remember.
 The reference structure, extracted from a working two-workflow setup. Stack-agnostic: the
 *shape* is the standard, the commands inside it come from the `Makefile`.
 
+> **Working templates ship in [`templates/ci/`](templates/ci/README.md)** — `ci.yml` and
+> `deploy.yml`, exported **inert** so adoption never activates a workflow (least of all a
+> deploy) behind you. Copy into `.github/workflows/` and fill the `<ANGLE-BRACKET>` spots.
+> This section is the *why*; those files are the *what*.
+
 **Two workflows, two different risk postures.**
 
 | | `ci.yml` | `deploy.yml` |
