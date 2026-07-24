@@ -52,5 +52,6 @@ TRIAGE header. Don't edit between the markers by hand.
 | Doc | Type | Status | Stage |
 |-----|------|--------|-------|
 | feature-init-and-template-split | Feature | ✅ Done | done |
+| feature-ci-as-authority | Feature | 🟦 Proposal | inprogress |
 | feature-harness-integrity-and-lifecycle | Feature | 🚧 In progress | inprogress |
 <!-- END: generated index -->
