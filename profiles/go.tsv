@@ -5,3 +5,7 @@ test	go test ./...
 test-one	go test "$(F)"
 build	go build ./...
 run	go run .
+ci-setup	      - name: Download locked Go modules
+ci-setup	        run: go mod download
+ci-setup	      - name: Verify Go modules
+ci-setup	        run: go mod verify

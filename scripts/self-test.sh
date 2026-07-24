@@ -29,6 +29,48 @@ assert_no_file() {
   [ ! -e "$1" ] || fail "unexpected file: $1"
 }
 
+assert_active_ci_workflow() { # <workflow.yml>
+  workflow="$1"
+  assert_file "$workflow"
+  if LC_ALL=C grep -q "$(printf '\t')" "$workflow"; then
+    fail "$workflow contains a literal tab"
+  fi
+  grep -q '^name:' "$workflow" || fail "$workflow lacks top-level name"
+  grep -q '^on:' "$workflow" || fail "$workflow lacks top-level on"
+  grep -q '^permissions:' "$workflow" || fail "$workflow lacks top-level permissions"
+  grep -q '^jobs:' "$workflow" || fail "$workflow lacks top-level jobs"
+  grep -q '<[^>]*>' "$workflow" && fail "$workflow contains angle-bracket placeholders"
+  grep -q 'needs: \[changes, secrets-scan, app, docs\]' "$workflow" \
+    || fail "$workflow ci-gate needs list drifted"
+  for job in secrets-scan app docs; do
+    grep -q "needs\.$job\.result" "$workflow" \
+      || fail "$workflow ci-gate loop does not assert on job '$job'"
+  done
+}
+
+path_without_tools() { # <output-dir> <tool>...
+  out_dir="$1"
+  shift
+  mkdir -p "$out_dir"
+  old_ifs=$IFS
+  IFS=:
+  for path_dir in $PATH; do
+    [ -d "$path_dir" ] || continue
+    for candidate in "$path_dir"/*; do
+      [ -f "$candidate" ] && [ -x "$candidate" ] || continue
+      name=${candidate##*/}
+      skip=false
+      for blocked in "$@"; do
+        [ "$name" = "$blocked" ] && skip=true
+      done
+      [ "$skip" = true ] && continue
+      [ -e "$out_dir/$name" ] || ln -s "$candidate" "$out_dir/$name"
+    done
+  done
+  IFS=$old_ifs
+  printf '%s\n' "$out_dir"
+}
+
 # Feed a PreToolUse hook a Bash tool call and assert it blocks / allows.
 must_block() { # <hook> <command>
   printf '{"tool_input":{"command":"%s"}}' "$2" | "$1" >/dev/null 2>&1 && fail "hook allowed: $2"
@@ -58,6 +100,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   if [ -n "$source_git_dir" ]; then
     printf 'gitdir: %s\n' "$source_git_dir" > "$SOURCE_FIXTURE/.git"
   fi
+
+  assert_active_ci_workflow "$SOURCE_FIXTURE/.github/workflows/ci.yml"
 
   printf '%s\n' '{}' > "$SOURCE_FIXTURE/.codex/unclassified.json"
   AGENTIC_PROJECT_ROOT="$SOURCE_FIXTURE" \
@@ -101,6 +145,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   printf '%s\n' '{"hooks":{}}' > "$SOURCE_FIXTURE/.codex/hooks.json"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
     && fail "doctor accepted a structurally unwired Codex hook configuration"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >/dev/null 2>&1 \
+    && fail "repo-scope doctor accepted a structurally unwired Codex hook configuration"
   cp "$TMP/codex-hooks.orig" "$SOURCE_FIXTURE/.codex/hooks.json"
 
   printf '%s\n' unresolved > "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
@@ -108,6 +154,29 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     && fail "doctor accepted an unresolved scaffold merge candidate"
   rm -f "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
 
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) > "$TMP/doctor-default.out"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope all) > "$TMP/doctor-scope-all.out"
+  cmp -s "$TMP/doctor-default.out" "$TMP/doctor-scope-all.out" \
+    || fail "doctor --scope all output differed from the default all-scope run"
+
+  STRIPPED_BIN=$(path_without_tools "$TMP/stripped-bin" gitleaks git-claude git-codex gh shellcheck)
+  STRIPPED_PATH="$STRIPPED_BIN"
+  PATH="$STRIPPED_PATH" command -v git >/dev/null 2>&1 \
+    || fail "stripped PATH accidentally removed ordinary git"
+  for removed_tool in gitleaks git-claude git-codex gh shellcheck; do
+    PATH="$STRIPPED_PATH" command -v "$removed_tool" >/dev/null 2>&1 \
+      && fail "stripped PATH still contains $removed_tool"
+  done
+  (cd "$SOURCE_FIXTURE" && PATH="$STRIPPED_PATH" AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) \
+    > "$TMP/doctor-repo-stripped.out" 2>&1 \
+    || { cat "$TMP/doctor-repo-stripped.out" >&2; fail "repo-scope doctor failed on stripped PATH"; }
+  grep -q "scope: repo" "$TMP/doctor-repo-stripped.out" \
+    || fail "repo-scope doctor did not print its active scope"
+  (cd "$SOURCE_FIXTURE" && PATH="$STRIPPED_PATH" AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope env) \
+    > "$TMP/doctor-env-stripped.out" 2>&1 \
+    && fail "env-scope doctor passed on stripped PATH without env tools"
+  grep -q "scope: env" "$TMP/doctor-env-stripped.out" \
+    || fail "env-scope doctor did not print its active scope"
   DOC_LEAK_SENTINEL="$SOURCE_FIXTURE/docs/inprogress/self-test-export-leak.md"
   TARGET="$TMP/target"
   printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
@@ -142,6 +211,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # least of all deploy.yml — behind the adopter's back.
   assert_no_file "$TARGET/.github/workflows/ci.yml"
   assert_no_file "$TARGET/.github/workflows/deploy.yml"
+  assert_no_file "$TARGET/.github"
   # Every job in ci-gate's needs must also be asserted in its result loop, or the gate
   # reports green for a job nothing checked.
   for job in secrets-scan app docs; do
@@ -172,6 +242,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # made the Stop gate block from turn one).
   (cd "$TARGET" && make check) >"$TMP/target-check.log" 2>&1 \
     || { cat "$TMP/target-check.log" >&2; fail "make check failed in a fresh export"; }
+  (cd "$TARGET" && PATH="$STRIPPED_PATH" make check) > "$TMP/target-check-stripped.log" 2>&1 \
+    || { cat "$TMP/target-check-stripped.log" >&2; fail "make check failed in a fresh export on stripped PATH"; }
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
   # Simulate an older installed scaffold so a conflict can prove that invoking a newer
@@ -195,7 +267,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q "# second candidate content" "$second_candidate" \
     || fail "versioned merge candidate does not contain the new source content"
 
-  (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >"$TMP/doctor.log" 2>&1 \
+  (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >"$TMP/doctor.log" 2>&1 \
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
 
   INIT_TARGET="$TMP/init-empty"
@@ -238,6 +310,30 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     fail "non-TTY init left unfilled template tokens"
   fi
 
+  INIT_RUST="$TMP/init-rust"
+  "$ROOT/scripts/init.sh" "$INIT_RUST" --name rust-proj --stack rust --yes >"$TMP/init-rust.log" 2>&1 \
+    || { cat "$TMP/init-rust.log" >&2; fail "init failed for a rust target"; }
+  assert_no_file "$INIT_RUST/.github/workflows/ci.yml"
+  assert_no_file "$INIT_RUST/.github/workflows/deploy.yml"
+  assert_no_file "$INIT_RUST/.github"
+  grep -q 'Set up Cargo toolchain' "$INIT_RUST/templates/ci/ci.yml" \
+    || fail "rust init did not render a Cargo runtime setup block"
+  grep -q 'cargo fetch --locked' "$INIT_RUST/templates/ci/ci.yml" \
+    || fail "rust init did not render a locked Cargo dependency step"
+  for node_marker in setup-node 'node-version' 'npm '; do
+    if grep -q "$node_marker" "$INIT_RUST/templates/ci/ci.yml"; then
+      fail "rust init leaked Node runtime marker into rendered CI template: $node_marker"
+    fi
+  done
+  grep -q '<SRC DIRS, e.g. src/\*\*>' "$INIT_RUST/templates/ci/ci.yml" \
+    || fail "rust init rewrote the project-specific source path placeholder"
+  grep -q '<MANIFEST + LOCKFILE, e.g. package.json, package-lock.json>' \
+    "$INIT_RUST/templates/ci/ci.yml" \
+    || fail "rust init rewrote the project-specific manifest path placeholder"
+  if grep -q 'Replace this block with your stack' "$INIT_RUST/templates/ci/ci.yml"; then
+    fail "rust init left the runtime setup replacement marker in the rendered template"
+  fi
+
   # Stack profiles are data, rendered by one implementation. Validate every shipped
   # profile without requiring its runtime or package manager to be installed.
   for profile in generic node python go rust; do
@@ -256,7 +352,86 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     esac
     grep -qF "$expected" "$profile_makefile" \
       || fail "$profile stack profile did not render its build command"
+
+    profile_ci_root="$TMP/ci-root.$profile"
+    mkdir -p "$profile_ci_root/templates/ci"
+    profile_workflow="$profile_ci_root/templates/ci/ci.yml"
+    cp "$ROOT/templates/ci/ci.yml" "$profile_workflow"
+    "$ROOT/scripts/render-stack-profile.sh" "$profile" --ci "$profile_workflow"
+    if grep -q 'Replace this block with your stack' "$profile_workflow" \
+      || grep -q 'End runtime setup' "$profile_workflow"; then
+      fail "$profile CI render left orphaned runtime setup marker comments"
+    fi
+    if grep -q '<MAJOR' "$profile_workflow"; then
+      fail "$profile CI render left a runtime angle-bracket placeholder"
+    fi
+    grep -q '<SRC DIRS, e.g. src/\*\*>' "$profile_workflow" \
+      || fail "$profile CI render rewrote the source path-filter placeholder"
+    grep -q '<MANIFEST + LOCKFILE, e.g. package.json, package-lock.json>' "$profile_workflow" \
+      || fail "$profile CI render rewrote the manifest path-filter placeholder"
+    AGENTIC_PROJECT_ROOT="$profile_ci_root" "$ROOT/scripts/check-action-pins.sh" >/dev/null 2>&1 \
+      || fail "$profile rendered CI workflow failed the action pin guard"
+
+    case "$profile" in
+      generic)
+        for marker in setup-node 'node-version' 'npm ' cargo rustup 'go mod' python3; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "generic CI render leaked runtime marker: $marker"
+          fi
+        done
+        ;;
+      node)
+        grep -q 'setup-node' "$profile_workflow" \
+          || fail "node CI render lacks setup-node"
+        grep -q 'npm ci' "$profile_workflow" \
+          || fail "node CI render lacks npm ci"
+        grep -q 'node-version: 22' "$profile_workflow" \
+          || fail "node CI render lacks a concrete node-version"
+        for marker in cargo rustup 'go mod' python3; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "node CI render leaked another runtime marker: $marker"
+          fi
+        done
+        ;;
+      python)
+        grep -q 'python3 -m pip install --require-hashes' "$profile_workflow" \
+          || fail "python CI render lacks locked dependency install"
+        for marker in setup-node 'node-version' 'npm ' cargo rustup 'go mod'; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "python CI render leaked another runtime marker: $marker"
+          fi
+        done
+        ;;
+      go)
+        grep -q 'go mod download' "$profile_workflow" \
+          || fail "go CI render lacks module download"
+        for marker in setup-node 'node-version' 'npm ' cargo rustup python3; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "go CI render leaked another runtime marker: $marker"
+          fi
+        done
+        ;;
+      rust)
+        grep -q 'Set up Cargo toolchain' "$profile_workflow" \
+          || fail "rust CI render lacks Cargo toolchain setup"
+        grep -q 'cargo fetch --locked' "$profile_workflow" \
+          || fail "rust CI render lacks locked Cargo dependency fetch"
+        for marker in setup-node 'node-version' 'npm ' 'go mod' python3; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "rust CI render leaked another runtime marker: $marker"
+          fi
+        done
+        ;;
+    esac
   done
+
+  BAD_PROFILE="$SOURCE_FIXTURE/profiles/bad-ci.tsv"
+  cp "$SOURCE_FIXTURE/profiles/generic.tsv" "$BAD_PROFILE"
+  printf 'ci-setup\t      - name: Bad\tliteral tab\n' >> "$BAD_PROFILE"
+  BAD_WORKFLOW="$TMP/bad-ci.yml"
+  cp "$SOURCE_FIXTURE/templates/ci/ci.yml" "$BAD_WORKFLOW"
+  "$SOURCE_FIXTURE/scripts/render-stack-profile.sh" bad-ci --ci "$BAD_WORKFLOW" >/dev/null 2>&1 \
+    && fail "renderer accepted a ci-setup row containing a literal tab"
 fi
 
 # --- shellcheck is required, not optional ------------------------------------------------
@@ -497,6 +672,10 @@ INVALID_SPEC="$TMP/invalid-spec.json"
 printf '%s\n' '{"tracking":{"title":"Plan: bad"},"steps":[]}' > "$INVALID_SPEC"
 "$ROOT/scripts/plan-to-issues.sh" "$INVALID_SPEC" >/dev/null 2>"$TMP/plan.err" && fail "invalid plan spec was accepted"
 grep -q "spec must contain" "$TMP/plan.err" || fail "invalid plan spec did not fail validation first"
+"$ROOT/scripts/plan-to-issues.sh" --approved-by >/dev/null 2>"$TMP/approved-by.err" \
+  && fail "plan-to-issues accepted --approved-by with no value"
+grep -q -- "--approved-by requires a name" "$TMP/approved-by.err" \
+  || fail "missing --approved-by value did not explain the error"
 
 # --- plan-to-issues reconciliation -------------------------------------------------------
 # Replay GitHub locally so failure/resume and repeated apply are deterministic, offline,
@@ -519,6 +698,10 @@ case "${1:-} ${2:-}" in
       *nameWithOwner*) printf '%s\n' owner/repo ;;
       *hasIssuesEnabled*) printf '%s\n' true ;;
     esac
+    exit 0
+    ;;
+  "run view")
+    printf '%s\n' "${FAKE_GH_RUN_CONCLUSION:-success}"
     exit 0
     ;;
   "label create") exit 0 ;;
@@ -629,11 +812,48 @@ plan_apply "$PLAN_SPEC" || fail "repeated identical plan apply failed"
 issue_count=$(find "$GHSTATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
 [ "$issue_count" -eq 3 ] || fail "repeated plan apply duplicated issues"
 
+APPROVAL_DOC_ROOT="$TMP/approval-doc-root"
+mkdir -p "$APPROVAL_DOC_ROOT/docs/inprogress"
+APPROVAL_DOC="$APPROVAL_DOC_ROOT/docs/inprogress/feature-approval.md"
+cat > "$APPROVAL_DOC" <<'MD'
+## Tracker
+- [x] F-1 done
+## Status / Implementation status
+- **Tracking issue:** pending.
+- **Approval:** pending.
+- **Verification evidence:** https://example.invalid/actions/1
+- **Review verdict:** approved.
+MD
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  "$PLAN_DRIVER" --apply --approved-by "Test User" --doc "$APPROVAL_DOC" "$PLAN_SPEC" >/dev/null \
+  || fail "plan apply with --approved-by failed against fake GitHub"
+tracker_body=$(grep -Rl "agentic-flow:plan:self-test-plan tracker" "$GHSTATE"/issue-*/body | xargs cat)
+printf '%s\n' "$tracker_body" | grep -q 'approved-by:Test User approved-at:' \
+  || fail "approval stamp did not land in the existing tracker marker"
+approved_at=$(printf '%s\n' "$tracker_body" | sed -n 's/.*approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
+[ -n "$approved_at" ] || fail "approval stamp did not include approved-at"
+grep -qF -- "- **Approval:** Test User approved on ${approved_at%%T*} via plan-to-issues --apply." "$APPROVAL_DOC" \
+  || fail "--doc did not write the canonical Approval status line"
+AGENTIC_PROJECT_ROOT="$APPROVAL_DOC_ROOT" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
+  || fail "lifecycle-status did not recognize the machine-written Approval line"
+plan_apply "$PLAN_SPEC" || fail "plan apply without --approved-by failed after approval"
+tracker_body_after=$(grep -Rl "agentic-flow:plan:self-test-plan tracker" "$GHSTATE"/issue-*/body | xargs cat)
+printf '%s\n' "$tracker_body_after" | grep -q "approved-at:$approved_at" \
+  || fail "repeated apply changed the original approval timestamp"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  "$PLAN_DRIVER" --apply --approved-by "Other User" "$PLAN_SPEC" >/dev/null 2>"$TMP/approval-conflict.err" \
+  && fail "plan apply silently rewrote an existing approval"
+grep -q "already approved by 'Test User'" "$TMP/approval-conflict.err" \
+  || fail "approval conflict did not explain the preserved approver"
+
 UPDATED_SPEC="$TMP/plan-spec-updated.json"
 jq '.steps[0].body = "alpha v2"' "$PLAN_SPEC" > "$UPDATED_SPEC"
 plan_apply "$UPDATED_SPEC" || fail "changed plan did not reconcile"
 grep -Rl "alpha v2" "$GHSTATE"/issue-*/body >/dev/null \
   || fail "changed step body was not updated in place"
+tracker_body_updated=$(grep -Rl "agentic-flow:plan:self-test-plan tracker" "$GHSTATE"/issue-*/body | xargs cat)
+printf '%s\n' "$tracker_body_updated" | grep -q "approved-at:$approved_at" \
+  || fail "changed plan reconciliation dropped the original approval"
 
 REMOVED_SPEC="$TMP/plan-spec-removed.json"
 jq '.steps = [.steps[0]]' "$UPDATED_SPEC" > "$REMOVED_SPEC"
@@ -687,6 +907,56 @@ sed \
 mv "$TMP/lifecycle-ready.md" "$LIFEFIX/docs/inprogress/feature-blocked.md"
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
   || fail "strict lifecycle check rejected a tracker with complete closure evidence"
+
+# --- lifecycle: CI run evidence verification (#25) --------------------------------------
+write_lifecycle_ready_doc() { # <root> <verification-evidence>
+  mkdir -p "$1/docs/inprogress"
+  cat > "$1/docs/inprogress/feature-ready.md" <<MD
+## Tracker
+- [x] F-1 done
+## Status
+- **Approval:** user approved 2026-01-01.
+- **Tracking issue:** https://example.invalid/issues/1
+- **Verification evidence:** $2
+- **Review verdict:** approved.
+MD
+}
+
+LIFE25_NO_GH="$TMP/lifecycle25-no-gh"
+write_lifecycle_ready_doc "$LIFE25_NO_GH" "https://github.com/owner/repo/actions/runs/100"
+NO_GH_BIN=$(path_without_tools "$TMP/no-gh-bin" gh)
+AGENTIC_PROJECT_ROOT="$LIFE25_NO_GH" PATH="$NO_GH_BIN" \
+  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-no-gh.out" \
+  || fail "strict verified lifecycle check treated absent gh as fatal"
+grep -q 'UNVERIFIED.*feature-ready\.md.*gh is not available' "$TMP/lifecycle25-no-gh.out" \
+  || fail "verified lifecycle check did not report absent gh as UNVERIFIED"
+
+LIFE25_NON_RUN="$TMP/lifecycle25-non-run"
+write_lifecycle_ready_doc "$LIFE25_NON_RUN" "https://example.invalid/actions/1"
+AGENTIC_PROJECT_ROOT="$LIFE25_NON_RUN" PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-non-run.out" \
+  || fail "strict verified lifecycle check treated non-run evidence as fatal"
+grep -q 'UNVERIFIED.*feature-ready\.md.*not a GitHub Actions run URL' \
+  "$TMP/lifecycle25-non-run.out" \
+  || fail "verified lifecycle check did not report non-run evidence as UNVERIFIED"
+
+LIFE25_FAILURE="$TMP/lifecycle25-failure"
+write_lifecycle_ready_doc "$LIFE25_FAILURE" "https://github.com/owner/repo/actions/runs/200"
+AGENTIC_PROJECT_ROOT="$LIFE25_FAILURE" PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  FAKE_GH_RUN_CONCLUSION=failure \
+  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-failure.out" 2>&1 \
+  && fail "strict verified lifecycle check accepted a resolved failing CI run"
+grep -q 'BLOCKED.*feature-ready\.md.*concluded failure' "$TMP/lifecycle25-failure.out" \
+  || fail "verified lifecycle check did not block on a resolved failing CI run"
+
+LIFE25_SUCCESS="$TMP/lifecycle25-success"
+write_lifecycle_ready_doc "$LIFE25_SUCCESS" "https://github.com/owner/repo/actions/runs/100"
+AGENTIC_PROJECT_ROOT="$LIFE25_SUCCESS" PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  FAKE_GH_RUN_CONCLUSION=success \
+  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-success.out" \
+  || fail "strict verified lifecycle check rejected a resolved successful CI run"
+grep -q 'READY.*feature-ready\.md.*concluded success' "$TMP/lifecycle25-success.out" \
+  || fail "verified lifecycle check did not mark a resolved successful CI run READY"
 
 # --- lifecycle: absent vs. misnamed vs. wrapped evidence (#19) ---------------------------
 # A checker that reports "missing" for both "never recorded" and "recorded under the wrong

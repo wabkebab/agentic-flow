@@ -8,11 +8,11 @@
 # Feature — CI as the authority for "green"
 
 ## Tracker
-- [ ] F-1 Split `doctor.sh` into repo-invariant and environment scopes — open
-- [ ] F-2 Activate CI on this repository — open
-- [ ] F-3 Stamp approval as an event (`--approved-by`) — open
-- [ ] F-4 Derive verification evidence from the CI run conclusion — open
-- [ ] F-5 Render the CI runtime setup block from the stack profile — open
+- [x] F-1 Split `doctor.sh` into repo-invariant and environment scopes — fixed in f14069a (#22)
+- [x] F-2 Activate CI on this repository — fixed in cef93b8 (#23)
+- [x] F-3 Stamp approval as an event (`--approved-by`) — fixed in b13a5d9 (#24)
+- [x] F-4 Derive verification evidence from the CI run conclusion — fixed in 82a5265 (#25)
+- [x] F-5 Render the CI runtime setup block from the stack profile — fixed in 7f91faa (#26)
 
 ---
 
@@ -201,9 +201,9 @@ loop is bounded by its `needs` list; CI concurrency cancels superseded runs per 
 
 ## Open questions
 
-- **[BLOCKING] Base branch.** This work must base on `main` *after* #16 merges — it depends on
-  `config/payload.tsv`, `lifecycle-status.sh`, `render-stack-profile.sh`, and the `.codex`/
-  `.agents` adapters, none of which are on `main` yet. Confirm the merge before F-1 starts.
+- ~~**[BLOCKING] Base branch.**~~ **Resolved 2026-07-24 — #16 merged** (PR #27). `main` now
+  carries `config/payload.tsv`, `lifecycle-status.sh`, `render-stack-profile.sh`, and the
+  `.codex`/`.agents` adapters this brief depends on. Base directly on `main`.
 - Should `make check` keep calling doctor at all once the scope split exists, or should the
   environment scope move to `make run` (which already calls doctor)? Leaning yes-keep — the
   repo scope is cheap and catches unwired hooks early — but the executor should raise it if the
@@ -252,9 +252,11 @@ A brief that was wrong is useful information about the brief.
 
 ## Branch
 
-Base: `main` **after #16 merges** (see the blocking open question). Per METHODOLOGY §2, one
-issue owns one branch and one PR: `feature-ci-as-authority-fN`. Do not stack all five steps on
-one long-lived branch — that is the shape §2 now forbids, and #16 is the cautionary example.
+Base: `main` (#16 has merged). Per METHODOLOGY §2, one branch and one PR for the whole brief:
+`feature-ci-as-authority`. Each step lands as its own commit on that branch, closing its issue
+via `Fixes #N` when the PR merges — steps are the tracking/commit granularity, not the
+branch/PR granularity. This is the same shape #16 itself shipped as (nine execution commits,
+one branch, one PR — #27).
 
 ## Definition of done (whole brief)
 
@@ -625,5 +627,8 @@ pin checker still passes.
   yet — it is **F-3 of this very plan**. When F-3 lands, this line becomes machine-written.
 - **Verification evidence:** pending until execution.
 - **Review verdict:** pending.
-- Steps not yet started. Executor closes each via a PR with `Fixes #N`, records the commit
-  SHA per step here, and ticks the matching F-N box in the Tracker above.
+- **Execution commits:** F-1 `f14069a`; F-2 `cef93b8`; F-3 `b13a5d9`; F-4 `82a5265`;
+  F-5 this commit.
+- F-1 through F-5 implemented locally on `feature-ci-as-authority-f1`.
+  Executor closes each step via a PR with `Fixes #N`, records the commit SHA per step here,
+  and ticks the matching F-N box in the Tracker above.

@@ -409,13 +409,15 @@ constraint moved from *scripts* to *authority*.
    turns a pasted URL into a queried CI conclusion; 2.7 finishes the stack-profile idea.
 5. **2.3 last**, unchanged in position but smaller in scope — the guardrail half is built,
    so what's left is the ticking. Land its preview mode before its mutating flag.
-6. **Tier 2 exit test (dogfood):** unchanged in spirit, and now partly satisfied. #16 ran
-   Feature doc → `plan-to-issues --apply` → execution commits → independent review →
-   derived `READY`, which is most of the loop and the first time it has run for real. What
-   it did **not** exercise: PRs (the work landed as commits on one branch, which the new §2
-   lanes now forbid), CI evidence, and `--with-issues` sync. So the exit test stands, with
-   the bar restated: **one feature, through PRs, with CI-derived evidence, auto-qualified to
-   `done/`.** 2.6 is a hard prerequisite.
+6. **Tier 2 exit test (dogfood):** unchanged in spirit, and now largely satisfied. #16 ran
+   Feature doc → `plan-to-issues --apply` → nine execution commits on one branch →
+   independent review → PR #27 → merge → derived `READY`, which is the loop end to end and
+   the first time it has run for real. This is also the correct shape under METHODOLOGY §2
+   as corrected 2026-07-24: one branch and one PR **per pass**, one issue and one commit
+   per step — not a branch per step, which was an over-fine-grained reading briefly written
+   into §2 and reverted. What #16 did **not** exercise: CI evidence (there was no CI to
+   derive it from) and `--with-issues` sync. So the exit test narrows to: **CI-derived
+   evidence on the pass's PR, auto-qualified to `done/`.** 2.6 is a hard prerequisite.
 7. **Tier 3 as each pain is felt** — except 3.2, promoted above.
 
 Every Tier 2+ item should itself go through the loop: a Feature doc in `docs/inprogress/`

@@ -6,3 +6,12 @@ test	npm run test:run
 test-one	npx vitest run "$(F)"
 build	npm run build
 run	npm run dev
+ci-setup	      - name: Set up Node
+ci-setup	        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+ci-setup	        with:
+ci-setup	          node-version: 22
+ci-setup	          cache: npm
+ci-setup	      - name: Install locked dependencies
+ci-setup	        run: npm ci
+ci-setup	      - name: Audit production dependencies
+ci-setup	        run: npm audit --omit dev --audit-level=high

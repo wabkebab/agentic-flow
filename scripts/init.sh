@@ -206,9 +206,11 @@ fi
 preexisting_claude=false
 preexisting_agents=false
 preexisting_makefile=false
+preexisting_ci_template=false
 [ -e "$TARGET_ABS/CLAUDE.md" ] && preexisting_claude=true
 [ -e "$TARGET_ABS/AGENTS.md" ] && preexisting_agents=true
 [ -e "$TARGET_ABS/Makefile" ] && preexisting_makefile=true
+[ -e "$TARGET_ABS/templates/ci/ci.yml" ] && preexisting_ci_template=true
 
 "$SRC/scripts/export.sh" "$TARGET_ABS"
 
@@ -263,6 +265,12 @@ else
 fi
 "$SRC/scripts/render-stack-profile.sh" "$STACK" "$TARGET_ABS/Makefile.agentic-new" \
   2>/dev/null || true
+if [ "$preexisting_ci_template" = false ]; then
+  "$SRC/scripts/render-stack-profile.sh" "$STACK" --ci "$TARGET_ABS/templates/ci/ci.yml"
+else
+  "$SRC/scripts/render-stack-profile.sh" "$STACK" --ci "$TARGET_ABS/templates/ci/ci.yml.agentic-new" \
+    2>/dev/null || true
+fi
 echo "Applied $STACK stack profile; verify its Make recipes match the project."
 
 token_files=""

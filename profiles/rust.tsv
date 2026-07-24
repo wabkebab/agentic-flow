@@ -5,3 +5,7 @@ test	cargo test --locked
 test-one	cargo test --locked "$(F)"
 build	cargo build --locked
 run	cargo run --locked
+ci-setup	      - name: Set up Cargo toolchain
+ci-setup	        run: rustup toolchain install stable --profile minimal
+ci-setup	      - name: Fetch locked Cargo dependencies
+ci-setup	        run: cargo fetch --locked

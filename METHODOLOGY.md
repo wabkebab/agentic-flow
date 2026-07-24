@@ -42,7 +42,8 @@ opt-out at the top of the project's `CLAUDE.md`.
   plan-to-issues  ───────────────▶  GitHub tracking issue + one sub-issue per step
         │
         ▼
-  Execute (Codex)                   branch + PR per step, "Fixes #N", git-codex
+  Execute (Codex)                   one branch + PR per pass; one commit + "Fixes #N"
+                                     per step; git-codex
         │
         ▼
   Review (Claude)                   /code-review (+ ultra for big branches), or a
@@ -67,13 +68,16 @@ Use the smallest lane that preserves the risk and evidence needed:
 | Lane | Use when | Required artifact |
 |------|----------|-------------------|
 | **Fast Fix** | A bounded bug or maintenance change with an obvious approach | Issue or short brief, regression test, one branch/PR |
-| **Planned Change** | Feature, security work, or multi-step behavior change | Feature/Security doc, approved brief, one issue/branch/PR per shippable step |
+| **Planned Change** | Feature, security work, or multi-step behavior change | Feature/Security doc, approved brief, one branch/PR per pass (one issue + one commit per step) |
 | **Decision** | Product or architecture choice before implementation | Product Analysis; spin off a Planned Change if approved |
 | **Emergency** | Production restoration cannot wait for the normal planning cycle | Hotfix PR with evidence, followed by a retrospective Feature/Security doc |
 
-An independently-shippable step is the delivery unit: **one issue owns one branch and one
-PR**. A brief may order several issues, but it does not put them on one long-lived feature
-branch. If two proposed steps cannot be reviewed and merged independently, they are one step.
+An independently-shippable step is the **tracking** unit — one issue, one logical commit,
+closed via `Fixes #N` when that commit lands. The **shipping** unit is coarser: a whole
+Feature/Security pass ships as **one branch and one PR**, so a reviewer sees the complete
+arc of the pass instead of fragments merged out of order. "Independently shippable" still
+means each step must stand alone as a coherent, working commit — if two proposed steps can't
+be reviewed and merged in that order within the pass, they are one step.
 
 ---
 
@@ -174,8 +178,11 @@ independently-shippable step**, from the implementation brief.
 
 Rules:
 - One issue per independently-shippable step — not one giant issue, not one per commit.
-- One issue owns one branch and one PR. Merge ordered dependencies before branching the
-  next step; use an explicitly documented stacked-PR workflow only when the project supports it.
+- Issues are the tracking granularity, not the shipping granularity. Each step is one issue,
+  closed by that step's own commit via `Fixes #N`. The whole plan ships as **one branch and
+  one PR** — a Feature/Security pass is the review unit, not each step. Split a pass across
+  multiple PRs only when the brief says so explicitly (e.g. a pass too large or long-running
+  to hold on one branch); don't default to a branch per step.
 - Issue body = the step's Definition of Done + the exact verification commands. The *why*
   and the ordering stay in the doc.
 - Flow is one-directional. If the plan changes, regenerate or hand-edit issues; never

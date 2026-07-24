@@ -1,7 +1,7 @@
 # CI — pull-request gate. See METHODOLOGY.md §10 for the reasoning behind this shape.
 #
-# Shipped INERT: copy to .github/workflows/ci.yml to activate, then fill the two
-# <ANGLE-BRACKET> spots (runtime setup, path filters). Everything else works as-is.
+# Shipped INERT: `init.sh --stack <profile>` fills the runtime setup block while leaving
+# the path filters for the adopter to complete when they deliberately activate CI.
 #
 # Action SHAs below were current when this template shipped. Re-verify them against the
 # latest releases when you adopt it (METHODOLOGY.md §9) — pinning is only useful if the
@@ -87,7 +87,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # ── Replace this block with your stack's runtime setup ──────────────────
-      # Node example shown. Always enable dependency caching, and install from the
+      # Always enable dependency caching where the stack supports it, and install from the
       # LOCKFILE (`npm ci`, `poetry install --sync`, `cargo build --locked`) — never a
       # resolving install, which silently drifts CI away from what you tested locally.
       - name: Set up Node

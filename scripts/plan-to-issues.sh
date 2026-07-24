@@ -19,6 +19,7 @@ set -euo pipefail
 MODE=dry
 SPEC=""
 DOC=""
+APPROVED_BY=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --apply) MODE=apply; shift ;;
@@ -26,7 +27,10 @@ while [ "$#" -gt 0 ]; do
     --doc)
       [ "$#" -ge 2 ] || { echo "error: --doc requires a path" >&2; exit 2; }
       DOC="$2"; shift 2 ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --approved-by)
+      [ "$#" -ge 2 ] || { echo "error: --approved-by requires a name" >&2; exit 2; }
+      APPROVED_BY="$2"; shift 2 ;;
+    -h|--help) awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"; exit 0 ;;
     -*)
       echo "error: unknown flag: $1" >&2
       exit 2
@@ -42,6 +46,10 @@ die() { echo "error: $*" >&2; exit 1; }
 
 [ -n "$SPEC" ] || die "no spec file given. Usage: $0 [--apply|--diff] [--doc <path>] <spec.json>"
 [ -f "$SPEC" ] || die "spec file not found: $SPEC"
+case "$APPROVED_BY" in
+  *'
+'*|*"-->"*) die "--approved-by must be a single safe stamp value" ;;
+esac
 command -v jq >/dev/null || die "jq not found"
 command -v git >/dev/null || die "git not found"
 jq -e . "$SPEC" >/dev/null 2>&1 || die "spec is not valid JSON: $SPEC"
@@ -118,11 +126,33 @@ issue_for_marker() {
 }
 
 TRACK_ID_MARKER="$PLAN_MARKER tracker"
-TRACK_STAMP="<!-- $TRACK_ID_MARKER spec:$SPEC_HASH -->"
+existing_tracker=$(issue_for_marker "$TRACK_ID_MARKER")
+APPROVAL_BY=""
+APPROVAL_AT=""
+if [ -n "$existing_tracker" ]; then
+  existing_body=$(printf '%s\n' "$existing_tracker" | jq -r '.body // ""')
+  APPROVAL_BY=$(printf '%s\n' "$existing_body" \
+    | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)
+  APPROVAL_AT=$(printf '%s\n' "$existing_body" \
+    | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
+fi
+if [ -n "$APPROVED_BY" ]; then
+  if [ -n "$APPROVAL_BY" ] && [ "$APPROVAL_BY" != "$APPROVED_BY" ]; then
+    die "plan already approved by '$APPROVAL_BY'; refusing to replace it with '$APPROVED_BY'"
+  fi
+  if [ -z "$APPROVAL_BY" ]; then
+    APPROVAL_BY="$APPROVED_BY"
+    APPROVAL_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  fi
+fi
+TRACK_STAMP="<!-- $TRACK_ID_MARKER spec:$SPEC_HASH"
+if [ -n "$APPROVAL_BY" ]; then
+  TRACK_STAMP="$TRACK_STAMP approved-by:$APPROVAL_BY approved-at:$APPROVAL_AT"
+fi
+TRACK_STAMP="$TRACK_STAMP -->"
 TRACK_DESIRED="${TRACK_BODY}
 
 ${TRACK_STAMP}"
-existing_tracker=$(issue_for_marker "$TRACK_ID_MARKER")
 
 if [ "$MODE" = diff ]; then
   if [ -z "$existing_tracker" ]; then
@@ -261,19 +291,34 @@ echo "native sub-issue link attempts succeeded: $linked/$STEP_COUNT"
 if [ -n "$DOC" ]; then
   [ -f "$DOC" ] || die "--doc file not found after reconciliation: $DOC"
   doc_tmp="$DOC.tmp.$$"
-  awk -v url="$track_url" '
+  approval_line=""
+  if [ -n "$APPROVAL_BY" ]; then
+    approval_day=${APPROVAL_AT%%T*}
+    approval_line="- **Approval:** ${APPROVAL_BY} approved on ${approval_day} via plan-to-issues --apply."
+  fi
+  awk -v url="$track_url" -v approval_line="$approval_line" '
     /^- \*\*Tracking issue:\*\*/ && replaced != 1 {
       print "- **Tracking issue:** [" url "](" url ")."
       replaced=1
       next
     }
+    approval_line != "" && /^- \*\*Approval:\*\*/ && approved != 1 {
+      print approval_line
+      approved=1
+      next
+    }
     { print }
     END {
       if (replaced != 1) exit 3
+      if (approval_line != "" && approved != 1) exit 4
     }
   ' "$DOC" > "$doc_tmp" || {
+    status=$?
     rm -f "$doc_tmp"
-    die "--doc has no '- **Tracking issue:**' status line"
+    case "$status" in
+      4) die "--doc has no '- **Approval:**' status line" ;;
+      *) die "--doc has no '- **Tracking issue:**' status line" ;;
+    esac
   }
   mv "$doc_tmp" "$DOC"
   echo "updated doc tracker link: $DOC"

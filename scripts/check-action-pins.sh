@@ -33,7 +33,7 @@ for arg in "$@"; do
     --strict) STRICT=true ;;
     --online) ONLINE=true ;;
     --stamp)  STAMP=true ;;
-    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"; exit 0 ;;
     *) echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
 done

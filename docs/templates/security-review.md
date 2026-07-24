@@ -74,8 +74,9 @@
 > commit bodies. This brief carries the **approach and insights — not the code.**
 
 ## Branch
-Base: `<base branch>`. Each step uses one branch and one PR:
-`security-<topic>-secN` (confirm the base with the human).
+Base: `<base branch>`. One branch and one PR for the whole brief:
+`security-<topic>` (confirm the base with the human). Each finding lands as its own commit
+on that branch, closing its issue via `Fixes #N`.
 
 ## Definition of done (whole brief)
 Every step's per-step DoD met; `make check` and `make test` green; each fix has a

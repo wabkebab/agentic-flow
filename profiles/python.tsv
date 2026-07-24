@@ -6,3 +6,10 @@ test	python3 -m pytest
 test-one	python3 -m pytest "$(F)"
 build	python3 -m build
 run	scripts/doctor.sh
+ci-setup	      - name: Set up Python package tooling
+ci-setup	        run: python3 -m pip install --upgrade pip
+ci-setup	      - name: Install locked Python dependencies
+ci-setup	        run: |
+ci-setup	          if [ -f requirements.txt ]; then
+ci-setup	            python3 -m pip install --require-hashes -r requirements.txt
+ci-setup	          fi
