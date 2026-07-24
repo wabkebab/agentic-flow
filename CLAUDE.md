@@ -34,7 +34,7 @@
 | Target | What it does on this project | Notes / gotchas |
 |--------|------------------------------|-----------------|
 | `make check` | Bash syntax for shipped scripts, docs index freshness, action-pin structure, and `scripts/self-test.sh` | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
-| `make test` | full offline scaffold regression suite, plus `shellcheck` over `scripts/` when installed | no network or GitHub writes |
+| `make test` | full offline scaffold regression suite, plus `shellcheck` over `scripts/` | no network or GitHub writes; **fails if `shellcheck` is missing** rather than skipping |
 | `make test-one F=…` | same offline suite; this harness has no finer-grained test runner yet | accepts `F` for interface compatibility and prints it |
 | `make build` | dry-run export into a temporary directory | validates the payload assembles without writing a real target |
 | `make run` | `scripts/doctor.sh` report mode | the scaffold's "app" is its adoption report |
@@ -51,7 +51,8 @@
 - **Required for the scaffold:** `bash`, `make`, `git`, `jq`, `gh`.
 - **Required unless opted out:** `git-claude` for planner/reviewer commits and `git-codex`
   for executor commits.
-- **Recommended:** `shellcheck`.
+- **Required:** `shellcheck` — `make test` fails without it (a skip-if-absent gate is
+  green only because the tool is missing).
 - **Adoption check:** run `scripts/doctor.sh --check` after exporting the scaffold and before
   committing it in a target project.
 

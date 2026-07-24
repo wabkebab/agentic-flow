@@ -70,7 +70,7 @@ require_tool make
 require_tool git
 require_tool jq
 require_tool gh
-optional_tool shellcheck
+require_tool shellcheck
 optional_tool git-claude
 optional_tool git-codex
 

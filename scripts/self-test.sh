@@ -148,6 +148,20 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   fi
 fi
 
+# --- shellcheck is required, not optional ------------------------------------------------
+# A lint that skips when its tool is missing reports green for the wrong reason — that is
+# exactly how `make test` sat red-but-passing until someone installed shellcheck.
+#
+# Asserted by reading the recipes, NOT by running `make test` under a stripped PATH: this
+# script IS what `make test` runs, so invoking it would recurse without bound.
+for mf in "$ROOT/Makefile" "$ROOT/templates/harness/Makefile"; do
+  [ -f "$mf" ] || continue
+  grep -q "shellcheck" "$mf" || fail "$mf does not run shellcheck in 'make test'"
+  if grep -qi "shellcheck not found; skipping" "$mf"; then
+    fail "$mf skips shellcheck when absent instead of failing"
+  fi
+done
+
 # --- action-pin guard (run everywhere) ---------------------------------------------------
 # The guard's whole value is discriminating a mutable tag pin from an immutable SHA pin.
 # Assert it FAILS on bad input first — a checker that only ever passes proves nothing.

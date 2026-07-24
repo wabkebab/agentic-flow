@@ -13,8 +13,7 @@ It wraps the low-level exporter, fills the project token, preserves existing fil
 - `gh`
 - `git-claude`, unless the project opts out of Claude commits
 - `git-codex`, unless the project is Claude-only or otherwise opts out of Codex execution
-
-Recommended: `shellcheck`.
+- `shellcheck` — `make test` fails without it
 
 ## Usage
 

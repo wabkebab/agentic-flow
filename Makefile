@@ -15,7 +15,8 @@ check:          ## fast sanity gate: harness checks + your type-check/lint. Run 
 
 test:           ## full test suite
 	@scripts/self-test.sh
-	@if command -v shellcheck >/dev/null 2>&1; then shellcheck scripts/*.sh scripts/hooks/*.sh; else echo "shellcheck not found; skipping."; fi
+	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required for 'make test' — install it (brew install shellcheck / apt-get install shellcheck)." >&2; exit 1; }
+	@shellcheck scripts/*.sh scripts/hooks/*.sh
 
 test-one:       ## one targeted test:  make test-one F=path/to/file
 	@echo "No finer-grained harness test runner yet; running offline suite. F=$(F)"

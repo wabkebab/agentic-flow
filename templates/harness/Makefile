@@ -5,9 +5,11 @@
 # Humans, agents, hooks, and CI all call these targets; never hard-code raw commands
 # elsewhere. See METHODOLOGY.md §1 and CLAUDE.md "Stack profile".
 #
-# `check` ships working — harness sanity (script syntax, docs-index freshness, self-test) —
-# and is what the Stop hook runs, so keep it fast. Extend it with your stack's type-check +
-# lint. The other recipes no-op with a reminder until filled in for your stack (TS/Node
+# `check` ships working — harness sanity (script syntax, docs-index freshness, action-pin
+# structure, self-test) — and is what the Stop hook runs, so keep it fast. Extend it with
+# your stack's type-check + lint. `test` ships with shellcheck over the harness scripts and
+# REQUIRES it: a lint that skips when the tool is absent is green for the wrong reason.
+# The remaining recipes no-op with a reminder until filled in for your stack (TS/Node
 # examples shown commented), so a fresh scaffold doesn't block work.
 
 .PHONY: check test test-one build run help
@@ -23,7 +25,9 @@ check:          ## fast sanity gate: harness checks + your type-check/lint. Run 
 #	npm run typecheck && npm run lint
 
 test:           ## full test suite
-	@echo "TODO: define 'test' in the Makefile."
+	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required for 'make test' — install it (brew install shellcheck / apt-get install shellcheck)." >&2; exit 1; }
+	@shellcheck scripts/*.sh scripts/hooks/*.sh
+	@echo "TODO: add your stack's test suite to 'test' in the Makefile."
 #	npm run test:run
 
 test-one:       ## one targeted test:  make test-one F=path/to/file
