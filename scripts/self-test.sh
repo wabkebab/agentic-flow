@@ -569,6 +569,10 @@ INVALID_SPEC="$TMP/invalid-spec.json"
 printf '%s\n' '{"tracking":{"title":"Plan: bad"},"steps":[]}' > "$INVALID_SPEC"
 "$ROOT/scripts/plan-to-issues.sh" "$INVALID_SPEC" >/dev/null 2>"$TMP/plan.err" && fail "invalid plan spec was accepted"
 grep -q "spec must contain" "$TMP/plan.err" || fail "invalid plan spec did not fail validation first"
+"$ROOT/scripts/plan-to-issues.sh" --approved-by >/dev/null 2>"$TMP/approved-by.err" \
+  && fail "plan-to-issues accepted --approved-by with no value"
+grep -q -- "--approved-by requires a name" "$TMP/approved-by.err" \
+  || fail "missing --approved-by value did not explain the error"
 
 # --- plan-to-issues reconciliation -------------------------------------------------------
 # Replay GitHub locally so failure/resume and repeated apply are deterministic, offline,
@@ -701,11 +705,48 @@ plan_apply "$PLAN_SPEC" || fail "repeated identical plan apply failed"
 issue_count=$(find "$GHSTATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
 [ "$issue_count" -eq 3 ] || fail "repeated plan apply duplicated issues"
 
+APPROVAL_DOC_ROOT="$TMP/approval-doc-root"
+mkdir -p "$APPROVAL_DOC_ROOT/docs/inprogress"
+APPROVAL_DOC="$APPROVAL_DOC_ROOT/docs/inprogress/feature-approval.md"
+cat > "$APPROVAL_DOC" <<'MD'
+## Tracker
+- [x] F-1 done
+## Status / Implementation status
+- **Tracking issue:** pending.
+- **Approval:** pending.
+- **Verification evidence:** https://example.invalid/actions/1
+- **Review verdict:** approved.
+MD
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  "$PLAN_DRIVER" --apply --approved-by "Test User" --doc "$APPROVAL_DOC" "$PLAN_SPEC" >/dev/null \
+  || fail "plan apply with --approved-by failed against fake GitHub"
+tracker_body=$(grep -Rl "agentic-flow:plan:self-test-plan tracker" "$GHSTATE"/issue-*/body | xargs cat)
+printf '%s\n' "$tracker_body" | grep -q 'approved-by:Test User approved-at:' \
+  || fail "approval stamp did not land in the existing tracker marker"
+approved_at=$(printf '%s\n' "$tracker_body" | sed -n 's/.*approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
+[ -n "$approved_at" ] || fail "approval stamp did not include approved-at"
+grep -qF -- "- **Approval:** Test User approved on ${approved_at%%T*} via plan-to-issues --apply." "$APPROVAL_DOC" \
+  || fail "--doc did not write the canonical Approval status line"
+AGENTIC_PROJECT_ROOT="$APPROVAL_DOC_ROOT" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
+  || fail "lifecycle-status did not recognize the machine-written Approval line"
+plan_apply "$PLAN_SPEC" || fail "plan apply without --approved-by failed after approval"
+tracker_body_after=$(grep -Rl "agentic-flow:plan:self-test-plan tracker" "$GHSTATE"/issue-*/body | xargs cat)
+printf '%s\n' "$tracker_body_after" | grep -q "approved-at:$approved_at" \
+  || fail "repeated apply changed the original approval timestamp"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  "$PLAN_DRIVER" --apply --approved-by "Other User" "$PLAN_SPEC" >/dev/null 2>"$TMP/approval-conflict.err" \
+  && fail "plan apply silently rewrote an existing approval"
+grep -q "already approved by 'Test User'" "$TMP/approval-conflict.err" \
+  || fail "approval conflict did not explain the preserved approver"
+
 UPDATED_SPEC="$TMP/plan-spec-updated.json"
 jq '.steps[0].body = "alpha v2"' "$PLAN_SPEC" > "$UPDATED_SPEC"
 plan_apply "$UPDATED_SPEC" || fail "changed plan did not reconcile"
 grep -Rl "alpha v2" "$GHSTATE"/issue-*/body >/dev/null \
   || fail "changed step body was not updated in place"
+tracker_body_updated=$(grep -Rl "agentic-flow:plan:self-test-plan tracker" "$GHSTATE"/issue-*/body | xargs cat)
+printf '%s\n' "$tracker_body_updated" | grep -q "approved-at:$approved_at" \
+  || fail "changed plan reconciliation dropped the original approval"
 
 REMOVED_SPEC="$TMP/plan-spec-removed.json"
 jq '.steps = [.steps[0]]' "$UPDATED_SPEC" > "$REMOVED_SPEC"
