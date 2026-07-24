@@ -36,6 +36,10 @@ order, edge cases — not finished code. Read the brief for the step before writ
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 
+**Adding a dependency?** Check its current stable version from the registry / release notes
+before you add it — don't type the version you remember, it will be stale (`METHODOLOGY.md`
+§9). Match the project's existing major versions and let the lockfile record the result.
+
 ## Commit contract (Codex)
 
 - Commit with **`git-codex`** (signs with the Codex key).

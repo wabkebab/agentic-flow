@@ -34,10 +34,13 @@
 > and CI all call. **Fill in the Makefile recipes.** This section just *explains* the
 > targets and records the gotchas, so prose can't drift from what actually runs.
 >
-> **Before picking languages, frameworks, or libraries here, check current stable
-> versions** (release notes, changelogs, official docs — not training-data recall, which
-> skews stale). Pin the versions actually chosen in the Makefile / lockfiles, not just
-> in prose here.
+> **Assess the stack before you wire it up** (`METHODOLOGY.md` §9). Read the manifests,
+> lockfiles, and installed toolchain versions to see what this project actually runs; check
+> current stable/LTS releases from release notes, changelogs, and official docs — *not*
+> training-data recall, which skews stale. Install a modern version by default; record any
+> deliberate deviation (peer-dependency ceiling, platform constraint, known-bad release)
+> under Gotchas. Pin the versions actually chosen in the manifests, lockfiles, and Makefile
+> — not just in prose here.
 
 | Target | What it does on this project | Notes / gotchas |
 |--------|------------------------------|-----------------|
