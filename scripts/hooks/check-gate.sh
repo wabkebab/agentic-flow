@@ -27,16 +27,23 @@ if [ ! -f Makefile ] || ! grep -Eq '^check:' Makefile; then
   exit 0
 fi
 
-if make check >/tmp/agentic-check-gate.log 2>&1; then
+# Unique log per invocation. A fixed path (this used to be /tmp/agentic-check-gate.log)
+# is clobbered by any concurrent run — a second session, or another project entirely —
+# so the agent could be shown someone else's failures and "fix" the wrong repo. The path
+# is echoed below, so uniqueness costs nothing in usability.
+LOG=$(mktemp "${TMPDIR:-/tmp}/agentic-check-gate.XXXXXX") || LOG="${TMPDIR:-/tmp}/agentic-check-gate.$$.log"
+
+if make check >"$LOG" 2>&1; then
+  rm -f "$LOG"
   exit 0
 fi
 
 if [ "$active" = "true" ]; then
-  echo "Warning: \`make check\` still failing, but allowing stop to avoid a loop. See /tmp/agentic-check-gate.log" >&2
+  echo "Warning: \`make check\` still failing, but allowing stop to avoid a loop. See $LOG" >&2
   exit 0
 fi
 
 echo "Stop blocked: \`make check\` failed. Fix type/lint errors before ending the turn." >&2
-echo "--- make check output ---" >&2
-tail -n 40 /tmp/agentic-check-gate.log >&2
+echo "--- make check output ($LOG) ---" >&2
+tail -n 40 "$LOG" >&2
 exit 2
