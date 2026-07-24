@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How agentic-flow works</title>
+<style>
+  :root {
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --fg: #1d1c1a;
+    --muted: #6b6862;
+    --faint: #e6e2db;
+    --stroke: #d3cec5;
+    --stroke-strong: #8c877e;
+    --accent: #b4532a;
+    --accent-bg: #fdf1ea;
+    --claude: #b4532a;
+    --claude-bg: #fdf1ea;
+    --codex: #2f6f6b;
+    --codex-bg: #e9f4f3;
+    --human: #4a5a8a;
+    --human-bg: #edf0f8;
+    --code-bg: #f2efe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614;
+      --panel: #1f1e1b;
+      --fg: #ece9e3;
+      --muted: #9a958c;
+      --faint: #2c2a26;
+      --stroke: #413e39;
+      --stroke-strong: #7d786f;
+      --accent: #e0855a;
+      --accent-bg: #2a1d16;
+      --claude: #e0855a;
+      --claude-bg: #2a1d16;
+      --codex: #6fbdb6;
+      --codex-bg: #142625;
+      --human: #92a5d8;
+      --human-bg: #1a1e2b;
+      --code-bg: #262421;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #171614; --panel: #1f1e1b; --fg: #ece9e3; --muted: #9a958c;
+    --faint: #2c2a26; --stroke: #413e39; --stroke-strong: #7d786f;
+    --accent: #e0855a; --accent-bg: #2a1d16; --claude: #e0855a; --claude-bg: #2a1d16;
+    --codex: #6fbdb6; --codex-bg: #142625; --human: #92a5d8; --human-bg: #1a1e2b;
+    --code-bg: #262421;
+  }
+  :root[data-theme="light"] {
+    --bg: #fbfaf8; --panel: #ffffff; --fg: #1d1c1a; --muted: #6b6862;
+    --faint: #e6e2db; --stroke: #d3cec5; --stroke-strong: #8c877e;
+    --accent: #b4532a; --accent-bg: #fdf1ea; --claude: #b4532a; --claude-bg: #fdf1ea;
+    --codex: #2f6f6b; --codex-bg: #e9f4f3; --human: #4a5a8a; --human-bg: #edf0f8;
+    --code-bg: #f2efe9;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow-x: hidden;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px 96px; }
+
+  header.hero { padding: 72px 0 40px; border-bottom: 1px solid var(--faint); margin-bottom: 8px; }
+  .eyebrow { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  h1 { font-size: clamp(32px, 6vw, 48px); line-height: 1.1; margin: 12px 0 16px; letter-spacing: -.02em; }
+  .lede { font-size: 19px; color: var(--muted); max-width: 62ch; margin: 0; }
+
+  h2 {
+    font-size: 26px; letter-spacing: -.01em; margin: 56px 0 4px; padding-top: 8px;
+  }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 10px; font-size: 18px; vertical-align: 3px; }
+  h3 { font-size: 17px; margin: 32px 0 6px; }
+  p { max-width: 68ch; }
+  .sub { color: var(--muted); margin-top: 0; max-width: 68ch; }
+  ul, ol { max-width: 68ch; padding-left: 22px; }
+  li { margin: 6px 0; }
+  a { color: var(--accent); }
+
+  code, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: .88em; }
+  :not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--faint); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13.5px; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; }
+
+  .fig { margin: 26px 0 30px; }
+  .fig .scroller { overflow-x: auto; padding-bottom: 4px; }
+  .fig svg { display: block; min-width: 620px; max-width: 100%; height: auto; margin: 0 auto; }
+  figcaption { color: var(--muted); font-size: 13.5px; margin-top: 10px; text-align: center; }
+
+  /* SVG theming */
+  .d-box { fill: var(--panel); stroke: var(--stroke); stroke-width: 1.25; }
+  .d-claude { fill: var(--claude-bg); stroke: var(--claude); stroke-width: 1.25; }
+  .d-codex  { fill: var(--codex-bg);  stroke: var(--codex);  stroke-width: 1.25; }
+  .d-human  { fill: var(--human-bg);  stroke: var(--human);  stroke-width: 1.25; }
+  .d-ghost  { fill: none; stroke: var(--stroke); stroke-width: 1.25; stroke-dasharray: 5 4; }
+  .t  { fill: var(--fg); font: 600 14px ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
+  .ts { fill: var(--muted); font: 11.5px ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
+  .tm { fill: var(--fg); font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .tl { fill: var(--muted); font: 11px ui-sans-serif, -apple-system, "Segoe UI", sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+  .cc { fill: var(--claude); font: 600 11px ui-sans-serif, sans-serif; letter-spacing: .06em; }
+  .cx { fill: var(--codex);  font: 600 11px ui-sans-serif, sans-serif; letter-spacing: .06em; }
+  .ch { fill: var(--human);  font: 600 11px ui-sans-serif, sans-serif; letter-spacing: .06em; }
+  .ln { stroke: var(--stroke-strong); stroke-width: 1.5; fill: none; }
+  .ln-d { stroke: var(--stroke-strong); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+  .ar { fill: var(--stroke-strong); }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; margin: 18px 0 8px; }
+  .tablewrap { overflow-x: auto; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--faint); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--faint); border-radius: 10px;
+    padding: 16px 20px; margin: 18px 0;
+  }
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--accent-bg);
+    padding: 12px 18px; border-radius: 0 8px 8px 0; margin: 22px 0;
+  }
+  .callout p { margin: 6px 0; }
+  .callout .label { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 20px 0; }
+  .grid .card { margin: 0; }
+  .grid h4 { margin: 0 0 4px; font-size: 15px; }
+  .grid p { margin: 0; font-size: 14px; color: var(--muted); }
+
+  .roles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); margin: 22px 0; }
+  .role { border-radius: 10px; padding: 16px 18px; border: 1px solid; }
+  .role.claude { border-color: var(--claude); background: var(--claude-bg); }
+  .role.codex  { border-color: var(--codex);  background: var(--codex-bg); }
+  .role.human  { border-color: var(--human);  background: var(--human-bg); }
+  .role .who { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700; }
+  .role.claude .who { color: var(--claude); }
+  .role.codex  .who { color: var(--codex); }
+  .role.human  .who { color: var(--human); }
+  .role h4 { margin: 6px 0 6px; font-size: 17px; }
+  .role p { margin: 0; font-size: 14px; }
+
+  footer { margin-top: 72px; padding-top: 22px; border-top: 1px solid var(--faint); color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">agentic-flow</div>
+  <h1>How this agentic flow works</h1>
+  <p class="lede">A copy-paste scaffold for running software work across two AI agents and one
+  human, without losing track of intent, evidence, or who is allowed to press which button.
+  One planner, one executor, one owner — and a set of hooks that make the contract mechanical
+  instead of aspirational.</p>
+</header>
+
+<h2><span class="num">01</span>The shape of it</h2>
+<p>Most agentic setups fail in the same two places: the reasoning behind a change evaporates the
+moment the code lands, and the agent quietly does something the human never approved. This
+scaffold answers both with the same move — <strong>separate the roles, and write the design
+down in a document that outlives the issues.</strong></p>
+<p>Work flows one direction. A document states intent. An approved document becomes GitHub
+issues. Issues become commits. Commits get reviewed, then merged by a human. The document then
+moves to <code>docs/done/</code> carrying its own evidence. Issues are disposable; the document
+is not.</p>
+
+<div class="roles">
+  <div class="role claude">
+    <div class="who">Plan / Review</div>
+    <h4>Claude</h4>
+    <p>Writes the analysis docs and the inlined implementation brief, generates the issues,
+    reviews the execution commits, fixes what the review finds. Commits with
+    <code>git-claude</code>.</p>
+  </div>
+  <div class="role codex">
+    <div class="who">Execute</div>
+    <h4>Codex</h4>
+    <p>Implements the issues — one issue per step, one logical commit per step, a regression
+    test per fix. Does not expand scope. Commits with <code>git-codex</code>.</p>
+  </div>
+  <div class="role human">
+    <div class="who">Own / merge / deploy</div>
+    <h4>You</h4>
+    <p>Approves plans before any issue exists, merges the PR, controls every push and every
+    release. Neither agent can push — that's enforced, not requested.</p>
+  </div>
+</div>
+
+<p class="sub">Two agents is the default, not a requirement. A project can opt out
+(<code>--claude-only</code>) and keep the same document lifecycle and review discipline with a
+single agent doing both jobs.</p>
+
+<h2><span class="num">02</span>The loop</h2>
+<p>Everything below is one pass through this cycle. The important property is the approval gate
+sitting between <em>design</em> and <em>execution</em>: no issue exists, and therefore no code
+gets written, until a human has read the plan.</p>
+
+<figure class="fig">
+<div class="scroller">
+<svg viewBox="0 0 880 700" role="img" aria-label="The plan, execute, review loop from analysis document through issues, execution, review, and merge">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
+    </marker>
+  </defs>
+
+  <!-- lane labels -->
+  <text x="18" y="52"  class="cc">CLAUDE</text>
+  <text x="18" y="240" class="ch">HUMAN</text>
+  <text x="18" y="330" class="cc">CLAUDE</text>
+  <text x="18" y="428" class="cx">CODEX</text>
+  <text x="18" y="524" class="cc">CLAUDE</text>
+  <text x="18" y="620" class="ch">HUMAN</text>
+
+  <!-- 1 plan -->
+  <rect x="150" y="24" width="500" height="62" rx="9" class="d-claude"/>
+  <text x="172" y="50" class="t">Plan — write the analysis document</text>
+  <text x="172" y="70" class="ts">Security · Feature · Product Analysis, from docs/templates/</text>
+
+  <path d="M400,86 L400,116" class="ln" marker-end="url(#a1)"/>
+
+  <!-- 2 doc -->
+  <rect x="150" y="118" width="500" height="80" rx="9" class="d-box"/>
+  <text x="172" y="144" class="tm">docs/inprogress/&lt;doc&gt;.md</text>
+  <text x="172" y="166" class="ts">Part A: goal, current state, threat model, approach, what not to build</text>
+  <text x="172" y="184" class="ts">Part B: the implementation brief — ordered steps, DoD, verify commands (not code)</text>
+
+  <path d="M400,198 L400,228" class="ln" marker-end="url(#a1)"/>
+
+  <!-- 3 approval -->
+  <rect x="250" y="230" width="300" height="42" rx="21" class="d-human"/>
+  <text x="400" y="256" class="t" text-anchor="middle">Human approves the plan</text>
+
+  <path d="M400,272 L400,302" class="ln" marker-end="url(#a1)"/>
+
+  <!-- 4 issues -->
+  <rect x="150" y="304" width="500" height="62" rx="9" class="d-claude"/>
+  <text x="172" y="330" class="t">plan-to-issues</text>
+  <text x="172" y="350" class="ts">1 tracking issue + 1 sub-issue per independently-shippable step</text>
+
+  <path d="M400,366 L400,396" class="ln" marker-end="url(#a1)"/>
+
+  <!-- 5 execute -->
+  <rect x="150" y="398" width="500" height="80" rx="9" class="d-codex"/>
+  <text x="172" y="424" class="t">Execute the steps</text>
+  <text x="172" y="444" class="ts">One branch + one PR for the whole pass</text>
+  <text x="172" y="462" class="ts">One commit per step, closing its issue with “Fixes #N”</text>
+
+  <path d="M400,478 L400,508" class="ln" marker-end="url(#a1)"/>
+
+  <!-- 6 review -->
+  <rect x="150" y="510" width="500" height="62" rx="9" class="d-claude"/>
+  <text x="172" y="536" class="t">Review the execution</text>
+  <text x="172" y="556" class="ts">/code-review (or a written review doc) → findings → fixes → tick the tracker</text>
+
+  <!-- feedback loop right -->
+  <path d="M650,541 C 730,541 730,438 654,438" class="ln-d" marker-end="url(#a1)"/>
+  <text x="742" y="486" class="ts" text-anchor="start">findings</text>
+  <text x="742" y="502" class="ts" text-anchor="start">become fixes</text>
+
+  <path d="M400,572 L400,602" class="ln" marker-end="url(#a1)"/>
+
+  <!-- 7 merge -->
+  <rect x="150" y="604" width="500" height="42" rx="9" class="d-human"/>
+  <text x="172" y="630" class="t">Human merges the PR — merge auto-closes the issues</text>
+
+  <path d="M400,646 L400,668" class="ln" marker-end="url(#a1)"/>
+  <text x="400" y="686" class="tm" text-anchor="middle">docs/done/  ·  or docs/accepted_risks.md</text>
+</svg>
+</div>
+<figcaption>The loop is one-directional: document → issues → commits. Issue edits never sync
+back into the document.</figcaption>
+</figure>
+
+<div class="callout">
+  <div class="label">The one rule that keeps this honest</div>
+  <p>The document is the source of design intent; issues are disposable execution units. If the
+  plan changes, you change the document and regenerate the issues — never the reverse. Reverse
+  syncing is how a codebase ends up with no record of why anything was built.</p>
+</div>
+
+<h3>Not everything deserves a full pass</h3>
+<p>Four delivery lanes. Use the smallest one that still preserves the risk and evidence you need.</p>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Lane</th><th>Use when</th><th>Required artifact</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Fast Fix</strong></td><td>A bounded bug with an obvious approach</td><td>Issue or short brief, a regression test, one branch/PR</td></tr>
+    <tr><td><strong>Planned Change</strong></td><td>A feature, security work, or multi-step behavior change</td><td>Feature/Security doc, approved brief, one branch/PR per pass</td></tr>
+    <tr><td><strong>Decision</strong></td><td>A product or architecture choice, before implementation</td><td>Product Analysis; spin off a Planned Change if greenlit</td></tr>
+    <tr><td><strong>Emergency</strong></td><td>Production restoration can't wait for planning</td><td>Hotfix PR with evidence, then a retrospective doc</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="num">03</span>Documents, and where they live</h2>
+<p>Four document types, each with a template in <code>docs/templates/</code>. Copy one out —
+never edit a template in place.</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Type</th><th>What it's for</th><th>Carries a brief?</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Security</strong></td><td>A review or hardening pass. Severity-graded findings, each with <code>file:line</code> and a concrete fix.</td><td>Yes — inlined</td></tr>
+    <tr><td><strong>Feature</strong></td><td>Designing a change: goal, current state, approach, and explicitly what not to build.</td><td>Yes — inlined</td></tr>
+    <tr><td><strong>Product Analysis</strong></td><td>Exploratory architecture or product analysis. Options, trade-offs, a recommendation. A decision record.</td><td>No</td></tr>
+    <tr><td><strong>Review</strong></td><td>A post-execution architectural review with findings, evidence, and a verdict.</td><td>No</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A document moves through folders as its state changes. The folder <em>is</em> the status —
+there is no separate board to keep in sync.</p>
+
+<figure class="fig">
+<div class="scroller">
+<svg viewBox="0 0 860 300" role="img" aria-label="Document lifecycle from backlog to inprogress to done, with accepted risks as an alternate exit">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
+    </marker>
+  </defs>
+
+  <rect x="30" y="96" width="180" height="70" rx="9" class="d-box"/>
+  <text x="120" y="126" class="tm" text-anchor="middle">docs/backlog/</text>
+  <text x="120" y="146" class="ts" text-anchor="middle">identified, not started</text>
+
+  <path d="M212,131 L268,131" class="ln" marker-end="url(#a2)"/>
+
+  <rect x="270" y="86" width="200" height="90" rx="9" class="d-claude"/>
+  <text x="370" y="118" class="tm" text-anchor="middle">docs/inprogress/</text>
+  <text x="370" y="138" class="ts" text-anchor="middle">plan → execute → review</text>
+  <text x="370" y="156" class="ts" text-anchor="middle">the tracker is ticked here</text>
+
+  <path d="M472,110 L556,60" class="ln" marker-end="url(#a2)"/>
+  <path d="M472,152 L556,214" class="ln-d" marker-end="url(#a2)"/>
+
+  <rect x="560" y="20" width="270" height="76" rx="9" class="d-box"/>
+  <text x="580" y="48" class="tm">docs/done/</text>
+  <text x="580" y="68" class="tm">docs/done/security/</text>
+  <text x="580" y="86" class="ts">shipped and verified</text>
+
+  <rect x="560" y="186" width="270" height="76" rx="9" class="d-ghost"/>
+  <text x="580" y="214" class="tm">docs/accepted_risks.md</text>
+  <text x="580" y="234" class="ts">risk accepted or feature declined —</text>
+  <text x="580" y="250" class="ts">a decision, recorded, not forgotten</text>
+
+  <text x="120" y="212" class="ts" text-anchor="middle">work can start</text>
+  <text x="120" y="228" class="ts" text-anchor="middle">straight in the middle</text>
+  <path d="M120,190 C 120,180 150,178 200,150" class="ln-d" marker-end="url(#a2)"/>
+</svg>
+</div>
+<figcaption>Two legitimate exits. A document leaves <code>inprogress/</code> either because the
+work shipped, or because someone decided it shouldn't happen — and that decision gets written
+down too.</figcaption>
+</figure>
+
+<h3>Two conventions that make documents scannable</h3>
+<p>Every document opens with a <strong>TRIAGE header</strong> — type, status emoji, and one or
+two lines saying what's current versus historical. <code>scripts/docs-index.sh</code> derives
+the whole <code>docs/README.md</code> index from those headers, so the index can't rot by hand;
+<code>--check</code> makes staleness fail the gate.</p>
+<p>Every Security and Feature document also carries a <strong>tracker</strong> near the top —
+the burndown the executor ticks as commits land:</p>
+<pre><code>## Tracker
+- [x] SEC-1 Backup restore destroys QA data — fixed in a1b2c3d (#70)
+- [ ] SEC-2 KDM expiry only checks start — open (#72)</code></pre>
+
+<h2><span class="num">04</span>From an approved plan to issues</h2>
+<p>The implementation brief is already an ordered list of independently-shippable steps, so
+converting it into GitHub issues is mechanical. The <code>plan-to-issues</code> skill does it:
+one tracking issue for the pass, one sub-issue per step, each carrying that step's definition
+of done and the exact verification commands.</p>
+
+<figure class="fig">
+<div class="scroller">
+<svg viewBox="0 0 860 330" role="img" aria-label="An implementation brief expanding into a tracking issue with sub-issues, all landing on one branch and one pull request">
+  <defs>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
+    </marker>
+  </defs>
+
+  <rect x="20" y="90" width="190" height="130" rx="9" class="d-box"/>
+  <text x="40" y="118" class="t">Implementation</text>
+  <text x="40" y="136" class="t">brief (Part B)</text>
+  <text x="40" y="162" class="ts">Step 1 · Step 2 · Step 3</text>
+  <text x="40" y="182" class="ts">DoD + verify commands</text>
+  <text x="40" y="202" class="ts">approved by the human</text>
+
+  <path d="M212,155 L266,155" class="ln" marker-end="url(#a3)"/>
+  <text x="239" y="144" class="ts" text-anchor="middle">skill</text>
+
+  <rect x="270" y="34" width="220" height="46" rx="9" class="d-claude"/>
+  <text x="290" y="62" class="t">Tracking issue · label: plan</text>
+
+  <rect x="290" y="106" width="200" height="40" rx="8" class="d-box"/>
+  <text x="308" y="131" class="ts">#71 Step 1 — needs-execution</text>
+  <rect x="290" y="156" width="200" height="40" rx="8" class="d-box"/>
+  <text x="308" y="181" class="ts">#72 Step 2 — needs-execution</text>
+  <rect x="290" y="206" width="200" height="40" rx="8" class="d-box"/>
+  <text x="308" y="231" class="ts">#73 Step 3 — needs-execution</text>
+
+  <path d="M380,80 L380,104" class="ln" marker-end="url(#a3)"/>
+  <path d="M272,126 L272,226" class="ln" style="marker-end:none"/>
+
+  <path d="M492,126 C 540,126 540,150 566,150" class="ln" marker-end="url(#a3)"/>
+  <path d="M492,176 L566,176" class="ln" marker-end="url(#a3)"/>
+  <path d="M492,226 C 540,226 540,202 566,202" class="ln" marker-end="url(#a3)"/>
+
+  <rect x="570" y="96" width="270" height="110" rx="9" class="d-codex"/>
+  <text x="590" y="124" class="t">One branch, one PR</text>
+  <text x="590" y="146" class="ts">commit 1 → “Fixes #71”</text>
+  <text x="590" y="166" class="ts">commit 2 → “Fixes #72”</text>
+  <text x="590" y="186" class="ts">commit 3 → “Fixes #73”</text>
+
+  <path d="M705,206 L705,248" class="ln" marker-end="url(#a3)"/>
+  <rect x="570" y="250" width="270" height="44" rx="9" class="d-human"/>
+  <text x="590" y="277" class="t">Human merges → issues close</text>
+</svg>
+</div>
+<figcaption>Issues are the <em>tracking</em> unit; the pass is the <em>shipping</em> unit. A
+reviewer sees the complete arc of the change, not fragments merged out of order.</figcaption>
+</figure>
+
+<p>The labels encode the loop itself: <code>plan</code> on the tracker, then
+<code>needs-execution</code>, <code>needs-review</code>, <code>agent:codex</code>,
+<code>agent:claude</code>, and <code>sev:high|med|low|nit</code> for security findings.</p>
+
+<h2><span class="num">05</span>The Makefile is the only source of truth</h2>
+<p>This is the load-bearing piece that makes the rest stack-agnostic. Every command that
+builds, checks, or tests the project lives in one <code>Makefile</code>. Humans, both agents,
+the hooks, and CI all call the same five targets. Nothing hard-codes a raw command anywhere
+else — so "green locally" and "green in CI" cannot drift apart.</p>
+
+<figure class="fig">
+<div class="scroller">
+<svg viewBox="0 0 860 330" role="img" aria-label="Humans, agents, hooks and CI all calling the same five Makefile targets">
+  <defs>
+    <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
+    </marker>
+  </defs>
+
+  <rect x="30" y="20"  width="150" height="46" rx="9" class="d-human"/>
+  <text x="105" y="48" class="t" text-anchor="middle">Human</text>
+  <rect x="30" y="94"  width="150" height="46" rx="9" class="d-claude"/>
+  <text x="105" y="122" class="t" text-anchor="middle">Claude</text>
+  <rect x="30" y="168" width="150" height="46" rx="9" class="d-codex"/>
+  <text x="105" y="196" class="t" text-anchor="middle">Codex</text>
+  <rect x="30" y="242" width="150" height="46" rx="9" class="d-box"/>
+  <text x="105" y="264" class="t" text-anchor="middle">Hooks &amp; CI</text>
+  <text x="105" y="280" class="ts" text-anchor="middle">Stop gate · ci.yml</text>
+
+  <path d="M182,43  C 250,43  260,120 316,138" class="ln" marker-end="url(#a4)"/>
+  <path d="M182,117 C 250,117 260,140 316,150" class="ln" marker-end="url(#a4)"/>
+  <path d="M182,191 C 250,191 260,175 316,164" class="ln" marker-end="url(#a4)"/>
+  <path d="M182,265 C 250,265 260,200 316,176" class="ln" marker-end="url(#a4)"/>
+
+  <rect x="320" y="60" width="230" height="196" rx="10" class="d-box"/>
+  <text x="435" y="92" class="t" text-anchor="middle">Makefile</text>
+  <text x="435" y="110" class="ts" text-anchor="middle">the stack profile</text>
+  <line x1="344" y1="124" x2="526" y2="124" stroke="var(--faint)" stroke-width="1"/>
+  <text x="348" y="148" class="tm">make check</text>
+  <text x="348" y="172" class="tm">make test</text>
+  <text x="348" y="196" class="tm">make test-one F=…</text>
+  <text x="348" y="220" class="tm">make build</text>
+  <text x="348" y="244" class="tm">make run</text>
+
+  <path d="M552,158 L604,158" class="ln" marker-end="url(#a4)"/>
+
+  <rect x="608" y="60" width="230" height="196" rx="10" class="d-ghost"/>
+  <text x="628" y="92" class="t">Whatever the stack is</text>
+  <text x="628" y="118" class="ts">tsc · eslint · vitest</text>
+  <text x="628" y="140" class="ts">ruff · mypy · pytest</text>
+  <text x="628" y="162" class="ts">cargo clippy · cargo test</text>
+  <text x="628" y="184" class="ts">go vet · go test</text>
+  <text x="628" y="212" class="ts">Rendered from profiles/,</text>
+  <text x="628" y="230" class="ts">so the methodology above</text>
+  <text x="628" y="248" class="ts">never mentions a language.</text>
+</svg>
+</div>
+<figcaption>Change languages and only the Makefile recipes change. If a CI step needs a command
+that isn't a target, that's a signal the Makefile is incomplete — not a reason to grow logic in
+YAML.</figcaption>
+</figure>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Target</th><th>Contract</th></tr></thead>
+  <tbody>
+    <tr><td><code>make check</code></td><td>The fast gate: type-check + lint + harness sanity checks. Cheap enough to run constantly — and the Stop hook does.</td></tr>
+    <tr><td><code>make test</code></td><td>The full suite. Must fail loudly when a required tool is missing rather than skipping silently.</td></tr>
+    <tr><td><code>make test-one F=…</code></td><td>One targeted test, so an agent can iterate on a step without paying for the suite.</td></tr>
+    <tr><td><code>make build</code></td><td>The production build, with dummy CI env values so it never needs real secrets.</td></tr>
+    <tr><td><code>make run</code></td><td>Start the app locally — what <code>/run</code> and <code>/verify</code> drive to confirm a fix actually behaves.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="num">06</span>Guardrails that don't depend on good intentions</h2>
+<p>Every rule above is also a hook. An agent that forgets the contract gets stopped by the
+harness rather than caught in review — which matters most for the rules whose violation is
+expensive to undo.</p>
+
+<figure class="fig">
+<div class="scroller">
+<svg viewBox="0 0 860 380" role="img" aria-label="Where each hook fires during an agent turn: pre-tool-use blocks on git commands, and the stop hook runs make check">
+  <defs>
+    <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="30" class="tl">An agent turn</text>
+  <line x1="20" y1="46" x2="840" y2="46" stroke="var(--faint)" stroke-width="1"/>
+
+  <rect x="20" y="66" width="150" height="52" rx="9" class="d-box"/>
+  <text x="95" y="90" class="t" text-anchor="middle">Agent edits</text>
+  <text x="95" y="108" class="ts" text-anchor="middle">files change</text>
+
+  <path d="M172,92 L226,92" class="ln" marker-end="url(#a5)"/>
+
+  <rect x="230" y="66" width="180" height="52" rx="9" class="d-box"/>
+  <text x="320" y="90" class="t" text-anchor="middle">Runs a Bash command</text>
+  <text x="320" y="108" class="ts" text-anchor="middle">git add / git commit / git push</text>
+
+  <path d="M320,120 L320,152" class="ln" marker-end="url(#a5)"/>
+
+  <rect x="180" y="154" width="470" height="146" rx="10" class="d-claude"/>
+  <text x="200" y="180" class="tl">PreToolUse(Bash) — three blocking hooks</text>
+  <text x="200" y="208" class="tm">block-git-add-all.sh</text>
+  <text x="200" y="226" class="ts">rejects <tspan class="tm">git add -A</tspan> / <tspan class="tm">.</tspan> / <tspan class="tm">--all</tspan> — stage files by name, always</text>
+  <text x="200" y="252" class="tm">block-push.sh</text>
+  <text x="200" y="270" class="ts">rejects <tspan class="tm">git push</tspan> and <tspan class="tm">gh pr merge</tspan> — the human owns those</text>
+  <text x="200" y="292" class="tm">scan-secrets.sh</text>
+
+  <path d="M654,227 L716,227" class="ln" marker-end="url(#a5)"/>
+  <rect x="720" y="196" width="130" height="62" rx="9" class="d-ghost"/>
+  <text x="785" y="220" class="ts" text-anchor="middle">gitleaks</text>
+  <text x="785" y="238" class="ts" text-anchor="middle">+ local patterns</text>
+  <text x="785" y="254" class="ts" text-anchor="middle">both, always</text>
+
+  <path d="M415,300 C 415,326 300,320 250,336" class="ln" marker-end="url(#a5)"/>
+
+  <rect x="20" y="322" width="420" height="46" rx="9" class="d-box"/>
+  <text x="40" y="350" class="t">Agent tries to end the turn</text>
+
+  <path d="M442,345 L494,345" class="ln" marker-end="url(#a5)"/>
+
+  <rect x="498" y="314" width="352" height="62" rx="9" class="d-claude"/>
+  <text x="518" y="338" class="tl">Stop / SubagentStop hook</text>
+  <text x="518" y="362" class="tm">make check</text>
+  <text x="640" y="362" class="ts">— a red gate blocks the turn from ending</text>
+</svg>
+</div>
+<figcaption>The Stop hook is skipped when the working tree is clean, so read-only turns pay
+nothing. It blocks once, then warns and allows — a gate that loops forever is a gate people
+disable.</figcaption>
+</figure>
+
+<div class="callout">
+  <div class="label">Why secret scanning is a commit hook, not a CI job</div>
+  <p>CI is one step too late. A secret that reaches a commit has to be <em>rotated</em> —
+  rewriting history does not un-leak it. The hook fails at the last moment the fix is still
+  free.</p>
+  <p>It runs <strong>two scanners, always both</strong>. Treating the local pattern set as a
+  fallback made the hook weaker on machines that <em>had</em> gitleaks, because its default
+  config allowlists documented sample credentials — a staged AWS example key came back clean
+  and nothing else ran. Any gate whose strength depends on which tools happen to be installed
+  will eventually be green for the wrong reason.</p>
+</div>
+
+<h3>The supporting scripts</h3>
+<div class="grid">
+  <div class="card"><h4><span class="mono">docs-index.sh</span></h4><p>Regenerates the docs index from TRIAGE headers. <code>--check</code> in CI so it can't go stale.</p></div>
+  <div class="card"><h4><span class="mono">lifecycle-status.sh</span></h4><p>Derives whether a tracker is still ACTIVE, READY to close, or BLOCKED on approval, CI evidence, or review.</p></div>
+  <div class="card"><h4><span class="mono">check-action-pins.sh</span></h4><p>Fails on unpinned GitHub Actions; warns when pins haven't been re-verified in months.</p></div>
+  <div class="card"><h4><span class="mono">doctor.sh</span></h4><p>The adoption checklist: required files and tools, hook wiring, real Make targets, CI posture.</p></div>
+  <div class="card"><h4><span class="mono">check-payload-manifest.sh</span></h4><p>Rejects any adapter, template, or profile living outside the canonical export manifest.</p></div>
+  <div class="card"><h4><span class="mono">self-test.sh</span></h4><p>Offline regression suite for the scaffold's own invariants — export behavior and hook behavior.</p></div>
+</div>
+
+<h2><span class="num">07</span>The commit contract</h2>
+<p>Identity is enforced by wrapper scripts, each carrying its own SSH signing key:
+<code>git-claude</code> for the planner/reviewer, <code>git-codex</code> for the executor. The
+<code>Co-Authored-By</code> trailer is appended by the wrapper, so no one hand-maintains a model
+name that will go stale.</p>
+<ul>
+  <li><strong>Stage files by name.</strong> Never <code>git add -A</code>.</li>
+  <li><strong>One logical commit per step.</strong> Don't bundle; don't split without reason.</li>
+  <li><strong>A verbose, why-first body.</strong> Name the risk, the approach, the blast radius.</li>
+  <li><strong>Reference the issue</strong> with <code>Fixes #N</code>.</li>
+  <li><strong>Never push.</strong></li>
+</ul>
+<pre><code>Bind session and exchange JWTs to the tenant schema
+
+Signed payloads omitted any tenant identifier, so with a shared secret a
+cookie from tenant A verified at tenant B. Add `schema` to every signed
+payload and reject mismatches in requireAuth. Legacy missing-claim cookies
+are treated as the default tenant for one release to ease rollout.
+
+Fixes #73</code></pre>
+<p class="sub">Writing that body is not ceremony — it's the review you give yourself. Half the
+problems in a change surface while explaining it.</p>
+
+<h2><span class="num">08</span>What CI looks like</h2>
+<p>Two workflows, because they carry two different risk postures. <code>ci.yml</code> runs on
+pull requests and cancels superseded runs — a stale run is waste. <code>deploy.yml</code> runs
+on pushes to release branches and never cancels — finishing a deploy beats half-deploying.</p>
+
+<figure class="fig">
+<div class="scroller">
+<svg viewBox="0 0 860 320" role="img" aria-label="CI job graph: a path-filter job gating per-area jobs, an unfiltered secrets scan, and a single ci-gate required check">
+  <defs>
+    <marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
+    </marker>
+  </defs>
+
+  <rect x="20" y="112" width="150" height="56" rx="9" class="d-box"/>
+  <text x="95" y="138" class="t" text-anchor="middle">changes</text>
+  <text x="95" y="156" class="ts" text-anchor="middle">path filters</text>
+
+  <path d="M172,128 C 220,128 230,52 276,52" class="ln" marker-end="url(#a6)"/>
+  <path d="M172,140 C 220,140 230,124 276,124" class="ln" marker-end="url(#a6)"/>
+  <path d="M172,152 C 220,152 230,196 276,196" class="ln" marker-end="url(#a6)"/>
+
+  <rect x="280" y="24" width="230" height="56" rx="9" class="d-box"/>
+  <text x="300" y="48" class="t">app checks</text>
+  <text x="300" y="68" class="ts">install from lockfile → audit → typecheck → lint → test → build</text>
+
+  <rect x="280" y="96" width="230" height="56" rx="9" class="d-box"/>
+  <text x="300" y="120" class="t">compose / infra syntax</text>
+  <text x="300" y="140" class="ts">if changes.docker</text>
+
+  <rect x="280" y="168" width="230" height="56" rx="9" class="d-box"/>
+  <text x="300" y="192" class="t">&lt;area N&gt;</text>
+  <text x="300" y="212" class="ts">one job per independently-testable area</text>
+
+  <rect x="280" y="240" width="230" height="56" rx="9" class="d-claude"/>
+  <text x="300" y="264" class="t">secrets-scan</text>
+  <text x="300" y="284" class="ts">never path-filtered — always runs</text>
+
+  <path d="M512,52  C 570,52  580,140 626,152" class="ln" marker-end="url(#a6)"/>
+  <path d="M512,124 C 570,124 580,148 626,158" class="ln" marker-end="url(#a6)"/>
+  <path d="M512,196 C 570,196 580,168 626,166" class="ln" marker-end="url(#a6)"/>
+  <path d="M512,268 C 570,268 580,190 626,176" class="ln" marker-end="url(#a6)"/>
+
+  <rect x="630" y="112" width="210" height="90" rx="9" class="d-human"/>
+  <text x="735" y="140" class="t" text-anchor="middle">ci-gate</text>
+  <text x="735" y="160" class="ts" text-anchor="middle">needs: everything · if: always()</text>
+  <text x="735" y="180" class="ts" text-anchor="middle">skipped = pass</text>
+  <text x="735" y="196" class="ts" text-anchor="middle">cancelled / failure = fail</text>
+
+  <text x="735" y="232" class="tl" text-anchor="middle">the one required check</text>
+  <text x="735" y="252" class="ts" text-anchor="middle">in branch protection</text>
+</svg>
+</div>
+<figcaption>The gate job exists because path filtering and required checks conflict: a skipped
+job never reports, so naming per-area jobs as required checks would block every PR that
+legitimately skips one.</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Pin everything.</strong> Third-party actions by full commit SHA with a
+  <code># vX.Y.Z</code> comment; runners by version, never <code>ubuntu-latest</code>. A tag is
+  mutable — a SHA is the only pin that resists a compromised action.</li>
+  <li><strong>Steps stay thin.</strong> Checkout, set up the runtime, call <code>make</code>.
+  Inlined command sequences are a second source of truth that will drift.</li>
+  <li><strong>The workflow file is its own trigger.</strong> Include it in every path filter,
+  so editing CI re-runs what CI gates.</li>
+  <li><strong>Ship the runbook with the workflow</strong> — a trailing comment listing one-time
+  server setup and every required secret. That operational knowledge dies otherwise.</li>
+</ul>
+
+<h2><span class="num">09</span>Adopting it</h2>
+<p>One command installs the harness into a target project. It copies the manifest-declared
+payload, fills the project name, preserves any differing existing file as
+<code>&lt;file&gt;.agentic-new</code> instead of overwriting it, applies a stack profile, stamps
+the scaffold version, and prints the doctor report.</p>
+<pre><code>scripts/init.sh /path/to/target-project --name my-project --stack node --yes
+
+# then, inside the target:
+scripts/doctor.sh --check
+make check</code></pre>
+<p>Stack profiles are <code>generic</code>, <code>node</code>, <code>python</code>,
+<code>go</code>, and <code>rust</code>; detection proposes one from the project's manifests but
+an explicit flag always wins. CI templates export <strong>inert</strong> — adoption never
+activates a workflow behind you, least of all a deploy.</p>
+<p>Afterwards, the two things worth doing by hand are filling in <code>CLAUDE.md</code>'s
+<strong>Architecture</strong> and <strong>Gotchas</strong> sections as you learn the codebase.
+Those are what orient an agent in the first thirty seconds of a session, and no scaffold can
+generate them for you.</p>
+
+<h2><span class="num">10</span>The standards underneath</h2>
+<p>Process is only half of it. These are the engineering rules the loop assumes, ordered by
+when they apply.</p>
+
+<h3>Automate what a human should never review</h3>
+<p>Anything a machine can catch must not cost review attention: a formatter and linter that
+fail the build, strict static typing from day one, dependency scanning blocking on high
+severity, and secret scanning at the commit boundary. Wire each into <code>make check</code> or
+<code>make test</code> — never into CI alone, or the feedback arrives after the context is
+gone.</p>
+<div class="callout">
+  <div class="label">The ratchet</div>
+  <p>When a reviewer catches the same <em>class</em> of issue twice, it stops being a review
+  comment and becomes a lint rule, a type, or a test. A review that repeats itself is a missing
+  automation.</p>
+</div>
+
+<h3>Before any code</h3>
+<ul>
+  <li><strong>Write the interface first.</strong> Signatures, endpoint contracts, data shapes.
+  Most architecture problems are visible here, where they cost nothing, and invisible once
+  there's code attached to them.</li>
+  <li><strong>Threat-model in one paragraph.</strong> Who is untrusted, what data matters, what's
+  the worst an attacker could do. Ten minutes, mandatory for anything touching auth, money, or
+  user data.</li>
+  <li><strong>Decide the failure behavior up front</strong> for every external call — timeout,
+  malformed response, partial success. Decided during coding, these become guesses no one
+  revisits.</li>
+</ul>
+
+<h3>While coding</h3>
+<ul>
+  <li><strong>Validate at the boundary, once.</strong> Parse external input into a validated type
+  at the edge; interior code then trusts its inputs. Scattered defensive checks never add up to
+  a guarantee and hide where the real contract is.</li>
+  <li><strong>Never build strings that get interpreted.</strong> Parameterized queries, argument
+  arrays for subprocesses. This removes most of the injection category by construction rather
+  than by vigilance.</li>
+  <li><strong>Deny by default, at a chokepoint.</strong> Per-handler authorization means you
+  will eventually miss one, and the miss is silent.</li>
+  <li><strong>No unbounded anything.</strong> Every query has a limit, every loop over external
+  data a cap, every outbound request a timeout.</li>
+  <li><strong>Make illegal states unrepresentable</strong> where the language allows it. A type
+  that cannot hold the bad value needs no runtime check and no test.</li>
+</ul>
+
+<h3>Verifying and reviewing</h3>
+<ul>
+  <li><strong>Test the failure path first.</strong> Everyone tests the happy path; the bugs are
+  in the other one.</li>
+  <li><strong>Every bug fix starts with a failing test</strong> that reproduces it — it forces
+  understanding the cause instead of pattern-matching a change that makes the symptom go
+  away.</li>
+  <li><strong>Test behavior, not implementation.</strong> If a behavior-preserving refactor
+  breaks the tests, the tests were asserting the wrong thing.</li>
+  <li><strong>Small diffs.</strong> A 200-line PR gets a real review; a 2000-line one gets a
+  rubber stamp. This is why the loop insists on one issue and one commit per step.</li>
+</ul>
+
+<footer>
+  <p>This page summarizes <span class="mono">METHODOLOGY.md</span>, <span class="mono">CLAUDE.md</span>,
+  <span class="mono">AGENTS.md</span>, and <span class="mono">ADOPTION.md</span> in the
+  agentic-flow repository. Those files are the source of truth; if this page and they disagree,
+  they win.</p>
+</footer>
+
+</div>
+</body>
+</html>
