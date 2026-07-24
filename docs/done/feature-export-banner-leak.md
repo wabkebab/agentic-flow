@@ -1,13 +1,14 @@
 <!-- TRIAGE (first pass · 2026-07-24) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > `export.sh` ships a maintainer-only banner into every adopted project's `CLAUDE.md`,
 > `AGENTS.md`, and `Makefile`. Found while adopting the scaffold into `collector`; three
-> known adopters already carry it. Approved 2026-07-24; tracked in #32.
+> known adopters already carry it. Approved 2026-07-24; merged via PR #36 on 2026-07-24;
+> tracking issue #32 closed.
 
 # Feature — Stop exporting the harness-template maintainer banner
 
 ## Tracker
-- [ ] F-1 Move the maintainer note out of the exported harness templates, with a regression assertion — open (#33)
+- [x] F-1 Move the maintainer note out of the exported harness templates, with a regression assertion — fixed in 6d5f330 (#33)
 
 ---
 
@@ -244,9 +245,10 @@ exported payload; `make check` and `make test` green.
 
 ## Status / Implementation status
 
-- **Tracking issue:** [https://github.com/wabkebab/agentic-flow/issues/32](https://github.com/wabkebab/agentic-flow/issues/32).
+- **Tracking issue:** [#32](https://github.com/wabkebab/agentic-flow/issues/32) — sub-issue
+  F-1 #33. Closed 2026-07-24.
 - **Approval:** wabkebab approved on 2026-07-24 via plan-to-issues --apply.
-- **Verification evidence:** pending execution.
-- **Review verdict:** pending.
-- Step not yet started. The executor closes it via a PR with `Fixes #N`, records the commit SHA
-  here, and ticks F-1 in the Tracker above.
+- **Verification evidence:** PR #36, merged 2026-07-24; `make check`/`make test` green.
+- **Review verdict:** approved, after two rounds of review findings fixed in 9f47044,
+  d529ef1, and fb9d1a1 (content-guard coverage gap, broadened match, redundant assertion).
+- F-1 implemented in 6d5f330, merged via PR #36 on 2026-07-24.

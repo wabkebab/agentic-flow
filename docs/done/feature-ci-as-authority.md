@@ -1,9 +1,10 @@
 <!-- TRIAGE (first pass · 2026-07-24) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > Move the authority for "green" and "approved" from something an agent asserts to something
 > the repository enforces: split doctor's portable checks from its workstation checks,
 > activate CI on this repo, stamp approval as an event, and derive verification evidence from
-> a CI run conclusion. Completes ROADMAP Tier 2 (2.6, 2.4-remainder, 2.1 rung 2, 2.7).
+> a CI run conclusion. Completes ROADMAP Tier 2 (2.6, 2.4-remainder, 2.1 rung 2, 2.7). All
+> five steps merged via PR #31 on 2026-07-24; tracking issue #21 closed.
 
 # Feature — CI as the authority for "green"
 
@@ -625,10 +626,9 @@ pin checker still passes.
 - **Approval:** user approved on 2026-07-24; issues created via `plan-to-issues --apply`
   (the approval event, METHODOLOGY §6). Hand-written because `--approved-by` does not exist
   yet — it is **F-3 of this very plan**. When F-3 lands, this line becomes machine-written.
-- **Verification evidence:** pending until execution.
-- **Review verdict:** pending.
+- **Verification evidence:** PR #31, merged 2026-07-24; `make check`/`make test` green.
+- **Review verdict:** approved.
 - **Execution commits:** F-1 `f14069a`; F-2 `cef93b8`; F-3 `b13a5d9`; F-4 `82a5265`;
-  F-5 this commit.
-- F-1 through F-5 implemented locally on `feature-ci-as-authority-f1`.
-  Executor closes each step via a PR with `Fixes #N`, records the commit SHA per step here,
-  and ticks the matching F-N box in the Tracker above.
+  F-5 `7f91faa`.
+- F-1 through F-5 implemented on `feature-ci-as-authority-f1`, merged via PR #31 on
+  2026-07-24. Tracking issue #21 closed.

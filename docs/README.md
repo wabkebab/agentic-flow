@@ -51,9 +51,9 @@ TRIAGE header. Don't edit between the markers by hand.
 <!-- BEGIN: generated index — do not edit by hand (scripts/docs-index.sh) -->
 | Doc | Type | Status | Stage |
 |-----|------|--------|-------|
+| feature-ci-as-authority | Feature | ✅ Done | done |
+| feature-export-banner-leak | Feature | ✅ Done | done |
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-init-and-template-split | Feature | ✅ Done | done |
-| feature-ci-as-authority | Feature | 🚧 In progress | inprogress |
-| feature-export-banner-leak | Feature | 🚧 In progress | inprogress |
 | feature-opencode-reviewer-role | Feature | 🚧 In progress | inprogress |
 <!-- END: generated index -->
