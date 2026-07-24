@@ -235,9 +235,21 @@ requiring the target runtime when only rendering.
 - **Approval:** user approved the implementation on 2026-07-24.
 - **Tracking issue:** [#16](https://github.com/wabkebab/agentic-flow/issues/16) —
   F-1 #9 · F-2 #10 · F-3 #11 · F-4 #12 · F-5 #13 · F-6 #14 · F-7 #15.
-- **Verification evidence:** local commands recorded in each signed execution commit;
-  final full-suite evidence pending below.
-- **Review verdict:** pending.
+- **Verification evidence:** https://github.com/wabkebab/agentic-flow/issues/16#issuecomment-5068303985
+  — reviewer re-ran every DoD against `3becf9a`: `make check`, `make test` (shellcheck
+  0.11.0), `doctor.sh --check` (0 failed), 4× concurrent `self-test.sh` with a clean tree,
+  and a fresh `init.sh` target passing its own `make check` and `doctor --check`. Each of
+  the six source findings was re-probed rather than read: Codex surfaces export, merge
+  candidates survive re-export, the installed version holds while merges are pending,
+  `init.sh`/`export.sh` stay source-only, and the Bash 3.2 empty-label crash exits 0 on
+  the real 3.2.57 runtime.
+- **Review verdict:** approved by Claude (reviewer role) on 2026-07-24; steps #9–#15 closed
+  with per-step evidence. Two latent defects found and filed as Fast Fix issues rather than
+  reopening this plan: source-only *directory* entries leak through `export.sh:is_excluded`
+  (exact match, not prefix), and `check-payload-manifest.sh` enumerates known adapter areas
+  so a brand-new adapter directory escapes the guard. Neither affects the shipped payload
+  today — every current source-only entry is a file and no new adapter exists.
 - **Execution commits:** F-1 `9f9aad9`, `47a6039` · F-2 `451a8e8` · F-3 `9049a93` ·
   F-4 `9eda324` · F-5 `202b099` · F-6 `5f1484e` · F-7 `375957d`.
-- F-1 through F-7 implemented and verified locally; independent review remains.
+- F-1 through F-7 implemented, verified, and independently reviewed. Eligible to move to
+  `docs/done/` once this branch merges.
