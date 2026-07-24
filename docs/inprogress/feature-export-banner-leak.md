@@ -1,13 +1,13 @@
 <!-- TRIAGE (first pass · 2026-07-24) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > `export.sh` ships a maintainer-only banner into every adopted project's `CLAUDE.md`,
 > `AGENTS.md`, and `Makefile`. Found while adopting the scaffold into `collector`; three
-> known adopters already carry it. Awaiting approval to execute.
+> known adopters already carry it. Approved 2026-07-24; tracked in #32.
 
 # Feature — Stop exporting the harness-template maintainer banner
 
 ## Tracker
-- [ ] F-1 Move the maintainer note out of the exported harness templates, with a regression assertion — open
+- [ ] F-1 Move the maintainer note out of the exported harness templates, with a regression assertion — open (#33)
 
 ---
 
@@ -244,8 +244,8 @@ exported payload; `make check` and `make test` green.
 
 ## Status / Implementation status
 
-- **Tracking issue:** _not yet created_ — run the `plan-to-issues` skill once this is approved.
-- **Approval:** pending.
+- **Tracking issue:** [https://github.com/wabkebab/agentic-flow/issues/32](https://github.com/wabkebab/agentic-flow/issues/32).
+- **Approval:** wabkebab approved on 2026-07-24 via plan-to-issues --apply.
 - **Verification evidence:** pending execution.
 - **Review verdict:** pending.
 - Step not yet started. The executor closes it via a PR with `Fixes #N`, records the commit SHA
