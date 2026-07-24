@@ -7,6 +7,27 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+SELF_TEST_MODE=fast
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fast)
+      SELF_TEST_MODE=fast
+      shift
+      ;;
+    --full)
+      SELF_TEST_MODE=full
+      shift
+      ;;
+    -h|--help)
+      echo "usage: $0 [--fast|--full]" >&2
+      exit 0
+      ;;
+    *)
+      echo "unknown flag: $1" >&2
+      exit 2
+      ;;
+  esac
+done
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
@@ -98,8 +119,8 @@ must_allow() { # <hook> <command>
   printf '{"tool_input":{"command":"%s"}}' "$2" | "$1" >/dev/null 2>&1 || fail "hook blocked: $2"
 }
 
-# --- export invariants (scaffold repo only) ---------------------------------------------
-if [ -f "$ROOT/scripts/export.sh" ]; then
+# --- export invariants (scaffold repo only, full suite only) -----------------------------
+if [ -f "$ROOT/scripts/export.sh" ] && [ "$SELF_TEST_MODE" = full ]; then
   # Exercise mutations against an isolated copy of the current checkout. The old test
   # appended sentinels to the live CLAUDE.md and docs/inprogress, then restored them in a
   # trap. Two concurrent checks could back up each other's temporary state and leave the
@@ -107,6 +128,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   SOURCE_FIXTURE="$TMP/source"
   mkdir -p "$SOURCE_FIXTURE"
   while IFS= read -r -d '' tracked; do
+    [ -e "$ROOT/$tracked" ] || continue
     mkdir -p "$SOURCE_FIXTURE/$(dirname "$tracked")"
     cp -p "$ROOT/$tracked" "$SOURCE_FIXTURE/$tracked"
   done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
@@ -484,6 +506,10 @@ for mf in "$ROOT/Makefile" "$ROOT/templates/harness/Makefile"; do
   if grep -qi "shellcheck not found; skipping" "$mf"; then
     fail "$mf skips shellcheck when absent instead of failing"
   fi
+  grep -q "scripts/self-test.sh --fast" "$mf" \
+    || fail "$mf does not run fast self-test mode in 'make check'"
+  grep -q "scripts/self-test.sh --full" "$mf" \
+    || fail "$mf does not run full self-test mode in 'make test'"
 done
 
 # --- action-pin guard (run everywhere) ---------------------------------------------------
