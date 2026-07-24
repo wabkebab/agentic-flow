@@ -77,8 +77,6 @@ assert_active_ci_workflow() { # <workflow.yml>
   grep -q '^permissions:' "$workflow" || fail "$workflow lacks top-level permissions"
   grep -q '^jobs:' "$workflow" || fail "$workflow lacks top-level jobs"
   grep -q '<[^>]*>' "$workflow" && fail "$workflow contains angle-bracket placeholders"
-  grep -q 'needs: \[changes, secrets-scan, app, docs\]' "$workflow" \
-    || fail "$workflow ci-gate needs list drifted"
   assert_ci_gate_needs_asserted "$workflow"
 }
 
@@ -97,6 +95,26 @@ assert_ci_gate_needs_asserted() { # <workflow.yml>
     }
   ' "$workflow")
   [ -n "$needs_csv" ] || fail "$workflow ci-gate needs list was not found"
+
+  # ci-gate must depend on every OTHER top-level job — derived from the workflow's actual
+  # job set rather than a hand-maintained literal string. A hardcoded list only catches a
+  # job being ADDED without updating it (and only by accident, since editing the needs:
+  # array and forgetting this string are the same slip); it says nothing if a job is silently
+  # DROPPED from needs, which is the more dangerous direction — that's exactly how #30
+  # happened; nothing here should reproduce a milder version of the same drift one line up.
+  other_jobs=$(awk '
+    /^jobs:/ { in_jobs=1; next }
+    in_jobs && /^[A-Za-z]/ { in_jobs=0 }
+    in_jobs && /^  [A-Za-z0-9_-]+:/ {
+      line=$0
+      sub(/^  /, "", line)
+      sub(/:.*/, "", line)
+      if (line != "ci-gate") print line
+    }
+  ' "$workflow" | sort | tr '\n' ',' | sed 's/,$//')
+  needs_sorted=$(printf '%s\n' "$needs_csv" | tr ',' '\n' | sort | tr '\n' ',' | sed 's/,$//')
+  [ "$needs_sorted" = "$other_jobs" ] \
+    || fail "$workflow ci-gate needs list ($needs_csv) does not match its actual job set ($other_jobs)"
 
   IFS=, read -r -a ci_gate_needs <<< "$needs_csv"
   for job in "${ci_gate_needs[@]}"; do
