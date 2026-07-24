@@ -73,7 +73,8 @@ path_without_tools() { # <output-dir> <tool>...
   for path_dir in $PATH; do
     [ -d "$path_dir" ] || continue
     for candidate in "$path_dir"/*; do
-      [ -f "$candidate" ] && [ -x "$candidate" ] || continue
+      [ -f "$candidate" ] || continue
+      [ -x "$candidate" ] || continue
       name=${candidate##*/}
       skip=false
       for blocked in "$@"; do
@@ -170,10 +171,23 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     && fail "doctor accepted an unresolved scaffold merge candidate"
   rm -f "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
 
-  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) > "$TMP/doctor-default.out"
-  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope all) > "$TMP/doctor-scope-all.out"
+  # Bare (unguarded) calls here would let doctor.sh's own exit status kill this whole
+  # script under `set -e` the moment an optional env tool (gh/gitleaks/git-claude/
+  # git-codex) is missing from PATH — which is exactly true of this project's own CI
+  # runner by design (see the "app" job's gotchas: it deliberately never installs
+  # gitleaks/git-claude/git-codex). The point of this assertion is that `--scope all`
+  # and the default agree with EACH OTHER, not that either happens to exit 0 on this
+  # machine, so capture both outcomes explicitly instead of letting either escape.
+  default_status=0
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) \
+    > "$TMP/doctor-default.out" 2>&1 || default_status=$?
+  scope_all_status=0
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope all) \
+    > "$TMP/doctor-scope-all.out" 2>&1 || scope_all_status=$?
   cmp -s "$TMP/doctor-default.out" "$TMP/doctor-scope-all.out" \
     || fail "doctor --scope all output differed from the default all-scope run"
+  [ "$default_status" -eq "$scope_all_status" ] \
+    || fail "doctor --scope all exit status ($scope_all_status) differed from the default ($default_status)"
 
   STRIPPED_BIN=$(path_without_tools "$TMP/stripped-bin" gitleaks git-claude git-codex gh shellcheck)
   STRIPPED_PATH="$STRIPPED_BIN"
