@@ -10,7 +10,8 @@
   implemented on `codex/harness-integrity-and-lifecycle` (#9)
 - [x] F-2 Make scaffold regression tests hermetic and parallel-safe —
   implemented on `codex/harness-integrity-and-lifecycle` (#10)
-- [ ] F-3 Preserve merge candidates and represent installed versions truthfully — open
+- [x] F-3 Preserve merge candidates and represent installed versions truthfully —
+  implemented on `codex/harness-integrity-and-lifecycle` (#11)
 - [ ] F-4 Separate source-only commands and strengthen adoption diagnostics — open
 - [ ] F-5 Make plan-to-issues idempotent, resumable, and Bash 3.2-safe — open
 - [ ] F-6 Clarify workflow lanes and make lifecycle qualification derivable — open
@@ -230,4 +231,4 @@ requiring the target runtime when only rendering.
 - **Approval:** user approved the implementation on 2026-07-24.
 - **Tracking issue:** [#16](https://github.com/wabkebab/agentic-flow/issues/16) —
   F-1 #9 · F-2 #10 · F-3 #11 · F-4 #12 · F-5 #13 · F-6 #14 · F-7 #15.
-- F-1 and F-2 implemented and verified; remaining steps proceed in tracker order.
+- F-1 through F-3 implemented and verified; remaining steps proceed in tracker order.

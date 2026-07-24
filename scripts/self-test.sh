@@ -119,9 +119,26 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || { cat "$TMP/target-check.log" >&2; fail "make check failed in a fresh export"; }
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
+  # Simulate an older installed scaffold so a conflict can prove that invoking a newer
+  # exporter does not falsely promote the active version.
+  printf '%s\n' older-source > "$TARGET/.agentic-flow-version"
   "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
   assert_file "$TARGET/CLAUDE.md.agentic-new"
   grep -q "# local edits" "$TARGET/CLAUDE.md" || fail "export clobbered an existing file"
+  grep -qx older-source "$TARGET/.agentic-flow-version" \
+    || fail "export advanced installed version while merge conflicts remained"
+  grep -qx "$expected_version" "$TARGET/.agentic-flow-candidate-version" \
+    || fail "export did not record the pending candidate version"
+
+  cp "$TARGET/CLAUDE.md.agentic-new" "$TMP/first-candidate"
+  printf '%s\n' "# second candidate content" >> "$SOURCE_FIXTURE/templates/harness/CLAUDE.md"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
+  cmp -s "$TMP/first-candidate" "$TARGET/CLAUDE.md.agentic-new" \
+    || fail "repeated export overwrote an existing merge candidate"
+  second_candidate="$TARGET/CLAUDE.md.agentic-new.$expected_version"
+  assert_file "$second_candidate"
+  grep -q "# second candidate content" "$second_candidate" \
+    || fail "versioned merge candidate does not contain the new source content"
 
   (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >"$TMP/doctor.log" 2>&1 \
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }

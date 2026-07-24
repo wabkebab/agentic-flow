@@ -118,7 +118,8 @@ echo "  to:   $DST"
 echo "  mode: $([ "$FORCE" = true ] && echo FORCE-overwrite || echo non-destructive)$($DRY && echo ' (dry-run)')"
 echo
 
-created=0; overwritten=0; merge=0; same=0
+version=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
+created=0; overwritten=0; merge=0; same=0; candidate_created=0; candidate_reused=0
 i=0
 while [ "$i" -lt "${#FILES[@]}" ]; do
   rel="${FILES[$i]}"
@@ -135,8 +136,27 @@ while [ "$i" -lt "${#FILES[@]}" ]; do
       $DRY || { mkdir -p "$(dirname "$d")"; cp -p "$s" "$d"; }
       echo "  overwrite   $dest"; overwritten=$((overwritten + 1))
     else
-      $DRY || cp -p "$s" "$d.agentic-new"
-      echo "  exists →    $dest.agentic-new   (differs — merge by hand)"; merge=$((merge + 1))
+      candidate="$d.agentic-new"
+      if [ -e "$candidate" ] && ! cmp -s "$s" "$candidate"; then
+        candidate="$d.agentic-new.$version"
+      fi
+      if [ -e "$candidate" ] && ! cmp -s "$s" "$candidate"; then
+        content_id=$(git hash-object "$s" 2>/dev/null | cut -c1-12)
+        [ -n "$content_id" ] || content_id=$(cksum "$s" | awk '{print $1}')
+        candidate="$d.agentic-new.$version.$content_id"
+      fi
+      if [ -e "$candidate" ]; then
+        cmp -s "$s" "$candidate" \
+          || die "refusing to overwrite occupied merge candidate: ${candidate#"$DST"/}"
+        candidate_reused=$((candidate_reused + 1))
+        candidate_action="pending"
+      else
+        $DRY || { mkdir -p "$(dirname "$candidate")"; cp -p "$s" "$candidate"; }
+        candidate_created=$((candidate_created + 1))
+        candidate_action="candidate"
+      fi
+      echo "  exists →    ${candidate#"$DST"/}   ($candidate_action — merge by hand)"
+      merge=$((merge + 1))
     fi
   else
     $DRY || { mkdir -p "$(dirname "$d")"; cp -p "$s" "$d"; }
@@ -144,14 +164,25 @@ while [ "$i" -lt "${#FILES[@]}" ]; do
   fi
 done
 
-version=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
 if [ "$DRY" = false ]; then
-  printf '%s\n' "$version" > "$DST/.agentic-flow-version"
+  if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
+    printf '%s\n' "$version" > "$DST/.agentic-flow-version"
+    rm -f "$DST/.agentic-flow-candidate-version"
+  else
+    printf '%s\n' "$version" > "$DST/.agentic-flow-candidate-version"
+  fi
 fi
-echo "  stamp       .agentic-flow-version ($version)"
+if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
+  echo "  installed   .agentic-flow-version ($version)"
+else
+  echo "  pending     .agentic-flow-candidate-version ($version)"
+fi
 
 echo
-echo "Summary: $created created, $overwritten overwritten, $merge to-merge (.agentic-new), $same already up to date."
+echo "Summary: $created created, $overwritten overwritten, $merge to-merge, $same already up to date."
+if [ "$merge" -gt 0 ]; then
+  echo "         $candidate_created merge candidate(s) created, $candidate_reused already pending."
+fi
 
 # Seed the docs index in the target (best-effort; needs the markers in docs/README.md).
 if [ "$DRY" = false ] && [ -x "$DST/scripts/docs-index.sh" ]; then
@@ -164,8 +195,9 @@ fi
 
 if [ "$merge" -gt 0 ]; then
   echo
-  echo "⚠ $merge file(s) already existed and differ — review the .agentic-new copies and merge:"
-  echo "    find \"$DST\" -name '*.agentic-new'"
+  echo "⚠ $merge file(s) already existed and differ — installed version was not advanced."
+  echo "  Review the merge candidates, merge them into the active files, then export again:"
+  echo "    find \"$DST\" -name '*.agentic-new*'"
 fi
 
 cat <<EOF

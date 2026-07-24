@@ -140,6 +140,10 @@ if [ -f "$ROOT/.agentic-flow-version" ]; then
 else
   warn "scaffold version stamp not found: .agentic-flow-version"
 fi
+if [ -f "$ROOT/.agentic-flow-candidate-version" ]; then
+  candidate_version=$(sed -n '1p' "$ROOT/.agentic-flow-candidate-version")
+  warn "scaffold update pending merge: $candidate_version"
+fi
 
 require_executable scripts/docs-index.sh
 require_executable scripts/plan-to-issues.sh
