@@ -432,6 +432,161 @@ must_allow "$PUSH_GUARD" 'echo push'
 INVALID_SPEC="$TMP/invalid-spec.json"
 printf '%s\n' '{"tracking":{"title":"Plan: bad"},"steps":[]}' > "$INVALID_SPEC"
 "$ROOT/scripts/plan-to-issues.sh" "$INVALID_SPEC" >/dev/null 2>"$TMP/plan.err" && fail "invalid plan spec was accepted"
-grep -q "spec must include" "$TMP/plan.err" || fail "invalid plan spec did not fail validation first"
+grep -q "spec must contain" "$TMP/plan.err" || fail "invalid plan spec did not fail validation first"
+
+# --- plan-to-issues reconciliation -------------------------------------------------------
+# Replay GitHub locally so failure/resume and repeated apply are deterministic, offline,
+# and safe to run in any repository.
+PLAN_DRIVER="$ROOT/scripts/plan-to-issues.sh"
+GHFIX="$TMP/gh-fixture"
+GHSTATE="$TMP/gh-state"
+mkdir -p "$GHFIX" "$GHSTATE"
+cat > "$GHFIX/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+state=${FAKE_GH_STATE:?}
+mkdir -p "$state"
+[ -f "$state/next" ] || printf '%s\n' 1 > "$state/next"
+
+case "${1:-} ${2:-}" in
+  "auth status") exit 0 ;;
+  "repo view")
+    case "$*" in
+      *nameWithOwner*) printf '%s\n' owner/repo ;;
+      *hasIssuesEnabled*) printf '%s\n' true ;;
+    esac
+    exit 0
+    ;;
+  "label create") exit 0 ;;
+  "issue list")
+    out="$state/issues.jsonl"
+    : > "$out"
+    for dir in "$state"/issue-*; do
+      [ -d "$dir" ] || continue
+      num=${dir##*-}
+      jq -n --argjson number "$num" \
+        --arg title "$(cat "$dir/title")" \
+        --arg body "$(cat "$dir/body")" \
+        --arg issue_state "$(cat "$dir/state")" \
+        --arg url "https://github.test/owner/repo/issues/$num" \
+        '{number:$number,title:$title,body:$body,state:$issue_state,url:$url}' >> "$out"
+    done
+    jq -s . "$out"
+    exit 0
+    ;;
+  "issue create")
+    shift 2
+    title=""; body=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --title) title="$2"; shift 2 ;;
+        --body) body="$2"; shift 2 ;;
+        --repo|--label) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    num=$(cat "$state/next")
+    printf '%s\n' $((num + 1)) > "$state/next"
+    if [ "${FAKE_GH_FAIL_CREATE_NUMBER:-}" = "$num" ]; then
+      echo "injected create failure" >&2
+      exit 1
+    fi
+    dir="$state/issue-$num"
+    mkdir -p "$dir"
+    printf '%s\n' "$title" > "$dir/title"
+    printf '%s\n' "$body" > "$dir/body"
+    printf '%s\n' OPEN > "$dir/state"
+    printf 'https://github.test/owner/repo/issues/%s\n' "$num"
+    exit 0
+    ;;
+  "issue edit")
+    num=$3
+    shift 3
+    dir="$state/issue-$num"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --title) printf '%s\n' "$2" > "$dir/title"; shift 2 ;;
+        --body) printf '%s\n' "$2" > "$dir/body"; shift 2 ;;
+        --repo|--add-label) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  "issue close")
+    num=$3
+    printf '%s\n' CLOSED > "$state/issue-$num/state"
+    exit 0
+    ;;
+esac
+
+if [ "${1:-}" = api ]; then
+  case "$*" in
+    *"--method POST"*) exit 0 ;;
+    *)
+      endpoint=${2:-}
+      num=${endpoint##*/}
+      printf '%s\n' $((num + 1000))
+      exit 0
+      ;;
+  esac
+fi
+
+echo "unsupported fake gh call: $*" >&2
+exit 2
+FAKE_GH
+chmod +x "$GHFIX/gh"
+
+PLAN_SPEC="$TMP/plan-spec.json"
+cat > "$PLAN_SPEC" <<'JSON'
+{
+  "id": "self-test-plan",
+  "tracking": {"title": "Plan: self test", "body": "tracker"},
+  "steps": [
+    {"id": "alpha", "title": "Alpha", "body": "alpha v1"},
+    {"id": "beta", "title": "Beta", "body": "beta v1", "labels": ["needs-execution"]}
+  ]
+}
+JSON
+
+plan_apply() {
+  PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" "$PLAN_DRIVER" --apply "$1" >/dev/null
+}
+
+plan_apply "$PLAN_SPEC" || fail "first plan apply failed against fake GitHub"
+issue_count=$(find "$GHSTATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
+[ "$issue_count" -eq 3 ] || fail "first plan apply did not create one tracker and two steps"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  "$PLAN_DRIVER" --diff "$PLAN_SPEC" > "$TMP/plan-diff.out" \
+  || fail "plan diff failed against fake GitHub"
+grep -q "Tracker: current" "$TMP/plan-diff.out" \
+  || fail "plan diff did not recognize the applied revision"
+plan_apply "$PLAN_SPEC" || fail "repeated identical plan apply failed"
+issue_count=$(find "$GHSTATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
+[ "$issue_count" -eq 3 ] || fail "repeated plan apply duplicated issues"
+
+UPDATED_SPEC="$TMP/plan-spec-updated.json"
+jq '.steps[0].body = "alpha v2"' "$PLAN_SPEC" > "$UPDATED_SPEC"
+plan_apply "$UPDATED_SPEC" || fail "changed plan did not reconcile"
+grep -Rl "alpha v2" "$GHSTATE"/issue-*/body >/dev/null \
+  || fail "changed step body was not updated in place"
+
+REMOVED_SPEC="$TMP/plan-spec-removed.json"
+jq '.steps = [.steps[0]]' "$UPDATED_SPEC" > "$REMOVED_SPEC"
+plan_apply "$REMOVED_SPEC" || fail "plan with a removed step did not reconcile"
+beta_state=$(grep -Rl "step:beta" "$GHSTATE"/issue-*/body | sed 's|/body$|/state|' | xargs cat)
+[ "$beta_state" = CLOSED ] || fail "removed plan step was not closed with history retained"
+
+PARTIAL_STATE="$TMP/gh-partial-state"
+PARTIAL_SPEC="$TMP/partial-spec.json"
+jq '.id = "partial-plan"' "$PLAN_SPEC" > "$PARTIAL_SPEC"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PARTIAL_STATE" FAKE_GH_FAIL_CREATE_NUMBER=2 \
+  "$PLAN_DRIVER" --apply "$PARTIAL_SPEC" >/dev/null 2>&1 \
+  && fail "injected partial GitHub failure unexpectedly succeeded"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PARTIAL_STATE" \
+  "$PLAN_DRIVER" --apply "$PARTIAL_SPEC" >/dev/null \
+  || fail "plan apply did not resume after a partial failure"
+partial_count=$(find "$PARTIAL_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
+[ "$partial_count" -eq 3 ] || fail "partial resume duplicated or omitted plan issues"
 
 echo "self-test passed."

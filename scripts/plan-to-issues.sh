@@ -1,126 +1,282 @@
 #!/usr/bin/env bash
 #
-# plan-to-issues.sh — create a GitHub tracking issue + one sub-issue per step from a
-# JSON spec. Implements METHODOLOGY.md §6 (driven by the plan-to-issues skill).
+# plan-to-issues.sh — reconcile a GitHub tracker and sub-issues from a JSON plan spec.
 #
 # Usage:
-#   scripts/plan-to-issues.sh <spec.json>            # DRY RUN — prints what it would create
-#   scripts/plan-to-issues.sh --apply <spec.json>    # actually create issues
+#   scripts/plan-to-issues.sh <spec.json>                   # offline dry run
+#   scripts/plan-to-issues.sh --diff <spec.json>            # compare with GitHub
+#   scripts/plan-to-issues.sh --apply [--doc <path>] <spec> # create/update/close
 #
-# Spec shape:
-#   {
-#     "tracking": { "title": "Plan: <topic>", "body": "<summary + doc link + branch>" },
-#     "labels":   ["plan"],
-#     "steps": [
-#       { "title": "Step 1 — ...", "body": "<DoD + verify cmds>", "labels": ["needs-execution","agent:codex"] }
-#     ]
-#   }
+# Stable identity:
+#   spec.id, or a hash of tracking.title when id is omitted
+#   steps[].id, or step-N when id is omitted
 #
-# Requires: gh (authenticated), jq. Run from inside the target git repo.
+# Every issue receives an HTML identity stamp. Re-running --apply discovers those stamps,
+# resumes partial work, edits changed artifacts in place, and closes removed steps with a
+# comment. It never identifies plans by editable issue titles.
 set -euo pipefail
 
-APPLY=0
+MODE=dry
 SPEC=""
-for arg in "$@"; do
-  case "$arg" in
-    --apply) APPLY=1 ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
-    *) SPEC="$arg" ;;
+DOC=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --apply) MODE=apply; shift ;;
+    --diff) MODE="diff"; shift ;;
+    --doc)
+      [ "$#" -ge 2 ] || { echo "error: --doc requires a path" >&2; exit 2; }
+      DOC="$2"; shift 2 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -*)
+      echo "error: unknown flag: $1" >&2
+      exit 2
+      ;;
+    *)
+      [ -z "$SPEC" ] || { echo "error: multiple spec files provided" >&2; exit 2; }
+      SPEC="$1"; shift
+      ;;
   esac
 done
 
 die() { echo "error: $*" >&2; exit 1; }
 
-[ -n "$SPEC" ] || die "no spec file given. Usage: $0 [--apply] <spec.json>"
+[ -n "$SPEC" ] || die "no spec file given. Usage: $0 [--apply|--diff] [--doc <path>] <spec.json>"
 [ -f "$SPEC" ] || die "spec file not found: $SPEC"
-command -v gh >/dev/null || die "gh not found"
 command -v jq >/dev/null || die "jq not found"
+command -v git >/dev/null || die "git not found"
 jq -e . "$SPEC" >/dev/null 2>&1 || die "spec is not valid JSON: $SPEC"
 jq -e '
+  (.id == null or (.id | type == "string" and test("^[a-z0-9][a-z0-9._-]*$"))) and
   (.tracking.title | type == "string" and length > 0) and
+  ((.labels // []) | type == "array" and all(.[]; type == "string" and length > 0)) and
   (.steps | type == "array" and length > 0) and
-  all(.steps[]; (.title | type == "string" and length > 0))
-' "$SPEC" >/dev/null 2>&1 || die "spec must include tracking.title and at least one step with a title"
-gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login)"
+  all(.steps[];
+    (.id == null or (.id | type == "string" and test("^[a-z0-9][a-z0-9._-]*$"))) and
+    (.title | type == "string" and length > 0) and
+    ((.labels // []) | type == "array" and all(.[]; type == "string" and length > 0))
+  ) and
+  (([.steps[] | (.id // "")] | map(select(length > 0)) | unique | length)
+    == ([.steps[] | (.id // "")] | map(select(length > 0)) | length))
+' "$SPEC" >/dev/null 2>&1 \
+  || die "spec must contain a tracker and uniquely identified, valid steps"
 
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) || die "not in a GitHub repo"
-HAS_ISSUES=$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)
-[ "$HAS_ISSUES" = "true" ] || die "Issues are not enabled on $REPO"
-
-# --- gather every label referenced (tracking + steps), deduped ---
-ALL_LABELS=$(jq -r '[(.labels // [])[], (.steps[].labels // [])[]] | unique[]' "$SPEC")
+hash_stdin() {
+  git hash-object --stdin 2>/dev/null || cksum | awk '{print $1}'
+}
 
 TRACK_TITLE=$(jq -r '.tracking.title' "$SPEC")
 TRACK_BODY=$(jq -r '.tracking.body // ""' "$SPEC")
 TRACK_LABELS=$(jq -r '(.labels // []) | join(",")' "$SPEC")
 STEP_COUNT=$(jq '.steps | length' "$SPEC")
+PLAN_KEY=$(jq -r '.id // empty' "$SPEC")
+[ -n "$PLAN_KEY" ] || PLAN_KEY=$(printf '%s' "$TRACK_TITLE" | hash_stdin)
+SPEC_HASH=$(jq -cS . "$SPEC" | hash_stdin)
+PLAN_MARKER="agentic-flow:plan:$PLAN_KEY"
 
-echo "Repo:            $REPO"
-echo "Mode:            $([ $APPLY -eq 1 ] && echo 'APPLY (will create issues)' || echo 'DRY RUN')"
-echo "Labels to ensure: $(echo "$ALL_LABELS" | paste -sd' ' -)"
-echo
+echo "Mode:            $MODE"
+echo "Plan identity:   $PLAN_KEY"
+echo "Spec revision:   $SPEC_HASH"
 echo "Tracking issue:  $TRACK_TITLE   [labels: $TRACK_LABELS]"
 echo "Steps ($STEP_COUNT):"
-for i in $(seq 0 $((STEP_COUNT - 1))); do
-  t=$(jq -r ".steps[$i].title" "$SPEC")
-  l=$(jq -r ".steps[$i].labels // [] | join(\",\")" "$SPEC")
-  echo "  $((i + 1)). $t   [labels: $l]"
+i=0
+while [ "$i" -lt "$STEP_COUNT" ]; do
+  title=$(jq -r ".steps[$i].title" "$SPEC")
+  step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
+  labels=$(jq -r ".steps[$i].labels // [] | join(\",\")" "$SPEC")
+  echo "  $((i + 1)). [$step_id] $title   [labels: $labels]"
+  i=$((i + 1))
 done
 
-if [ $APPLY -eq 0 ]; then
+if [ "$MODE" = dry ]; then
   echo
-  echo "DRY RUN — nothing created. Re-run with --apply to create these issues."
+  echo "OFFLINE DRY RUN — nothing queried or created."
+  echo "Use --diff to compare with GitHub or --apply to reconcile."
   exit 0
 fi
 
-# --- ensure labels exist (idempotent) ---
-while IFS= read -r label; do
-  [ -n "$label" ] || continue
-  gh label create "$label" --color CCCCCC >/dev/null 2>&1 || true
-done <<< "$ALL_LABELS"
+command -v gh >/dev/null || die "gh not found"
+gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login)"
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) || die "not in a GitHub repo"
+HAS_ISSUES=$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)
+[ "$HAS_ISSUES" = true ] || die "Issues are not enabled on $REPO"
+echo "Repo:            $REPO"
 
-# --- create step issues first, collect numbers ---
-declare -a STEP_NUMS=()
-declare -a STEP_TITLES=()
-for i in $(seq 0 $((STEP_COUNT - 1))); do
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/plan-to-issues.XXXXXX")
+trap 'rm -rf "$TMP"' EXIT
+
+# One bounded query discovers the tracker and every step belonging to this logical plan.
+ISSUES_JSON=$(gh issue list --repo "$REPO" --state all --limit 100 \
+  --search "\"$PLAN_MARKER\" in:body" --json number,title,body,state,url) \
+  || die "failed to query existing plan issues"
+printf '%s\n' "$ISSUES_JSON" | jq -e 'type == "array"' >/dev/null \
+  || die "GitHub returned malformed issue data"
+
+issue_for_marker() {
+  local marker="$1"
+  printf '%s\n' "$ISSUES_JSON" \
+    | jq -c --arg marker "$marker" '[.[] | select(.body | contains($marker))][0] // empty'
+}
+
+TRACK_ID_MARKER="$PLAN_MARKER tracker"
+TRACK_STAMP="<!-- $TRACK_ID_MARKER spec:$SPEC_HASH -->"
+TRACK_DESIRED="${TRACK_BODY}
+
+${TRACK_STAMP}"
+existing_tracker=$(issue_for_marker "$TRACK_ID_MARKER")
+
+if [ "$MODE" = diff ]; then
+  if [ -z "$existing_tracker" ]; then
+    echo
+    echo "Tracker: missing (would create)"
+  else
+    existing_spec=$(printf '%s\n' "$existing_tracker" | jq -r '.body' \
+      | sed -n 's/.* spec:\([^ ]*\) -->.*/\1/p' | head -1)
+    if [ "$existing_spec" = "$SPEC_HASH" ]; then
+      echo
+      echo "Tracker: current"
+    else
+      echo
+      echo "Tracker: revision differs (would reconcile)"
+    fi
+  fi
+  i=0
+  while [ "$i" -lt "$STEP_COUNT" ]; do
+    step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
+    marker="$PLAN_MARKER step:$step_id"
+    existing=$(issue_for_marker "$marker")
+    if [ -n "$existing" ]; then
+      echo "Step $step_id: exists"
+    else
+      echo "Step $step_id: missing (would create)"
+    fi
+    i=$((i + 1))
+  done
+  exit 0
+fi
+
+# Labels are idempotent support data. A create failure may mean the label already exists;
+# issue mutations below still fail loudly if a required label is actually unavailable.
+jq -r '[(.labels // [])[], (.steps[].labels // [])[]] | unique[]' "$SPEC" \
+  | while IFS= read -r label; do
+      [ -n "$label" ] || continue
+      gh label create "$label" --repo "$REPO" --color CCCCCC >/dev/null 2>&1 || true
+    done
+
+# Create the tracker first. If a later step fails, the stamped tracker is the durable
+# recovery anchor and the next --apply resumes from it.
+if [ -z "$existing_tracker" ]; then
+  if [ -n "$TRACK_LABELS" ]; then
+    track_url=$(gh issue create --repo "$REPO" --title "$TRACK_TITLE" \
+      --body "$TRACK_DESIRED" --label "$TRACK_LABELS")
+  else
+    track_url=$(gh issue create --repo "$REPO" --title "$TRACK_TITLE" \
+      --body "$TRACK_DESIRED")
+  fi
+  track_num=${track_url##*/}
+  echo "created track #$track_num  $TRACK_TITLE"
+else
+  track_num=$(printf '%s\n' "$existing_tracker" | jq -r .number)
+  track_url=$(printf '%s\n' "$existing_tracker" | jq -r .url)
+  gh issue edit "$track_num" --repo "$REPO" --title "$TRACK_TITLE" \
+    --body "$TRACK_DESIRED" >/dev/null
+  echo "updated track #$track_num  $TRACK_TITLE"
+fi
+
+: > "$TMP/current-step-ids"
+: > "$TMP/step-rows"
+i=0
+while [ "$i" -lt "$STEP_COUNT" ]; do
   title=$(jq -r ".steps[$i].title" "$SPEC")
   body=$(jq -r ".steps[$i].body // \"\"" "$SPEC")
   labels=$(jq -r ".steps[$i].labels // [] | join(\",\")" "$SPEC")
-  label_args=()
-  [ -n "$labels" ] && label_args=(--label "$labels")
-  url=$(gh issue create --repo "$REPO" --title "$title" --body "$body" "${label_args[@]}")
-  num=${url##*/}
-  STEP_NUMS+=("$num")
-  STEP_TITLES+=("$title")
-  echo "created step  #$num  $title"
+  step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
+  marker="$PLAN_MARKER step:$step_id"
+  stamp="<!-- $marker spec:$SPEC_HASH -->"
+  desired_body="${body}
+
+${stamp}"
+  printf '%s\n' "$step_id" >> "$TMP/current-step-ids"
+  existing=$(issue_for_marker "$marker")
+
+  if [ -z "$existing" ]; then
+    if [ -n "$labels" ]; then
+      url=$(gh issue create --repo "$REPO" --title "$title" \
+        --body "$desired_body" --label "$labels")
+    else
+      url=$(gh issue create --repo "$REPO" --title "$title" --body "$desired_body")
+    fi
+    num=${url##*/}
+    echo "created step  #$num  $title"
+  else
+    num=$(printf '%s\n' "$existing" | jq -r .number)
+    url=$(printf '%s\n' "$existing" | jq -r .url)
+    gh issue edit "$num" --repo "$REPO" --title "$title" --body "$desired_body" >/dev/null
+    [ -z "$labels" ] || gh issue edit "$num" --repo "$REPO" --add-label "$labels" >/dev/null
+    echo "updated step  #$num  $title"
+  fi
+  printf '%s\t%s\t%s\n' "$num" "$step_id" "$title" >> "$TMP/step-rows"
+  i=$((i + 1))
 done
 
-# --- build the task-list fallback for the tracking body ---
-tasklist=$'\n\n## Steps\n'
-for idx in "${!STEP_NUMS[@]}"; do
-  tasklist+="- [ ] #${STEP_NUMS[$idx]} ${STEP_TITLES[$idx]}"$'\n'
+# Close steps removed from the current spec. History is retained; nothing is deleted.
+printf '%s\n' "$ISSUES_JSON" | jq -r --arg plan "$PLAN_MARKER" '
+  .[]
+  | select(.body | contains($plan + " step:"))
+  | [.number, (.body | capture("step:(?<id>[a-zA-Z0-9._-]+)").id), .state]
+  | @tsv
+' | while IFS="$(printf '\t')" read -r old_num old_id old_state; do
+  grep -qxF "$old_id" "$TMP/current-step-ids" && continue
+  [ "$old_state" = CLOSED ] && continue
+  gh issue close "$old_num" --repo "$REPO" \
+    --comment "Closed by plan reconciliation: step '$old_id' is no longer in spec revision $SPEC_HASH." \
+    >/dev/null
+  echo "closed removed step #$old_num [$old_id]"
 done
 
-track_label_args=()
-[ -n "$TRACK_LABELS" ] && track_label_args=(--label "$TRACK_LABELS")
-track_url=$(gh issue create --repo "$REPO" --title "$TRACK_TITLE" \
-  --body "${TRACK_BODY}${tasklist}" "${track_label_args[@]}")
-track_num=${track_url##*/}
-echo "created track #$track_num  $TRACK_TITLE"
+tasklist='
 
-# --- best-effort: link steps as native sub-issues (needs the REST database id) ---
+## Steps
+'
+while IFS="$(printf '\t')" read -r num step_id title; do
+  tasklist="${tasklist}- [ ] #${num} [${step_id}] ${title}
+"
+done < "$TMP/step-rows"
+TRACK_FINAL="${TRACK_BODY}${tasklist}
+${TRACK_STAMP}"
+gh issue edit "$track_num" --repo "$REPO" --title "$TRACK_TITLE" \
+  --body "$TRACK_FINAL" >/dev/null
+
+# Native linking remains best-effort; the stamped task list is the durable fallback.
 linked=0
-for num in "${STEP_NUMS[@]}"; do
-  child_id=$(gh api "repos/$REPO/issues/$num" --jq .id 2>/dev/null) || continue
+while IFS="$(printf '\t')" read -r num step_id title; do
+  child_id=$(gh api "repos/$REPO/issues/$num" --jq .id 2>/dev/null || true)
+  [ -n "$child_id" ] || continue
   if gh api --method POST "repos/$REPO/issues/$track_num/sub_issues" \
        -F sub_issue_id="$child_id" >/dev/null 2>&1; then
     linked=$((linked + 1))
   fi
-done
-if [ "$linked" -eq "${#STEP_NUMS[@]}" ]; then
-  echo "linked $linked sub-issues to #$track_num"
-else
-  echo "sub-issue API linked $linked/${#STEP_NUMS[@]}; the task list in #$track_num is the fallback checklist"
+done < "$TMP/step-rows"
+echo "native sub-issue link attempts succeeded: $linked/$STEP_COUNT"
+
+if [ -n "$DOC" ]; then
+  [ -f "$DOC" ] || die "--doc file not found after reconciliation: $DOC"
+  doc_tmp="$DOC.tmp.$$"
+  awk -v url="$track_url" '
+    /^- \*\*Tracking issue:\*\*/ && replaced != 1 {
+      print "- **Tracking issue:** [" url "](" url ")."
+      replaced=1
+      next
+    }
+    { print }
+    END {
+      if (replaced != 1) exit 3
+    }
+  ' "$DOC" > "$doc_tmp" || {
+    rm -f "$doc_tmp"
+    die "--doc has no '- **Tracking issue:**' status line"
+  }
+  mv "$doc_tmp" "$DOC"
+  echo "updated doc tracker link: $DOC"
 fi
 
 echo
