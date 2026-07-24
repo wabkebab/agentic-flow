@@ -212,6 +212,8 @@ still green (nothing in this step touches code, but the gate must not regress).
 
 - **Tracking issue:** [https://github.com/wabkebab/agentic-flow/issues/38](https://github.com/wabkebab/agentic-flow/issues/38).
 - **Approval:** wabkebab approved on 2026-07-24 via plan-to-issues --apply.
-- **Verification evidence:** pending.
+- **Verification evidence:** 2026-07-25 Codex run: `make check` passed; `make test`
+  passed; `gh label list --limit 100` showed `agent:opencode`, `agent:claude`,
+  `needs-review`, and `needs-closing`.
 - **Review verdict:** pending.
-- Step not yet started.
+- Step implemented on branch `feature-opencode-reviewer-role`; OpenCode review pending.

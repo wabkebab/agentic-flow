@@ -16,7 +16,37 @@
   `docs/`, inline the implementation brief, generate issues with `plan-to-issues`, review
   execution commits, fix or delegate fixes. Commit with `git-claude`.
 - **Execute — Codex.** Implements the issues. Commits with `git-codex`. See `AGENTS.md`.
+- **Review — OpenCode.** Human-operated today, or via the `/review` command
+  (`.opencode/agent/code-reviewer.md`) / the `review-execution` skill
+  (`.opencode/skills/review-execution/SKILL.md`) when OpenCode itself is available as an
+  agent. Reviews each completed Codex step by reading the diff against the implementation
+  brief, then either records findings as an issue comment and sends the step back to Codex,
+  or marks it ready for Claude close-out. Commits any review-note changes with `git-opencode`.
 - **Own / merge / deploy — the human.** Approves plans, merges PRs, controls all pushes.
+
+### Step issue label state machine
+
+Step issues move by label pair:
+
+```
+agent:codex + needs-execution          (plan-to-issues default)
+      │  Codex finishes the step, commits with Fixes #N
+      ▼
+agent:opencode + needs-review
+      │  OpenCode (human) reviews
+      ├─ findings noted as an issue comment ──▶ agent:codex + needs-execution
+      │                                           (loop; capped at 3 findings rounds)
+      └─ no findings ──────────────────────────▶ agent:claude + needs-closing
+                                                      │
+                                                      ▼
+                                      Claude updates doc Tracker/Status,
+                                      moves doc to docs/done/ if complete.
+                                      Human still owns the actual merge/close.
+```
+
+After OpenCode sends a step back with findings three times, a fourth automatic bounce is not
+allowed. Escalate to the human explicitly instead of sending it back to Codex again or
+silently stopping.
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and
