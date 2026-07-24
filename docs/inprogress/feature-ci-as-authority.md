@@ -226,6 +226,30 @@ loop is bounded by its `needs` list; CI concurrency cancels superseded runs per 
 > (never `git add -A`). Use verbose, *why*-first commit bodies. This brief carries the
 > **approach and insights — not the code.**
 
+## Executor calibration
+
+Before implementing each step, re-read the current call sites and constants named by that step.
+Treat line numbers and quoted marker shapes in this brief as **orientation, not authority**. If
+the brief conflicts with the live code, **preserve the live contract** unless the step
+explicitly says to change it, and record the discrepancy before coding.
+
+This is not boilerplate caution. Review of this brief found four defects of exactly this kind,
+every one of them in a passage that *looked* precise:
+
+| What the brief asserted | What the code does | Failure it would have caused |
+|---|---|---|
+| stamp marker `agentic-plan:<id>` | `agentic-flow:plan:<id> tracker` (`plan-to-issues.sh:74,120`) | duplicate issues — resumption breaks |
+| tracker body is appended to | body is **replaced** wholesale (`:180-181`) | approval silently erased on re-run |
+| `init.sh` renders CI "alongside the Makefile" | adoption must create **no** workflow (`self-test.sh:109-112`) | activates CI in every adopted project |
+| `apt-get install -y` | runners need `sudo` + a refreshed index | red CI on an unrelated PR |
+
+The pattern: **quoted implementation details rot; stated intent does not.** Where this brief
+explains *why* a constraint exists, trust it. Where it quotes a name, a line number, or a
+command shape, verify it first — the quote was accurate when written and may not be when read.
+
+If a discrepancy is material, note it in the step's commit body rather than fixing it silently.
+A brief that was wrong is useful information about the brief.
+
 ## Branch
 
 Base: `main` **after #16 merges** (see the blocking open question). Per METHODOLOGY §2, one
