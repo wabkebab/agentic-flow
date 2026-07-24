@@ -42,6 +42,32 @@
 **Recommendation:** <Which, and why. The safest first version is usually the smallest one
 that delivers the user-visible value.>
 
+## Interface (before the implementation)
+<!-- METHODOLOGY.md §11.2. Write the shapes here, not in your head: function signatures,
+     endpoint contracts, request/response bodies, the data model delta. Most architecture
+     problems are visible at this stage and cost nothing to fix; once code exists they are
+     attached to something and get rationalised instead. Types/signatures — still not code. -->
+```
+<signatures / endpoint contracts / data shapes>
+```
+
+## Threat model (one paragraph)
+<!-- METHODOLOGY.md §11.2. MANDATORY if this feature touches auth, money, or user data;
+     ten minutes otherwise. Who are the untrusted actors, which data actually matters, and
+     what is the worst thing an attacker could do with this change? If the honest answer is
+     "nothing — no new trust boundary", write that and move on. -->
+<…>
+
+## Failure behavior
+<!-- METHODOLOGY.md §11.2. Decide this NOW; decided mid-implementation it becomes an ad-hoc
+     guess nobody revisits. One row per external call / dependency. -->
+
+| External call | On timeout | On malformed response | On partial success |
+|---------------|-----------|-----------------------|--------------------|
+| <…>           | <…>       | <…>                   | <…>                |
+
+Bounds: <every query's limit, every loop's cap, every request's timeout — §11.3>
+
 ## Out of scope / What NOT to build in this pass
 <!-- Just as important as the scope. Prevents gold-plating and scope creep. -->
 - <…>
@@ -84,7 +110,8 @@ make test                 # end of brief: full suite
 1. <Which files, which functions, what order. Data-model / migration changes first.>
 2. <Edge cases, gotchas, conventions to follow from CLAUDE.md.>
 
-**Test:** <What to add or extend; what it should assert.>
+**Test:** <What to add or extend; what it should assert. **Failure path first** (§11.4) —
+name the timeout / malformed / unauthorized case, not just the happy one.>
 
 **DoD:** <Observable end state for this step.>
 **Commit:** `<imperative commit subject>`

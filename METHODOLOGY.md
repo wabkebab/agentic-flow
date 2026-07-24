@@ -213,6 +213,11 @@ Fixes #73
   (`scripts/hooks/block-git-add-all.sh`): enforces §7's "stage files by name" mechanically.
 - **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`):
   enforces §7's "never push — the human controls all pushes and merges" mechanically.
+- **PreToolUse(Bash) → scan staged content for credentials** (`scripts/hooks/scan-secrets.sh`):
+  enforces §11.1's "secret scanning at the commit boundary". Blocks a commit whose staged
+  diff carries a credential shape, because CI catches that one step too late — a committed
+  secret has to be rotated. Prefers `gitleaks`; falls back to a high-signal pattern set.
+  `AGENTIC_ALLOW_SECRET=1` overrides a false positive, visibly.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
 - **`scripts/init.sh`** is the adoption path: export the scaffold, fill machine tokens,
@@ -379,3 +384,92 @@ CI green must mean the same thing as local green: the CI gate is `make check && 
 (§ Stack profile in `CLAUDE.md`), plus `scripts/docs-index.sh --check` where practical. If a
 CI step needs a command that isn't a Make target, that's a signal the Makefile is incomplete
 — add the target and call it, rather than growing logic in YAML.
+
+---
+
+## 11. Engineering standards
+
+The practices that make review cheap and bugs rare. §1–§10 cover *process*; this covers the
+work itself. Ordered by when it applies, not by importance.
+
+### 11.1 Automate what a human should never review
+
+Anything a machine can catch must not cost review attention. In value-per-effort order:
+
+1. **Linter + formatter, failing the build.** Ends style argument permanently and catches a
+   real bug class — unused variables, shadowing, unreachable code. Formatting is not a
+   review topic.
+2. **Static analysis / type checking, strict mode on.** The single highest-yield item if the
+   language has it. Strict from day one; retrofitting strictness onto a grown codebase is a
+   project, not a setting.
+3. **Dependency scanning, blocking on high severity.** `npm audit`, `pip-audit`,
+   `cargo audit`, Dependabot — whatever fits. In CI (§10 shows the step), not on a human's
+   memory.
+4. **Secret scanning at the commit boundary.** The scaffold ships this as a hook
+   (`scripts/hooks/scan-secrets.sh`) rather than CI-only, because *CI is one step too late*:
+   a secret that reaches a commit must be rotated, and rewriting history does not un-leak
+   it. The hook fails at the last moment the fix is still free.
+
+> **The ratchet:** when a reviewer catches the same *class* of issue twice, it stops being a
+> review comment and becomes a lint rule, a type, or a test. A review that repeats itself is
+> a missing automation.
+
+Wire each of these into `make check` / `make test` so local and CI enforce identically —
+never into CI alone, or the feedback arrives after the context is gone.
+
+### 11.2 Design stage — before any code
+
+These go in the Feature/Security doc (Part A), not in the implementer's head:
+
+- **Write the interface before the implementation.** Function signatures, endpoint
+  contracts, data shapes. Most architecture problems are visible here, where they cost
+  nothing to fix, and invisible once there's code to be attached to.
+- **Threat-model in one paragraph.** Who are the untrusted actors, what data actually
+  matters, what is the worst thing an attacker could do. Ten minutes, mandatory for anything
+  touching auth, money, or user data. The Security template has a slot; the Feature template
+  now does too.
+- **Decide the failure behavior up front.** For each external call: what happens on timeout,
+  on a malformed response, on partial success. Decided during coding, these become ad-hoc
+  guesses that no one revisits.
+
+### 11.3 Coding stage
+
+- **Validate at the boundary, once.** All external input — HTTP, files, env, DB rows — is
+  parsed into a validated type at the edge. Interior code then trusts its inputs. Defensive
+  checks scattered through the interior is the anti-pattern: it never adds up to a guarantee,
+  and it hides where the real contract is.
+- **Never build strings that get interpreted.** Parameterized queries, argument *arrays* for
+  subprocesses, no string-concatenated HTML or paths. This removes most of the injection
+  category by construction rather than by vigilance.
+- **Deny by default, at a chokepoint.** Authorization in middleware or a decorator, not
+  per-handler. Per-handler means you will eventually miss one, and the miss is silent.
+- **Secrets from config, never literals.** Including in tests. Including "temporarily" — the
+  commit boundary is where temporary becomes permanent.
+- **No unbounded anything.** Every query has a limit, every loop over external data has a
+  cap, every outbound request has a timeout.
+- **Make illegal states unrepresentable** where the language allows it. A type that cannot
+  hold the bad value needs no runtime check and no test.
+
+### 11.4 Verification
+
+- **Test the failure path first.** Everyone tests the happy path; the bugs are in the other
+  one. If a step's tests only cover success, the step is not done.
+- **Every bug fix starts with a failing test that reproduces it.** This is already the
+  contract for Security fixes (§3) — it applies to every fix. It prevents the regression and,
+  more importantly, forces understanding the cause instead of pattern-matching a change that
+  makes the symptom go away.
+- **Test behavior, not implementation.** If a refactor that preserves behavior breaks the
+  tests, the tests were asserting the wrong thing and are now blocking the cleanup.
+
+### 11.5 Review
+
+- **Small diffs.** A 200-line PR gets a real review; a 2000-line one gets a rubber stamp.
+  This is the highest-leverage habit available, solo or not — it's why §7 requires one
+  logical commit per step and §6 requires one issue per independently-shippable step.
+- **Explain the change in writing before submitting.** Half the problems surface while
+  writing the explanation. The *why*-first commit body (§7) is where this goes — it is not
+  ceremony, it is the review you give yourself.
+- **Use a checklist, not vibes.** Minimum viable version, applied to every change:
+  1. Is all external input validated at the boundary?
+  2. Are the failure paths handled — timeout, malformed, partial?
+  3. Is there enough logging to debug this at 2am without a debugger?
