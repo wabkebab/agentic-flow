@@ -8,7 +8,7 @@
 # Feature — CI as the authority for "green"
 
 ## Tracker
-- [ ] F-1 Split `doctor.sh` into repo-invariant and environment scopes — open
+- [x] F-1 Split `doctor.sh` into repo-invariant and environment scopes — fixed in f14069a (#22)
 - [ ] F-2 Activate CI on this repository — open
 - [ ] F-3 Stamp approval as an event (`--approved-by`) — open
 - [ ] F-4 Derive verification evidence from the CI run conclusion — open
@@ -625,5 +625,7 @@ pin checker still passes.
   yet — it is **F-3 of this very plan**. When F-3 lands, this line becomes machine-written.
 - **Verification evidence:** pending until execution.
 - **Review verdict:** pending.
-- Steps not yet started. Executor closes each via a PR with `Fixes #N`, records the commit
-  SHA per step here, and ticks the matching F-N box in the Tracker above.
+- **Execution commits:** F-1 `f14069a`.
+- F-1 implemented locally on `feature-ci-as-authority-f1`; F-2 through F-5 not yet started.
+  Executor closes each step via a PR with `Fixes #N`, records the commit SHA per step here,
+  and ticks the matching F-N box in the Tracker above.
