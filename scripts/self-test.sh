@@ -249,22 +249,34 @@ if [ -x "$SECRET_GUARD" ]; then
   secret_hook() { # <command> -> exit status
     (cd "$SECFIX" && printf '{"tool_input":{"command":"%s"}}' "$1" | "$SECRET_GUARD") >/dev/null 2>&1
   }
+  # Same call with gitleaks forced off. The hook must reach the same verdict either way:
+  # its behaviour may not depend on which tools happen to be installed on this machine.
+  secret_hook_nogl() { # <command> -> exit status
+    (cd "$SECFIX" && printf '{"tool_input":{"command":"%s"}}' "$1" \
+      | AGENTIC_SKIP_GITLEAKS=1 "$SECRET_GUARD") >/dev/null 2>&1
+  }
   stage() { # <content>
     (cd "$SECFIX" && git reset -q && printf '%s\n' "$1" > staged.txt && git add staged.txt)
   }
 
   stage "aws_key = \"$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')\""
   secret_hook 'git-claude commit -m x' && fail "secret scanner allowed a staged AWS-format key"
+  secret_hook_nogl 'git-claude commit -m x' \
+    && fail "secret scanner allowed an AWS-format key with gitleaks unavailable"
   secret_hook 'git status' || fail "secret scanner blocked a non-commit command"
 
   stage "$(printf -- '-----BEGIN RSA PRIVATE %s-----' 'KEY')"
   secret_hook 'git commit -m x' && fail "secret scanner allowed a staged private key block"
+  secret_hook_nogl 'git commit -m x' \
+    && fail "secret scanner allowed a private key block with gitleaks unavailable"
 
   # Assembled, not literal: a quoted `password = "..."` written directly into this file
   # would make the scanner block every commit that touches self-test.sh. (It did, once.)
   pw_fixture="$(printf 's3cret%s' 'passphrase')"
   stage "password = \"$pw_fixture\""
   secret_hook 'git commit -m x' && fail "secret scanner allowed a hardcoded password"
+  secret_hook_nogl 'git commit -m x' \
+    && fail "secret scanner allowed a hardcoded password with gitleaks unavailable"
 
   # Placeholders and env lookups must NOT trip it — a scanner that cries wolf gets disabled.
   stage 'password = "changeme-please"'

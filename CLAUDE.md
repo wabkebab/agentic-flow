@@ -53,6 +53,8 @@
   for executor commits.
 - **Required:** `shellcheck` — `make test` fails without it (a skip-if-absent gate is
   green only because the tool is missing).
+- **Required:** `gitleaks` — the staged-secret hook runs it as one of two scanning layers;
+  `scripts/doctor.sh --check` fails without it.
 - **Adoption check:** run `scripts/doctor.sh --check` after exporting the scaffold and before
   committing it in a target project.
 
@@ -68,9 +70,10 @@ This project ships `.claude/settings.json` with:
   — enforces "never push; the human controls pushes and merges" mechanically.
 - **PreToolUse(Bash) → scan staged content before a commit** (`scripts/hooks/scan-secrets.sh`)
   — blocks a commit whose staged diff looks like it carries a credential. CI-side scanning
-  is one step too late: a committed secret must be rotated, not just removed. Uses
-  `gitleaks` when installed, else a high-signal pattern set. Override a false positive with
-  `AGENTIC_ALLOW_SECRET=1` on the commit.
+  is one step too late: a committed secret must be rotated, not just removed. Runs **two
+  layers, both always**: `gitleaks`, plus a local high-signal pattern set — the local set is
+  not a fallback, it covers what gitleaks' default config allowlists (documented sample
+  keys). Override a false positive with `AGENTIC_ALLOW_SECRET=1` on the commit.
 
 ## Architecture (orient an agent fast)
 

@@ -6,8 +6,10 @@
 # history does not un-leak it — the credential must be rotated. CI catches it one step too
 # late; this catches it while the fix is still `git restore --staged`.
 #
-# Uses gitleaks when installed (better coverage); otherwise falls back to the high-signal
-# pattern set below. Reads the tool-call JSON on stdin.
+# Two layers, both always applied: gitleaks (broad, curated rules) when installed, AND the
+# high-signal pattern set below. The patterns are not a fallback — gitleaks allowlists
+# documented sample credentials, so the local set is what keeps behaviour identical whether
+# or not the tool is present. Reads the tool-call JSON on stdin.
 # Exit 2 = block the call and show stderr to the agent; exit 0 = allow.
 set -uo pipefail
 
@@ -53,15 +55,22 @@ block() {
   exit 2
 }
 
-# --- gitleaks path -----------------------------------------------------------------------
-if command -v gitleaks >/dev/null 2>&1; then
-  if ! out=$(gitleaks protect --staged --no-banner --redact 2>&1); then
-    block "$out"
+# --- layer 1: gitleaks -------------------------------------------------------------------
+# ADDITIVE, not an alternative. An earlier version returned gitleaks' verdict and skipped
+# the patterns below, which made the hook *weaker* on a machine that had gitleaks: its
+# default config allowlists documented sample credentials, so a staged AWS example key came
+# back clean and nothing else ran. Behaviour must not depend on which tools are installed.
+if [ "${AGENTIC_SKIP_GITLEAKS:-0}" != "1" ] && command -v gitleaks >/dev/null 2>&1; then
+  # `gitleaks git --staged` is the modern spelling; `protect --staged` is the pre-8.19 one.
+  if gitleaks git --help >/dev/null 2>&1; then
+    gl_out=$(gitleaks git --staged --no-banner --redact 2>&1) || block "$gl_out"
+  else
+    gl_out=$(gitleaks protect --staged --no-banner --redact 2>&1) || block "$gl_out"
   fi
-  exit 0
 fi
 
-# --- fallback pattern set ----------------------------------------------------------------
+# --- layer 2: high-signal patterns -------------------------------------------------------
+# Always runs, gitleaks present or not.
 # High-signal only: these have a shape that essentially cannot occur by accident. A noisy
 # scanner trains people to bypass it, which costs more than the leaks it catches.
 #

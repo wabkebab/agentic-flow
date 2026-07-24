@@ -75,6 +75,7 @@ See [`ADOPTION.md`](ADOPTION.md) for flags and verification.
 - **Required:** `bash`, `make`, `git`, `jq`, `gh`.
 - **Project wrappers:** `git-claude` and `git-codex` unless the project explicitly opts out.
 - **Required:** `shellcheck` — `make test` lints `scripts/` with it and fails if it is absent.
+- **Required:** `gitleaks` — one of the two layers in the staged-secret commit hook.
 
 For adopted projects, `scripts/doctor.sh` is the verifier and can be used in CI.
 

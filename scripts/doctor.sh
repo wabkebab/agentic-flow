@@ -71,6 +71,7 @@ require_tool git
 require_tool jq
 require_tool gh
 require_tool shellcheck
+require_tool gitleaks
 optional_tool git-claude
 optional_tool git-codex
 

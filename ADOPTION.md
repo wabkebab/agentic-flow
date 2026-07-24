@@ -14,9 +14,7 @@ It wraps the low-level exporter, fills the project token, preserves existing fil
 - `git-claude`, unless the project opts out of Claude commits
 - `git-codex`, unless the project is Claude-only or otherwise opts out of Codex execution
 - `shellcheck` — `make test` fails without it
-
-Recommended: `gitleaks`. The staged-secret hook uses it when present and falls back to a
-narrower built-in pattern set otherwise.
+- `gitleaks` — one of the two layers in the staged-secret hook
 
 ## Usage
 

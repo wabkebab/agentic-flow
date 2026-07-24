@@ -216,7 +216,8 @@ Fixes #73
 - **PreToolUse(Bash) → scan staged content for credentials** (`scripts/hooks/scan-secrets.sh`):
   enforces §11.1's "secret scanning at the commit boundary". Blocks a commit whose staged
   diff carries a credential shape, because CI catches that one step too late — a committed
-  secret has to be rotated. Prefers `gitleaks`; falls back to a high-signal pattern set.
+  secret has to be rotated. Runs `gitleaks` (required) **and** a local high-signal pattern
+  set, always both — see §11.1 on why the second layer is not a fallback.
   `AGENTIC_ALLOW_SECRET=1` overrides a false positive, visibly.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
@@ -409,6 +410,13 @@ Anything a machine can catch must not cost review attention. In value-per-effort
    (`scripts/hooks/scan-secrets.sh`) rather than CI-only, because *CI is one step too late*:
    a secret that reaches a commit must be rotated, and rewriting history does not un-leak
    it. The hook fails at the last moment the fix is still free.
+
+   **Layer scanners; never let one substitute for another.** The hook runs `gitleaks` *and*
+   a local pattern set, always both. Treating the local set as a fallback made the hook
+   weaker on machines that had gitleaks, whose default config allowlists documented sample
+   credentials — a staged AWS example key came back clean and nothing else ran. Any gate
+   whose strength depends on which tools happen to be installed will eventually be green for
+   the wrong reason: see also `make test` silently skipping `shellcheck`.
 
 > **The ratchet:** when a reviewer catches the same *class* of issue twice, it stops being a
 > review comment and becomes a lint rule, a type, or a test. A review that repeats itself is
