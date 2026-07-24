@@ -1,14 +1,15 @@
 <!-- TRIAGE (first pass · 2026-07-24) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > Adds a third agent role — **Review (OpenCode)** — between Codex execution and Claude's
 > final close-out, driven entirely by GitHub label flips on the step issue. Design is the
 > human's, given directly; this doc exists to make the contract precise and durable in
-> `CLAUDE.md`/`AGENTS.md` rather than only spoken once in chat.
+> `CLAUDE.md`/`AGENTS.md` rather than only spoken once in chat. Approved 2026-07-24; tracked
+> in #38.
 
 # Feature — Add the OpenCode Reviewer role and its label state machine
 
 ## Tracker
-- [ ] F-1 Add the Review (OpenCode) role and label state machine to CLAUDE.md/AGENTS.md, and create the GitHub labels — open
+- [ ] F-1 Add the Review (OpenCode) role and label state machine to CLAUDE.md/AGENTS.md, and create the GitHub labels — open (#39)
 
 ---
 
@@ -209,8 +210,8 @@ still green (nothing in this step touches code, but the gate must not regress).
 
 ## Status / Implementation status
 
-- **Tracking issue:** _not yet created_ — run `plan-to-issues` once approved.
-- **Approval:** pending.
+- **Tracking issue:** [https://github.com/wabkebab/agentic-flow/issues/38](https://github.com/wabkebab/agentic-flow/issues/38).
+- **Approval:** wabkebab approved on 2026-07-24 via plan-to-issues --apply.
 - **Verification evidence:** pending.
 - **Review verdict:** pending.
 - Step not yet started.
