@@ -597,6 +597,10 @@ case "${1:-} ${2:-}" in
     esac
     exit 0
     ;;
+  "run view")
+    printf '%s\n' "${FAKE_GH_RUN_CONCLUSION:-success}"
+    exit 0
+    ;;
   "label create") exit 0 ;;
   "issue list")
     out="$state/issues.jsonl"
@@ -800,6 +804,56 @@ sed \
 mv "$TMP/lifecycle-ready.md" "$LIFEFIX/docs/inprogress/feature-blocked.md"
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
   || fail "strict lifecycle check rejected a tracker with complete closure evidence"
+
+# --- lifecycle: CI run evidence verification (#25) --------------------------------------
+write_lifecycle_ready_doc() { # <root> <verification-evidence>
+  mkdir -p "$1/docs/inprogress"
+  cat > "$1/docs/inprogress/feature-ready.md" <<MD
+## Tracker
+- [x] F-1 done
+## Status
+- **Approval:** user approved 2026-01-01.
+- **Tracking issue:** https://example.invalid/issues/1
+- **Verification evidence:** $2
+- **Review verdict:** approved.
+MD
+}
+
+LIFE25_NO_GH="$TMP/lifecycle25-no-gh"
+write_lifecycle_ready_doc "$LIFE25_NO_GH" "https://github.com/owner/repo/actions/runs/100"
+NO_GH_BIN=$(path_without_tools "$TMP/no-gh-bin" gh)
+AGENTIC_PROJECT_ROOT="$LIFE25_NO_GH" PATH="$NO_GH_BIN" \
+  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-no-gh.out" \
+  || fail "strict verified lifecycle check treated absent gh as fatal"
+grep -q 'UNVERIFIED.*feature-ready\.md.*gh is not available' "$TMP/lifecycle25-no-gh.out" \
+  || fail "verified lifecycle check did not report absent gh as UNVERIFIED"
+
+LIFE25_NON_RUN="$TMP/lifecycle25-non-run"
+write_lifecycle_ready_doc "$LIFE25_NON_RUN" "https://example.invalid/actions/1"
+AGENTIC_PROJECT_ROOT="$LIFE25_NON_RUN" PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-non-run.out" \
+  || fail "strict verified lifecycle check treated non-run evidence as fatal"
+grep -q 'UNVERIFIED.*feature-ready\.md.*not a GitHub Actions run URL' \
+  "$TMP/lifecycle25-non-run.out" \
+  || fail "verified lifecycle check did not report non-run evidence as UNVERIFIED"
+
+LIFE25_FAILURE="$TMP/lifecycle25-failure"
+write_lifecycle_ready_doc "$LIFE25_FAILURE" "https://github.com/owner/repo/actions/runs/200"
+AGENTIC_PROJECT_ROOT="$LIFE25_FAILURE" PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  FAKE_GH_RUN_CONCLUSION=failure \
+  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-failure.out" 2>&1 \
+  && fail "strict verified lifecycle check accepted a resolved failing CI run"
+grep -q 'BLOCKED.*feature-ready\.md.*concluded failure' "$TMP/lifecycle25-failure.out" \
+  || fail "verified lifecycle check did not block on a resolved failing CI run"
+
+LIFE25_SUCCESS="$TMP/lifecycle25-success"
+write_lifecycle_ready_doc "$LIFE25_SUCCESS" "https://github.com/owner/repo/actions/runs/100"
+AGENTIC_PROJECT_ROOT="$LIFE25_SUCCESS" PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  FAKE_GH_RUN_CONCLUSION=success \
+  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-success.out" \
+  || fail "strict verified lifecycle check rejected a resolved successful CI run"
+grep -q 'READY.*feature-ready\.md.*concluded success' "$TMP/lifecycle25-success.out" \
+  || fail "verified lifecycle check did not mark a resolved successful CI run READY"
 
 # --- lifecycle: absent vs. misnamed vs. wrapped evidence (#19) ---------------------------
 # A checker that reports "missing" for both "never recorded" and "recorded under the wrong

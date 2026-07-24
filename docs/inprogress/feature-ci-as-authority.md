@@ -9,9 +9,9 @@
 
 ## Tracker
 - [x] F-1 Split `doctor.sh` into repo-invariant and environment scopes — fixed in f14069a (#22)
-- [ ] F-2 Activate CI on this repository — open
-- [ ] F-3 Stamp approval as an event (`--approved-by`) — open
-- [ ] F-4 Derive verification evidence from the CI run conclusion — open
+- [x] F-2 Activate CI on this repository — fixed in cef93b8 (#23)
+- [x] F-3 Stamp approval as an event (`--approved-by`) — fixed in b13a5d9 (#24)
+- [x] F-4 Derive verification evidence from the CI run conclusion — fixed in local commit (#25)
 - [ ] F-5 Render the CI runtime setup block from the stack profile — open
 
 ---
@@ -627,7 +627,7 @@ pin checker still passes.
   yet — it is **F-3 of this very plan**. When F-3 lands, this line becomes machine-written.
 - **Verification evidence:** pending until execution.
 - **Review verdict:** pending.
-- **Execution commits:** F-1 `f14069a`.
-- F-1 implemented locally on `feature-ci-as-authority-f1`; F-2 through F-5 not yet started.
+- **Execution commits:** F-1 `f14069a`; F-2 `cef93b8`; F-3 `b13a5d9`; F-4 this commit.
+- F-1 through F-4 implemented locally on `feature-ci-as-authority-f1`; F-5 not yet started.
   Executor closes each step via a PR with `Fixes #N`, records the commit SHA per step here,
   and ticks the matching F-N box in the Tracker above.

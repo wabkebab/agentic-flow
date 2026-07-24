@@ -2,18 +2,23 @@
 # lifecycle-status.sh — derive whether active implementation docs are eligible to close.
 #
 # Usage:
-#   scripts/lifecycle-status.sh          report ACTIVE / READY / BLOCKED
-#   scripts/lifecycle-status.sh --check  fail when an all-checked tracker lacks evidence
+#   scripts/lifecycle-status.sh                    report ACTIVE / READY / BLOCKED
+#   scripts/lifecycle-status.sh --check            fail when an all-checked tracker is BLOCKED
+#   scripts/lifecycle-status.sh --verify-evidence  query GitHub Actions run evidence when possible
 set -euo pipefail
 
 ROOT=${AGENTIC_PROJECT_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}
 STRICT=false
-case "${1:-}" in
-  --check) STRICT=true ;;
-  -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
-  "") ;;
-  *) echo "unknown flag: $1" >&2; exit 2 ;;
-esac
+VERIFY_EVIDENCE=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --check) STRICT=true ;;
+    --verify-evidence) VERIFY_EVIDENCE=true ;;
+    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    *) echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
 
 # A field's FULL value: its "- **Label:**" line plus any continuation lines, up to the next
 # bullet or a blank line. A single grep on the label's own line (the old approach) made a
@@ -69,6 +74,45 @@ check_field() { # <doc> <canonical-label> <field-id> <content-pattern>
   missing="$missing $field_id"
 }
 
+verify_evidence() { # <verification-evidence block>
+  local block="$1" url owner repo run_id conclusion path_without_host
+  url=$(printf '%s\n' "$block" |
+    grep -Eo 'https://github\.com/[^/[:space:]]+/[^/[:space:]]+/actions/runs/[0-9]+' |
+    head -n 1 || true)
+  if [ -z "$url" ]; then
+    evidence_status=UNVERIFIED
+    evidence_reason="verification evidence is not a GitHub Actions run URL"
+    return
+  fi
+
+  path_without_host=${url#https://github.com/}
+  owner=${path_without_host%%/*}
+  path_without_host=${path_without_host#*/}
+  repo=${path_without_host%%/*}
+  run_id=${url##*/}
+
+  if ! command -v gh >/dev/null 2>&1; then
+    evidence_status=UNVERIFIED
+    evidence_reason="gh is not available to resolve GitHub Actions evidence"
+    return
+  fi
+
+  conclusion=$(gh run view "$run_id" --repo "$owner/$repo" --json conclusion --jq .conclusion 2>/dev/null || true)
+  if [ -z "$conclusion" ]; then
+    evidence_status=UNVERIFIED
+    evidence_reason="could not resolve GitHub Actions run $owner/$repo#$run_id"
+    return
+  fi
+
+  if [ "$conclusion" = success ]; then
+    evidence_status=READY
+    evidence_reason="GitHub Actions run $owner/$repo#$run_id concluded success"
+  else
+    evidence_status=BLOCKED
+    evidence_reason="GitHub Actions run $owner/$repo#$run_id concluded $conclusion"
+  fi
+}
+
 blocked=0
 found=0
 while IFS= read -r doc; do
@@ -92,7 +136,25 @@ while IFS= read -r doc; do
   check_field "$doc" "Review verdict" review-verdict 'approved|pass|accepted'
 
   if [ -z "$missing" ] && [ -z "$unrecognized" ]; then
-    printf 'READY   %s  eligible to move to done/\n' "$rel"
+    if [ "$VERIFY_EVIDENCE" = true ]; then
+      evidence_status=""
+      evidence_reason=""
+      verify_evidence "$(field_block "$doc" "Verification evidence")"
+      case "$evidence_status" in
+        READY)
+          printf 'READY   %s  %s\n' "$rel" "$evidence_reason"
+          ;;
+        BLOCKED)
+          printf 'BLOCKED %s  %s\n' "$rel" "$evidence_reason"
+          blocked=$((blocked + 1))
+          ;;
+        UNVERIFIED)
+          printf 'UNVERIFIED %s  %s\n' "$rel" "$evidence_reason"
+          ;;
+      esac
+    else
+      printf 'READY   %s  eligible to move to done/\n' "$rel"
+    fi
   else
     printf 'BLOCKED %s  all tracker items checked;' "$rel"
     [ -z "$missing" ] || printf ' missing:%s' "$missing"
