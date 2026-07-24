@@ -132,7 +132,11 @@ scripts/doctor.sh [--check] [--scope repo|env|all]     # default: all
 
 # F-3 — approval as an event
 scripts/plan-to-issues.sh --apply --approved-by <name> [--doc <path>] <spec.json>
-  → tracker body gains:  <!-- agentic-plan:<id> approved-by:<name> at:<ISO-8601> -->
+  → EXTEND the existing tracker stamp — do NOT introduce a second marker:
+      before:  <!-- agentic-flow:plan:<id> tracker spec:<hash> -->
+      after:   <!-- agentic-flow:plan:<id> tracker spec:<hash> approved-by:<name> approved-at:<ISO-8601> -->
+    The lookup key is the PREFIX "agentic-flow:plan:<id> tracker" (plan-to-issues.sh:114-120,
+    a jq `contains` substring match), so appending fields after spec: is safe.
   → with --doc, Status block gains:
      - **Approval:** <name> approved on <YYYY-MM-DD> via plan-to-issues --apply.
 
@@ -264,7 +268,11 @@ and a non-zero `make check`.
 3. `gh` is a judgement call: classify it **env**. Nothing in the repo scope shells out to it.
 4. Change `self-test.sh:166` to `--scope repo`. Leave lines 70 and 75 alone — those assert
    doctor *rejects* broken fixtures and must keep exercising the full path.
-5. Print the active scope in doctor's header so a CI log says which contract was checked.
+5. Print the active scope in doctor's header **only when a non-default scope was explicitly
+   selected** (`--scope repo` / `--scope env`). The default `all` run must print exactly what
+   it prints today — otherwise the "byte-identical" DoD below is unsatisfiable, and every
+   adopter's expected doctor output changes for no benefit. A CI log still says which contract
+   was checked, because CI always passes `--scope repo` explicitly.
 
 **Test:** extend `self-test.sh`'s doctor section. **Failure path first:** a fixture with a
 deliberately unwired hook must still fail under `--scope repo` (proving the split didn't
@@ -354,9 +362,12 @@ first is the cheapest possible dogfood — the Make targets are already real and
    one. **Expect this to modify `templates/ci/*.yml` as well as `.github/workflows/*.yml`** —
    `check-action-pins.sh:53-58` scans both directories and `:96-99` rewrites every stamped
    file it finds. That is intended and allowed here: the stamp records *when the pins were
-   last verified*, and they were verified for both copies by the same act. Stage both files by
-   name and say so in the commit body. Do **not** add a scope flag to `check-action-pins.sh`
-   to avoid this — a stamp that lies about the template is worse than a two-file diff.
+   last verified*, and they were verified by the same act. **Stage every stamped workflow file
+   by name** — once the workflow is copied there are at least **three**: `.github/workflows/ci.yml`,
+   `templates/ci/ci.yml` (`:10`), and `templates/ci/deploy.yml` (`:11`). `deploy.yml` is easy to
+   miss because this step never otherwise touches it, and leaving it unstaged produces a dirty
+   tree that the Stop gate will flag. Do **not** add a scope flag to `check-action-pins.sh` to
+   avoid this — a stamp that lies about the template is worse than a three-file diff.
 8. Add `.github/` to `config/payload.tsv` as **`source-only`** — this workflow is this repo's
    own instance, not payload. Adopters get the inert template. (Note issue #17: source-only
    directories don't currently exclude correctly. If #17 has not landed, use the exact file
@@ -419,14 +430,26 @@ the source rather than teaching the checker more spellings.
 **Approach:**
 1. Add `--approved-by <name>` to `plan-to-issues.sh`'s flag loop (`scripts/plan-to-issues.sh:22-39`),
    following the existing `--doc` pattern for "requires a value".
-2. On `--apply`, extend the tracker's identity stamp with `approved-by` and an ISO-8601 date.
-   Reuse the existing HTML-comment stamp mechanism — do not invent a second marker format, and
-   do not put approval in the title.
+2. On `--apply`, **extend the existing `TRACK_STAMP`** (`plan-to-issues.sh:120-121`) by
+   appending `approved-by:` and `approved-at:` fields *inside that same HTML comment*. Do not
+   invent a second marker, and do not put approval in the title.
+   - The tracker is discovered by `issue_for_marker` (`:114-118`) doing a jq `contains` match
+     on the **prefix** `agentic-flow:plan:<id> tracker`. Appending after `spec:<hash>` leaves
+     that prefix intact, so reconciliation keeps working. Prepending or renaming the marker
+     would break resumption for every existing tracker — the failure would look like
+     "plan-to-issues suddenly creates duplicate issues."
 3. When `--doc` is given, write the `- **Approval:**` line into the doc's Status block using
    the schema in `docs/templates/feature-analysis.md:138`. Match the canonical field name
    exactly; that mismatch is precisely issue #19.
 4. Reconciliation must stay idempotent: re-running `--apply` preserves the original approval
-   stamp rather than re-dating it. Approval is an event, not a timestamp of the last run.
+   rather than re-dating it. Approval is an event, not a timestamp of the last run.
+   **Mind the overwrite.** On the update path the tracker body is *replaced* wholesale with
+   `TRACK_DESIRED` (`plan-to-issues.sh:180-181`). So approval stored in the body is destroyed
+   by the next `--apply` unless it is deliberately carried forward: parse `approved-by:` /
+   `approved-at:` out of the **fetched** `existing_tracker` body and re-emit them when
+   composing `TRACK_DESIRED`. A later `--approved-by` with a *different* name on an
+   already-approved plan should be refused (or warn loudly and keep the original) rather than
+   silently rewriting who approved it — that field is the audit trail.
 5. `--approved-by` stays optional. Requiring it would break every existing spec.
 
 **Test:** extend the fake-`gh` suite (`self-test.sh:469+`). **Failure path first:** `--approved-by`
