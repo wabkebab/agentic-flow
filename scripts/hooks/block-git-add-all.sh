@@ -13,8 +13,11 @@ fi
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null) || cmd=""
 [ -n "$cmd" ] || exit 0
 
-# Match: (git|git-claude|git-codex) add  ... <-A | --all | . | :/> as a standalone arg.
-if printf '%s' "$cmd" | grep -Eq '(^|[[:space:];&|(])(git|git-claude|git-codex)[[:space:]]+add[[:space:]]+([^|;&]*[[:space:]])?(-A|--all|\.|:/)([[:space:]]|$)'; then
+# Match: (git|git-claude|git-codex) [-C <path>|-c <k=v>]... add ... <-A|--all|.|:/> as a
+# standalone arg. The intervening-flag part matters: `git -C <path> add -A` and
+# `git -c k=v add .` are everyday usage, not evasion, and a pattern requiring `add` to
+# follow `git` immediately waved them straight through. Mirrors block-push.sh.
+if printf '%s' "$cmd" | grep -Eq '(^|[[:space:];&|(])(git|git-claude|git-codex)([[:space:]]+-[Cc][[:space:]]+[^[:space:]]+)*[[:space:]]+add[[:space:]]+([^|;&]*[[:space:]])?(-A|--all|\.|:/)([[:space:]]|$)'; then
   echo "Blocked: 'git add -A' / 'git add .' / 'git add --all' is not allowed (METHODOLOGY.md §7)." >&2
   echo "Stage specific files by name instead, e.g.:  git-claude add path/to/file" >&2
   exit 2
