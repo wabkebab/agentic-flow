@@ -14,7 +14,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --check) STRICT=true ;;
     --verify-evidence) VERIFY_EVIDENCE=true ;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
   shift

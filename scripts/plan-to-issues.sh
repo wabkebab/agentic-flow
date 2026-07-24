@@ -30,7 +30,7 @@ while [ "$#" -gt 0 ]; do
     --approved-by)
       [ "$#" -ge 2 ] || { echo "error: --approved-by requires a name" >&2; exit 2; }
       APPROVED_BY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"; exit 0 ;;
     -*)
       echo "error: unknown flag: $1" >&2
       exit 2

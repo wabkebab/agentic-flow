@@ -11,8 +11,8 @@
 - [x] F-1 Split `doctor.sh` into repo-invariant and environment scopes — fixed in f14069a (#22)
 - [x] F-2 Activate CI on this repository — fixed in cef93b8 (#23)
 - [x] F-3 Stamp approval as an event (`--approved-by`) — fixed in b13a5d9 (#24)
-- [x] F-4 Derive verification evidence from the CI run conclusion — fixed in local commit (#25)
-- [x] F-5 Render the CI runtime setup block from the stack profile — fixed in this commit (#26)
+- [x] F-4 Derive verification evidence from the CI run conclusion — fixed in 82a5265 (#25)
+- [x] F-5 Render the CI runtime setup block from the stack profile — fixed in 7f91faa (#26)
 
 ---
 

@@ -2,8 +2,14 @@
 # doctor.sh — adoption checklist for a project using the agentic-flow scaffold.
 #
 # Usage:
-#   scripts/doctor.sh          report required-tool and scaffold gaps
-#   scripts/doctor.sh --check  same report; exits non-zero when gaps are found
+#   scripts/doctor.sh                    report required-tool and scaffold gaps
+#   scripts/doctor.sh --check            same report; exits non-zero when gaps are found
+#   scripts/doctor.sh --scope repo|env|all
+#       repo  portable repository invariants only — files, hook wiring, manifest,
+#             merge candidates, Make targets, CI posture, docs index. Runs anywhere,
+#             including a CI runner with no developer tooling installed.
+#       env   workstation tooling only — required commands and the commit wrappers.
+#       all   both (default; output is unchanged from before --scope existed).
 set -euo pipefail
 
 CHECK=false
@@ -19,7 +25,10 @@ while [ "$#" -gt 0 ]; do
       esac
       shift 2
       ;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    # Print the header block by shape, not by a hardcoded line range: the old `sed -n
+    # '2,8p'` silently went stale when the usage text grew, leaking `set -euo pipefail`
+    # into --help and omitting the flags added below it.
+    -h|--help) awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
