@@ -69,7 +69,12 @@ is_excluded() {
   local rel="$1" base; base=$(basename "$rel")
   local x
   for x in "${EXCLUDE_BASENAMES[@]}"; do [ "$base" = "$x" ] && return 0; done
-  for x in "${EXCLUDE_PATHS[@]}";     do [ "$rel"  = "$x" ] && return 0; done
+  # Prefix match, not exact-equality: a source-only manifest entry can name a directory
+  # (e.g. a future installer-only subtree), and its files reach us here as paths beneath
+  # it, never as the directory path itself.
+  for x in "${EXCLUDE_PATHS[@]}"; do
+    case "$rel" in "$x"|"$x"/*) return 0 ;; esac
+  done
   return 1
 }
 
