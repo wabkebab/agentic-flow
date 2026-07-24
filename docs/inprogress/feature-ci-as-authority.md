@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-07-24) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > Move the authority for "green" and "approved" from something an agent asserts to something
 > the repository enforces: split doctor's portable checks from its workstation checks,
 > activate CI on this repo, stamp approval as an event, and derive verification evidence from
@@ -618,8 +618,11 @@ pin checker still passes.
 ---
 
 ## Status / Implementation status
-- **Tracking issue:** pending — run `plan-to-issues --apply` after approval.
-- **Approval:** pending.
+- **Tracking issue:** [#21](https://github.com/wabkebab/agentic-flow/issues/21) — sub-issues:
+  F-1 #22 · F-2 #23 · F-3 #24 · F-4 #25 · F-5 #26.
+- **Approval:** user approved on 2026-07-24; issues created via `plan-to-issues --apply`
+  (the approval event, METHODOLOGY §6). Hand-written because `--approved-by` does not exist
+  yet — it is **F-3 of this very plan**. When F-3 lands, this line becomes machine-written.
 - **Verification evidence:** pending until execution.
 - **Review verdict:** pending.
 - Steps not yet started. Executor closes each via a PR with `Fixes #N`, records the commit
