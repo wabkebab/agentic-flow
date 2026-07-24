@@ -5,6 +5,7 @@ templates/harness/CLAUDE.md	CLAUDE.md	claude	preserve	export
 templates/harness/AGENTS.md	AGENTS.md	codex	preserve	export
 templates/harness/Makefile	Makefile	core	preserve	export
 .claude/settings.json	.claude/settings.json	claude	preserve	export
+.claude/settings.local.json	.claude/settings.local.json	source-only	none	source-only
 .claude/skills	.claude/skills	claude	preserve	export
 .codex/hooks.json	.codex/hooks.json	codex	preserve	export
 .agents/skills	.agents/skills	codex	preserve	export

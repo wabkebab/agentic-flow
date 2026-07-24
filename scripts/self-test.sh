@@ -59,6 +59,12 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     printf 'gitdir: %s\n' "$source_git_dir" > "$SOURCE_FIXTURE/.git"
   fi
 
+  printf '%s\n' '{}' > "$SOURCE_FIXTURE/.codex/unclassified.json"
+  AGENTIC_PROJECT_ROOT="$SOURCE_FIXTURE" \
+    "$SOURCE_FIXTURE/scripts/check-payload-manifest.sh" >/dev/null 2>&1 \
+    && fail "payload coverage accepted an unclassified Codex adapter file"
+  rm -f "$SOURCE_FIXTURE/.codex/unclassified.json"
+
   cp "$SOURCE_FIXTURE/.codex/hooks.json" "$TMP/codex-hooks.orig"
   printf '%s\n' '{"hooks":{}}' > "$SOURCE_FIXTURE/.codex/hooks.json"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \

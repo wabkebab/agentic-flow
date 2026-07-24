@@ -48,6 +48,7 @@ awk -v profile="$PROFILE_FILE" '
     if (target == "check") {
       print "\t@for f in scripts/*.sh scripts/hooks/*.sh; do bash -n \"$$f\" || exit 1; done"
       print "\t@scripts/docs-index.sh --check"
+      print "\t@scripts/check-payload-manifest.sh"
       print "\t@scripts/check-action-pins.sh"
       print "\t@scripts/self-test.sh"
     } else if (target == "test") {

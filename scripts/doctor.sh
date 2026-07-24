@@ -117,6 +117,7 @@ require_file .claude/settings.json
 require_file .codex/hooks.json
 require_file .agents/skills/plan-to-issues/SKILL.md
 require_file scripts/docs-index.sh
+require_file scripts/check-payload-manifest.sh
 require_file scripts/lifecycle-status.sh
 require_file scripts/render-stack-profile.sh
 require_file scripts/plan-to-issues.sh
@@ -204,6 +205,7 @@ if [ -f "$ROOT/.agentic-flow-stack-candidate" ]; then
 fi
 
 require_executable scripts/docs-index.sh
+require_executable scripts/check-payload-manifest.sh
 require_executable scripts/lifecycle-status.sh
 require_executable scripts/render-stack-profile.sh
 require_executable scripts/plan-to-issues.sh
