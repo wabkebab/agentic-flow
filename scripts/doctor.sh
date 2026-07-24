@@ -81,7 +81,10 @@ require_file ADOPTION.md
 require_file CLAUDE.md
 require_file AGENTS.md
 require_file Makefile
+require_file config/payload.tsv
 require_file .claude/settings.json
+require_file .codex/hooks.json
+require_file .agents/skills/plan-to-issues/SKILL.md
 require_file scripts/docs-index.sh
 require_file scripts/plan-to-issues.sh
 require_file scripts/doctor.sh
@@ -92,6 +95,38 @@ require_file scripts/hooks/block-push.sh
 require_file scripts/hooks/scan-secrets.sh
 require_file docs/README.md
 require_file docs/accepted_risks.md
+
+if [ -f "$ROOT/config/payload.tsv" ]; then
+  manifest_failures=0
+  while IFS="$(printf '\t')" read -r source destination scope merge_policy disposition; do
+    case "${source:-}" in ""|\#*) continue ;; esac
+    case "${disposition:-}" in
+      export)
+        if [ ! -e "$ROOT/$destination" ]; then
+          fail "manifest destination: $destination"
+          manifest_failures=$((manifest_failures + 1))
+        fi
+        ;;
+      source-only) ;;
+      *)
+        fail "manifest disposition for $source"
+        manifest_failures=$((manifest_failures + 1))
+        ;;
+    esac
+    [ -n "${scope:-}" ] || {
+      fail "manifest scope for $source"
+      manifest_failures=$((manifest_failures + 1))
+    }
+    case "${merge_policy:-}" in preserve|force|none) ;; *)
+      fail "manifest merge policy for $source"
+      manifest_failures=$((manifest_failures + 1))
+      ;;
+    esac
+  done < "$ROOT/config/payload.tsv"
+  if [ "$manifest_failures" -eq 0 ]; then
+    ok "payload manifest destinations present"
+  fi
+fi
 
 if grep -Eq "$TOKEN_RE" "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" 2>/dev/null; then
   fail "unfilled template tokens in CLAUDE.md or AGENTS.md"

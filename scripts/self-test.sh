@@ -55,6 +55,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/AGENTS.md"
   assert_file "$TARGET/Makefile"
   assert_file "$TARGET/.claude/settings.json"
+  assert_file "$TARGET/.codex/hooks.json"
+  assert_file "$TARGET/.agents/skills/plan-to-issues/SKILL.md"
+  assert_file "$TARGET/config/payload.tsv"
   assert_file "$TARGET/scripts/plan-to-issues.sh"
   assert_file "$TARGET/scripts/doctor.sh"
   assert_file "$TARGET/docs/README.md"
@@ -88,6 +91,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_no_file "$TARGET/docs/inprogress/feature-init-and-template-split.md"
   assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"
+  assert_no_file "$TARGET/scripts/init.sh"
 
   (cd "$TARGET" && scripts/docs-index.sh --check) >/dev/null
 
