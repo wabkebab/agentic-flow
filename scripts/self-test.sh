@@ -88,6 +88,12 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/config/payload.tsv"
   assert_file "$TARGET/scripts/plan-to-issues.sh"
   assert_file "$TARGET/scripts/doctor.sh"
+  assert_file "$TARGET/scripts/render-stack-profile.sh"
+  assert_file "$TARGET/profiles/generic.tsv"
+  assert_file "$TARGET/profiles/node.tsv"
+  assert_file "$TARGET/profiles/python.tsv"
+  assert_file "$TARGET/profiles/go.tsv"
+  assert_file "$TARGET/profiles/rust.tsv"
   assert_file "$TARGET/docs/README.md"
   assert_file "$TARGET/docs/templates/feature-analysis.md"
   assert_file "$TARGET/docs/accepted_risks.md"
@@ -193,6 +199,26 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   if grep -RE "$TOKEN_RE" "$INIT_NONTty" >/dev/null 2>&1; then
     fail "non-TTY init left unfilled template tokens"
   fi
+
+  # Stack profiles are data, rendered by one implementation. Validate every shipped
+  # profile without requiring its runtime or package manager to be installed.
+  for profile in generic node python go rust; do
+    profile_makefile="$TMP/Makefile.$profile"
+    cp "$ROOT/templates/harness/Makefile" "$profile_makefile"
+    "$ROOT/scripts/render-stack-profile.sh" "$profile" "$profile_makefile"
+    if grep -q "TODO: define" "$profile_makefile"; then
+      fail "$profile stack profile left placeholder Make targets"
+    fi
+    case "$profile" in
+      generic) expected="No project build profile configured" ;;
+      node) expected="npm run build" ;;
+      python) expected="python3 -m build" ;;
+      go) expected="go build ./..." ;;
+      rust) expected="cargo build --locked" ;;
+    esac
+    grep -qF "$expected" "$profile_makefile" \
+      || fail "$profile stack profile did not render its build command"
+  done
 fi
 
 # --- shellcheck is required, not optional ------------------------------------------------

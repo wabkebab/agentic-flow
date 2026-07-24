@@ -1,0 +1,8 @@
+# target	command
+detect	pyproject.toml
+detect	requirements.txt
+check	python3 -m compileall -q .
+test	python3 -m pytest
+test-one	python3 -m pytest "$(F)"
+build	python3 -m build
+run	scripts/doctor.sh

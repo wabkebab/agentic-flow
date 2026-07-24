@@ -1,0 +1,7 @@
+# target	command
+detect	Cargo.toml
+check	cargo check --locked
+test	cargo test --locked
+test-one	cargo test --locked "$(F)"
+build	cargo build --locked
+run	cargo run --locked

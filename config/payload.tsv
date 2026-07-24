@@ -11,7 +11,9 @@ templates/harness/Makefile	Makefile	core	preserve	export
 scripts	scripts	core	preserve	export
 scripts/export.sh	scripts/export.sh	source-only	none	source-only
 scripts/init.sh	scripts/init.sh	source-only	none	source-only
+.agentic-flow-stack	.agentic-flow-stack	source-only	none	source-only
 templates/ci	templates/ci	ci	preserve	export
+profiles	profiles	core	preserve	export
 docs/templates	docs/templates	docs	preserve	export
 docs/README.md	docs/README.md	docs	preserve	export
 docs/accepted_risks.md	docs/accepted_risks.md	docs	preserve	export

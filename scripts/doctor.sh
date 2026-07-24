@@ -118,6 +118,7 @@ require_file .codex/hooks.json
 require_file .agents/skills/plan-to-issues/SKILL.md
 require_file scripts/docs-index.sh
 require_file scripts/lifecycle-status.sh
+require_file scripts/render-stack-profile.sh
 require_file scripts/plan-to-issues.sh
 require_file scripts/doctor.sh
 require_file scripts/self-test.sh
@@ -184,9 +185,27 @@ if [ -f "$ROOT/.agentic-flow-candidate-version" ]; then
   candidate_version=$(sed -n '1p' "$ROOT/.agentic-flow-candidate-version")
   warn "scaffold update pending merge: $candidate_version"
 fi
+if [ -f "$ROOT/.agentic-flow-stack" ]; then
+  stack_profile=$(sed -n '1p' "$ROOT/.agentic-flow-stack")
+  if [ -f "$ROOT/profiles/$stack_profile.tsv" ]; then
+    ok "stack profile: $stack_profile"
+    if [ "$stack_profile" = generic ]; then
+      warn "generic stack profile validates the harness only; customize project recipes"
+    fi
+  else
+    fail "unknown stack profile: $stack_profile"
+  fi
+else
+  warn "stack profile stamp not found: .agentic-flow-stack"
+fi
+if [ -f "$ROOT/.agentic-flow-stack-candidate" ]; then
+  candidate_stack=$(sed -n '1p' "$ROOT/.agentic-flow-stack-candidate")
+  warn "stack profile pending Makefile merge: $candidate_stack"
+fi
 
 require_executable scripts/docs-index.sh
 require_executable scripts/lifecycle-status.sh
+require_executable scripts/render-stack-profile.sh
 require_executable scripts/plan-to-issues.sh
 require_executable scripts/doctor.sh
 require_executable scripts/self-test.sh

@@ -2,7 +2,8 @@
 # init.sh — adopt the agentic-flow scaffold into a target project.
 #
 # Usage:
-#   scripts/init.sh <target-dir> --name <kebab> [--stack none|node] [--claude-only] [--git-init] [--yes] [--dry-run]
+#   scripts/init.sh <target-dir> --name <kebab> [--stack <profile>]
+#                   [--claude-only] [--git-init] [--yes] [--dry-run]
 #
 # Every promptable choice has a matching flag. Non-TTY runs never prompt.
 set -euo pipefail
@@ -31,12 +32,27 @@ die() {
 }
 
 detect_stack() {
-  local target="$1"
-  if [ -f "$target/package.json" ]; then
-    printf '%s\n' node
-  else
-    printf '%s\n' none
-  fi
+  local target="$1" profile_file profile marker
+  for profile_file in "$SRC"/profiles/*.tsv; do
+    profile=$(basename "$profile_file" .tsv)
+    [ "$profile" = generic ] && continue
+    while IFS="$(printf '\t')" read -r key marker; do
+      [ "$key" = detect ] || continue
+      if [ -f "$target/$marker" ]; then
+        printf '%s\n' "$profile"
+        return
+      fi
+    done < "$profile_file"
+  done
+  printf '%s\n' generic
+}
+
+available_profiles() {
+  local profile_file names=""
+  for profile_file in "$SRC"/profiles/*.tsv; do
+    names="${names}${names:+|}$(basename "$profile_file" .tsv)"
+  done
+  printf '%s\n' "$names"
 }
 
 target_in_git_repo() {
@@ -62,13 +78,15 @@ prompt_stack() {
   local default value
   default=$(detect_stack "$TARGET_ABS")
   while true; do
-    printf 'Stack preset (--stack) [none|node, default: %s]: ' "$default" >&2
+    printf 'Stack profile (--stack) [%s, default: %s]: ' "$(available_profiles)" "$default" >&2
     IFS= read -r value || die "failed to read --stack"
     [ -n "$value" ] || value="$default"
-    case "$value" in
-      none|node) STACK="$value"; return ;;
-      *) echo "Enter 'none' or 'node'." >&2 ;;
-    esac
+    [ "$value" = none ] && value=generic
+    if [ -f "$SRC/profiles/$value.tsv" ]; then
+      STACK="$value"
+      return
+    fi
+    echo "Enter one of: $(available_profiles)." >&2
   done
 }
 
@@ -161,10 +179,9 @@ else
 fi
 
 is_kebab "$PROJECT_NAME" || die "--name must be kebab-case lowercase letters, numbers, and hyphens"
-case "$STACK" in
-  none|node) ;;
-  *) die "--stack must be 'none' or 'node'" ;;
-esac
+[ "$STACK" = none ] && STACK=generic
+[ -f "$SRC/profiles/$STACK.tsv" ] \
+  || die "--stack must name a profile in profiles/ ('none' aliases generic)"
 
 if [ "$DRY" = true ]; then
   "$SRC/scripts/export.sh" --dry-run "$DST"
@@ -219,52 +236,6 @@ apply_claude_only() {
   mv "$tmp" "$file"
 }
 
-apply_node_preset() {
-  local file="$1" tmp
-  [ -f "$file" ] || return 0
-  tmp="$file.tmp.$$"
-  awk '
-    skip == 1 && /^[A-Za-z0-9_.-]+:/ { skip=0 }
-    skip == 1 { next }
-    /^check:/ {
-      print
-      print "\t@for f in scripts/*.sh scripts/hooks/*.sh; do bash -n \"$$f\" || exit 1; done"
-      print "\t@scripts/docs-index.sh --check"
-      print "\t@scripts/self-test.sh"
-      print "\t@npm run typecheck"
-      print "\t@npm run lint"
-      skip=1
-      next
-    }
-    /^test:/ {
-      print
-      print "\t@npm run test:run"
-      skip=1
-      next
-    }
-    /^test-one:/ {
-      print
-      print "\t@npx vitest run $(F)"
-      skip=1
-      next
-    }
-    /^build:/ {
-      print
-      print "\t@npm run build"
-      skip=1
-      next
-    }
-    /^run:/ {
-      print
-      print "\t@npm run dev"
-      skip=1
-      next
-    }
-    { print }
-  ' "$file" > "$tmp"
-  mv "$tmp" "$file"
-}
-
 if [ "$preexisting_claude" = false ]; then
   fill_project_name "$TARGET_ABS/CLAUDE.md"
 fi
@@ -284,13 +255,15 @@ if [ "$CLAUDE_ONLY" = true ]; then
   apply_claude_only "$TARGET_ABS/AGENTS.md.agentic-new"
 fi
 
-if [ "$STACK" = "node" ]; then
-  if [ "$preexisting_makefile" = false ]; then
-    apply_node_preset "$TARGET_ABS/Makefile"
-  fi
-  apply_node_preset "$TARGET_ABS/Makefile.agentic-new"
-  echo "Applied node stack preset; verify these recipes match package.json."
+if [ "$preexisting_makefile" = false ]; then
+  "$SRC/scripts/render-stack-profile.sh" "$STACK" "$TARGET_ABS/Makefile"
+  printf '%s\n' "$STACK" > "$TARGET_ABS/.agentic-flow-stack"
+else
+  printf '%s\n' "$STACK" > "$TARGET_ABS/.agentic-flow-stack-candidate"
 fi
+"$SRC/scripts/render-stack-profile.sh" "$STACK" "$TARGET_ABS/Makefile.agentic-new" \
+  2>/dev/null || true
+echo "Applied $STACK stack profile; verify its Make recipes match the project."
 
 token_files=""
 for f in "$TARGET_ABS/CLAUDE.md" "$TARGET_ABS/AGENTS.md" \

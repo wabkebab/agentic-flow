@@ -244,9 +244,11 @@ Fixes #73
   to close, or blocked on approval, tracking, CI evidence, or review. `--check` makes missing
   closure evidence fatal without moving files automatically.
 - **`scripts/init.sh`** is the adoption path: export the scaffold, fill machine tokens,
-  apply stack/opt-out flags, stamp the source version, and print the doctor report.
+  apply a data-driven generic/Node/Python/Go/Rust stack profile plus opt-out flags, stamp
+  the source version, and print the doctor report. Detection proposes; explicit flags win.
 - **`scripts/doctor.sh`** is the adoption checklist for a copied scaffold: required files,
-  hook wiring, required tools, real Make targets, and docs-index freshness.
+  agent-adapter hook wiring, required tools, stack/version state, unresolved update
+  candidates, real Make targets, CI posture, and docs-index freshness.
 - **`scripts/check-action-pins.sh`** keeps GitHub Actions pinned to immutable SHAs with a
   readable version comment (fatal), and nags when the pins haven't been re-verified in
   months (`--strict` to enforce, `--online` to check against GitHub). See §10.
