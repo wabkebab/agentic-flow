@@ -6,7 +6,7 @@
 # the export section and checks only the local invariants: hooks and spec validation.
 set -euo pipefail
 
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
@@ -58,6 +58,17 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   if [ -n "$source_git_dir" ]; then
     printf 'gitdir: %s\n' "$source_git_dir" > "$SOURCE_FIXTURE/.git"
   fi
+
+  cp "$SOURCE_FIXTURE/.codex/hooks.json" "$TMP/codex-hooks.orig"
+  printf '%s\n' '{"hooks":{}}' > "$SOURCE_FIXTURE/.codex/hooks.json"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
+    && fail "doctor accepted a structurally unwired Codex hook configuration"
+  cp "$TMP/codex-hooks.orig" "$SOURCE_FIXTURE/.codex/hooks.json"
+
+  printf '%s\n' unresolved > "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
+    && fail "doctor accepted an unresolved scaffold merge candidate"
+  rm -f "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
 
   DOC_LEAK_SENTINEL="$SOURCE_FIXTURE/docs/inprogress/self-test-export-leak.md"
   TARGET="$TMP/target"
@@ -213,7 +224,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 YAML
-  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 && fail "pin guard accepted a mutable tag pin"
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
+    && fail "pin guard accepted a mutable tag pin"
 
   cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
 # Action pins verified: 2999-01-01
@@ -222,7 +234,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 YAML
-  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 && fail "pin guard accepted a SHA pin with no version comment"
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
+    && fail "pin guard accepted a SHA pin with no version comment"
 
   # A well-formed pin and a local action must both pass.
   cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
@@ -233,20 +246,20 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/local
 YAML
-  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 \
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
     || fail "pin guard rejected a correctly pinned action or a local action"
 
   # Staleness is a warning, not an error — otherwise the calendar alone turns repos red
   # and the Stop hook starts blocking turns. --strict is what enforces.
   printf '%s\n' "# Action pins verified: 2020-01-01" > "$PINFIX/.github/workflows/stale.yml"
-  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 \
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
     || fail "pin guard treated a stale stamp as fatal in default mode"
-  (cd "$PINFIX" && "$PIN_GUARD" --strict) >/dev/null 2>&1 \
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" --strict >/dev/null 2>&1 \
     && fail "pin guard --strict did not fail on a stale stamp"
 
   # No workflows at all is a clean pass, not an error: most fresh adoptions have none.
   mkdir -p "$TMP/pin-empty"
-  (cd "$TMP/pin-empty" && "$PIN_GUARD") >/dev/null 2>&1 \
+  AGENTIC_PROJECT_ROOT="$TMP/pin-empty" "$PIN_GUARD" >/dev/null 2>&1 \
     || fail "pin guard failed in a project with no workflow files"
 
   # The shipped templates must satisfy their own guard.
