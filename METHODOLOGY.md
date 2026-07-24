@@ -60,17 +60,33 @@ opt-out at the top of the project's `CLAUDE.md`.
 The loop is **one-directional** (doc → issues), never the reverse. The document stays the
 source of design intent; issues are the disposable execution units.
 
+### Delivery lanes
+
+Use the smallest lane that preserves the risk and evidence needed:
+
+| Lane | Use when | Required artifact |
+|------|----------|-------------------|
+| **Fast Fix** | A bounded bug or maintenance change with an obvious approach | Issue or short brief, regression test, one branch/PR |
+| **Planned Change** | Feature, security work, or multi-step behavior change | Feature/Security doc, approved brief, one issue/branch/PR per shippable step |
+| **Decision** | Product or architecture choice before implementation | Product Analysis; spin off a Planned Change if approved |
+| **Emergency** | Production restoration cannot wait for the normal planning cycle | Hotfix PR with evidence, followed by a retrospective Feature/Security doc |
+
+An independently-shippable step is the delivery unit: **one issue owns one branch and one
+PR**. A brief may order several issues, but it does not put them on one long-lived feature
+branch. If two proposed steps cannot be reviewed and merged independently, they are one step.
+
 ---
 
 ## 3. Document types
 
-Three types live under `docs/`. Pick the template that matches the work.
+Four types live under `docs/`. Pick the template that matches the work.
 
 | Type | Template | Purpose | Implementation brief? |
 |------|----------|---------|-----------------------|
 | **Security** | `templates/security-review.md` | A security review or hardening pass. Severity-graded findings with `file:line` and a concrete fix. | **Yes — inlined.** Closes to `docs/done/security/`. |
 | **Feature** | `templates/feature-analysis.md` | Designing a feature or change. Goal, current state, approach, what-not-to-build. | **Yes — inlined.** Closes to `docs/done/`. |
 | **Product Analysis** | `templates/product-analysis.md` | Exploratory architecture / product / monetization analysis. Options, trade-offs, a recommendation. A **decision record**. | **No.** If it greenlights work, spin off a Feature (or Security) doc for that. |
+| **Review** | `templates/review.md` | Post-execution architectural or hand-written review with findings, evidence, and a verdict. | **No.** Required fixes become Fast Fix issues or a new approved brief. |
 
 **The implementation brief is inlined** in Security and Feature docs as a dedicated
 section — it is the brief an implementing agent reads to execute precisely. It contains
@@ -100,7 +116,8 @@ docs/
   feature (record that decision in `accepted_risks.md` and link it).
 
 ### Naming convention
-- `security-<topic>.md`, `feature-<topic>.md`, `product-<topic>.md` — kebab-case topic.
+- `security-<topic>.md`, `feature-<topic>.md`, `product-<topic>.md`,
+  `review-<topic>.md` — kebab-case topic.
 - Avoid dates and model names in filenames; put those in the TRIAGE header instead.
 - One topic per file. Don't accumulate unrelated findings in one doc.
 
@@ -157,6 +174,8 @@ independently-shippable step**, from the implementation brief.
 
 Rules:
 - One issue per independently-shippable step — not one giant issue, not one per commit.
+- One issue owns one branch and one PR. Merge ordered dependencies before branching the
+  next step; use an explicitly documented stacked-PR workflow only when the project supports it.
 - Issue body = the step's Definition of Done + the exact verification commands. The *why*
   and the ordering stay in the doc.
 - Flow is one-directional. If the plan changes, regenerate or hand-edit issues; never
@@ -221,6 +240,9 @@ Fixes #73
   `AGENTIC_ALLOW_SECRET=1` overrides a false positive, visibly.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
+- **`scripts/lifecycle-status.sh`** derives whether active trackers are still active, ready
+  to close, or blocked on approval, tracking, CI evidence, or review. `--check` makes missing
+  closure evidence fatal without moving files automatically.
 - **`scripts/init.sh`** is the adoption path: export the scaffold, fill machine tokens,
   apply stack/opt-out flags, stamp the source version, and print the doctor report.
 - **`scripts/doctor.sh`** is the adoption checklist for a copied scaffold: required files,

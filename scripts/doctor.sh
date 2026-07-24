@@ -117,6 +117,7 @@ require_file .claude/settings.json
 require_file .codex/hooks.json
 require_file .agents/skills/plan-to-issues/SKILL.md
 require_file scripts/docs-index.sh
+require_file scripts/lifecycle-status.sh
 require_file scripts/plan-to-issues.sh
 require_file scripts/doctor.sh
 require_file scripts/self-test.sh
@@ -185,6 +186,7 @@ if [ -f "$ROOT/.agentic-flow-candidate-version" ]; then
 fi
 
 require_executable scripts/docs-index.sh
+require_executable scripts/lifecycle-status.sh
 require_executable scripts/plan-to-issues.sh
 require_executable scripts/doctor.sh
 require_executable scripts/self-test.sh

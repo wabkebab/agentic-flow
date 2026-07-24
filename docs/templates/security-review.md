@@ -74,7 +74,8 @@
 > commit bodies. This brief carries the **approach and insights — not the code.**
 
 ## Branch
-`security-<topic>` off <base branch>. (Confirm the base with the human.)
+Base: `<base branch>`. Each step uses one branch and one PR:
+`security-<topic>-secN` (confirm the base with the human).
 
 ## Definition of done (whole brief)
 Every step's per-step DoD met; `make check` and `make test` green; each fix has a
@@ -125,5 +126,8 @@ passes after.>
 ## Status / Implementation status
 <!-- Kept current by the executor. -->
 - **Tracking issue:** [#NN](<url>) — sub-issues: SEC-1 #__ · SEC-2 #__.
+- **Approval:** <approved by whom and when>.
+- **Verification evidence:** <CI run or PR checks URL; pending until execution>.
+- **Review verdict:** <pending | approved with review URL>.
 - Steps not yet started. Executor closes each via a PR with `Fixes #N`, records the commit
   SHA per step here, and ticks the matching SEC-N box in the Tracker above.

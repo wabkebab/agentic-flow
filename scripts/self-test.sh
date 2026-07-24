@@ -589,4 +589,39 @@ PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PARTIAL_STATE" \
 partial_count=$(find "$PARTIAL_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
 [ "$partial_count" -eq 3 ] || fail "partial resume duplicated or omitted plan issues"
 
+# --- lifecycle qualification -------------------------------------------------------------
+LIFEFIX="$TMP/lifecycle-fixture"
+mkdir -p "$LIFEFIX/docs/inprogress"
+cat > "$LIFEFIX/docs/inprogress/feature-active.md" <<'MD'
+## Tracker
+- [x] F-1 done
+- [ ] F-2 open
+MD
+cat > "$LIFEFIX/docs/inprogress/feature-blocked.md" <<'MD'
+## Tracker
+- [x] F-1 done
+## Status
+- **Approval:** user approved 2026-01-01.
+- **Tracking issue:** https://example.invalid/issues/1
+- **Verification evidence:** pending.
+- **Review verdict:** pending.
+MD
+AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" \
+  > "$TMP/lifecycle.out"
+grep -q "ACTIVE.*feature-active.md" "$TMP/lifecycle.out" \
+  || fail "lifecycle report did not retain an open tracker as active"
+grep -q "BLOCKED.*feature-blocked.md.*verification-evidence.*review-verdict" \
+  "$TMP/lifecycle.out" \
+  || fail "lifecycle report did not name missing closure evidence"
+AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
+  && fail "strict lifecycle check accepted an all-checked tracker without evidence"
+
+sed \
+  -e 's|^- \*\*Verification evidence:\*\* pending\.$|- **Verification evidence:** https://example.invalid/actions/1|' \
+  -e 's|^- \*\*Review verdict:\*\* pending\.$|- **Review verdict:** approved — https://example.invalid/reviews/1|' \
+  "$LIFEFIX/docs/inprogress/feature-blocked.md" > "$TMP/lifecycle-ready.md"
+mv "$TMP/lifecycle-ready.md" "$LIFEFIX/docs/inprogress/feature-blocked.md"
+AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
+  || fail "strict lifecycle check rejected a tracker with complete closure evidence"
+
 echo "self-test passed."

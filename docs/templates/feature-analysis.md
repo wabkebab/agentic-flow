@@ -87,7 +87,8 @@ Bounds: <every query's limit, every loop's cap, every request's timeout — §11
 > **approach and insights — not the code.**
 
 ## Branch
-`feature-<topic>` off <base branch>. (Confirm the base with the human.)
+Base: `<base branch>`. Each step uses one branch and one PR:
+`feature-<topic>-fN` (confirm the base with the human).
 
 ## Definition of done (whole brief)
 Every step's per-step DoD met; `make check` and `make test` green; the user-visible goal in
@@ -134,5 +135,8 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 ## Status / Implementation status
 <!-- Kept current by the executor. -->
 - **Tracking issue:** [#NN](<url>) — sub-issues: F-1 #__ · F-2 #__.
+- **Approval:** <approved by whom and when>.
+- **Verification evidence:** <CI run or PR checks URL; pending until execution>.
+- **Review verdict:** <pending | approved with review URL>.
 - Steps not yet started. Executor closes each via a PR with `Fixes #N`, records the commit
   SHA per step here, and ticks the matching F-N box in the Tracker above.

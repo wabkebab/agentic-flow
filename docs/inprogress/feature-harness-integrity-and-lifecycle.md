@@ -16,7 +16,8 @@
   implemented on `codex/harness-integrity-and-lifecycle` (#12)
 - [x] F-5 Make plan-to-issues idempotent, resumable, and Bash 3.2-safe —
   implemented on `codex/harness-integrity-and-lifecycle` (#13)
-- [ ] F-6 Clarify workflow lanes and make lifecycle qualification derivable — open
+- [x] F-6 Clarify workflow lanes and make lifecycle qualification derivable —
+  implemented on `codex/harness-integrity-and-lifecycle` (#14)
 - [ ] F-7 Add modular stack profiles and finish the documentation — open
 
 ---
@@ -233,4 +234,6 @@ requiring the target runtime when only rendering.
 - **Approval:** user approved the implementation on 2026-07-24.
 - **Tracking issue:** [#16](https://github.com/wabkebab/agentic-flow/issues/16) —
   F-1 #9 · F-2 #10 · F-3 #11 · F-4 #12 · F-5 #13 · F-6 #14 · F-7 #15.
-- F-1 through F-5 implemented and verified; remaining steps proceed in tracker order.
+- **Verification evidence:** pending final full-suite and review evidence.
+- **Review verdict:** pending.
+- F-1 through F-6 implemented and verified; remaining steps proceed in tracker order.
