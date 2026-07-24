@@ -67,7 +67,11 @@ is_excluded() {
 
 # Create / validate target.
 if [ ! -d "$DST" ]; then
-  $DRY && echo "(dry-run) would create target dir: $DST" || { mkdir -p "$DST"; echo "created target dir: $DST"; }
+  if $DRY; then
+    echo "(dry-run) would create target dir: $DST"
+  else
+    mkdir -p "$DST"; echo "created target dir: $DST"
+  fi
 fi
 DST=$(cd "$DST" 2>/dev/null && pwd -P || echo "$DST")
 [ "$DST" != "$SRC" ] || die "target is the agentic-flow repo itself"

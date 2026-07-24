@@ -195,7 +195,8 @@ YAML
     && fail "pin guard --strict did not fail on a stale stamp"
 
   # No workflows at all is a clean pass, not an error: most fresh adoptions have none.
-  mkdir -p "$TMP/pin-empty" && (cd "$TMP/pin-empty" && "$PIN_GUARD") >/dev/null 2>&1 \
+  mkdir -p "$TMP/pin-empty"
+  (cd "$TMP/pin-empty" && "$PIN_GUARD") >/dev/null 2>&1 \
     || fail "pin guard failed in a project with no workflow files"
 
   # The shipped templates must satisfy their own guard.

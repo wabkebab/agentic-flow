@@ -24,19 +24,23 @@ warn() { printf 'warning %s\n' "$*"; warnings=$((warnings + 1)); }
 fail() { printf 'missing %s\n' "$*"; failures=$((failures + 1)); }
 
 require_file() {
-  [ -f "$ROOT/$1" ] && ok "$1" || fail "$1"
+  if [ -f "$ROOT/$1" ]; then ok "$1"; else fail "$1"; fi
 }
 
 require_executable() {
-  [ -x "$ROOT/$1" ] && ok "$1 executable" || fail "$1 executable"
+  if [ -x "$ROOT/$1" ]; then ok "$1 executable"; else fail "$1 executable"; fi
 }
 
 require_tool() {
-  command -v "$1" >/dev/null 2>&1 && ok "tool: $1" || fail "tool: $1"
+  if command -v "$1" >/dev/null 2>&1; then ok "tool: $1"; else fail "tool: $1"; fi
 }
 
 optional_tool() {
-  command -v "$1" >/dev/null 2>&1 && ok "optional tool: $1" || warn "optional tool not found: $1"
+  if command -v "$1" >/dev/null 2>&1; then
+    ok "optional tool: $1"
+  else
+    warn "optional tool not found: $1"
+  fi
 }
 
 real_make_target() {
