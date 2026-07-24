@@ -88,6 +88,7 @@ require_file scripts/self-test.sh
 require_file scripts/hooks/check-gate.sh
 require_file scripts/hooks/block-git-add-all.sh
 require_file scripts/hooks/block-push.sh
+require_file scripts/hooks/scan-secrets.sh
 require_file docs/README.md
 require_file docs/accepted_risks.md
 
@@ -111,6 +112,7 @@ require_executable scripts/self-test.sh
 require_executable scripts/hooks/check-gate.sh
 require_executable scripts/hooks/block-git-add-all.sh
 require_executable scripts/hooks/block-push.sh
+require_executable scripts/hooks/scan-secrets.sh
 
 echo
 real_make_target check
@@ -135,6 +137,12 @@ if grep -q "scripts/hooks/block-push.sh" "$ROOT/.claude/settings.json" 2>/dev/nu
   ok "push guard hook wired"
 else
   fail "PreToolUse hook wired to scripts/hooks/block-push.sh"
+fi
+
+if grep -q "scripts/hooks/scan-secrets.sh" "$ROOT/.claude/settings.json" 2>/dev/null; then
+  ok "secret scanner hook wired"
+else
+  fail "PreToolUse hook wired to scripts/hooks/scan-secrets.sh"
 fi
 
 if "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then

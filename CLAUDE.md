@@ -66,6 +66,11 @@ This project ships `.claude/settings.json` with:
   — enforces "stage files by name" mechanically.
 - **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)
   — enforces "never push; the human controls pushes and merges" mechanically.
+- **PreToolUse(Bash) → scan staged content before a commit** (`scripts/hooks/scan-secrets.sh`)
+  — blocks a commit whose staged diff looks like it carries a credential. CI-side scanning
+  is one step too late: a committed secret must be rotated, not just removed. Uses
+  `gitleaks` when installed, else a high-signal pattern set. Override a false positive with
+  `AGENTIC_ALLOW_SECRET=1` on the commit.
 
 ## Architecture (orient an agent fast)
 
@@ -90,6 +95,11 @@ reports adoption gaps, `scripts/self-test.sh` covers offline regressions, and th
   literal placeholder that would self-match — keep that trick when editing, comments
   included. The pattern is deliberately narrow (double-brace UPPER_SNAKE) so shipped docs
   can quote GitHub Actions `dollar-brace` expressions without tripping it.
+- **Same rule for anything credential-shaped.** `scan-secrets.sh` reads the staged diff, so
+  a real-looking key or a quoted `password = "…"` written literally into any file — hook
+  patterns, test fixtures, docs examples — blocks every commit that touches that file.
+  Assemble them with `printf` (see the fixtures in `self-test.sh`). Both scripts learned
+  this the hard way; the pattern set is written split for exactly this reason.
 
 ---
 

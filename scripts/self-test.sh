@@ -231,6 +231,59 @@ must_block "$ADD_GUARD" 'git-claude add --all'
 must_allow "$ADD_GUARD" 'git add README.md'
 must_allow "$ADD_GUARD" 'git add docs/inprogress/feature-x.md scripts/doctor.sh'
 
+SECRET_GUARD="$ROOT/scripts/hooks/scan-secrets.sh"
+
+# The scanner reads STAGED content, so it needs a throwaway repo rather than a command
+# string. Fixture credentials are ASSEMBLED from pieces: writing a real-shaped key literal
+# into this file would make the scanner block every commit that touches self-test.sh.
+if [ -x "$SECRET_GUARD" ]; then
+  SECFIX="$TMP/secret-fixture"
+  mkdir -p "$SECFIX"
+  (
+    cd "$SECFIX"
+    git init -q .
+    git config user.email selftest@example.invalid
+    git config user.name selftest
+  ) >/dev/null 2>&1
+
+  secret_hook() { # <command> -> exit status
+    (cd "$SECFIX" && printf '{"tool_input":{"command":"%s"}}' "$1" | "$SECRET_GUARD") >/dev/null 2>&1
+  }
+  stage() { # <content>
+    (cd "$SECFIX" && git reset -q && printf '%s\n' "$1" > staged.txt && git add staged.txt)
+  }
+
+  stage "aws_key = \"$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')\""
+  secret_hook 'git-claude commit -m x' && fail "secret scanner allowed a staged AWS-format key"
+  secret_hook 'git status' || fail "secret scanner blocked a non-commit command"
+
+  stage "$(printf -- '-----BEGIN RSA PRIVATE %s-----' 'KEY')"
+  secret_hook 'git commit -m x' && fail "secret scanner allowed a staged private key block"
+
+  # Assembled, not literal: a quoted `password = "..."` written directly into this file
+  # would make the scanner block every commit that touches self-test.sh. (It did, once.)
+  pw_fixture="$(printf 's3cret%s' 'passphrase')"
+  stage "password = \"$pw_fixture\""
+  secret_hook 'git commit -m x' && fail "secret scanner allowed a hardcoded password"
+
+  # Placeholders and env lookups must NOT trip it — a scanner that cries wolf gets disabled.
+  stage 'password = "changeme-please"'
+  secret_hook 'git commit -m x' || fail "secret scanner flagged an obvious placeholder"
+  stage 'password = os.environ["PW"]'
+  secret_hook 'git commit -m x' || fail "secret scanner flagged an env lookup"
+  stage 'const timeout = 30000'
+  secret_hook 'git commit -m x' || fail "secret scanner flagged ordinary code"
+
+  # The escape hatch has to work, or the gate gets removed wholesale instead of bypassed.
+  stage "aws_key = \"$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')\""
+  (cd "$SECFIX" && printf '{"tool_input":{"command":"git commit -m x"}}' \
+    | AGENTIC_ALLOW_SECRET=1 "$SECRET_GUARD") >/dev/null 2>&1 \
+    || fail "AGENTIC_ALLOW_SECRET=1 did not bypass the secret scanner"
+
+  (cd "$SECFIX" && git reset -q)
+  secret_hook 'git commit -m x' || fail "secret scanner blocked a commit with nothing staged"
+fi
+
 PUSH_GUARD="$ROOT/scripts/hooks/block-push.sh"
 
 must_block "$PUSH_GUARD" 'git push'
