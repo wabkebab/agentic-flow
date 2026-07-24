@@ -65,6 +65,38 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     && fail "payload coverage accepted an unclassified Codex adapter file"
   rm -f "$SOURCE_FIXTURE/.codex/unclassified.json"
 
+  # A wholly new adapter-shaped directory (not just a stray file inside a known one, #18)
+  # must fail until it is classified, then pass once it is.
+  cp "$SOURCE_FIXTURE/config/payload.tsv" "$TMP/payload.tsv.orig"
+  mkdir -p "$SOURCE_FIXTURE/.cursor"
+  printf '%s\n' '{}' > "$SOURCE_FIXTURE/.cursor/hooks.json"
+  AGENTIC_PROJECT_ROOT="$SOURCE_FIXTURE" \
+    "$SOURCE_FIXTURE/scripts/check-payload-manifest.sh" >/dev/null 2>&1 \
+    && fail "payload coverage accepted a brand-new unclassified adapter directory"
+  printf '.cursor\t.cursor\tsource-only\tnone\tsource-only\n' >> "$SOURCE_FIXTURE/config/payload.tsv"
+  AGENTIC_PROJECT_ROOT="$SOURCE_FIXTURE" \
+    "$SOURCE_FIXTURE/scripts/check-payload-manifest.sh" >/dev/null 2>&1 \
+    || fail "payload coverage still rejected a newly classified adapter directory"
+  cp "$TMP/payload.tsv.orig" "$SOURCE_FIXTURE/config/payload.tsv"
+  rm -rf "$SOURCE_FIXTURE/.cursor"
+
+  # A source-only manifest entry naming a DIRECTORY, not just a file, must exclude the
+  # whole subtree on export (#17) — is_excluded() used to compare source-only paths by
+  # exact equality, so a directory entry matched nothing and its contents were copied
+  # straight through. Uses its own throwaway destination so it never touches $TARGET,
+  # which later assertions in this section depend on staying in its original state.
+  mkdir -p "$SOURCE_FIXTURE/scripts/private_probe"
+  printf '%s\n' "should never leave the source repo" \
+    > "$SOURCE_FIXTURE/scripts/private_probe/tool.sh"
+  printf 'scripts/private_probe\tscripts/private_probe\tsource-only\tnone\tsource-only\n' \
+    >> "$SOURCE_FIXTURE/config/payload.tsv"
+  SOURCE_ONLY_DIR_TARGET="$TMP/source-only-dir-target"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$SOURCE_ONLY_DIR_TARGET" >/dev/null
+  assert_no_file "$SOURCE_ONLY_DIR_TARGET/scripts/private_probe"
+  assert_no_file "$SOURCE_ONLY_DIR_TARGET/scripts/private_probe/tool.sh"
+  cp "$TMP/payload.tsv.orig" "$SOURCE_FIXTURE/config/payload.tsv"
+  rm -rf "$SOURCE_FIXTURE/scripts/private_probe" "$SOURCE_ONLY_DIR_TARGET"
+
   cp "$SOURCE_FIXTURE/.codex/hooks.json" "$TMP/codex-hooks.orig"
   printf '%s\n' '{"hooks":{}}' > "$SOURCE_FIXTURE/.codex/hooks.json"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
