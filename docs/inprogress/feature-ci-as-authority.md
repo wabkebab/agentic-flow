@@ -428,8 +428,10 @@ kind of feedback F-2 exists to obtain.
   placeholders), and its `ci-gate` `needs` list matches its result loop.
 - Every command the workflow runs passes locally: `make check`, `make test`, `make build`,
   `scripts/doctor.sh --check --scope repo`.
-- `scripts/check-action-pins.sh` passes; both the workflow and the template carry a refreshed
-  stamp, staged by name.
+- `scripts/check-action-pins.sh` passes; **every stamped workflow/template file** carries a
+  refreshed stamp and is staged by name — at least `.github/workflows/ci.yml`,
+  `templates/ci/ci.yml`, and `templates/ci/deploy.yml`. Verify by listing what `--stamp`
+  actually rewrote rather than by recalling this list.
 - `scripts/doctor.sh` reports CI **active** instead of inert.
 - The workflow does not appear in an export (`config/payload.tsv` marks it source-only).
 - `self-test.sh` covers the assertions above.
@@ -558,17 +560,45 @@ Node block that the profile system could have omitted. Independent of F-3 and F-
    improvement.
 5. Pins stay in the template, not the profiles. `check-action-pins.sh` must keep working, and
    scattering SHAs across five profile files would guarantee drift.
+6. **Scope: the runtime block only. Path filters stay as placeholders — deliberately.**
+   `templates/ci/ci.yml` has three angle-bracket spots, and they are not the same kind of thing:
+   - `:96` `<MAJOR, e.g. 22>` — **stack-derived.** F-5 renders it.
+   - `:50` `<MANIFEST + LOCKFILE>` — stack-derived in principle (the profiles' `detect` rows
+     already name `Cargo.toml`, `package.json`, `go.mod`, `pyproject.toml`).
+   - `:49` `<SRC DIRS>` — **project-specific and not derivable.** A Rust project may use
+     `src/**`, `crates/**`, or workspace members; no profile can know which.
 
-**Test:** render every profile and assert, using the structural checks defined below (**not** a
-YAML parser): no `<ANGLE-BRACKET>` placeholders remain; `generic` produces a workflow with no
-runtime block and no orphaned marker comments; `check-action-pins.sh` passes on each rendered
-result; adoption still creates no `.github/workflows/*`. **Failure path first:** a profile with
-a malformed `ci-setup` row fails validation loudly rather than emitting a broken workflow, and
-a `ci-setup` value containing a literal tab is rejected — see the tab note below.
+   Render only `:96`. Rendering `:50` while `:49` must stay is **not** worth new profile rows:
+   the two are *adjacent lines in the same filter block*, so the human edits that block either
+   way and pre-filling one line of it saves nothing real. Leave both, and update the template's
+   header comment (`:3-4`) so it says the runtime block is now filled by the stack profile and
+   the path filters remain the adopter's to complete at activation. This is consistent with
+   the template shipping inert: activation was always a deliberate human step.
+
+**Test:** render every profile and assert, using the structural checks defined in F-2 (**not** a
+YAML parser): **no angle-bracket placeholder remains between the runtime-setup markers**;
+the two path-filter placeholders (`:49`, `:50`) are still present and unmodified; `generic`
+produces a workflow with no runtime block and no orphaned marker comments;
+`check-action-pins.sh` passes on each rendered result; adoption still creates no
+`.github/workflows/*`. **Failure path first:** a profile with a malformed `ci-setup` row fails
+validation loudly rather than emitting a broken workflow, and a `ci-setup` value containing a
+literal tab is rejected — see F-2's tab note.
+
+Scope the placeholder assertion to the runtime block, not the whole file. A whole-file "no
+angle brackets" check would fail by design and invite someone to "fix" it by gutting the path
+filters.
+
+**This does not contradict F-2**, which asserts *zero* angle brackets. The two steps assert
+about different files: F-2 covers `.github/workflows/ci.yml`, the **activated** copy, where a
+human filled the path filters for this specific repo (F-2 step 3). F-5 covers
+`templates/ci/ci.yml`, the **inert** template, where those filters cannot be filled because no
+project has been chosen yet. Activated ⇒ complete; inert ⇒ runtime resolved, project details
+pending.
 
 **DoD:** `init.sh --stack rust` produces an **inert** `templates/ci/ci.yml` in the target whose
-setup block is Cargo, with no angle brackets left to fill; `.github/workflows/` is not created;
-the pin checker still passes.
+runtime setup block is Cargo with **no runtime placeholder left**; the path-filter placeholders
+remain for the adopter to complete at activation, and the template's header comment says so;
+`.github/workflows/` is not created; the pin checker still passes.
 **Commit:** `Render the CI runtime block from the stack profile like the Makefile`
 
 ---
