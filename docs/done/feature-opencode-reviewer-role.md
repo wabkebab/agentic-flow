@@ -1,15 +1,15 @@
 <!-- TRIAGE (first pass · 2026-07-24) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > Adds a third agent role — **Review (OpenCode)** — between Codex execution and Claude's
 > final close-out, driven entirely by GitHub label flips on the step issue. Design is the
 > human's, given directly; this doc exists to make the contract precise and durable in
-> `CLAUDE.md`/`AGENTS.md` rather than only spoken once in chat. Approved 2026-07-24; tracked
-> in #38.
+> `CLAUDE.md`/`AGENTS.md` rather than only spoken once in chat. Approved 2026-07-24; tracking
+> issue #38 closed.
 
 # Feature — Add the OpenCode Reviewer role and its label state machine
 
 ## Tracker
-- [ ] F-1 Add the Review (OpenCode) role and label state machine to CLAUDE.md/AGENTS.md, and create the GitHub labels — open (#39)
+- [x] F-1 Add the Review (OpenCode) role and label state machine to CLAUDE.md/AGENTS.md, and create the GitHub labels — fixed in 9e19366 (#39)
 
 ---
 
@@ -210,10 +210,15 @@ still green (nothing in this step touches code, but the gate must not regress).
 
 ## Status / Implementation status
 
-- **Tracking issue:** [https://github.com/wabkebab/agentic-flow/issues/38](https://github.com/wabkebab/agentic-flow/issues/38).
+- **Tracking issue:** [#38](https://github.com/wabkebab/agentic-flow/issues/38) — sub-issue
+  F-1 #39. Closed 2026-07-25.
 - **Approval:** wabkebab approved on 2026-07-24 via plan-to-issues --apply.
 - **Verification evidence:** 2026-07-25 Codex run: `make check` passed; `make test`
   passed; `gh label list --limit 100` showed `agent:opencode`, `agent:claude`,
   `needs-review`, and `needs-closing`.
-- **Review verdict:** pending.
-- Step implemented on branch `feature-opencode-reviewer-role`; OpenCode review pending.
+- **Review verdict:** approved (Claude standing in for OpenCode, which was unavailable).
+  Two findings from the review fixed in `0b304fa` (missing cross-reference to the existing
+  `.opencode/agent/code-reviewer.md`/`/review`, a missing trailing newline) and `99b131a`
+  (committed the untracked `.agents/` copy of the `review-execution` skill).
+- F-1 implemented in `9e19366`; review follow-ups in `0b304fa` and `99b131a`, on branch
+  `feature-opencode-reviewer-role`.
