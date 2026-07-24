@@ -12,16 +12,16 @@ check:          ## fast sanity gate: harness checks + your type-check/lint. Run 
 	@scripts/docs-index.sh --check
 	@scripts/check-payload-manifest.sh
 	@scripts/check-action-pins.sh
-	@scripts/self-test.sh
+	@scripts/self-test.sh --fast
 
 test:           ## full test suite
-	@scripts/self-test.sh
+	@scripts/self-test.sh --full
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required for 'make test' — install it (brew install shellcheck / apt-get install shellcheck)." >&2; exit 1; }
 	@shellcheck scripts/*.sh scripts/hooks/*.sh
 
 test-one:       ## one targeted test:  make test-one F=path/to/file
 	@echo "No finer-grained harness test runner yet; running offline suite. F=$(F)"
-	@scripts/self-test.sh
+	@scripts/self-test.sh --full
 
 build:          ## production build
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/agentic-flow-build.XXXXXX"); \
