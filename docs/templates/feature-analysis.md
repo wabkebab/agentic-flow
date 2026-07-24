@@ -87,8 +87,9 @@ Bounds: <every query's limit, every loop's cap, every request's timeout — §11
 > **approach and insights — not the code.**
 
 ## Branch
-Base: `<base branch>`. Each step uses one branch and one PR:
-`feature-<topic>-fN` (confirm the base with the human).
+Base: `<base branch>`. One branch and one PR for the whole brief:
+`feature-<topic>` (confirm the base with the human). Each step lands as its own commit on
+that branch, closing its issue via `Fixes #N`.
 
 ## Definition of done (whole brief)
 Every step's per-step DoD met; `make check` and `make test` green; the user-visible goal in

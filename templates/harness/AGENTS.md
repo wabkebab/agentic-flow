@@ -26,9 +26,11 @@ order, edge cases — not finished code. Read the brief for the step before writ
 
 1. **Read the implementation brief** for the issue (linked from the issue / tracking issue).
    It gives the problem, the approach, the regression test to add, and the Definition of Done.
-2. **Branch** as the brief specifies; work one step at a time, in the brief's order. One
-   issue owns one branch and one PR. If a brief assigns multiple independently-shippable
-   issues to one branch, stop and flag the delivery-unit conflict.
+2. **Branch** as the brief specifies; work one step at a time, in the brief's order. The
+   whole brief ships as **one branch and one PR** — each step is one issue and one commit
+   on that branch, closed via `Fixes #N` when the PR merges. If the brief instead calls for
+   a separate branch/PR per step (unusual — only for a pass too large to hold on one
+   branch), follow that explicitly; don't split by default.
 3. **Implement** the step. Add the regression test the brief asks for — it must fail against
    the old code and pass after.
 4. **Verify** with the project's `make` targets (defined in the `Makefile`; explained in

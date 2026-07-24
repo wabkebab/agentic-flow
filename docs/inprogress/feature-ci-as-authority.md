@@ -201,9 +201,9 @@ loop is bounded by its `needs` list; CI concurrency cancels superseded runs per 
 
 ## Open questions
 
-- **[BLOCKING] Base branch.** This work must base on `main` *after* #16 merges — it depends on
-  `config/payload.tsv`, `lifecycle-status.sh`, `render-stack-profile.sh`, and the `.codex`/
-  `.agents` adapters, none of which are on `main` yet. Confirm the merge before F-1 starts.
+- ~~**[BLOCKING] Base branch.**~~ **Resolved 2026-07-24 — #16 merged** (PR #27). `main` now
+  carries `config/payload.tsv`, `lifecycle-status.sh`, `render-stack-profile.sh`, and the
+  `.codex`/`.agents` adapters this brief depends on. Base directly on `main`.
 - Should `make check` keep calling doctor at all once the scope split exists, or should the
   environment scope move to `make run` (which already calls doctor)? Leaning yes-keep — the
   repo scope is cheap and catches unwired hooks early — but the executor should raise it if the
@@ -252,9 +252,11 @@ A brief that was wrong is useful information about the brief.
 
 ## Branch
 
-Base: `main` **after #16 merges** (see the blocking open question). Per METHODOLOGY §2, one
-issue owns one branch and one PR: `feature-ci-as-authority-fN`. Do not stack all five steps on
-one long-lived branch — that is the shape §2 now forbids, and #16 is the cautionary example.
+Base: `main` (#16 has merged). Per METHODOLOGY §2, one branch and one PR for the whole brief:
+`feature-ci-as-authority`. Each step lands as its own commit on that branch, closing its issue
+via `Fixes #N` when the PR merges — steps are the tracking/commit granularity, not the
+branch/PR granularity. This is the same shape #16 itself shipped as (nine execution commits,
+one branch, one PR — #27).
 
 ## Definition of done (whole brief)
 
