@@ -8,7 +8,8 @@
 ## Tracker
 - [x] F-1 Drive the payload from one manifest and ship every enabled agent adapter —
   implemented on `codex/harness-integrity-and-lifecycle` (#9)
-- [ ] F-2 Make scaffold regression tests hermetic and parallel-safe — open
+- [x] F-2 Make scaffold regression tests hermetic and parallel-safe —
+  implemented on `codex/harness-integrity-and-lifecycle` (#10)
 - [ ] F-3 Preserve merge candidates and represent installed versions truthfully — open
 - [ ] F-4 Separate source-only commands and strengthen adoption diagnostics — open
 - [ ] F-5 Make plan-to-issues idempotent, resumable, and Bash 3.2-safe — open
@@ -229,4 +230,4 @@ requiring the target runtime when only rendering.
 - **Approval:** user approved the implementation on 2026-07-24.
 - **Tracking issue:** [#16](https://github.com/wabkebab/agentic-flow/issues/16) —
   F-1 #9 · F-2 #10 · F-3 #11 · F-4 #12 · F-5 #13 · F-6 #14 · F-7 #15.
-- F-1 implemented and verified; remaining steps proceed in tracker order.
+- F-1 and F-2 implemented and verified; remaining steps proceed in tracker order.

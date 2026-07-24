@@ -9,13 +9,12 @@ set -euo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
-DOC_LEAK_SENTINEL="$ROOT/docs/inprogress/self-test-export-leak.md"
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 # Matches only real scaffold placeholders (double-brace UPPER_SNAKE), not the
 # dollar-brace expression syntax that shipped docs quote when documenting CI workflows.
 # Built with printf so this file never contains a literal placeholder to self-match.
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
-trap 'if [ -f "$TMP/CLAUDE.md.orig" ]; then cp "$TMP/CLAUDE.md.orig" "$ROOT/CLAUDE.md"; fi; rm -rf "$TMP"; rm -f "$DOC_LEAK_SENTINEL"' EXIT
+trap 'rm -rf "$TMP"' EXIT
 
 fail() {
   echo "self-test failed: $*" >&2
@@ -42,11 +41,29 @@ must_allow() { # <hook> <command>
 
 # --- export invariants (scaffold repo only) ---------------------------------------------
 if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Exercise mutations against an isolated copy of the current checkout. The old test
+  # appended sentinels to the live CLAUDE.md and docs/inprogress, then restored them in a
+  # trap. Two concurrent checks could back up each other's temporary state and leave the
+  # source checkout modified. Copy tracked and untracked working files instead.
+  SOURCE_FIXTURE="$TMP/source"
+  mkdir -p "$SOURCE_FIXTURE"
+  while IFS= read -r -d '' tracked; do
+    mkdir -p "$SOURCE_FIXTURE/$(dirname "$tracked")"
+    cp -p "$ROOT/$tracked" "$SOURCE_FIXTURE/$tracked"
+  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+
+  # Let the fixture resolve the real source HEAD for the version-stamp assertion without
+  # copying or mutating the repository's git database.
+  source_git_dir=$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)
+  if [ -n "$source_git_dir" ]; then
+    printf 'gitdir: %s\n' "$source_git_dir" > "$SOURCE_FIXTURE/.git"
+  fi
+
+  DOC_LEAK_SENTINEL="$SOURCE_FIXTURE/docs/inprogress/self-test-export-leak.md"
   TARGET="$TMP/target"
-  cp "$ROOT/CLAUDE.md" "$TMP/CLAUDE.md.orig"
   printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
-  printf '%s\n' "# self-test root sentinel" >> "$ROOT/CLAUDE.md"
-  "$ROOT/scripts/export.sh" "$TARGET" >/dev/null
+  printf '%s\n' "# self-test root sentinel" >> "$SOURCE_FIXTURE/CLAUDE.md"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
   expected_version=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
 
   assert_file "$TARGET/METHODOLOGY.md"
@@ -102,12 +119,10 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || { cat "$TMP/target-check.log" >&2; fail "make check failed in a fresh export"; }
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
-  "$ROOT/scripts/export.sh" "$TARGET" >/dev/null
+  "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
   assert_file "$TARGET/CLAUDE.md.agentic-new"
   grep -q "# local edits" "$TARGET/CLAUDE.md" || fail "export clobbered an existing file"
 
-  rm -f "$DOC_LEAK_SENTINEL"
-  cp "$TMP/CLAUDE.md.orig" "$ROOT/CLAUDE.md"
   (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >"$TMP/doctor.log" 2>&1 \
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
 
