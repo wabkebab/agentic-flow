@@ -57,7 +57,8 @@ path_without_tools() { # <output-dir> <tool>...
   for path_dir in $PATH; do
     [ -d "$path_dir" ] || continue
     for candidate in "$path_dir"/*; do
-      [ -f "$candidate" ] && [ -x "$candidate" ] || continue
+      [ -f "$candidate" ] || continue
+      [ -x "$candidate" ] || continue
       name=${candidate##*/}
       skip=false
       for blocked in "$@"; do
