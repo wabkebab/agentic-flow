@@ -84,6 +84,11 @@ reports adoption gaps, `scripts/self-test.sh` covers offline regressions, and th
   the help comment.
 - The Stop hook runs `make check`, which runs `self-test.sh`; export behavior and its tests
   need to stay consistent within the same commit.
+- `init.sh`/`doctor.sh`/`self-test.sh` scan exported files for unfilled placeholders and
+  must agree on the pattern. They build it with `printf` so the scripts never contain a
+  literal placeholder that would self-match — keep that trick when editing, comments
+  included. The pattern is deliberately narrow (double-brace UPPER_SNAKE) so shipped docs
+  can quote GitHub Actions `dollar-brace` expressions without tripping it.
 
 ---
 

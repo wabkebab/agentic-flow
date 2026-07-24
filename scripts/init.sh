@@ -19,7 +19,7 @@ STACK_SET=false
 CLAUDE_ONLY_SET=false
 GIT_INIT_SET=false
 TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
-TOKEN_OPEN="$(printf '{%s' '{')"
+TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
 
 usage() {
   sed -n '2,7p' "$0" >&2
@@ -295,7 +295,7 @@ fi
 token_files=""
 for f in "$TARGET_ABS/CLAUDE.md" "$TARGET_ABS/AGENTS.md" \
          "$TARGET_ABS/CLAUDE.md.agentic-new" "$TARGET_ABS/AGENTS.md.agentic-new"; do
-  if [ -f "$f" ] && grep -q "$TOKEN_OPEN" "$f"; then
+  if [ -f "$f" ] && grep -Eq "$TOKEN_RE" "$f"; then
     token_files="${token_files}
 $f"
   fi

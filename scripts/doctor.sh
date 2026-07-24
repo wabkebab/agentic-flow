@@ -17,7 +17,7 @@ esac
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 failures=0
 warnings=0
-TOKEN_OPEN="$(printf '{%s' '{')"
+TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
 
 ok() { printf 'ok      %s\n' "$*"; }
 warn() { printf 'warning %s\n' "$*"; warnings=$((warnings + 1)); }
@@ -87,7 +87,7 @@ require_file scripts/hooks/block-push.sh
 require_file docs/README.md
 require_file docs/accepted_risks.md
 
-if grep -q "$TOKEN_OPEN" "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" 2>/dev/null; then
+if grep -Eq "$TOKEN_RE" "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" 2>/dev/null; then
   fail "unfilled template tokens in CLAUDE.md or AGENTS.md"
 else
   ok "CLAUDE.md and AGENTS.md tokens filled"

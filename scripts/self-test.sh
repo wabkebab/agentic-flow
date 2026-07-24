@@ -11,7 +11,10 @@ TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
 DOC_LEAK_SENTINEL="$ROOT/docs/inprogress/self-test-export-leak.md"
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
-TOKEN_OPEN="$(printf '{%s' '{')"
+# Matches only real scaffold placeholders (double-brace UPPER_SNAKE), not the
+# dollar-brace expression syntax that shipped docs quote when documenting CI workflows.
+# Built with printf so this file never contains a literal placeholder to self-match.
+TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
 trap 'if [ -f "$TMP/CLAUDE.md.orig" ]; then cp "$TMP/CLAUDE.md.orig" "$ROOT/CLAUDE.md"; fi; rm -rf "$TMP"; rm -f "$DOC_LEAK_SENTINEL"' EXIT
 
 fail() {
@@ -94,8 +97,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   INIT_TARGET="$TMP/init-empty"
   "$ROOT/scripts/init.sh" "$INIT_TARGET" --name demo-proj --stack none --yes >"$TMP/init-empty.log" 2>&1 \
     || { cat "$TMP/init-empty.log" >&2; fail "init failed for an empty target"; }
-  if grep -R "$TOKEN_OPEN" "$INIT_TARGET" >/dev/null 2>&1; then
-    grep -R "$TOKEN_OPEN" "$INIT_TARGET" >&2 || true
+  if grep -RE "$TOKEN_RE" "$INIT_TARGET" >/dev/null 2>&1; then
+    grep -RE "$TOKEN_RE" "$INIT_TARGET" >&2 || true
     fail "init left unfilled template tokens in an empty target"
   fi
   grep -q "demo-proj" "$INIT_TARGET/CLAUDE.md" || fail "init did not stamp project name in CLAUDE.md"
@@ -114,7 +117,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$INIT_EXISTING/CLAUDE.md.agentic-new"
   grep -q "demo-proj" "$INIT_EXISTING/CLAUDE.md.agentic-new" \
     || fail "init did not fill project name in CLAUDE.md.agentic-new"
-  if grep -q "$TOKEN_OPEN" "$INIT_EXISTING/CLAUDE.md.agentic-new"; then
+  if grep -Eq "$TOKEN_RE" "$INIT_EXISTING/CLAUDE.md.agentic-new"; then
     fail "init left an unfilled token in CLAUDE.md.agentic-new"
   fi
 
@@ -127,7 +130,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   "$ROOT/scripts/init.sh" "$INIT_NONTty" --name pipe-proj --stack none < /dev/null >"$TMP/init-nontty.log" 2>&1 \
     || { cat "$TMP/init-nontty.log" >&2; fail "init non-TTY fallback failed"; }
   grep -q "pipe-proj" "$INIT_NONTty/CLAUDE.md" || fail "non-TTY init did not stamp project name"
-  if grep -R "$TOKEN_OPEN" "$INIT_NONTty" >/dev/null 2>&1; then
+  if grep -RE "$TOKEN_RE" "$INIT_NONTty" >/dev/null 2>&1; then
     fail "non-TTY init left unfilled template tokens"
   fi
 fi
