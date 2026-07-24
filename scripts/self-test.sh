@@ -79,7 +79,27 @@ assert_active_ci_workflow() { # <workflow.yml>
   grep -q '<[^>]*>' "$workflow" && fail "$workflow contains angle-bracket placeholders"
   grep -q 'needs: \[changes, secrets-scan, app, docs\]' "$workflow" \
     || fail "$workflow ci-gate needs list drifted"
-  for job in secrets-scan app docs; do
+  assert_ci_gate_needs_asserted "$workflow"
+}
+
+assert_ci_gate_needs_asserted() { # <workflow.yml>
+  workflow="$1"
+  needs_csv=$(awk '
+    /^[[:space:]]+ci-gate:/ { in_gate=1; next }
+    in_gate && /^[[:space:]][A-Za-z0-9_-]+:/ { exit }
+    in_gate && /^[[:space:]]+needs:/ {
+      line=$0
+      sub(/^[[:space:]]+needs:[[:space:]]*\[/, "", line)
+      sub(/\][[:space:]]*$/, "", line)
+      gsub(/[[:space:]]/, "", line)
+      print line
+      exit
+    }
+  ' "$workflow")
+  [ -n "$needs_csv" ] || fail "$workflow ci-gate needs list was not found"
+
+  IFS=, read -r -a ci_gate_needs <<< "$needs_csv"
+  for job in "${ci_gate_needs[@]}"; do
     grep -q "needs\.$job\.result" "$workflow" \
       || fail "$workflow ci-gate loop does not assert on job '$job'"
   done
@@ -266,10 +286,7 @@ if [ -f "$ROOT/scripts/export.sh" ] && [ "$SELF_TEST_MODE" = full ]; then
   assert_no_file "$TARGET/.github"
   # Every job in ci-gate's needs must also be asserted in its result loop, or the gate
   # reports green for a job nothing checked.
-  for job in secrets-scan app docs; do
-    grep -q "needs\.$job\.result" "$TARGET/templates/ci/ci.yml" \
-      || fail "ci.yml gate loop does not assert on job '$job'"
-  done
+  assert_ci_gate_needs_asserted "$TARGET/templates/ci/ci.yml"
   assert_file "$TARGET/docs/backlog/.gitkeep"
   assert_file "$TARGET/docs/inprogress/.gitkeep"
   assert_file "$TARGET/docs/done/.gitkeep"
