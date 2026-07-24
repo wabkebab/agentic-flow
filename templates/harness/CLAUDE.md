@@ -52,7 +52,8 @@
 
 - **Languages / runtimes:** <…>
 - **Package / build layout:** <e.g. monorepo packages/*, single module, …>
-- **CI gate:** <what must be green before merge — ideally `make check && make test`>
+- **CI gate:** <what must be green before merge — ideally `make check && make test`; see
+  `METHODOLOGY.md` §10 for the pipeline shape and the single required-status gate job>
 - **`check` gotchas:** <e.g. cross-package type-check needs `--incremental false`; lint
   scope; anything non-obvious belongs *inside the Makefile recipe* so everyone gets it>
 
