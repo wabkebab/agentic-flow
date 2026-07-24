@@ -1,0 +1,69 @@
+---
+name: plan-to-issues
+description: Turn an approved implementation brief (the Part B of a Security or Feature doc in docs/) into a GitHub tracking issue with one sub-issue per step. Use when a plan is approved and ready to hand to the executor. Implements METHODOLOGY.md §6.
+---
+
+# plan-to-issues
+
+Convert an **approved** implementation brief into GitHub issues: one parent **tracking
+issue** plus one **sub-issue per independently-shippable step**. The doc stays the source of
+design intent; the issues are the execution burndown (progress bar + `Fixes #N` auto-close).
+
+This skill does the reading/extraction; the deterministic GitHub calls live in
+`scripts/plan-to-issues.sh`, driven by a JSON spec.
+
+## When to use
+- A Security or Feature doc with an inlined implementation brief exists **and the human has
+  approved it** (never create issues for a draft).
+- The brief has an ordered step list where each step is independently committable.
+
+## Preconditions — check first
+1. `gh auth status` is logged in (repo scope is enough for tracking + sub-issues).
+2. Issues are enabled: `gh repo view --json hasIssuesEnabled`.
+3. Confirm the target doc path with the user if ambiguous.
+
+## Procedure
+1. **Read the doc's implementation brief (Part B).** Extract: the feature/topic name, the
+   branch, the ordered steps, and each step's Definition of Done + verification commands
+   (the verify commands come from `AGENTS.md` → Stack profile). Preserve the risk ordering.
+2. **Build a JSON spec** (write to a temp file, e.g. the session scratchpad):
+   ```json
+   {
+     "tracking": {
+       "title": "Plan: <topic>",
+       "body": "<1–2 line summary, link to the doc path, and the branch>"
+     },
+     "labels": ["plan"],
+     "steps": [
+       {
+         "title": "Step 1 — <summary>",
+         "body": "<DoD + verification commands as markdown. Keep the *why* in the doc.>",
+         "labels": ["needs-execution", "agent:codex"]
+       }
+     ]
+   }
+   ```
+   - One step issue per brief step. Don't merge steps or split per-commit.
+   - Step body = Definition of Done + the exact verify commands. Design rationale stays in the doc.
+   - Labels follow METHODOLOGY.md §6: `plan` on the tracker; `needs-execution` + `agent:codex`
+     on steps. For a **Security** doc add the matching `sev:high|med|low|nit` per step.
+3. **Dry run** — show the user exactly what will be created, no mutations:
+   ```
+   scripts/plan-to-issues.sh <spec.json>
+   ```
+4. **Get explicit approval.** Creating issues writes public artifacts — never run `--apply`
+   without the user's go-ahead in this turn.
+5. **Apply:**
+   ```
+   scripts/plan-to-issues.sh --apply <spec.json>
+   ```
+6. **Close the loop:** update the doc's **Status / Implementation status** section to link
+   the tracking issue, tick nothing yet, and tell the user the tracking issue URL.
+
+## Notes
+- The script ensures labels idempotently but is **not** idempotent on issues — running
+  `--apply` twice creates a second set. Run once per plan.
+- Sub-issue linking is best-effort via the GitHub sub-issues API; if unavailable, the
+  tracking issue still carries a `- [ ] #N` task list as the fallback checklist.
+- For a **Security** doc's findings, each 🔴🟠🟡🔵 finding becomes a step entry with the
+  matching `sev:*` label under one "Plan: <topic>" tracker.
