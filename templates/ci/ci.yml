@@ -139,6 +139,11 @@ jobs:
     steps:
       - name: Assert no upstream job failed or was cancelled
         run: |
+          if [ "${{ needs.changes.result }}" != "success" ]; then
+            echo "Detect changes ended in '${{ needs.changes.result }}'"
+            exit 1
+          fi
+
           for result in \
             "${{ needs.secrets-scan.result }}" \
             "${{ needs.app.result }}" \
