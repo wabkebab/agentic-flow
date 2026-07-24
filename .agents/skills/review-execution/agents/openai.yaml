@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Execution"
+  short_description: "Review implemented changes against their brief"
+  default_prompt: "Use $review-execution to review the current branch against its approved implementation brief."
