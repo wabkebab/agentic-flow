@@ -15,7 +15,9 @@
 - ✅ **Tier 1 — enforcement backbone** — done, branch `tier1-enforcement` (`4556f2d`).
   Executable Stack profile (`Makefile`), enforced hooks (`make check` Stop gate + `git add`
   guard), generated docs index. Tiers 2–3 build on this.
-- ⬜ **Tier 1.5 — hardening the shipped guardrails** — small, batched; below.
+- ✅ **Tier 1.5 — hardening the shipped guardrails** — done on `feature-init-and-template-split`.
+  1.5.1/1.5.5 landed earlier with the export work; 1.5.2 (`42fcc94`), 1.5.3 (`9948062`),
+  1.5.4 (`b2c6311`).
 - ⬜ **Tier 2 — close the loop honestly** — below.
 - ⬜ **Tier 3 — durability & scale** — below.
 
@@ -26,7 +28,7 @@
 Defects and gaps *in the Tier 1 guardrails themselves*. Each is under an hour; none needs
 a Feature doc — one commit each, with a self-test where noted.
 
-### 1.5.1 Don't export the scaffold's own working docs ⚠️ blocks dogfooding
+### 1.5.1 Don't export the scaffold's own working docs — ✅ done
 - **Problem:** `export.sh` allow-lists `docs` wholesale — including `inprogress/`,
   `backlog/`, and `done/`. The moment this repo follows its own closing rule ("every
   roadmap item goes through the loop: a Feature doc in `docs/inprogress/`"), that doc
@@ -38,28 +40,28 @@ a Feature doc — one commit each, with a self-test where noted.
   asserts it is absent from the target. Until this lands, dogfooding (the Tier 2 exit
   test) is blocked.
 
-### 1.5.2 check-gate log path collides across sessions
+### 1.5.2 check-gate log path collides across sessions — ✅ done (`42fcc94`)
 - **Problem:** `check-gate.sh` writes to the fixed path `/tmp/agentic-check-gate.log` —
   two concurrent sessions (or two projects) clobber each other's failure output, so the
   agent may be shown the *other* project's errors.
 - **Fix:** per-repo path (e.g. `${TMPDIR:-/tmp}/agentic-check-gate.<repo-hash>.log`) or
   `mktemp`.
 
-### 1.5.3 git-add guard misses flags between `git` and `add`
+### 1.5.3 git-add guard misses flags between `git` and `add` — ✅ done (`9948062`)
 - **Problem:** the regex requires `git` immediately followed by `add`, so the common,
   innocent `git -C <path> add -A` (and `git -c k=v add -A`) passes the guard. The hook
   guards against sloppiness, not adversaries — but `-C` is everyday usage, not evasion.
 - **Fix:** allow intervening `-C <path>` / `-c <k=v>` args in the pattern; extend the
   self-test with these cases.
 
-### 1.5.4 self-test doesn't exercise check-gate.sh at all
+### 1.5.4 self-test doesn't exercise check-gate.sh at all — ✅ done (`b2c6311`)
 - **Problem:** `self-test.sh` covers export, the git-add guard, and plan-to-issues
   validation — but the Stop gate (the highest-leverage hook) has zero coverage, including
   its no-Makefile no-op and its `stop_hook_active` loop-safety path.
 - **Fix:** fixture dir with a Makefile whose `check` passes/fails on demand; assert
   exit 0 / exit 2 / warn-and-allow for the three paths.
 
-### 1.5.5 Stamp the export version (pulled forward from 3.2)
+### 1.5.5 Stamp the export version (pulled forward from 3.2) — ✅ done
 - **Problem:** a target has no record of which scaffold version it started from, so drift
   (3.2) can never be measured. The stamp costs one line *now*; retrofitting it later can't
   recover history.
