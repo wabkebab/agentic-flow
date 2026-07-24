@@ -71,8 +71,9 @@ if [ -n "$MAKEFILE" ]; then
         print "\t@scripts/docs-index.sh --check"
         print "\t@scripts/check-payload-manifest.sh"
         print "\t@scripts/check-action-pins.sh"
-        print "\t@scripts/self-test.sh"
+        print "\t@scripts/self-test.sh --fast"
       } else if (target == "test") {
+        print "\t@scripts/self-test.sh --full"
         print "\t@command -v shellcheck >/dev/null 2>&1 || { echo \"shellcheck is required for make test.\" >&2; exit 1; }"
         print "\t@shellcheck scripts/*.sh scripts/hooks/*.sh"
       }
