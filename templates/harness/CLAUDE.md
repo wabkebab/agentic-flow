@@ -1,6 +1,3 @@
-# Pristine form - shipped by export.sh; the repo-root copy is this repo's own instance;
-# contract changes must land in both.
-
 # CLAUDE.md — {{PROJECT_NAME}}
 
 > Project guidance for Claude (the **Plan / Review** role). Override-authoritative: these

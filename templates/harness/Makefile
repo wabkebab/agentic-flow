@@ -1,6 +1,3 @@
-# Pristine form - shipped by export.sh; the repo-root copy is this repo's own instance;
-# contract changes must land in both.
-
 # Stack profile — the ONE place this project's build/test/run commands live.
 # Humans, agents, hooks, and CI all call these targets; never hard-code raw commands
 # elsewhere. See METHODOLOGY.md §1 and CLAUDE.md "Stack profile".

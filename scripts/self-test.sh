@@ -29,6 +29,18 @@ assert_no_file() {
   [ ! -e "$1" ] || fail "unexpected file: $1"
 }
 
+assert_exported_harness_file() { # <file> <expected-first-non-empty-line>
+  file="$1"
+  expected_heading="$2"
+  assert_file "$file"
+  actual_heading=$(sed -n '/[^[:space:]]/{p;q;}' "$file")
+  [ "$actual_heading" = "$expected_heading" ] \
+    || fail "$file first non-empty line was '$actual_heading', expected '$expected_heading'"
+  if grep -Eq 'export\.sh|repo-root copy' "$file"; then
+    fail "$file contains scaffold-maintainer export note text"
+  fi
+}
+
 assert_active_ci_workflow() { # <workflow.yml>
   workflow="$1"
   assert_file "$workflow"
@@ -189,6 +201,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/CLAUDE.md"
   assert_file "$TARGET/AGENTS.md"
   assert_file "$TARGET/Makefile"
+  assert_exported_harness_file "$TARGET/CLAUDE.md" "# CLAUDE.md — $PROJECT_TOKEN"
+  assert_exported_harness_file "$TARGET/AGENTS.md" "# AGENTS.md — $PROJECT_TOKEN"
+  assert_exported_harness_file "$TARGET/Makefile" "# Stack profile — the ONE place this project's build/test/run commands live."
   assert_file "$TARGET/.claude/settings.json"
   assert_file "$TARGET/.codex/hooks.json"
   assert_file "$TARGET/.agents/skills/plan-to-issues/SKILL.md"
