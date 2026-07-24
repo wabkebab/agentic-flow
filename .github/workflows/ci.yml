@@ -1,0 +1,168 @@
+# CI — pull-request gate. See METHODOLOGY.md §10 for the reasoning behind this shape.
+#
+# Active in this repository. The adopter-facing copy remains inert under templates/ci/.
+# Runtime setup is intentionally empty here because agentic-flow is a bash/make harness.
+#
+# Action SHAs below were current when this template shipped. Re-verify them against the
+# latest releases when you adopt it (METHODOLOGY.md §9) — pinning is only useful if the
+# pin is a version you actually chose.
+#
+# Action pins verified: 2026-07-24
+# Checked by scripts/check-action-pins.sh. After re-verifying, run it with --stamp.
+
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  # dorny/paths-filter calls the GitHub Pulls API to list changed files; without this
+  # scope it errors with "Resource not accessible by integration" on hardened repos
+  # and forked-PR contexts.
+  pull-requests: read
+
+# Cancel superseded runs when a PR is updated — the old run's verdict is already stale.
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Detect what changed ──────────────────────────────────────────────────────
+  # Gates the expensive jobs so a docs-only PR doesn't pay for a full build.
+  # Every filter includes this workflow file, so editing CI re-runs what it gates.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Filter paths
+        id: filter
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          filters: |
+            app:
+              - 'scripts/**'
+              - 'Makefile'
+              - 'config/**'
+              - 'profiles/**'
+              - 'templates/**'
+              - '.claude/**'
+              - '.codex/**'
+              - '.agents/**'
+              - '.github/workflows/ci.yml'
+            docs:
+              - 'docs/**'
+              - '*.md'
+              - '.github/workflows/ci.yml'
+
+  # ── Secrets scan ─────────────────────────────────────────────────────────────
+  # Deliberately NOT path-filtered: a credential can land in any file.
+  secrets-scan:
+    name: Secrets scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Scan PR diff for verified leaked secrets
+        uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55 # v3.95.9
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          # --only-verified: report a finding only when the credential is confirmed live.
+          # Without it the noise floor trains everyone to ignore this job.
+          extra_args: --only-verified
+
+  # ── The gate itself ──────────────────────────────────────────────────────────
+  # Steps stay thin and call Make targets: CI green must mean the same thing as
+  # local green. If something here can't be a Make target, the Makefile is incomplete.
+  app:
+    name: App checks
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # This repository is the harness itself: bash/make only, no language runtime
+      # setup, lockfile install, or package audit is required here.
+      - name: Preflight runner tools
+        run: |
+          missing=""
+          for t in bash make git jq shellcheck; do
+            command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+          done
+          if [ -n "$missing" ]; then
+            sudo apt-get update -qq
+            # shellcheck disable=SC2086
+            sudo apt-get install -y $missing
+          fi
+          for t in bash make git jq shellcheck; do
+            command -v "$t" >/dev/null || { echo "preflight: $t still missing" >&2; exit 1; }
+          done
+          bash --version | head -1
+          make --version | head -1
+          git --version
+          jq --version
+          shellcheck --version | sed -n '1,2p'
+
+      - name: Fast gate (type-check + lint)
+        run: make check
+      - name: Repo-scope scaffold doctor
+        run: scripts/doctor.sh --check --scope repo
+      # Reporting only: gating lifecycle-status would deadlock a plan's final PR,
+      # because the PR itself produces the verification evidence the doc needs.
+      - name: Lifecycle status report
+        run: scripts/lifecycle-status.sh || true
+      # `make test` shellchecks the harness scripts and requires the tool. ubuntu-24.04
+      # ships shellcheck preinstalled, but an older release than you likely have locally —
+      # so CI is the more permissive of the two. Local green is the stricter claim; don't
+      # read a green CI as proof the newer linter is happy.
+      - name: Test suite
+        run: make test
+      - name: Build
+        run: make build
+
+  docs:
+    name: Docs index
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Docs index is derived, not hand-edited
+        run: scripts/docs-index.sh --check
+
+  # ── Required-status gate ──────────────────────────────────────────────────────
+  # Make THIS the only required status check in branch protection.
+  #
+  # Path-filtered jobs skip; a skipped job never reports a status; a required check
+  # that never reports blocks the PR forever. So the jobs above cannot be named as
+  # required checks directly. This one always reports: `skipped` passes, `failure`
+  # and `cancelled` fail. Add every new job to `needs` AND to the loop below —
+  # a job missing from the loop is a job nothing enforces.
+  ci-gate:
+    name: CI gate
+    needs: [changes, secrets-scan, app, docs]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Assert no upstream job failed or was cancelled
+        run: |
+          for result in \
+            "${{ needs.secrets-scan.result }}" \
+            "${{ needs.app.result }}" \
+            "${{ needs.docs.result }}"; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "Upstream job ended in '$result'"; exit 1 ;;
+            esac
+          done

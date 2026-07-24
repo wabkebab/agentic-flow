@@ -29,6 +29,25 @@ assert_no_file() {
   [ ! -e "$1" ] || fail "unexpected file: $1"
 }
 
+assert_active_ci_workflow() { # <workflow.yml>
+  workflow="$1"
+  assert_file "$workflow"
+  if LC_ALL=C grep -q "$(printf '\t')" "$workflow"; then
+    fail "$workflow contains a literal tab"
+  fi
+  grep -q '^name:' "$workflow" || fail "$workflow lacks top-level name"
+  grep -q '^on:' "$workflow" || fail "$workflow lacks top-level on"
+  grep -q '^permissions:' "$workflow" || fail "$workflow lacks top-level permissions"
+  grep -q '^jobs:' "$workflow" || fail "$workflow lacks top-level jobs"
+  grep -q '<[^>]*>' "$workflow" && fail "$workflow contains angle-bracket placeholders"
+  grep -q 'needs: \[changes, secrets-scan, app, docs\]' "$workflow" \
+    || fail "$workflow ci-gate needs list drifted"
+  for job in secrets-scan app docs; do
+    grep -q "needs\.$job\.result" "$workflow" \
+      || fail "$workflow ci-gate loop does not assert on job '$job'"
+  done
+}
+
 path_without_tools() { # <output-dir> <tool>...
   out_dir="$1"
   shift
@@ -81,6 +100,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   if [ -n "$source_git_dir" ]; then
     printf 'gitdir: %s\n' "$source_git_dir" > "$SOURCE_FIXTURE/.git"
   fi
+
+  assert_active_ci_workflow "$SOURCE_FIXTURE/.github/workflows/ci.yml"
 
   printf '%s\n' '{}' > "$SOURCE_FIXTURE/.codex/unclassified.json"
   AGENTIC_PROJECT_ROOT="$SOURCE_FIXTURE" \
@@ -190,6 +211,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # least of all deploy.yml — behind the adopter's back.
   assert_no_file "$TARGET/.github/workflows/ci.yml"
   assert_no_file "$TARGET/.github/workflows/deploy.yml"
+  assert_no_file "$TARGET/.github"
   # Every job in ci-gate's needs must also be asserted in its result loop, or the gate
   # reports green for a job nothing checked.
   for job in secrets-scan app docs; do
