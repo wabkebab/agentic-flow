@@ -310,6 +310,30 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     fail "non-TTY init left unfilled template tokens"
   fi
 
+  INIT_RUST="$TMP/init-rust"
+  "$ROOT/scripts/init.sh" "$INIT_RUST" --name rust-proj --stack rust --yes >"$TMP/init-rust.log" 2>&1 \
+    || { cat "$TMP/init-rust.log" >&2; fail "init failed for a rust target"; }
+  assert_no_file "$INIT_RUST/.github/workflows/ci.yml"
+  assert_no_file "$INIT_RUST/.github/workflows/deploy.yml"
+  assert_no_file "$INIT_RUST/.github"
+  grep -q 'Set up Cargo toolchain' "$INIT_RUST/templates/ci/ci.yml" \
+    || fail "rust init did not render a Cargo runtime setup block"
+  grep -q 'cargo fetch --locked' "$INIT_RUST/templates/ci/ci.yml" \
+    || fail "rust init did not render a locked Cargo dependency step"
+  for node_marker in setup-node 'node-version' 'npm '; do
+    if grep -q "$node_marker" "$INIT_RUST/templates/ci/ci.yml"; then
+      fail "rust init leaked Node runtime marker into rendered CI template: $node_marker"
+    fi
+  done
+  grep -q '<SRC DIRS, e.g. src/\*\*>' "$INIT_RUST/templates/ci/ci.yml" \
+    || fail "rust init rewrote the project-specific source path placeholder"
+  grep -q '<MANIFEST + LOCKFILE, e.g. package.json, package-lock.json>' \
+    "$INIT_RUST/templates/ci/ci.yml" \
+    || fail "rust init rewrote the project-specific manifest path placeholder"
+  if grep -q 'Replace this block with your stack' "$INIT_RUST/templates/ci/ci.yml"; then
+    fail "rust init left the runtime setup replacement marker in the rendered template"
+  fi
+
   # Stack profiles are data, rendered by one implementation. Validate every shipped
   # profile without requiring its runtime or package manager to be installed.
   for profile in generic node python go rust; do
@@ -328,7 +352,86 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     esac
     grep -qF "$expected" "$profile_makefile" \
       || fail "$profile stack profile did not render its build command"
+
+    profile_ci_root="$TMP/ci-root.$profile"
+    mkdir -p "$profile_ci_root/templates/ci"
+    profile_workflow="$profile_ci_root/templates/ci/ci.yml"
+    cp "$ROOT/templates/ci/ci.yml" "$profile_workflow"
+    "$ROOT/scripts/render-stack-profile.sh" "$profile" --ci "$profile_workflow"
+    if grep -q 'Replace this block with your stack' "$profile_workflow" \
+      || grep -q 'End runtime setup' "$profile_workflow"; then
+      fail "$profile CI render left orphaned runtime setup marker comments"
+    fi
+    if grep -q '<MAJOR' "$profile_workflow"; then
+      fail "$profile CI render left a runtime angle-bracket placeholder"
+    fi
+    grep -q '<SRC DIRS, e.g. src/\*\*>' "$profile_workflow" \
+      || fail "$profile CI render rewrote the source path-filter placeholder"
+    grep -q '<MANIFEST + LOCKFILE, e.g. package.json, package-lock.json>' "$profile_workflow" \
+      || fail "$profile CI render rewrote the manifest path-filter placeholder"
+    AGENTIC_PROJECT_ROOT="$profile_ci_root" "$ROOT/scripts/check-action-pins.sh" >/dev/null 2>&1 \
+      || fail "$profile rendered CI workflow failed the action pin guard"
+
+    case "$profile" in
+      generic)
+        for marker in setup-node 'node-version' 'npm ' cargo rustup 'go mod' python3; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "generic CI render leaked runtime marker: $marker"
+          fi
+        done
+        ;;
+      node)
+        grep -q 'setup-node' "$profile_workflow" \
+          || fail "node CI render lacks setup-node"
+        grep -q 'npm ci' "$profile_workflow" \
+          || fail "node CI render lacks npm ci"
+        grep -q 'node-version: 22' "$profile_workflow" \
+          || fail "node CI render lacks a concrete node-version"
+        for marker in cargo rustup 'go mod' python3; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "node CI render leaked another runtime marker: $marker"
+          fi
+        done
+        ;;
+      python)
+        grep -q 'python3 -m pip install --require-hashes' "$profile_workflow" \
+          || fail "python CI render lacks locked dependency install"
+        for marker in setup-node 'node-version' 'npm ' cargo rustup 'go mod'; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "python CI render leaked another runtime marker: $marker"
+          fi
+        done
+        ;;
+      go)
+        grep -q 'go mod download' "$profile_workflow" \
+          || fail "go CI render lacks module download"
+        for marker in setup-node 'node-version' 'npm ' cargo rustup python3; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "go CI render leaked another runtime marker: $marker"
+          fi
+        done
+        ;;
+      rust)
+        grep -q 'Set up Cargo toolchain' "$profile_workflow" \
+          || fail "rust CI render lacks Cargo toolchain setup"
+        grep -q 'cargo fetch --locked' "$profile_workflow" \
+          || fail "rust CI render lacks locked Cargo dependency fetch"
+        for marker in setup-node 'node-version' 'npm ' 'go mod' python3; do
+          if grep -q "$marker" "$profile_workflow"; then
+            fail "rust CI render leaked another runtime marker: $marker"
+          fi
+        done
+        ;;
+    esac
   done
+
+  BAD_PROFILE="$SOURCE_FIXTURE/profiles/bad-ci.tsv"
+  cp "$SOURCE_FIXTURE/profiles/generic.tsv" "$BAD_PROFILE"
+  printf 'ci-setup\t      - name: Bad\tliteral tab\n' >> "$BAD_PROFILE"
+  BAD_WORKFLOW="$TMP/bad-ci.yml"
+  cp "$SOURCE_FIXTURE/templates/ci/ci.yml" "$BAD_WORKFLOW"
+  "$SOURCE_FIXTURE/scripts/render-stack-profile.sh" bad-ci --ci "$BAD_WORKFLOW" >/dev/null 2>&1 \
+    && fail "renderer accepted a ci-setup row containing a literal tab"
 fi
 
 # --- shellcheck is required, not optional ------------------------------------------------

@@ -12,7 +12,8 @@ so adopting the harness never activates CI or a deploy behind your back.
 ## Activating `ci.yml`
 
 1. Copy it into `.github/workflows/`.
-2. Fill the `<ANGLE-BRACKET>` spots: the path filters and your runtime setup block.
+2. Fill the path-filter `<ANGLE-BRACKET>` spots for your project. The runtime setup block
+   is filled by `init.sh --stack <profile>` in the inert template before activation.
    Everything else works unmodified.
 3. Confirm `make check`, `make test`, and `make build` are real recipes — the workflow
    calls Make targets so CI green means the same thing as local green.
