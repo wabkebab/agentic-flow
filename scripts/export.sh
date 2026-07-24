@@ -6,9 +6,8 @@
 #   scripts/export.sh --dry-run <target-dir>  show what would happen, write nothing
 #   scripts/export.sh --force <target-dir>    overwrite existing files (destructive)
 #
-# Copies the allow-list (METHODOLOGY/CLAUDE/AGENTS/Makefile, .claude/settings.json,
-# .claude/skills, scripts, templates/ci, docs skeleton) and leaves behind this repo's meta:
-# README.md, ROADMAP.md, .git, .claude/settings.local.json, and export.sh itself.
+# Copies the entries declared in config/payload.tsv and leaves behind entries marked
+# source-only plus this repo's live docs and metadata.
 #
 # Default mode never overwrites: a file that already exists in the target and differs is
 # written next to it as `<file>.agentic-new` so you can diff and MERGE (important for a
@@ -34,28 +33,37 @@ done
 die() { echo "error: $*" >&2; exit 1; }
 [ -n "$DST" ] || die "no target dir. Usage: $0 [--dry-run|--force] <target-dir>"
 
-# Allow-list of items to export (files copied as-is; dirs copied file-by-file).
-ITEMS=(
-  METHODOLOGY.md
-  ADOPTION.md
-  templates/harness/CLAUDE.md=CLAUDE.md
-  templates/harness/AGENTS.md=AGENTS.md
-  templates/harness/Makefile=Makefile
-  .claude/settings.json
-  .claude/skills
-  scripts
-  templates/ci
-  docs/templates
-  docs/README.md
-  docs/accepted_risks.md
-  docs/backlog/.gitkeep
-  docs/inprogress/.gitkeep
-  docs/done/.gitkeep
-  docs/done/security/.gitkeep
-)
-# Never export these (basenames anywhere, or exact relative paths).
+# The manifest is the one source of truth for payload membership. Export, doctor, and
+# self-test all consume or validate it so a new adapter cannot silently exist only here.
+MANIFEST="$SRC/config/payload.tsv"
+[ -f "$MANIFEST" ] || die "payload manifest not found: $MANIFEST"
+
+# Never export these basenames anywhere. Exact source-only paths come from the manifest.
 EXCLUDE_BASENAMES=( settings.local.json .DS_Store )
-EXCLUDE_PATHS=( scripts/export.sh )
+EXCLUDE_PATHS=()
+ITEM_SRCS=()
+ITEM_DSTS=()
+
+while IFS="$(printf '\t')" read -r src_item dst_item scope merge_policy disposition; do
+  case "${src_item:-}" in ""|\#*) continue ;; esac
+  [ -n "${dst_item:-}" ] || die "manifest entry has no destination: $src_item"
+  case "${disposition:-}" in
+    export)
+      ITEM_SRCS+=("$src_item")
+      ITEM_DSTS+=("$dst_item")
+      ;;
+    source-only)
+      EXCLUDE_PATHS+=("$src_item")
+      ;;
+    *)
+      die "manifest entry has invalid disposition '${disposition:-}': $src_item"
+      ;;
+  esac
+  case "${merge_policy:-}" in preserve|force|none) ;; *)
+    die "manifest entry has invalid merge policy '$merge_policy': $src_item" ;;
+  esac
+  [ -n "${scope:-}" ] || die "manifest entry has no scope: $src_item"
+done < "$MANIFEST"
 
 is_excluded() {
   local rel="$1" base; base=$(basename "$rel")
@@ -76,16 +84,14 @@ fi
 DST=$(cd "$DST" 2>/dev/null && pwd -P || echo "$DST")
 [ "$DST" != "$SRC" ] || die "target is the agentic-flow repo itself"
 
-# Expand the allow-list into parallel source/destination file lists (bash 3.2 safe — no mapfile).
+# Expand the manifest into parallel source/destination file lists (bash 3.2 safe).
 FILES=()
 DESTS=()
-for item in "${ITEMS[@]}"; do
-  src_item="${item%%=*}"
-  if [ "$src_item" = "$item" ]; then
-    dst_item="$src_item"
-  else
-    dst_item="${item#*=}"
-  fi
+manifest_i=0
+while [ "$manifest_i" -lt "${#ITEM_SRCS[@]}" ]; do
+  src_item="${ITEM_SRCS[$manifest_i]}"
+  dst_item="${ITEM_DSTS[$manifest_i]}"
+  manifest_i=$((manifest_i + 1))
 
   if [ -f "$SRC/$src_item" ]; then
     FILES+=("$src_item")
@@ -100,7 +106,9 @@ for item in "${ITEMS[@]}"; do
         suffix="${rel#"$src_item"/}"
         DESTS+=("$dst_item/$suffix")
       fi
-    done < <(find "$SRC/$src_item" -type f)
+    done < <(find "$SRC/$src_item" -type f | sort)
+  else
+    die "manifest source does not exist: $src_item"
   fi
 done
 
@@ -110,7 +118,8 @@ echo "  to:   $DST"
 echo "  mode: $([ "$FORCE" = true ] && echo FORCE-overwrite || echo non-destructive)$($DRY && echo ' (dry-run)')"
 echo
 
-created=0; overwritten=0; merge=0; same=0
+version=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
+created=0; overwritten=0; merge=0; same=0; candidate_created=0; candidate_reused=0
 i=0
 while [ "$i" -lt "${#FILES[@]}" ]; do
   rel="${FILES[$i]}"
@@ -127,8 +136,27 @@ while [ "$i" -lt "${#FILES[@]}" ]; do
       $DRY || { mkdir -p "$(dirname "$d")"; cp -p "$s" "$d"; }
       echo "  overwrite   $dest"; overwritten=$((overwritten + 1))
     else
-      $DRY || cp -p "$s" "$d.agentic-new"
-      echo "  exists →    $dest.agentic-new   (differs — merge by hand)"; merge=$((merge + 1))
+      candidate="$d.agentic-new"
+      if [ -e "$candidate" ] && ! cmp -s "$s" "$candidate"; then
+        candidate="$d.agentic-new.$version"
+      fi
+      if [ -e "$candidate" ] && ! cmp -s "$s" "$candidate"; then
+        content_id=$(git hash-object "$s" 2>/dev/null | cut -c1-12)
+        [ -n "$content_id" ] || content_id=$(cksum "$s" | awk '{print $1}')
+        candidate="$d.agentic-new.$version.$content_id"
+      fi
+      if [ -e "$candidate" ]; then
+        cmp -s "$s" "$candidate" \
+          || die "refusing to overwrite occupied merge candidate: ${candidate#"$DST"/}"
+        candidate_reused=$((candidate_reused + 1))
+        candidate_action="pending"
+      else
+        $DRY || { mkdir -p "$(dirname "$candidate")"; cp -p "$s" "$candidate"; }
+        candidate_created=$((candidate_created + 1))
+        candidate_action="candidate"
+      fi
+      echo "  exists →    ${candidate#"$DST"/}   ($candidate_action — merge by hand)"
+      merge=$((merge + 1))
     fi
   else
     $DRY || { mkdir -p "$(dirname "$d")"; cp -p "$s" "$d"; }
@@ -136,14 +164,25 @@ while [ "$i" -lt "${#FILES[@]}" ]; do
   fi
 done
 
-version=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
 if [ "$DRY" = false ]; then
-  printf '%s\n' "$version" > "$DST/.agentic-flow-version"
+  if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
+    printf '%s\n' "$version" > "$DST/.agentic-flow-version"
+    rm -f "$DST/.agentic-flow-candidate-version"
+  else
+    printf '%s\n' "$version" > "$DST/.agentic-flow-candidate-version"
+  fi
 fi
-echo "  stamp       .agentic-flow-version ($version)"
+if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
+  echo "  installed   .agentic-flow-version ($version)"
+else
+  echo "  pending     .agentic-flow-candidate-version ($version)"
+fi
 
 echo
-echo "Summary: $created created, $overwritten overwritten, $merge to-merge (.agentic-new), $same already up to date."
+echo "Summary: $created created, $overwritten overwritten, $merge to-merge, $same already up to date."
+if [ "$merge" -gt 0 ]; then
+  echo "         $candidate_created merge candidate(s) created, $candidate_reused already pending."
+fi
 
 # Seed the docs index in the target (best-effort; needs the markers in docs/README.md).
 if [ "$DRY" = false ] && [ -x "$DST/scripts/docs-index.sh" ]; then
@@ -156,8 +195,9 @@ fi
 
 if [ "$merge" -gt 0 ]; then
   echo
-  echo "⚠ $merge file(s) already existed and differ — review the .agentic-new copies and merge:"
-  echo "    find \"$DST\" -name '*.agentic-new'"
+  echo "⚠ $merge file(s) already existed and differ — installed version was not advanced."
+  echo "  Review the merge candidates, merge them into the active files, then export again:"
+  echo "    find \"$DST\" -name '*.agentic-new*'"
 fi
 
 cat <<EOF

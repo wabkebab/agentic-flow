@@ -99,7 +99,7 @@ honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1
 - **Done when:** a closed step in any doc traces to a PR whose checks (or attached output)
   prove the verification commands ran green.
 
-### 2.2 Make `plan-to-issues.sh` idempotent — and make it write the link back
+### 2.2 Make `plan-to-issues.sh` idempotent — and make it write the link back — ✅ done
 - **Problem:** running `--apply` twice creates a *second* full set of issues. The script
   warns about this but doesn't prevent it — one fat-finger doubles the tracker. Separately,
   the doc→tracker link (`[#NN](url)` in Status) — which 2.3 depends on — is written by hand
@@ -121,6 +121,8 @@ honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1
   shim serves both).
 - **Done when:** a second `--apply` of the same spec is a no-op; a changed spec reconciles
   instead of duplicating; the doc's tracker link exists without a human typing it.
+  Delivered by `scripts/plan-to-issues.sh`'s stable plan/step stamps, offline dry-run,
+  `--diff`, resumable reconciliation, and `--doc` link-back.
 
 ### 2.3 docs-index issue-state sync (the "powerful layer" deferred from Tier 1)
 - **Problem:** a doc's `## Tracker` checkboxes are still ticked by hand; "closure inferred

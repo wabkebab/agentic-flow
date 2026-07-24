@@ -27,10 +27,16 @@ AGENTS.md                         executor (Codex) contract + commit format
 Makefile                          the Stack profile: make check / test / test-one / build / run
 .claude/settings.json             enforced hooks (Stop→make check; block git add -A; block git push)
 .claude/skills/plan-to-issues/    skill: approved brief → GitHub tracking issue + sub-issues
+.codex/hooks.json                 Codex mirror of the enforced lifecycle hooks
+.agents/skills/plan-to-issues/    Codex skill mirror
+config/payload.tsv                canonical source→destination export manifest
+profiles/                         data-only generic / Node / Python / Go / Rust stack profiles
 scripts/export.sh                 copy the standard into a target project (non-destructive)
 scripts/init.sh                   one-command scaffold adoption; wraps export + token fill + doctor
 scripts/plan-to-issues.sh         the deterministic gh/jq driver the skill calls
 scripts/docs-index.sh             regenerate docs/README.md's index from TRIAGE headers
+scripts/check-payload-manifest.sh  reject unclassified adapter/template/profile files
+scripts/lifecycle-status.sh       derive ACTIVE / READY / BLOCKED document state
 scripts/doctor.sh                 adoption checklist / scaffold health check
 scripts/self-test.sh              offline regression checks for this scaffold
 scripts/hooks/                    the two hook scripts settings.json calls
@@ -45,6 +51,7 @@ docs/
     ├── security-review.md        analysis + inlined implementation brief
     ├── feature-analysis.md       analysis + inlined implementation brief
     ├── product-analysis.md       decision record (no implementation brief)
+    ├── review.md                 post-execution findings, evidence, and verdict
     └── accepted-risk-entry.md    one block for accepted_risks.md
 ```
 
@@ -53,16 +60,18 @@ docs/
 Run `init.sh` from this scaffold repo:
 
 ```bash
-scripts/init.sh /path/to/target-project --name my-project --stack none --yes
+scripts/init.sh /path/to/target-project --name my-project --stack node --yes
 ```
 
 It copies the allow-list, fills the project name, preserves differing existing files as
 `<file>.agentic-new`, applies the requested stack/opt-out flags, writes the scaffold version
-stamp, and prints the doctor report. The hooks in `.claude/settings.json` are active on copy.
+stamp, and prints the doctor report. Claude and Codex hook/skill adapters ship together.
 
-Use `--stack node` for npm-oriented Makefile recipes, `--claude-only` for projects that opt
-out of Codex execution, and omit `--yes` in a terminal for prompts. `scripts/export.sh`
-remains the low-level non-destructive copy command for manual or unusual adoptions.
+Stack profiles are `generic`, `node`, `python`, `go`, and `rust`; `none` remains an alias
+for `generic`. Detection proposes a profile from project manifests but never overrides an
+explicit flag. Use `--claude-only` for projects that opt out of Codex execution and omit
+`--yes` in a terminal for prompts. `scripts/export.sh` remains the source-repository,
+low-level non-destructive copy command for manual or unusual adoptions.
 
 After adoption, fill in `CLAUDE.md`'s **Architecture** and **Gotchas** as you learn the
 codebase, start a doc from `docs/templates/`, and keep the index current with

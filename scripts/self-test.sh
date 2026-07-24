@@ -6,16 +6,15 @@
 # the export section and checks only the local invariants: hooks and spec validation.
 set -euo pipefail
 
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
-DOC_LEAK_SENTINEL="$ROOT/docs/inprogress/self-test-export-leak.md"
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 # Matches only real scaffold placeholders (double-brace UPPER_SNAKE), not the
 # dollar-brace expression syntax that shipped docs quote when documenting CI workflows.
 # Built with printf so this file never contains a literal placeholder to self-match.
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
-trap 'if [ -f "$TMP/CLAUDE.md.orig" ]; then cp "$TMP/CLAUDE.md.orig" "$ROOT/CLAUDE.md"; fi; rm -rf "$TMP"; rm -f "$DOC_LEAK_SENTINEL"' EXIT
+trap 'rm -rf "$TMP"' EXIT
 
 fail() {
   echo "self-test failed: $*" >&2
@@ -42,11 +41,46 @@ must_allow() { # <hook> <command>
 
 # --- export invariants (scaffold repo only) ---------------------------------------------
 if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Exercise mutations against an isolated copy of the current checkout. The old test
+  # appended sentinels to the live CLAUDE.md and docs/inprogress, then restored them in a
+  # trap. Two concurrent checks could back up each other's temporary state and leave the
+  # source checkout modified. Copy tracked and untracked working files instead.
+  SOURCE_FIXTURE="$TMP/source"
+  mkdir -p "$SOURCE_FIXTURE"
+  while IFS= read -r -d '' tracked; do
+    mkdir -p "$SOURCE_FIXTURE/$(dirname "$tracked")"
+    cp -p "$ROOT/$tracked" "$SOURCE_FIXTURE/$tracked"
+  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+
+  # Let the fixture resolve the real source HEAD for the version-stamp assertion without
+  # copying or mutating the repository's git database.
+  source_git_dir=$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)
+  if [ -n "$source_git_dir" ]; then
+    printf 'gitdir: %s\n' "$source_git_dir" > "$SOURCE_FIXTURE/.git"
+  fi
+
+  printf '%s\n' '{}' > "$SOURCE_FIXTURE/.codex/unclassified.json"
+  AGENTIC_PROJECT_ROOT="$SOURCE_FIXTURE" \
+    "$SOURCE_FIXTURE/scripts/check-payload-manifest.sh" >/dev/null 2>&1 \
+    && fail "payload coverage accepted an unclassified Codex adapter file"
+  rm -f "$SOURCE_FIXTURE/.codex/unclassified.json"
+
+  cp "$SOURCE_FIXTURE/.codex/hooks.json" "$TMP/codex-hooks.orig"
+  printf '%s\n' '{"hooks":{}}' > "$SOURCE_FIXTURE/.codex/hooks.json"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
+    && fail "doctor accepted a structurally unwired Codex hook configuration"
+  cp "$TMP/codex-hooks.orig" "$SOURCE_FIXTURE/.codex/hooks.json"
+
+  printf '%s\n' unresolved > "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
+    && fail "doctor accepted an unresolved scaffold merge candidate"
+  rm -f "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
+
+  DOC_LEAK_SENTINEL="$SOURCE_FIXTURE/docs/inprogress/self-test-export-leak.md"
   TARGET="$TMP/target"
-  cp "$ROOT/CLAUDE.md" "$TMP/CLAUDE.md.orig"
   printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
-  printf '%s\n' "# self-test root sentinel" >> "$ROOT/CLAUDE.md"
-  "$ROOT/scripts/export.sh" "$TARGET" >/dev/null
+  printf '%s\n' "# self-test root sentinel" >> "$SOURCE_FIXTURE/CLAUDE.md"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
   expected_version=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
 
   assert_file "$TARGET/METHODOLOGY.md"
@@ -55,8 +89,17 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/AGENTS.md"
   assert_file "$TARGET/Makefile"
   assert_file "$TARGET/.claude/settings.json"
+  assert_file "$TARGET/.codex/hooks.json"
+  assert_file "$TARGET/.agents/skills/plan-to-issues/SKILL.md"
+  assert_file "$TARGET/config/payload.tsv"
   assert_file "$TARGET/scripts/plan-to-issues.sh"
   assert_file "$TARGET/scripts/doctor.sh"
+  assert_file "$TARGET/scripts/render-stack-profile.sh"
+  assert_file "$TARGET/profiles/generic.tsv"
+  assert_file "$TARGET/profiles/node.tsv"
+  assert_file "$TARGET/profiles/python.tsv"
+  assert_file "$TARGET/profiles/go.tsv"
+  assert_file "$TARGET/profiles/rust.tsv"
   assert_file "$TARGET/docs/README.md"
   assert_file "$TARGET/docs/templates/feature-analysis.md"
   assert_file "$TARGET/docs/accepted_risks.md"
@@ -88,6 +131,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_no_file "$TARGET/docs/inprogress/feature-init-and-template-split.md"
   assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"
+  assert_no_file "$TARGET/scripts/init.sh"
 
   (cd "$TARGET" && scripts/docs-index.sh --check) >/dev/null
 
@@ -98,12 +142,27 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || { cat "$TMP/target-check.log" >&2; fail "make check failed in a fresh export"; }
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
-  "$ROOT/scripts/export.sh" "$TARGET" >/dev/null
+  # Simulate an older installed scaffold so a conflict can prove that invoking a newer
+  # exporter does not falsely promote the active version.
+  printf '%s\n' older-source > "$TARGET/.agentic-flow-version"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
   assert_file "$TARGET/CLAUDE.md.agentic-new"
   grep -q "# local edits" "$TARGET/CLAUDE.md" || fail "export clobbered an existing file"
+  grep -qx older-source "$TARGET/.agentic-flow-version" \
+    || fail "export advanced installed version while merge conflicts remained"
+  grep -qx "$expected_version" "$TARGET/.agentic-flow-candidate-version" \
+    || fail "export did not record the pending candidate version"
 
-  rm -f "$DOC_LEAK_SENTINEL"
-  cp "$TMP/CLAUDE.md.orig" "$ROOT/CLAUDE.md"
+  cp "$TARGET/CLAUDE.md.agentic-new" "$TMP/first-candidate"
+  printf '%s\n' "# second candidate content" >> "$SOURCE_FIXTURE/templates/harness/CLAUDE.md"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
+  cmp -s "$TMP/first-candidate" "$TARGET/CLAUDE.md.agentic-new" \
+    || fail "repeated export overwrote an existing merge candidate"
+  second_candidate="$TARGET/CLAUDE.md.agentic-new.$expected_version"
+  assert_file "$second_candidate"
+  grep -q "# second candidate content" "$second_candidate" \
+    || fail "versioned merge candidate does not contain the new source content"
+
   (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >"$TMP/doctor.log" 2>&1 \
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
 
@@ -146,6 +205,26 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   if grep -RE "$TOKEN_RE" "$INIT_NONTty" >/dev/null 2>&1; then
     fail "non-TTY init left unfilled template tokens"
   fi
+
+  # Stack profiles are data, rendered by one implementation. Validate every shipped
+  # profile without requiring its runtime or package manager to be installed.
+  for profile in generic node python go rust; do
+    profile_makefile="$TMP/Makefile.$profile"
+    cp "$ROOT/templates/harness/Makefile" "$profile_makefile"
+    "$ROOT/scripts/render-stack-profile.sh" "$profile" "$profile_makefile"
+    if grep -q "TODO: define" "$profile_makefile"; then
+      fail "$profile stack profile left placeholder Make targets"
+    fi
+    case "$profile" in
+      generic) expected="No project build profile configured" ;;
+      node) expected="npm run build" ;;
+      python) expected="python3 -m build" ;;
+      go) expected="go build ./..." ;;
+      rust) expected="cargo build --locked" ;;
+    esac
+    grep -qF "$expected" "$profile_makefile" \
+      || fail "$profile stack profile did not render its build command"
+  done
 fi
 
 # --- shellcheck is required, not optional ------------------------------------------------
@@ -177,7 +256,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 YAML
-  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 && fail "pin guard accepted a mutable tag pin"
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
+    && fail "pin guard accepted a mutable tag pin"
 
   cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
 # Action pins verified: 2999-01-01
@@ -186,7 +266,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 YAML
-  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 && fail "pin guard accepted a SHA pin with no version comment"
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
+    && fail "pin guard accepted a SHA pin with no version comment"
 
   # A well-formed pin and a local action must both pass.
   cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
@@ -197,20 +278,20 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/local
 YAML
-  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 \
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
     || fail "pin guard rejected a correctly pinned action or a local action"
 
   # Staleness is a warning, not an error — otherwise the calendar alone turns repos red
   # and the Stop hook starts blocking turns. --strict is what enforces.
   printf '%s\n' "# Action pins verified: 2020-01-01" > "$PINFIX/.github/workflows/stale.yml"
-  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 \
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
     || fail "pin guard treated a stale stamp as fatal in default mode"
-  (cd "$PINFIX" && "$PIN_GUARD" --strict) >/dev/null 2>&1 \
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" --strict >/dev/null 2>&1 \
     && fail "pin guard --strict did not fail on a stale stamp"
 
   # No workflows at all is a clean pass, not an error: most fresh adoptions have none.
   mkdir -p "$TMP/pin-empty"
-  (cd "$TMP/pin-empty" && "$PIN_GUARD") >/dev/null 2>&1 \
+  AGENTIC_PROJECT_ROOT="$TMP/pin-empty" "$PIN_GUARD" >/dev/null 2>&1 \
     || fail "pin guard failed in a project with no workflow files"
 
   # The shipped templates must satisfy their own guard.
@@ -383,6 +464,196 @@ must_allow "$PUSH_GUARD" 'echo push'
 INVALID_SPEC="$TMP/invalid-spec.json"
 printf '%s\n' '{"tracking":{"title":"Plan: bad"},"steps":[]}' > "$INVALID_SPEC"
 "$ROOT/scripts/plan-to-issues.sh" "$INVALID_SPEC" >/dev/null 2>"$TMP/plan.err" && fail "invalid plan spec was accepted"
-grep -q "spec must include" "$TMP/plan.err" || fail "invalid plan spec did not fail validation first"
+grep -q "spec must contain" "$TMP/plan.err" || fail "invalid plan spec did not fail validation first"
+
+# --- plan-to-issues reconciliation -------------------------------------------------------
+# Replay GitHub locally so failure/resume and repeated apply are deterministic, offline,
+# and safe to run in any repository.
+PLAN_DRIVER="$ROOT/scripts/plan-to-issues.sh"
+GHFIX="$TMP/gh-fixture"
+GHSTATE="$TMP/gh-state"
+mkdir -p "$GHFIX" "$GHSTATE"
+cat > "$GHFIX/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+state=${FAKE_GH_STATE:?}
+mkdir -p "$state"
+[ -f "$state/next" ] || printf '%s\n' 1 > "$state/next"
+
+case "${1:-} ${2:-}" in
+  "auth status") exit 0 ;;
+  "repo view")
+    case "$*" in
+      *nameWithOwner*) printf '%s\n' owner/repo ;;
+      *hasIssuesEnabled*) printf '%s\n' true ;;
+    esac
+    exit 0
+    ;;
+  "label create") exit 0 ;;
+  "issue list")
+    out="$state/issues.jsonl"
+    : > "$out"
+    for dir in "$state"/issue-*; do
+      [ -d "$dir" ] || continue
+      num=${dir##*-}
+      jq -n --argjson number "$num" \
+        --arg title "$(cat "$dir/title")" \
+        --arg body "$(cat "$dir/body")" \
+        --arg issue_state "$(cat "$dir/state")" \
+        --arg url "https://github.test/owner/repo/issues/$num" \
+        '{number:$number,title:$title,body:$body,state:$issue_state,url:$url}' >> "$out"
+    done
+    jq -s . "$out"
+    exit 0
+    ;;
+  "issue create")
+    shift 2
+    title=""; body=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --title) title="$2"; shift 2 ;;
+        --body) body="$2"; shift 2 ;;
+        --repo|--label) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    num=$(cat "$state/next")
+    printf '%s\n' $((num + 1)) > "$state/next"
+    if [ "${FAKE_GH_FAIL_CREATE_NUMBER:-}" = "$num" ]; then
+      echo "injected create failure" >&2
+      exit 1
+    fi
+    dir="$state/issue-$num"
+    mkdir -p "$dir"
+    printf '%s\n' "$title" > "$dir/title"
+    printf '%s\n' "$body" > "$dir/body"
+    printf '%s\n' OPEN > "$dir/state"
+    printf 'https://github.test/owner/repo/issues/%s\n' "$num"
+    exit 0
+    ;;
+  "issue edit")
+    num=$3
+    shift 3
+    dir="$state/issue-$num"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --title) printf '%s\n' "$2" > "$dir/title"; shift 2 ;;
+        --body) printf '%s\n' "$2" > "$dir/body"; shift 2 ;;
+        --repo|--add-label) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  "issue close")
+    num=$3
+    printf '%s\n' CLOSED > "$state/issue-$num/state"
+    exit 0
+    ;;
+esac
+
+if [ "${1:-}" = api ]; then
+  case "$*" in
+    *"--method POST"*) exit 0 ;;
+    *)
+      endpoint=${2:-}
+      num=${endpoint##*/}
+      printf '%s\n' $((num + 1000))
+      exit 0
+      ;;
+  esac
+fi
+
+echo "unsupported fake gh call: $*" >&2
+exit 2
+FAKE_GH
+chmod +x "$GHFIX/gh"
+
+PLAN_SPEC="$TMP/plan-spec.json"
+cat > "$PLAN_SPEC" <<'JSON'
+{
+  "id": "self-test-plan",
+  "tracking": {"title": "Plan: self test", "body": "tracker"},
+  "steps": [
+    {"id": "alpha", "title": "Alpha", "body": "alpha v1"},
+    {"id": "beta", "title": "Beta", "body": "beta v1", "labels": ["needs-execution"]}
+  ]
+}
+JSON
+
+plan_apply() {
+  PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" "$PLAN_DRIVER" --apply "$1" >/dev/null
+}
+
+plan_apply "$PLAN_SPEC" || fail "first plan apply failed against fake GitHub"
+issue_count=$(find "$GHSTATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
+[ "$issue_count" -eq 3 ] || fail "first plan apply did not create one tracker and two steps"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+  "$PLAN_DRIVER" --diff "$PLAN_SPEC" > "$TMP/plan-diff.out" \
+  || fail "plan diff failed against fake GitHub"
+grep -q "Tracker: current" "$TMP/plan-diff.out" \
+  || fail "plan diff did not recognize the applied revision"
+plan_apply "$PLAN_SPEC" || fail "repeated identical plan apply failed"
+issue_count=$(find "$GHSTATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
+[ "$issue_count" -eq 3 ] || fail "repeated plan apply duplicated issues"
+
+UPDATED_SPEC="$TMP/plan-spec-updated.json"
+jq '.steps[0].body = "alpha v2"' "$PLAN_SPEC" > "$UPDATED_SPEC"
+plan_apply "$UPDATED_SPEC" || fail "changed plan did not reconcile"
+grep -Rl "alpha v2" "$GHSTATE"/issue-*/body >/dev/null \
+  || fail "changed step body was not updated in place"
+
+REMOVED_SPEC="$TMP/plan-spec-removed.json"
+jq '.steps = [.steps[0]]' "$UPDATED_SPEC" > "$REMOVED_SPEC"
+plan_apply "$REMOVED_SPEC" || fail "plan with a removed step did not reconcile"
+beta_state=$(grep -Rl "step:beta" "$GHSTATE"/issue-*/body | sed 's|/body$|/state|' | xargs cat)
+[ "$beta_state" = CLOSED ] || fail "removed plan step was not closed with history retained"
+
+PARTIAL_STATE="$TMP/gh-partial-state"
+PARTIAL_SPEC="$TMP/partial-spec.json"
+jq '.id = "partial-plan"' "$PLAN_SPEC" > "$PARTIAL_SPEC"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PARTIAL_STATE" FAKE_GH_FAIL_CREATE_NUMBER=2 \
+  "$PLAN_DRIVER" --apply "$PARTIAL_SPEC" >/dev/null 2>&1 \
+  && fail "injected partial GitHub failure unexpectedly succeeded"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PARTIAL_STATE" \
+  "$PLAN_DRIVER" --apply "$PARTIAL_SPEC" >/dev/null \
+  || fail "plan apply did not resume after a partial failure"
+partial_count=$(find "$PARTIAL_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
+[ "$partial_count" -eq 3 ] || fail "partial resume duplicated or omitted plan issues"
+
+# --- lifecycle qualification -------------------------------------------------------------
+LIFEFIX="$TMP/lifecycle-fixture"
+mkdir -p "$LIFEFIX/docs/inprogress"
+cat > "$LIFEFIX/docs/inprogress/feature-active.md" <<'MD'
+## Tracker
+- [x] F-1 done
+- [ ] F-2 open
+MD
+cat > "$LIFEFIX/docs/inprogress/feature-blocked.md" <<'MD'
+## Tracker
+- [x] F-1 done
+## Status
+- **Approval:** user approved 2026-01-01.
+- **Tracking issue:** https://example.invalid/issues/1
+- **Verification evidence:** pending.
+- **Review verdict:** pending.
+MD
+AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" \
+  > "$TMP/lifecycle.out"
+grep -q "ACTIVE.*feature-active.md" "$TMP/lifecycle.out" \
+  || fail "lifecycle report did not retain an open tracker as active"
+grep -q "BLOCKED.*feature-blocked.md.*verification-evidence.*review-verdict" \
+  "$TMP/lifecycle.out" \
+  || fail "lifecycle report did not name missing closure evidence"
+AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
+  && fail "strict lifecycle check accepted an all-checked tracker without evidence"
+
+sed \
+  -e 's|^- \*\*Verification evidence:\*\* pending\.$|- **Verification evidence:** https://example.invalid/actions/1|' \
+  -e 's|^- \*\*Review verdict:\*\* pending\.$|- **Review verdict:** approved — https://example.invalid/reviews/1|' \
+  "$LIFEFIX/docs/inprogress/feature-blocked.md" > "$TMP/lifecycle-ready.md"
+mv "$TMP/lifecycle-ready.md" "$LIFEFIX/docs/inprogress/feature-blocked.md"
+AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
+  || fail "strict lifecycle check rejected a tracker with complete closure evidence"
 
 echo "self-test passed."

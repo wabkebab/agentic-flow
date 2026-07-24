@@ -43,8 +43,8 @@
 - **Package / build layout:** single scaffold repo; reusable payload lives in scripts,
   docs skeleton, hooks, and `templates/harness/`.
 - **CI gate:** `make check && make test`.
-- **`check` gotchas:** `scripts/self-test.sh` mutates root `CLAUDE.md` briefly to prove
-  exports come from `templates/harness/`; do not run multiple self-tests in parallel.
+- **`check` gotchas:** the regression suite copies the current checkout into unique
+  temporary fixtures, so concurrent checks are supported and must leave the source clean.
 
 ## Required local tools
 
@@ -77,16 +77,19 @@ This project ships `.claude/settings.json` with:
 
 ## Architecture (orient an agent fast)
 
-`scripts/export.sh` copies the allow-listed scaffold payload into a target project.
+`scripts/export.sh` copies the manifest-declared scaffold payload into a target project.
 Pristine root harness files are sourced from `templates/harness/`, while this repo's root
-`CLAUDE.md`, `AGENTS.md`, and `Makefile` are its own filled-in instance. `scripts/doctor.sh`
-reports adoption gaps, `scripts/self-test.sh` covers offline regressions, and the hooks in
-`scripts/hooks/` enforce the local stop gate, named staging, and no-push contract.
+`CLAUDE.md`, `AGENTS.md`, and `Makefile` are its own filled-in instance. Data-only files in
+`profiles/` render stack-specific Make recipes. `scripts/doctor.sh` reports adoption gaps,
+`scripts/self-test.sh` covers offline regressions, and the hooks in `scripts/hooks/`
+enforce the local stop gate, named staging, and no-push contract.
 
 ## Gotchas (the top traps)
 
 - Contract changes to `CLAUDE.md`, `AGENTS.md`, or `Makefile` usually need matching edits
   in both the repo-root instance and `templates/harness/`.
+- Payload membership belongs in `config/payload.tsv`; do not add another file list to
+  export, doctor, or tests.
 - Keep scripts Bash 3.2 compatible for macOS: no `mapfile`, no associative arrays, and be
   careful with empty arrays under `set -u`.
 - `export.sh --help` prints a fixed `sed -n` header range; update that range when changing

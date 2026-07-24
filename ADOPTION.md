@@ -19,14 +19,15 @@ It wraps the low-level exporter, fills the project token, preserves existing fil
 ## Usage
 
 ```bash
-scripts/init.sh /path/to/target-project --name my-project --stack none --yes
+scripts/init.sh /path/to/target-project --name my-project --stack node --yes
 ```
 
 Flags:
 
 - `--name <kebab>`: required for non-interactive runs; fills `CLAUDE.md` and `AGENTS.md`.
-- `--stack none|node`: chooses Makefile recipes. `none` keeps the generic scaffold recipes;
-  `node` writes npm-oriented recipes and prints a reminder to verify `package.json`.
+- `--stack generic|node|python|go|rust`: renders Makefile recipes from `profiles/`.
+  `none` is a compatibility alias for `generic`. Without an explicit flag, manifest
+  detection proposes a profile; it never overrides an explicit choice.
 - `--claude-only`: records the opt-out from the default Claude/Codex split.
 - `--git-init`: runs `git init` when the target is not already inside a git repo.
 - `--yes`: non-interactive mode. Missing required flags fail instead of being guessed.
@@ -37,8 +38,9 @@ names the flag it fills, so an interactive run teaches the scriptable form.
 
 ## Verify
 
-`scripts/doctor.sh` is the verifier. It reports required tools, required files, hook wiring,
-placeholder Make targets, the scaffold version stamp, and docs-index freshness.
+`scripts/doctor.sh` is the verifier. It reports required tools, agent adapters, stack
+profile, unresolved merge candidates, active/pending scaffold versions, Make targets,
+hook wiring, CI posture, and docs-index freshness.
 
 Run this in the target before committing the harness:
 
@@ -55,5 +57,6 @@ own. Copy it to `.github/workflows/ci.yml`, fill the `<ANGLE-BRACKET>` spots, an
 is the optional deploy counterpart; read its runbook comment before enabling it. See
 `templates/ci/README.md` and `METHODOLOGY.md` §10.
 
-`scripts/export.sh` remains available as the low-level non-destructive copy operation for
-manual or unusual adoptions.
+Run `scripts/export.sh` from the source scaffold for low-level installs or update
+candidates. It is intentionally source-only; adopted projects receive runtime checks and
+profiles, not another installer.

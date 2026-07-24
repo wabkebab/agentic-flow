@@ -33,6 +33,9 @@
 > [`Makefile`](Makefile) — the one executable source of truth that humans, agents, hooks,
 > and CI all call. **Fill in the Makefile recipes.** This section just *explains* the
 > targets and records the gotchas, so prose can't drift from what actually runs.
+> `init.sh --stack generic|node|python|go|rust` renders a conservative starting profile
+> into the Makefile. Treat it as a proposal: verify the commands against this project's
+> manifests and scripts before considering adoption complete.
 >
 > **Assess the stack before you wire it up** (`METHODOLOGY.md` §9). Read the manifests,
 > lockfiles, and installed toolchain versions to see what this project actually runs; check

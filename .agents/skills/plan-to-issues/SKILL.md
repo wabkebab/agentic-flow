@@ -29,6 +29,7 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
 2. **Build a JSON spec** (write to a temp file, e.g. the session scratchpad):
    ```json
    {
+     "id": "<stable-kebab-id>",
      "tracking": {
        "title": "Plan: <topic>",
        "body": "<1–2 line summary, link to the doc path, and the branch>"
@@ -36,6 +37,7 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
      "labels": ["plan"],
      "steps": [
        {
+         "id": "<stable-step-id>",
          "title": "Step 1 — <summary>",
          "body": "<DoD + verification commands as markdown. Keep the *why* in the doc.>",
          "labels": ["needs-execution", "agent:codex"]
@@ -43,26 +45,33 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
      ]
    }
    ```
+   - Give the plan and every step a stable `id`. These identities survive title/body edits
+     and let the driver reconcile without duplicating issues.
    - One step issue per brief step. Don't merge steps or split per-commit.
    - Step body = Definition of Done + the exact verify commands. Design rationale stays in the doc.
    - Labels follow METHODOLOGY.md §6: `plan` on the tracker; `needs-execution` + `agent:codex`
      on steps. For a **Security** doc add the matching `sev:high|med|low|nit` per step.
-3. **Dry run** — show the user exactly what will be created, no mutations:
+3. **Dry run** — show the user exactly what the spec describes. This is fully offline:
    ```
    scripts/plan-to-issues.sh <spec.json>
    ```
-4. **Get explicit approval.** Creating issues writes public artifacts — never run `--apply`
+4. **Optional live diff** — after a plan has been applied, compare it with GitHub:
+   ```
+   scripts/plan-to-issues.sh --diff <spec.json>
+   ```
+5. **Get explicit approval.** Creating or reconciling issues writes public artifacts —
+   never run `--apply`
    without the user's go-ahead in this turn.
-5. **Apply:**
+6. **Apply and write the tracker link back:**
    ```
-   scripts/plan-to-issues.sh --apply <spec.json>
+   scripts/plan-to-issues.sh --apply --doc docs/inprogress/<doc>.md <spec.json>
    ```
-6. **Close the loop:** update the doc's **Status / Implementation status** section to link
-   the tracking issue, tick nothing yet, and tell the user the tracking issue URL.
+7. **Close the loop:** tick nothing yet and tell the user the tracking issue URL.
 
 ## Notes
-- The script ensures labels idempotently but is **not** idempotent on issues — running
-  `--apply` twice creates a second set. Run once per plan.
+- The script stamps trackers and steps with their stable IDs. Repeating `--apply` updates
+  existing issues, resumes interrupted runs, creates added steps, and closes removed steps
+  with a history-preserving comment.
 - Sub-issue linking is best-effort via the GitHub sub-issues API; if unavailable, the
   tracking issue still carries a `- [ ] #N` task list as the fallback checklist.
 - For a **Security** doc's findings, each 🔴🟠🟡🔵 finding becomes a step entry with the

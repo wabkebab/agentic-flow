@@ -21,7 +21,7 @@
 #   date. So the fast gate nags; a scheduled --strict run is what enforces.
 set -euo pipefail
 
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+ROOT=${AGENTIC_PROJECT_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}
 STAMP_LABEL="Action pins verified:"
 MAX_AGE_DAYS=${ACTION_PIN_MAX_AGE_DAYS:-180}
 

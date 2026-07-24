@@ -11,7 +11,7 @@
 # Tracker-checkbox sync from live GitHub issue state is a planned follow-up layer.
 set -euo pipefail
 
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 DOCS_DIR="$ROOT/docs"
 README="$DOCS_DIR/README.md"
 BEGIN='<!-- BEGIN: generated index — do not edit by hand (scripts/docs-index.sh) -->'

@@ -1,0 +1,8 @@
+# target	command
+detect	package.json
+check	npm run typecheck
+check	npm run lint
+test	npm run test:run
+test-one	npx vitest run "$(F)"
+build	npm run build
+run	npm run dev

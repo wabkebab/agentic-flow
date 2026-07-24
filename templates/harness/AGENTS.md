@@ -26,13 +26,16 @@ order, edge cases — not finished code. Read the brief for the step before writ
 
 1. **Read the implementation brief** for the issue (linked from the issue / tracking issue).
    It gives the problem, the approach, the regression test to add, and the Definition of Done.
-2. **Branch** as the brief specifies; work one step at a time, in the brief's order.
+2. **Branch** as the brief specifies; work one step at a time, in the brief's order. One
+   issue owns one branch and one PR. If a brief assigns multiple independently-shippable
+   issues to one branch, stop and flag the delivery-unit conflict.
 3. **Implement** the step. Add the regression test the brief asks for — it must fail against
    the old code and pass after.
 4. **Verify** with the project's `make` targets (defined in the `Makefile`; explained in
    `CLAUDE.md` → Stack profile): `make check` and `make test-one F=<the step's test>` per
    step; run the full `make test` at the end. (The Stop hook runs `make check` regardless.)
 5. **Commit** (see contract below), one logical commit for the step, with `Fixes #N`.
+   Record the PR/CI evidence in the implementation doc; the issue closes when that PR merges.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 
