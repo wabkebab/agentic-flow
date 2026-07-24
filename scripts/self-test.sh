@@ -148,6 +148,61 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   fi
 fi
 
+# --- action-pin guard (run everywhere) ---------------------------------------------------
+# The guard's whole value is discriminating a mutable tag pin from an immutable SHA pin.
+# Assert it FAILS on bad input first — a checker that only ever passes proves nothing.
+PIN_GUARD="$ROOT/scripts/check-action-pins.sh"
+if [ -x "$PIN_GUARD" ]; then
+  PINFIX="$TMP/pinfix"
+  mkdir -p "$PINFIX/.github/workflows"
+
+  cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
+# Action pins verified: 2999-01-01
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@v4
+YAML
+  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 && fail "pin guard accepted a mutable tag pin"
+
+  cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
+# Action pins verified: 2999-01-01
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+YAML
+  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 && fail "pin guard accepted a SHA pin with no version comment"
+
+  # A well-formed pin and a local action must both pass.
+  cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
+# Action pins verified: 2999-01-01
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/local
+YAML
+  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 \
+    || fail "pin guard rejected a correctly pinned action or a local action"
+
+  # Staleness is a warning, not an error — otherwise the calendar alone turns repos red
+  # and the Stop hook starts blocking turns. --strict is what enforces.
+  printf '%s\n' "# Action pins verified: 2020-01-01" > "$PINFIX/.github/workflows/stale.yml"
+  (cd "$PINFIX" && "$PIN_GUARD") >/dev/null 2>&1 \
+    || fail "pin guard treated a stale stamp as fatal in default mode"
+  (cd "$PINFIX" && "$PIN_GUARD" --strict) >/dev/null 2>&1 \
+    && fail "pin guard --strict did not fail on a stale stamp"
+
+  # No workflows at all is a clean pass, not an error: most fresh adoptions have none.
+  mkdir -p "$TMP/pin-empty" && (cd "$TMP/pin-empty" && "$PIN_GUARD") >/dev/null 2>&1 \
+    || fail "pin guard failed in a project with no workflow files"
+
+  # The shipped templates must satisfy their own guard.
+  (cd "$ROOT" && "$PIN_GUARD") >/dev/null 2>&1 \
+    || fail "shipped templates/ci workflows fail the pin guard"
+fi
+
 # --- hook invariants (run everywhere) ----------------------------------------------------
 ADD_GUARD="$ROOT/scripts/hooks/block-git-add-all.sh"
 

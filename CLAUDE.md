@@ -33,7 +33,7 @@
 
 | Target | What it does on this project | Notes / gotchas |
 |--------|------------------------------|-----------------|
-| `make check` | Bash syntax for shipped scripts, docs index freshness, and `scripts/self-test.sh` | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
+| `make check` | Bash syntax for shipped scripts, docs index freshness, action-pin structure, and `scripts/self-test.sh` | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
 | `make test` | full offline scaffold regression suite, plus `shellcheck` over `scripts/` when installed | no network or GitHub writes |
 | `make test-one F=…` | same offline suite; this harness has no finer-grained test runner yet | accepts `F` for interface compatibility and prints it |
 | `make build` | dry-run export into a temporary directory | validates the payload assembles without writing a real target |

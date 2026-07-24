@@ -26,6 +26,41 @@ so adopting the harness never activates CI or a deploy behind your back.
 Adding a job later means adding it to `ci-gate`'s `needs` **and** to the result loop
 inside it. A job missing from the loop is a job nothing enforces.
 
+## Keeping the pins honest
+
+`scripts/check-action-pins.sh` scans `.github/workflows/` and `templates/ci/`:
+
+```bash
+scripts/check-action-pins.sh            # structure fatal, staleness warns — runs in `make check`
+scripts/check-action-pins.sh --online   # resolve pins against GitHub, report newer releases
+scripts/check-action-pins.sh --strict   # staleness fatal too — for a scheduled run
+scripts/check-action-pins.sh --stamp    # record today as the re-verification date
+```
+
+A tag pin or a SHA with no `# vX.Y.Z` comment fails immediately. Staleness only warns in the
+fast gate: pins decay with the calendar, not with your edits, so failing `make check` on a
+date would turn the repo red without anyone touching it — and the Stop hook would start
+blocking agents over it. Put the teeth in a scheduled workflow instead:
+
+```yaml
+name: Action pin audit
+on:
+  schedule:
+    - cron: '0 6 * * 1'     # Monday morning
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pins:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: scripts/check-action-pins.sh --strict --online
+```
+
+The re-verification workflow: run `--online`, bump anything it reports, confirm it comes
+back clean, then `--stamp`.
+
 ## Activating `deploy.yml`
 
 This one deploys. Read it end to end first. Beyond the angle brackets you need the

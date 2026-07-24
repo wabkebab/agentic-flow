@@ -10,6 +10,7 @@ help:           ## list available targets
 check:          ## fast sanity gate: harness checks + your type-check/lint. Run by the Stop hook.
 	@for f in scripts/*.sh scripts/hooks/*.sh; do bash -n "$$f" || exit 1; done
 	@scripts/docs-index.sh --check
+	@scripts/check-action-pins.sh
 	@scripts/self-test.sh
 
 test:           ## full test suite

@@ -219,6 +219,9 @@ Fixes #73
   apply stack/opt-out flags, stamp the source version, and print the doctor report.
 - **`scripts/doctor.sh`** is the adoption checklist for a copied scaffold: required files,
   hook wiring, required tools, real Make targets, and docs-index freshness.
+- **`scripts/check-action-pins.sh`** keeps GitHub Actions pinned to immutable SHAs with a
+  readable version comment (fatal), and nags when the pins haven't been re-verified in
+  months (`--strict` to enforce, `--online` to check against GitHub). See §10.
 - **`scripts/self-test.sh`** exercises the scaffold's offline invariants, especially export
   behavior and hook behavior.
 
@@ -292,6 +295,14 @@ The reference structure, extracted from a working two-workflow setup. Stack-agno
 - **Pin everything.** Third-party actions by **full commit SHA** with a `# vX.Y.Z` trailing
   comment; runners by version (`ubuntu-24.04`, never `ubuntu-latest`). A tag is mutable —
   a SHA is the only pin that resists a compromised action.
+- **Enforce the pins with `scripts/check-action-pins.sh`.** Pins rot two ways and the check
+  grades them differently. *Structure* — a tag pin, or a SHA with no version comment — is
+  always fatal; it runs in `make check`. *Staleness* is only a warning there, because pins
+  decay with the calendar rather than with edits, and failing the fast gate on a date would
+  turn a repo red with no change to it (and, via the Stop hook, block agents from ending
+  turns). Enforcement lives in a scheduled `--strict` run instead. `--online` resolves each
+  pin against GitHub to prove it really is the version its comment claims and to report
+  newer releases; `--stamp` records the re-verification date.
 - **Least-privilege `permissions:` declared explicitly** at workflow level. Add a scope only
   where a step actually needs it, and comment *why* (e.g. path-filter actions call the Pulls
   API and fail with "Resource not accessible by integration" without `pull-requests: read`).
