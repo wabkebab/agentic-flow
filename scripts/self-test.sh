@@ -646,6 +646,53 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail "doctor report failed for a stamped project with no source"
   grep -q "scaffold source not recorded" "$TMP/no-source-doctor.out" \
     || fail "doctor did not warn about a stamped project with no source"
+
+  # Regression for the scaffold-only scoping of the role-bundle word ceilings (below): an
+  # oversized CLAUDE.md must still fail the check in the scaffold repo, and must NOT fail it
+  # once exported, since CLAUDE.md/AGENTS.md are preserve/instance files every adopter fills
+  # with real project content of whatever size that content actually needs. Extract the live
+  # snippet rather than re-describing its logic, so this test breaks if the guard is ever
+  # dropped instead of silently drifting from what actually runs. Rewritten to reference
+  # CEILING_ROOT rather than ROOT so running it in a subshell below never shadows this
+  # script's own $ROOT for shellcheck (SC2030/SC2031) or for real.
+  CEILING_SNIPPET_FILE="$TMP/ceiling-snippet.sh"
+  # shellcheck disable=SC2016 # literal $ROOT/$CEILING_ROOT text being rewritten, not expanded.
+  sed -n '/^# Ceilings are set just above the MEASURED size of each bundle/,/reviewer static role bundle exceeds its ceiling/p' \
+    "$ROOT/scripts/self-test.sh" \
+    | sed 's/\$ROOT\//\$CEILING_ROOT\//g' > "$CEILING_SNIPPET_FILE"
+  [ -s "$CEILING_SNIPPET_FILE" ] \
+    || fail "could not extract the role-bundle ceiling snippet for its own regression test"
+
+  run_ceiling_snippet() { # <fixture-root> <export-sh present: yes|no>
+    local d="$1" has_export="$2"
+    rm -rf "$d"
+    mkdir -p "$d/.agents/skills/review-execution"
+    printf 'word %.0s' $(seq 1 1600) > "$d/CLAUDE.md"
+    printf 'word %.0s' $(seq 1 1600) > "$d/AGENTS.md"
+    printf 'short reviewer skill\n' > "$d/.agents/skills/review-execution/SKILL.md"
+    if [ "$has_export" = yes ]; then mkdir -p "$d/scripts"; : > "$d/scripts/export.sh"; fi
+    ( # shellcheck disable=SC2034 # consumed by the sourced snippet below, not used directly here.
+      CEILING_ROOT="$d"
+      # shellcheck disable=SC2329 # invoked indirectly by the sourced snippet below.
+      fail() { echo "CEILING_FAIL: $1"; }
+      # shellcheck disable=SC1090 # the snippet is extracted from this file at runtime.
+      . "$CEILING_SNIPPET_FILE"
+    )
+  }
+
+  # Captured via command substitution, NOT piped live to grep -q: grep -q exits on its
+  # first match, and the snippet still has a second echo (the executor ceiling) queued
+  # behind it — writing to an already-closed pipe raises SIGPIPE, which pipefail turns
+  # into a pipeline failure even though the match already succeeded. Capturing first
+  # lets the subshell finish and exit cleanly before anything greps it.
+  CEILING_FIXTURE="$TMP/ceiling-fixture"
+  scaffold_ceiling_out=$(run_ceiling_snippet "$CEILING_FIXTURE" yes)
+  printf '%s\n' "$scaffold_ceiling_out" | grep -q "planner static role bundle exceeds" \
+    || fail "role-bundle ceiling did not fire for an oversized CLAUDE.md inside the scaffold repo"
+  exported_ceiling_out=$(run_ceiling_snippet "$CEILING_FIXTURE" no)
+  printf '%s\n' "$exported_ceiling_out" | grep -q "planner static role bundle exceeds" \
+    && fail "role-bundle ceiling fired in an exported project (scripts/export.sh absent) — adopters must be allowed real project content of any size"
+  rm -rf "$CEILING_FIXTURE"
 fi
 fi
 
@@ -785,24 +832,35 @@ done
 # matter what gets re-inlined, which turns the assertion into decoration. Raising one is
 # a deliberate act: move the content to its canonical home first (CLAUDE.md → routing).
 #
-# Raised once, deliberately, when the review handoff became data-carrying: Codex now
-# comments the commit sha and verification on the step issue, and the reviewer closes that
-# issue itself rather than parking it at needs-closing. Every bit of *rationale* for that
-# went to METHODOLOGY.md §2/§6 (uncapped, and the canonical home); what landed in the three
-# bundles is irreducible mechanics — the state machine and the gh commands each role runs.
-# Each ceiling keeps the original ~80-word headroom over its new measured size, so the
-# assertion still bites on re-inlining rather than on one contract change. For the executor
-# the binding measurement is templates/harness/AGENTS.md (947), not this repo's own root
-# instance (869) — the same check runs inside a fresh export, where the bundle carries the
-# opt-out notes too. Size a ceiling against the larger of the pair, or `make test` fails on
-# the export while `make check` passes here.
-planner_words=$(wc -w < "$ROOT/CLAUDE.md" | tr -d ' ')
-executor_words=$(wc -w < "$ROOT/AGENTS.md" | tr -d ' ')
+# The planner/executor ceilings apply ONLY in the scaffold repo (scripts/export.sh present),
+# never in an exported project. CLAUDE.md and AGENTS.md are "preserve" instance files —
+# config/payload.tsv ships them to every adopter to fill with their OWN Stack profile,
+# Architecture, and Gotchas, which is real project information the pristine template doesn't
+# carry and has no reason to be bounded by this repo's own measurements. Running this
+# unconditionally broke the first real adopter upgrade past this check: collector's filled-in
+# CLAUDE.md measured 2227 words against a 1530 ceiling sized for the standard's own root file.
+# The reviewer-skill ceiling stays unconditional — that file is pristine payload, never
+# customized per project, so its size is meaningful everywhere.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Raised once, deliberately, when the review handoff became data-carrying: Codex now
+  # comments the commit sha and verification on the step issue, and the reviewer closes
+  # that issue itself rather than parking it at needs-closing. Every bit of *rationale* for
+  # that went to METHODOLOGY.md §2/§6 (uncapped, and the canonical home); what landed in
+  # the three bundles is irreducible mechanics — the state machine and the gh commands each
+  # role runs. Each ceiling keeps the original ~80-word headroom over its new measured
+  # size, so the assertion still bites on re-inlining rather than on one contract change.
+  # For the executor the binding measurement is templates/harness/AGENTS.md (947), not this
+  # repo's own root instance (869) — the same check runs inside a fresh export, where the
+  # bundle carries the opt-out notes too. Size a ceiling against the larger of the pair, or
+  # `make test` fails on the export while `make check` passes here.
+  planner_words=$(wc -w < "$ROOT/CLAUDE.md" | tr -d ' ')
+  executor_words=$(wc -w < "$ROOT/AGENTS.md" | tr -d ' ')
+  [ "$planner_words" -le 1530 ] \
+    || fail "planner static role bundle exceeds its ceiling: $planner_words words (max 1530)"
+  [ "$executor_words" -le 1030 ] \
+    || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1030)"
+fi
 reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
-[ "$planner_words" -le 1530 ] \
-  || fail "planner static role bundle exceeds its ceiling: $planner_words words (max 1530)"
-[ "$executor_words" -le 1030 ] \
-  || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1030)"
 [ "$reviewer_words" -le 965 ] \
   || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 965)"
 
