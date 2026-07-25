@@ -24,14 +24,26 @@
 
 | Role | Who (default) | Output |
 |------|---------------|--------|
-| **Plan / Review** | Claude | Analysis & review documents (`docs/`), the inlined implementation brief, GitHub issues, code review of execution commits. Commits with `git-claude`. |
+| **Plan / Close-out** | Claude | Analysis & review documents (`docs/`), the inlined implementation brief, GitHub issues; then close-out — Tracker/Status updates and the doc move once a step is reviewed. Commits with `git-claude`. |
 | **Execute** | Codex | Code that satisfies the issues generated from a plan, one logical commit per step. Commits with `git-codex`. |
+| **Review** | OpenCode | The **independent** review of each completed step: reads the diff against the brief, then either records findings and returns the step to the executor, or marks it ready for close-out. Commits any review-note changes with `git-opencode`. |
 | **Own / merge / deploy** | Human | Approves plans, merges PRs, controls all pushes and releases. |
 
-This two-agent split is the **default standard**. A project may **opt out** (e.g.
-Claude-only, no Codex): keep the same document lifecycle and review discipline, drop the
-`agent:codex` labels and `git-codex`, and let Claude both plan and execute. State the
-opt-out at the top of the project's `CLAUDE.md`.
+**Review is a separate role on purpose.** The value is independence: the agent that wrote the
+code is not the agent that judges it. Claude may still run `/code-review` (§8) as a *second*
+opinion or on a whole branch, but that does not replace the reviewer's pass — and a step should
+not be reviewed twice by default.
+
+This three-agent split is the **default standard**. A project may **opt out** of either agent
+role, keeping the same document lifecycle and review discipline:
+
+- **No Codex** — drop the `agent:codex` labels and `git-codex`; Claude plans and executes.
+- **No OpenCode** — drop the `agent:opencode` labels and `git-opencode`; Claude reviews with
+  `/code-review` or a hand-written review doc. Independence is weaker, so say so in the review
+  verdict rather than implying a separate reviewer signed off.
+
+State any opt-out at the top of the project's `CLAUDE.md`. **Exactly one role reviews** — an
+opt-out reassigns the review, it never leaves it to both.
 
 ---
 
@@ -51,12 +63,15 @@ opt-out at the top of the project's `CLAUDE.md`.
         │
         ▼
   Execute (Codex)                   one branch + PR per pass; one commit + "Fixes #N"
-                                     per step; git-codex
-        │
+        │                            per step; git-codex; then flips the step issue
+        │                            to agent:opencode + needs-review
         ▼
-  Review (Claude)                   /code-review (+ ultra for big branches), or a
-        │                           hand-written review doc; findings → fixes
-        │                           (Codex or Claude), tick the findings tracker
+  Review (OpenCode)                 reads the step's diff against the brief
+        │                           ├─ findings ─▶ back to agent:codex (loop, capped)
+        │                           └─ none ─────▶ agent:claude + needs-closing
+        ▼
+  Close-out (Claude)                tick the Tracker, update Status; the doc moves
+        │                           when every step is reviewed and verified
         ▼
   Merge (human)  ────────────────▶  PR merge auto-closes #N
         │
@@ -65,6 +80,9 @@ opt-out at the top of the project's `CLAUDE.md`.
                                     update the Status section; accepted-but-not-built
                                     risks/features recorded in docs/accepted_risks.md
 ```
+
+The label pair is what moves a step between roles; the project's `CLAUDE.md` holds the exact
+state machine and the cap on findings rounds.
 
 The loop is **one-directional** (doc → issues), never the reverse. The document stays the
 source of design intent; issues are the disposable execution units.
@@ -180,9 +198,16 @@ Use the `plan-to-issues` skill (`.claude/skills/plan-to-issues/`) once a plan is
 **approved**. It creates one **tracking issue** plus one **sub-issue per
 independently-shippable step**, from the implementation brief.
 
-**Label convention (encodes the loop):**
-`plan` (on the tracker) · `needs-execution` · `needs-review` · `agent:codex` ·
-`agent:claude` · `sev:high|med|low|nit`.
+**Label convention (encodes the loop).** Labels move in **pairs** — one `agent:*` naming who
+holds the step, one `needs-*` naming what it needs:
+
+| Holder | Needs | Meaning |
+|--------|-------|---------|
+| `agent:codex` | `needs-execution` | the executor implements it (the `plan-to-issues` default) |
+| `agent:opencode` | `needs-review` | the reviewer has it; returns it to `agent:codex` with findings, or passes it on |
+| `agent:claude` | `needs-closing` | reviewed clean; close-out updates the Tracker and Status |
+
+Plus `plan` on the tracking issue and `sev:high|med|low|nit` on findings (§5).
 
 Rules:
 - One issue per independently-shippable step — not one giant issue, not one per commit.
@@ -281,8 +306,9 @@ These make the handoff explicit and parallel instead of sequential:
 - **Worktrees** (`isolation: "worktree"`) — run execution and review on isolated worktrees
   of the same branch so review can start while execution continues.
 - **`/code-review`** (`low|medium|high|max`, and **`ultra`** for a deep multi-agent cloud
-  review of a whole branch) — the productized version of a hand-written review doc. Keep
-  hand-written reviews for architecture-level passes.
+  review of a whole branch) — a whole-branch or second-opinion pass, **not** a substitute for
+  §1's independent per-step review, and the reviewer's role if a project opts out of OpenCode.
+  Keep hand-written review docs for architecture-level passes.
 - **`/security-review`** — a security pass on the pending branch diff; complements a
   Security doc.
 - **`/verify` and `/run`** — drive the app to confirm a fix behaves, not just that tests pass.

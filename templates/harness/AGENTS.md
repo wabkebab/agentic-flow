@@ -34,7 +34,11 @@ order, edge cases — not finished code. Read the brief for the step before writ
    `CLAUDE.md` → Stack profile): `make check` and `make test-one F=<the step's test>` per
    step; run the full `make test` at the end. (The Stop hook runs `make check` regardless.)
 5. **Commit** (see contract below), one logical commit for the step, with `Fixes #N`.
+   Then hand the step to the reviewer — flip the label pair (`METHODOLOGY.md` §6):
+   `gh issue edit <N> --add-label "agent:opencode,needs-review" --remove-label "agent:codex,needs-execution"`.
    Record the PR/CI evidence in the implementation doc; the issue closes when that PR merges.
+   (If the project opts out of OpenCode, `CLAUDE.md` says who reviews instead — hand off to them,
+   never to yourself.)
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 
