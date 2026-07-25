@@ -293,14 +293,24 @@ to short pointers instead of renumbering them.
 - Deriving the doc Tracker from GitHub; `ROADMAP.md` retains that future work.
 - Moving review findings into the implementation document.
 
+## Decisions
+
+Recorded 2026-07-25. O-4 is unblocked.
+
+- ✅ **Batch Claude close-out once per plan.** Every step still receives independent review;
+  only Tracker/Status edits wait until all steps are reviewed. O-4's stop condition stands: if
+  batching could let a document close with an unreviewed step, keep per-step close-out.
+- ✅ **Reduce automated findings returns from three to two** before human escalation. No finding
+  is auto-dismissed; the third return escalates.
+- ✅ **No `Critical` severity level.** The scale is **High / Medium / Low / Nit** on the existing
+  `sev:high|med|low|nit` labels, with accepted/by-design kept as a separate disposition. This
+  reverses an earlier planning-thread decision to adopt Critical/High/Medium/Low/Nit: a fifth
+  level does not reduce elapsed time or context, and this pass removes layers rather than adding
+  them. Production urgency belongs to incident handling. Recorded here because the earlier choice
+  is in the thread history and O-3 would otherwise look like it contradicts it.
+
 ## Open questions
 
-- **[BLOCKING for O-4] Approve batching Claude close-out once per plan?** Every step still
-  receives independent review; only Tracker/Status edits wait until all steps are reviewed.
-  Recommendation: approve.
-- **[BLOCKING for O-4] Approve reducing automated findings returns from three to two before
-  human escalation?** This removes one executor/reviewer pair from the worst path.
-  Recommendation: approve.
 - Should `README.md`'s large source-tree inventory be reduced to entry points? It is
   source-only and therefore not a hot-path exported cost. Recommendation: defer unless a
   drift defect is found.
@@ -516,7 +526,9 @@ new manifest mode or label, and smaller reviewer static context.
 ## O-4 — Reduce close-out and review-bounce context boots
 
 **Why fourth:** O-1 reduces cost per boot; this step reduces boot count. It changes lifecycle
-behavior and therefore requires the two explicit approvals in Open questions.
+behavior; both required approvals were granted 2026-07-25 (see Decisions), so it is unblocked.
+The stop conditions below still govern — an approval to batch is not permission to let an
+unreviewed step through.
 
 **Inspect immediately before editing:**
 
@@ -668,7 +680,9 @@ existing functional gates remain green.
 
 # Status / evidence
 
-- **Approval:** pending.
+- **Approval:** decisions approved by the human 2026-07-25 — close-out batching, findings cap
+  three → two, and no `Critical` severity level (see Decisions). Whole-plan approval to begin
+  execution: pending.
 - **Tracking issue:** [https://github.com/wabkebab/agentic-flow/issues/46](https://github.com/wabkebab/agentic-flow/issues/46).
 - **Branch:** pending activation.
 - **Verification evidence:** pending.
