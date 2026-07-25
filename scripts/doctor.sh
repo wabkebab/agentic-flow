@@ -199,15 +199,25 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     ok "CLAUDE.md and AGENTS.md tokens filled"
   fi
 
+  # Stamp is `<semver>+<sha>` (semver build-metadata syntax): semver is the human-facing
+  # release, bumped deliberately in VERSION on a contract change; sha pins the exact commit
+  # for tooling that needs it. Split it back apart for the report; tolerate a bare sha from
+  # a pre-semver stamp so an old adoption doesn't suddenly warn on nothing new.
   if [ -f "$ROOT/.agentic-flow-version" ]; then
     version=$(sed -n '1p' "$ROOT/.agentic-flow-version")
-    ok "scaffold version: $version"
+    case "$version" in
+      *+*) ok "scaffold version: ${version%%+*} (commit ${version#*+})" ;;
+      *)   ok "scaffold version: $version" ;;
+    esac
   else
     warn "scaffold version stamp not found: .agentic-flow-version"
   fi
   if [ -f "$ROOT/.agentic-flow-candidate-version" ]; then
     candidate_version=$(sed -n '1p' "$ROOT/.agentic-flow-candidate-version")
-    warn "scaffold update pending merge: $candidate_version"
+    case "$candidate_version" in
+      *+*) warn "scaffold update pending merge: ${candidate_version%%+*} (commit ${candidate_version#*+})" ;;
+      *)   warn "scaffold update pending merge: $candidate_version" ;;
+    esac
   fi
   if [ -f "$ROOT/.agentic-flow-stack" ]; then
     stack_profile=$(sed -n '1p' "$ROOT/.agentic-flow-stack")

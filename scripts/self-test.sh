@@ -272,7 +272,11 @@ if [ -f "$ROOT/scripts/export.sh" ] && [ "$SELF_TEST_MODE" = full ]; then
   printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
   printf '%s\n' "# self-test root sentinel" >> "$SOURCE_FIXTURE/CLAUDE.md"
   "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
-  expected_version=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
+  # Mirrors export.sh's own semver+SHA computation exactly — see the comment there.
+  expected_semver=$(sed -n '1p' "$ROOT/VERSION" 2>/dev/null || true)
+  [ -n "$expected_semver" ] || expected_semver="0.0.0"
+  expected_sha=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
+  expected_version="$expected_semver+$expected_sha"
 
   assert_file "$TARGET/METHODOLOGY.md"
   assert_file "$TARGET/ADOPTION.md"
@@ -312,6 +316,9 @@ if [ -f "$ROOT/scripts/export.sh" ] && [ "$SELF_TEST_MODE" = full ]; then
   assert_file "$TARGET/.agentic-flow-version"
   grep -qx "$expected_version" "$TARGET/.agentic-flow-version" \
     || fail "export version stamp did not match source HEAD"
+  # VERSION is this repo's own maintainer-facing semver source; not in the manifest, so
+  # nothing copies it. Only the computed semver+SHA stamp reaches a target.
+  assert_no_file "$TARGET/VERSION"
   grep -q "$PROJECT_TOKEN" "$TARGET/CLAUDE.md" \
     || fail "exported CLAUDE.md did not come from the tokenized harness template"
   if grep -q "# self-test root sentinel" "$TARGET/CLAUDE.md"; then

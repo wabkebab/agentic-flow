@@ -9,6 +9,14 @@
 > Everything here, in the templates, and in the hooks calls its targets: `make check`
 > (fast type-check + lint gate), `make test`, `make test-one F=…`, `make build`, `make run`.
 > `CLAUDE.md` explains those targets and their gotchas; the `Makefile` runs them.
+>
+> **Standard version:** [`VERSION`](VERSION) — a human-facing semver, bumped deliberately
+> on a contract change (a section here, in `CLAUDE.md`/`AGENTS.md`, or a hook/script
+> behavior an adopted project depends on). `scripts/export.sh` and `scripts/init.sh` combine
+> it with the exact commit as `<semver>+<sha>` (semver build-metadata syntax) and stamp it
+> into a target's `.agentic-flow-version` — the semver half is what a human compares release
+> notes against, the `+sha` half is what tooling diffs exactly. `scripts/doctor.sh` reports
+> both halves split back apart.
 
 ---
 

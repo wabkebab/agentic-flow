@@ -65,7 +65,8 @@ scripts/init.sh /path/to/target-project --name my-project --stack node --yes
 
 It copies the allow-list, fills the project name, preserves differing existing files as
 `<file>.agentic-new`, applies the requested stack/opt-out flags, writes the scaffold version
-stamp, and prints the doctor report. Claude and Codex hook/skill adapters ship together.
+stamp (`<semver>+<sha>` from [`VERSION`](VERSION) plus the exact commit — see `ADOPTION.md`),
+and prints the doctor report. Claude and Codex hook/skill adapters ship together.
 
 Stack profiles are `generic`, `node`, `python`, `go`, and `rust`; `none` remains an alias
 for `generic`. Detection proposes a profile from project manifests but never overrides an
