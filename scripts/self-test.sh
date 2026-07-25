@@ -1044,8 +1044,15 @@ chmod +x "$TIMEOUT_BIN/git"
 (cd "$TIMEOUT_TARGET" && PATH="$TIMEOUT_BIN:$PATH" AGENTIC_FLOW_FETCH_TIMEOUT=1 "$AGENTIC_FLOW_CLI" diff) \
   > "$TMP/diff-timeout.out" 2>"$TMP/diff-timeout.err" \
   && fail "diff accepted a timed-out fetch"
-sleep 3
-assert_no_file "$TIMEOUT_SENTINEL"
+if command -v perl >/dev/null 2>&1; then
+  sleep 3
+  assert_no_file "$TIMEOUT_SENTINEL"
+else
+  # Without Perl's POSIX setsid helper, run_with_timeout deliberately falls back to killing
+  # only the immediate child. Keep the basic timeout assertion above, but do not pretend the
+  # fallback can enforce descendant cleanup that it cannot actually perform.
+  rm -f "$TIMEOUT_SENTINEL"
+fi
 
 UPGRADE_SOURCE="$TMP/upgrade-source"
 mkdir -p "$UPGRADE_SOURCE/config" "$UPGRADE_SOURCE/scripts/lib" "$UPGRADE_SOURCE/scripts" \
