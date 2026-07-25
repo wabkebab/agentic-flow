@@ -10,13 +10,17 @@
 #             including a CI runner with no developer tooling installed.
 #       env   workstation tooling only — required commands and the commit wrappers.
 #       all   both (default; output is unchanged from before --scope existed).
+#   scripts/doctor.sh --check --scope repo --skip-make-check
+#       trust a caller that already ran the equivalent fast gate; repo scope only.
 set -euo pipefail
 
 CHECK=false
 SCOPE=all
+SKIP_MAKE_CHECK=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --check) CHECK=true; shift ;;
+    --skip-make-check) SKIP_MAKE_CHECK=true; shift ;;
     --scope)
       [ "$#" -ge 2 ] || { echo "error: --scope requires repo, env, or all" >&2; exit 2; }
       case "$2" in
@@ -32,6 +36,10 @@ while [ "$#" -gt 0 ]; do
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
+if [ "$SKIP_MAKE_CHECK" = true ] && [ "$SCOPE" != repo ]; then
+  echo "error: --skip-make-check is only valid with --scope repo" >&2
+  exit 2
+fi
 
 # Resolve from this script, not the enclosing git worktree. A harness installed in a
 # monorepo subdirectory owns that subdirectory; `git rev-parse --show-toplevel` would make
@@ -293,7 +301,9 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   fi
 
   # Behavior-derived, not text-derived: a `check` recipe can look wired yet still be red.
-  if [ "${AGENTIC_SELFTEST:-}" = "1" ]; then
+  if [ "$SKIP_MAKE_CHECK" = true ]; then
+    ok "make check passes (skipped by explicit caller after equivalent gate)"
+  elif [ "${AGENTIC_SELFTEST:-}" = "1" ]; then
     ok "make check passes (skipped inside self-test recursion guard)"
   elif (cd "$ROOT" && make check) >/dev/null 2>&1; then
     ok "make check passes"

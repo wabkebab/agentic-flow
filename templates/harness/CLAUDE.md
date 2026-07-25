@@ -4,23 +4,35 @@
 > instructions win over defaults. Keep this dense and gotcha-rich — it is the source of
 > truth an agent reads first.
 >
-> This project follows the standard in [`METHODOLOGY.md`](METHODOLOGY.md). Read it once;
-> it defines the plan → execute → review loop, the document lifecycle, and the commit
-> contract. The executor's mirror of this file is [`AGENTS.md`](AGENTS.md).
+> This project follows the standard in [`METHODOLOGY.md`](METHODOLOGY.md). Load this file
+> first, then route to specific methodology sections as needed; do not preload the whole
+> methodology for routine planning or close-out. The executor's mirror of this file is
+> [`AGENTS.md`](AGENTS.md).
 
 ---
 
 ## Roles on this project
 
-- **Plan / Review — Claude** (you). Write Security / Feature / Product-Analysis docs in
-  `docs/`, inline the implementation brief, generate issues with `plan-to-issues`, review
-  execution commits, fix or delegate fixes. Commit with `git-claude`.
+- **Plan / Close-out — Claude** (you). Write Security / Feature / Product-Analysis docs in
+  `docs/`, inline the implementation brief, generate issues with `plan-to-issues`, then close
+  out reviewed steps (Tracker/Status, doc move). For planning, load the chosen template,
+  relevant live code/tests, and only the methodology section the task needs. For close-out,
+  load the Tracker/Status, step issue states, review verdicts, CI evidence, and lifecycle
+  output. Commit with `git-claude`.
 - **Execute — Codex.** Implements the issues. Commits with `git-codex`. See `AGENTS.md`.
+- **Review — OpenCode.** The independent per-step review: reads the diff against the brief and
+  either returns findings to Codex or marks the step ready for close-out. Commits review notes
+  with `git-opencode`. See `METHODOLOGY.md` §1 and the label pairs in §6.
 - **Own / merge / deploy — the human.** Approves plans, merges PRs, controls all pushes.
 
-<!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
-     "This project is Claude-only. There is no Codex executor; Claude both plans and
-      executes. Drop the agent:codex labels; keep the doc lifecycle and review discipline." -->
+**Exactly one role reviews.** An opt-out reassigns the review; it never leaves it to both.
+
+<!-- OPT-OUT: state any opt-out here, e.g.:
+     "Claude-only: no Codex executor and no OpenCode reviewer; Claude plans, executes, and
+      reviews with /code-review. Drop the agent:codex / agent:opencode labels; keep the doc
+      lifecycle and review discipline."
+     "No OpenCode: Claude reviews with /code-review. Independence is weaker — say so in the
+      review verdict rather than implying a separate reviewer signed off." -->
 
 ---
 
@@ -110,5 +122,8 @@ This project ships `.claude/settings.json` with:
 - Security/Feature docs carry an **inlined implementation brief** (approach + ordered steps
   + DoD + verification commands from the Stack profile — **not code**).
 - Approved plan → run the **`plan-to-issues`** skill.
+- Reviewed steps may accumulate at `agent:claude + needs-closing`; close the plan in one
+  pass only after all steps are independently reviewed, CI evidence is recorded, and
+  `scripts/lifecycle-status.sh --check --verify-evidence` passes.
 - On done (shipped & verified, or risk accepted) → move the doc to `docs/done/`
   (or `docs/done/security/`); record accepted risks in `docs/accepted_risks.md`.

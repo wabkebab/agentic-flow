@@ -49,6 +49,16 @@ scripts/doctor.sh --check
 make check
 ```
 
+`make test-one F=<group>` runs one focused harness group when the scaffold itself is under
+change: `export`, `contracts`, `hooks`, `plan-to-issues`, or `lifecycle`. `make test` still
+runs the complete suite plus `shellcheck`.
+
+Agent context is intentionally progressive. Executors start from `AGENTS.md`, the issue,
+the linked brief step, `CLAUDE.md` Stack profile/Gotchas, and live call sites/tests.
+Planner and close-out work starts from `CLAUDE.md` plus the relevant template, Tracker,
+issue states, review verdicts, CI evidence, and lifecycle output. Load `METHODOLOGY.md` by
+referenced section, not by default.
+
 ## Versioning
 
 `.agentic-flow-version` in the target holds `<semver>+<sha>` — e.g. `0.9.0+661d9da`. The

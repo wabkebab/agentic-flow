@@ -8,7 +8,8 @@
     PART A — the review (findings, severity-graded, with file:line and a fix)
     PART B — the inlined IMPLEMENTATION BRIEF (the execution insights for the implementer —
              approach and steps, NOT the actual code)
-  Severity legend (maps to labels): 🔴 High (sev:high) · 🟠 Medium (sev:med) · 🟡 Low (sev:low) · 🟦 by-design/accepted.
+  Severity legend (maps to labels): 🔴 High (sev:high) · 🟠 Medium (sev:med) · 🟡 Low (sev:low) · 🟦 Nit (sev:nit).
+  Accepted/by-design is a disposition, not a severity.
   See METHODOLOGY.md §3, §5. Verification commands come from CLAUDE.md "Stack profile".
 -->
 
@@ -56,10 +57,18 @@
 
 - **<title>** (`path:NN`) — <description>. **Fix:** <…>
 
-## 🟦 By-design / accepted
+## 🟦 Nit
 
-- **<title>** — <why it's acceptable>. If the user accepts it, record it in
-  `docs/accepted_risks.md` and link the entry here; otherwise leave open with a `[DECIDE]` tag.
+- **<title>** (`path:NN`) — <wording, clarity, or hygiene issue>. Does not block closure.
+
+## Accepted / by-design (disposition, not a severity)
+
+A finding lands here after it has been graded above and the user has accepted it — the
+severity says how bad it is, this section says what was decided about it.
+
+- **<title>** (`path:NN`, was 🟠 Medium) — <why it's acceptable>. If the user accepts it,
+  record it in `docs/accepted_risks.md` and link the entry here; otherwise leave it open in
+  its severity section with a `[DECIDE]` tag.
 
 ## What looks solid (no action)
 <!-- Optional: note what you checked and found correct, so the next reviewer doesn't re-tread it. -->

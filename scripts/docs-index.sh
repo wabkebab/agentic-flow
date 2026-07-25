@@ -11,7 +11,7 @@
 # Tracker-checkbox sync from live GitHub issue state is a planned follow-up layer.
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+ROOT=${AGENTIC_PROJECT_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}
 DOCS_DIR="$ROOT/docs"
 README="$DOCS_DIR/README.md"
 BEGIN='<!-- BEGIN: generated index — do not edit by hand (scripts/docs-index.sh) -->'
@@ -32,6 +32,10 @@ build_table() {
     rel="${f#"$DOCS_DIR"/}"
     stage="${rel%/*}"
     [ "$stage" = "$rel" ] && stage="(root)"
+    case "$stage" in
+      backlog|inprogress|done|done/security) ;;
+      *) echo "error: undeclared docs stage '$stage' for $rel" >&2; exit 2 ;;
+    esac
     triage=$(grep -m1 -E '\*\*Type:\*\*' "$f" || true)
     type=$(printf '%s\n' "$triage" | sed -E 's/.*\*\*Type:\*\*[[:space:]]*//; s/[[:space:]]*(·|\*\*Status).*$//' | trim)
     status=$(printf '%s\n' "$triage" | sed -E 's/.*\*\*Status:\*\*[[:space:]]*//' | trim)

@@ -24,8 +24,9 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
 
 ## Procedure
 1. **Read the doc's implementation brief (Part B).** Extract: the feature/topic name, the
-   branch, the ordered steps, and each step's Definition of Done + verification commands
-   (the verify commands come from `CLAUDE.md` → Stack profile). Preserve the risk ordering.
+   branch, the ordered steps, and each step's concise Definition of Done. Preserve the risk
+   ordering. The approved brief owns intent; the Makefile owns executable command behavior.
+   If the issue must point to the Stack profile, name `CLAUDE.md` as the owner.
 2. **Build a JSON spec** (write to a temp file, e.g. the session scratchpad):
    ```json
    {
@@ -39,7 +40,7 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
        {
          "id": "<stable-step-id>",
          "title": "Step 1 — <summary>",
-         "body": "<DoD + verification commands as markdown. Keep the *why* in the doc.>",
+         "body": "<brief-step link + concise DoD + current label state. Keep the *why* and Make recipes in the doc/Makefile.>",
          "labels": ["needs-execution", "agent:codex"]
        }
      ]
@@ -48,7 +49,8 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
    - Give the plan and every step a stable `id`. These identities survive title/body edits
      and let the driver reconcile without duplicating issues.
    - One step issue per brief step. Don't merge steps or split per-commit.
-   - Step body = Definition of Done + the exact verify commands. Design rationale stays in the doc.
+   - Step body = brief-step link + concise Definition of Done + current label state. Design
+     rationale stays in the doc; Make recipes stay in the Makefile.
    - Labels follow METHODOLOGY.md §6: `plan` on the tracker; `needs-execution` + `agent:codex`
      on steps. For a **Security** doc add the matching `sev:high|med|low|nit` per step.
 3. **Dry run** — show the user exactly what the spec describes. This is fully offline:

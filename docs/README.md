@@ -39,8 +39,16 @@ docs/
 
 `backlog/` → `inprogress/` (plan → execute → review) → `done/` (or `done/security/`).
 
-A doc leaves `inprogress/` when its implementation steps are all shipped & verified, **or**
-the user accepts the risk / declines the feature — in which case add an entry to
+Those four are the **only** stages `scripts/docs-index.sh` accepts. A `.md` file anywhere
+else under `docs/` — including `docs/` itself — fails the index build (and therefore
+`make check`) rather than being listed under an invented stage. Non-Markdown files and
+`README.md` / `accepted_risks.md` / `templates/` are skipped entirely.
+
+A doc leaves `inprogress/` when its implementation steps are all shipped, independently
+reviewed, and verified. Reviewed step issues may accumulate at
+`agent:claude + needs-closing`; close the plan in one pass only after all steps qualify,
+CI evidence is recorded, and `scripts/lifecycle-status.sh --check --verify-evidence`
+passes. If the user accepts the risk / declines the feature, add an entry to
 `accepted_risks.md` and link it before moving the doc.
 
 ## Current docs
@@ -56,4 +64,8 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-init-and-template-split | Feature | ✅ Done | done |
 | feature-opencode-reviewer-role | Feature | ✅ Done | done |
+| context_optimization | Feature | 🚧 In progress | inprogress |
+| feature-adaptative-assurance-opus | Feature | 🟦 Proposal | inprogress |
+| feature-progressive-assurance-profiles | Feature | 🟦 Proposal | inprogress |
+| feature-upgrade-surface | Feature | 🟦 Proposal | inprogress |
 <!-- END: generated index -->

@@ -116,11 +116,7 @@ jobs:
       - name: Fast gate (type-check + lint)
         run: make check
       - name: Repo-scope scaffold doctor
-        run: scripts/doctor.sh --check --scope repo
-      # Reporting only: gating lifecycle-status would deadlock a plan's final PR,
-      # because the PR itself produces the verification evidence the doc needs.
-      - name: Lifecycle status report
-        run: scripts/lifecycle-status.sh || true
+        run: scripts/doctor.sh --check --scope repo --skip-make-check
       # `make test` shellchecks the harness scripts and requires the tool. ubuntu-24.04
       # ships shellcheck preinstalled, but an older release than you likely have locally —
       # so CI is the more permissive of the two. Local green is the stricter claim; don't
