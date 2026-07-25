@@ -18,13 +18,58 @@
 - ✅ **Tier 1.5 — hardening the shipped guardrails** — done on `feature-init-and-template-split`.
   1.5.1/1.5.5 landed earlier with the export work; 1.5.2 (`42fcc94`), 1.5.3 (`9948062`),
   1.5.4 (`b2c6311`).
-- 🚧 **Tier 2 — close the loop honestly** — **~60% delivered** by the harness-integrity plan
-  ([#16](https://github.com/wabkebab/agentic-flow/issues/16), branch
-  `codex/harness-integrity-and-lifecycle`). 2.2 ✅ · 2.1 🚧 · 2.4 🚧 · 2.5 🚧 · 2.3 ⬜.
-  See the re-evaluation note below — the remaining gap is narrower but sharper than it looks.
-- ⬜ **Tier 3 — durability & scale** — below. **3.2 has been rescoped and promoted**: the
-  manifest and installed/candidate version split now make an upgrade surface cheap, and it
-  is the largest *user-facing* gap in the system.
+- 🚧 **Tier 2 — close the loop honestly** — **all but one item delivered.**
+  2.1 ✅ · 2.2 ✅ · 2.4 ✅ · 2.5 ✅ · 2.7 ✅ · 2.6 🚧 (blocked on repo settings, not code) ·
+  2.3 ⬜. See the 2026-07-25 re-evaluation.
+- ⬜ **Tier 3 — durability & scale** — below. **3.2 is now the only thing between here and
+  1.0**: the manifest and installed/candidate version split make an upgrade surface cheap,
+  and it is the largest *user-facing* gap in the system.
+- ✅ **Tier 4 — cost of running the standard** — new axis, opened and half-delivered by
+  [#46](https://github.com/wabkebab/agentic-flow/issues/46). 4.1 ✅ · 4.2 ⬜.
+
+### What earns 1.0 (added 2026-07-25)
+
+`VERSION` is `0.10.0`. The backbone is 1.0-grade — hermetic tests, a single payload
+authority, fresh-export-green on a stripped `PATH`, pinned actions, derived docs index,
+pre-commit secret scanning, and a loop that has now run end-to-end for real twice (#16,
+#46). What is missing is not quality, it is a **promise**:
+
+> **1.0 is a compatibility promise, and you cannot promise compatibility between versions
+> without a mechanism to move between them.**
+
+So the bar is exactly two things:
+
+1. **3.2 ships, and is used** — an existing adopter is migrated across a real contract
+   change by the tool, not by hand. `collector` is pinned at `0.9.0+d507bf4`, the commit
+   immediately *before* #46; that migration is the exit test.
+2. **2.6's authority claim becomes true** — either `main` gets a required check, or
+   `METHODOLOGY.md` §10 stops calling CI authoritative for this repo.
+
+Everything else in Tier 3 is post-1.0 by construction ("defer until felt").
+
+### Re-evaluation after #46 (2026-07-25)
+
+#46 was not on this roadmap — it opened a **fourth axis the tier structure never
+anticipated**: the cost, in wall-clock and model context, of running the standard at all.
+Tiers 1–3 all ask "is the loop honest?"; none asks "what does honesty cost per step?"
+That axis is now **Tier 4**.
+
+Closing out #46 also cleared three Tier 2 items that this file still listed as open, because
+they landed in #16's tail and in the semver pass without the roadmap being updated:
+
+- **2.1 rung 2 is done** — `lifecycle-status.sh:78-112` extracts an Actions run URL and
+  queries `gh run view --json conclusion`. `READY` now means *checks were green*, not *a URL
+  was pasted*. It was never actually blocked on 2.6.
+- **2.4 is done** — `plan-to-issues.sh --approved-by` stamps `approved-by:`/`approved-at:`
+  into the tracker body, refuses to overwrite an existing approval, and writes the Approval
+  line into the doc via `--doc`.
+- **2.7 is done** — all four `profiles/*.tsv` carry a `ci-setup` row and
+  `render-stack-profile.sh --ci` renders the workflow's setup block per stack, with
+  cross-runtime leak assertions in the suite.
+
+The lesson is the roadmap's own guiding principle turned on itself: **this file is
+hand-maintained bookkeeping, and it rotted.** Three items sat marked 🚧 while their code was
+merged and tested. See 4.3.
 
 ### Re-evaluation after #16 (2026-07-24)
 
@@ -110,7 +155,7 @@ mean something verifiable, and the loop can't double-fire or skip review.
 honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1 gates
 2.3's auto-move. The suggested order at the bottom follows these edges.
 
-### 2.1 Capture verification evidence (don't just assert it) — 🚧 rung 1 done, rung 2 blocked
+### 2.1 Capture verification evidence (don't just assert it) — ✅ done (both rungs)
 - **Problem:** implementation briefs say "`make check` / `make test` must be green," but
   nothing records that they were actually run. "Tests pass" is currently a claim, not a fact.
 - **Fix — in two rungs, honest about which is which:**
@@ -138,9 +183,19 @@ honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1
   Two live examples of the gap: this repo's own `feature-harness-integrity-and-lifecycle.md`
   cites a review comment, and `feature-init-and-template-split.md` cites merged commit SHAs.
   Both are true, neither is *derived*.
-- **Remaining:** make `lifecycle-status.sh` recognise a CI run URL specifically and query
-  its conclusion via `gh run view --json conclusion`, so READY means "checks were green,"
-  not "a URL was pasted." Depends on 2.6.
+- **Rung 2 landed (found merged 2026-07-25, not previously recorded here).**
+  `lifecycle-status.sh --verify-evidence` extracts
+  `https://github.com/<o>/<r>/actions/runs/<id>` from the Status block and resolves it with
+  `gh run view --repo <o>/<r> --json conclusion`. `success` → READY; any other conclusion →
+  BLOCKED; a non-run URL or absent `gh` → UNVERIFIED (reported, not fatal). All four paths
+  have fixtures in the `lifecycle` self-test group behind a fake `gh` on `PATH`.
+- **It was never really blocked on 2.6.** The dependency as written assumed the *scaffold's*
+  CI had to exist first; in fact the query works against any adopter's runs, and this repo's
+  CI arrived independently. Cost of the mis-stated edge: the item sat marked blocked for a
+  cycle while being implementable.
+- **Residual, small:** UNVERIFIED is the honest answer when `gh` is absent, but nothing
+  distinguishes "no CI in this project" from "gh not installed here". Worth a one-line
+  reason string if it ever confuses someone; not worth a plan.
 
 ### 2.2 Make `plan-to-issues.sh` idempotent — and make it write the link back — ✅ done
 - **Problem:** running `--apply` twice creates a *second* full set of issues. The script
@@ -200,7 +255,7 @@ honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1
 - **Caution learned from #19:** this feature ticks boxes from issue state, and a false tick
   is worse than no tick. Land the `--diff`-style preview before the mutating flag.
 
-### 2.4 Post-execution review template + approval as an event — 🚧 template done, approval trace missing
+### 2.4 Post-execution review template + approval as an event — ✅ done
 - **Problem:** the three *input* docs are templated, but the *review that comes back* after
   execution isn't standardized — and "human approves the plan" is a verbal step with no
   marker, so approval is a vibe, not an event.
@@ -235,10 +290,16 @@ honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1
   That is the exact shape this roadmap warns about ("bookkeeping that will rot"), and #19
   showed the first rot already: a pre-schema doc recorded approval under `**Approved:**` and
   the checker called it missing. Stamping approval at `--apply` time removes the typing.
-- **Remaining:** `--approved-by <name>` on `plan-to-issues.sh`, stamped into the tracker body
-  and written into the doc's Status block by the existing `--doc` link-back.
+- **The approval half landed too (found merged 2026-07-25, not previously recorded here).**
+  `plan-to-issues.sh --approved-by <name>` validates the value as a safe stamp, writes
+  `approved-by:<name> approved-at:<date>` into the tracking issue's HTML-comment stamp, and
+  the `--doc` link-back rewrites the doc's `- **Approval:**` line. Re-applying with a
+  *different* name is refused rather than silently overwritten — approval is an event, so it
+  can't be quietly reassigned.
+- **Done when — met:** every execution traces to an approval artifact that nobody typed, and
+  `lifecycle-status.sh`'s approval check now reads a field the tool wrote.
 
-### 2.5 Ship a CI workflow template — 🚧 shipped, but deliberately inert
+### 2.5 Ship a CI workflow template — ✅ done (its two open costs became 2.6 and 2.7)
 - **Problem:** ADOPTION.md says "add `make check`, `make test`, and `docs-index --check`
   to CI where practical" — prose, so it mostly won't happen. Yet CI is the one place
   evidence gets **derived** rather than asserted (2.1's rung 2), and the only gate the
@@ -265,7 +326,7 @@ honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1
     stack-agnostic, so a Rust or Python adopter must hand-edit a Node workflow that the
     stack profiles could render for them. → **2.7**.
 
-### 2.6 Make CI the authoritative gate — starting with this repo (new)
+### 2.6 Make CI the authoritative gate — starting with this repo — 🚧 running, not authoritative
 - **Problem:** enforcement lives entirely in agent tool hooks. They bind Claude and Codex
   and nothing else — not a human in an IDE, not another agent, not plain `git`. They are
   fast feedback, not a gate. Meanwhile the one boundary that *is* agent-neutral and
@@ -284,8 +345,30 @@ honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1
   recommends a discipline it does not follow.
 - **Done when:** a PR against agentic-flow is red until the harness gates pass, `main` is
   protected by exactly one required check, and `doctor.sh` reports CI **active** here.
+- **Status 2026-07-25 — two of three met.** `.github/workflows/ci.yml` exists and runs; the
+  last five runs are `success`; `doctor.sh` prints `ok CI workflow active:
+  .github/workflows/ci.yml`. The third is **not** met and is not a code problem:
 
-### 2.7 Render the CI runtime block from the stack profile (new)
+  ```
+  $ gh api repos/wabkebab/agentic-flow/branches/main/protection
+  403: Upgrade to GitHub Pro or make this repository public to enable this feature.
+  ```
+
+  Branch protection is unavailable on a private repo on the free plan. So CI is **advisory
+  here**: it reports, nothing enforces it, and a merge can still land red.
+- **This is the gap between what the standard claims and what it does.** `METHODOLOGY.md`
+  §10 and `CLAUDE.md` both say CI is authoritative. In this repo it currently isn't. Two
+  honest resolutions, pick one:
+  - **Make the repo public** (or go Pro), set `CI gate` as the single required check, and
+    the claim becomes true. Cheapest, and it is the one that actually closes the item.
+  - **Keep it private and unprotected** — then say so, in one line, wherever CI authority is
+    claimed, and record it in `accepted_risks.md`. An untrue claim in the standard is worse
+    than a stated limitation, because adopters inherit the prose.
+- **Not a substitute:** local `pre-commit`/`pre-push` hooks. They don't distribute via git
+  and die to `--no-verify`. The original framing stands — don't build them and let them be
+  mistaken for a gate.
+
+### 2.7 Render the CI runtime block from the stack profile — ✅ done
 - **Problem:** stack profiles made the *Makefile* data-driven, but `templates/ci/ci.yml`
   still hardcodes a Node setup block with `<ANGLE-BRACKET>` fill-ins. The contract boundary
   is supposed to be the Make target; everything above it should follow the profile. A Rust
@@ -297,6 +380,13 @@ honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1
   fixed — only the setup block varies.
 - **Done when:** `init.sh --stack rust` produces a `templates/ci/ci.yml` whose setup block
   is Cargo, with no angle brackets left to fill, and the pin checker still passes.
+- **Status 2026-07-25 — met (found merged, not previously recorded here).** All four
+  `profiles/{node,python,rust,go}.tsv` carry a `ci-setup` row; `render-stack-profile.sh --ci`
+  emits the setup steps alongside the Makefile; the job graph, pins, path filters, and
+  `ci-gate` fan-in stay fixed. The `export` self-test group renders each profile and asserts
+  both the expected markers *and* the absence of every other runtime's markers, so a Rust
+  render leaking `setup-node` fails. A `ci-setup` value containing a literal tab is rejected
+  by the renderer — the TSV would otherwise silently split into the wrong columns.
 
 ---
 
@@ -314,6 +404,20 @@ adopt each piece when the pain is real.
 - **Artifacts:** a routine definition; a convention that every accepted-risk entry has
   machine-checkable-ish "Revisit if" triggers.
 - **Done when:** no accepted risk goes more than one cadence without a deliberate re-look.
+- **Relevance up — the first trigger has fired, and nothing noticed (2026-07-25).** F-4
+  ("Template and instance copies can drift") lists **"Revisit if: a contract change ships in
+  only one copy."** That happened during #46: the review severity vocabulary was normalized
+  in `review-execution/SKILL.md` but not in `.opencode/agent/code-reviewer.md`, which kept
+  the retired `block`/`fix`/`nit` scale and `BLOCK`/`LGTM` verdicts. It was caught by a human
+  review pass, not by the trigger.
+- **Cheap first version, worth doing before the scheduled agent:** F-4's condition is
+  *mechanically checkable today* — that is what the new parity assertions in the `contracts`
+  self-test group do. The general shape is: an accepted risk whose "Revisit if" can be
+  expressed as a check should **be** that check, and the entry should link to it. Reserve the
+  `/schedule` routine for the genuinely judgement-based ones ("if scale changes").
+- **Immediate, non-roadmap action:** F-4 needs re-deciding rather than being inherited into
+  1.0 — its trigger has fired once, and the mitigation it declined ("a strict template drift
+  checker") now partly exists.
 
 ### 3.2 Upgrade as a first-class surface — **rescoped and promoted** (was "anti-drift")
 - **Problem:** adoption happens **once**; drift lasts the **lifetime of every project**. The
@@ -346,6 +450,37 @@ adopt each piece when the pain is real.
 - **Done when:** an adopted project can answer "am I current, what would change, and what is
   half-applied" without reading `export.sh`, and `upgrade` never advances the installed
   version past what is actually active.
+- **Status 2026-07-25 — not started, and now the sole 1.0 blocker.**
+  `grep -rn upgrade scripts/ ADOPTION.md` returns nothing. Meanwhile
+  `collector/.agentic-flow-version` reads `0.9.0+d507bf4` — the commit immediately *before*
+  #46 — so a live adopter is already one contract generation behind with no supported way
+  forward. #46 widened the gap: it changed the review severity vocabulary, made
+  `docs-index.sh` hard-fail on an unrecognized docs stage, and added a CI step. That is
+  precisely the class of change an upgrade command exists to carry.
+
+#### 3.2a Adoption into an existing project is the normal case, and it isn't handled
+
+Split out 2026-07-25 from three real adoptions (film-festival-manager, print-traffic,
+collector). `init.sh` handles greenfield well. What actually happens is a **merge**:
+
+- Two of three needed `CLAUDE.md` / `AGENTS.md` hand-merged, because the target already had
+  its own. The `.agentic-new` policy defers the conflict but offers no help resolving it,
+  and these are the two files an agent reads *first*.
+- A blanket `.claude/` rule in the target's `.gitignore` silently swallowed the exported
+  hooks and settings — **twice, in two different projects**. The export succeeds, doctor
+  passes on disk, and the harness is simply not committed. This is the highest
+  cost-to-detect failure in the whole adoption path.
+- One adoption found `docs/` largely uncommitted for the same reason.
+
+Concrete, small fixes — all cheaper than the general upgrade engine:
+
+- **`doctor.sh`: warn when a payload path is git-ignored in the target.** One `git
+  check-ignore` pass over the manifest catches every instance of the trap above. This is the
+  single highest-value item in 3.2 and does not depend on the rest of it.
+- **`export.sh`: report a summary of what landed as `.agentic-new`**, so a merge that needs
+  attention is visible at the end of the run rather than discovered later.
+- Treat "adopt into an existing repo" as a first-class documented path in `ADOPTION.md`,
+  not a footnote on the greenfield one.
 
 ### 3.3 Wire in agent memory
 - **Problem:** durable decisions (the chosen stack profile, accepted risks, recurring review
@@ -376,7 +511,7 @@ adopt each piece when the pain is real.
 - **Done when:** adding a third agent surface is a manifest + profile change, and
   `--claude-only` stops being a special case in favour of a general binding.
 
-### 3.5 Split `self-test.sh` when it starts hurting (new, deliberately deferred)
+### 3.5 Split `self-test.sh` when it starts hurting — ⬜ triggers fired, then defused
 - **Problem:** `scripts/self-test.sh` is ~660 lines covering export invariants, hook parsing,
   the Stop gate, spec validation, a fake-`gh` reconciliation suite, and lifecycle fixtures.
   It is good, fast, and hermetic — but it is one file, and a failure in it points at a line
@@ -384,34 +519,123 @@ adopt each piece when the pain is real.
 - **Explicitly not now.** Splitting adds structure before there is pain, and the suite runs
   in seconds. Revisit when either: a single run exceeds ~30s, or someone skips adding a test
   because finding the right section is annoying.
-- **One thing worth doing early regardless:** keep the invariant that every adapter file is
-  either exported or explicitly source-only ([#18](https://github.com/wabkebab/agentic-flow/issues/18))
-  as its own script, not buried in the suite — it is the check most likely to be wanted
-  standalone in CI.
+- **Both revisit triggers have since fired — and #46 answered them without splitting
+  (2026-07-25).** The file is now **1,374 lines** (not 660) and `make test` takes **~102s**
+  (not "seconds"), so on the letter of the trigger this was due. But #46 introduced named
+  groups inside the one file — `export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`
+  — reachable as `make test-one F=<group>`, which delivers what the split was *for*:
+
+  | group | time | | group | time |
+  |---|---|---|---|---|
+  | `hooks` | 1.5s | | `lifecycle` | 4.7s |
+  | `contracts` | 2.2s | | `export` | **94s** |
+  | `plan-to-issues` | 2.6s | | *full `make test`* | *102s* |
+
+  A failure now names a subsystem, and the per-step cost dropped from ~100s to ~2s. Splitting
+  into files would add a runner, a shared-fixture module, and five more paths for the same
+  benefit.
+- **Revised trigger — one number, not two.** The remaining pain is entirely `export`: 94s,
+  92% of the full suite, because every fixture re-copies the checkout. Revisit when *that*
+  becomes the bottleneck, and when you do, **the fix is probably fixture reuse, not file
+  splitting** — one shared source fixture per run instead of per assertion. Splitting the
+  file would not have made `export` any faster.
+- **Guard that has to survive any such refactor:** the group dispatcher must not be able to
+  pass having run nothing. That is what the `should_run` call-site validation and the
+  end-of-run "did the promised groups execute" check exist for — a split would need to carry
+  the equivalent, or `make test-one` silently becomes decoration again.
+- **The early item is done:** the "every adapter file is exported or explicitly source-only"
+  invariant lives in its own `scripts/check-payload-manifest.sh` (83 lines), called from
+  `make check` — exactly as recommended.
+
+---
+
+## Tier 4 — cost of running the standard (new, 2026-07-25)
+
+Tiers 1–3 ask *is the loop honest?* None of them asks *what does honesty cost per step?*
+[#46](https://github.com/wabkebab/agentic-flow/issues/46) opened that axis after the audit
+found the harness paying full-suite and full-context prices on every step. It belongs on the
+roadmap because the failure mode is real and self-inflicted: **assurance that is too
+expensive to run gets skipped, and a skipped gate is worse than an absent one** — it still
+appears in the contract.
+
+### 4.1 Optimize context and execution cost — ✅ done (#46, `0.10.0`)
+- **Delivered:** focused self-test groups behind `make test-one F=<group>` (per-step
+  verification 100s → ~2s); CI no longer runs `make check` twice; role contracts define a
+  minimal read set and route by `METHODOLOGY.md §N` instead of preloading it (~6.3k modelled
+  tokens off every boot); plan-level close-out instead of per-step (removes N−1 boots);
+  findings returns capped at two before human escalation; one severity vocabulary across all
+  review surfaces; adapter and `TOKEN_RE` parity guarded.
+- **Honest accounting:** the static role files did **not** shrink (`CLAUDE.md` 1,286 → 1,370
+  words) and `METHODOLOGY.md` *grew* 4,667 → 5,028 as routed detail landed in its canonical
+  home. The saving is that no role loads it by default. The first draft of this claim asserted
+  a 50% file reduction that had not happened — corrected during review.
+- **Guard against regression:** executable word ceilings on each role bundle, set just above
+  measured size so re-inlining a routed block fails `make check`.
+
+### 4.2 Assurance profiles — ⬜ Part 2, two competing designs in `docs/inprogress/`
+- **Problem:** assurance is currently one-size-fits-all. A typo fix and an auth-boundary
+  change pay the same decomposition, review, and traceability cost. #46 deliberately scoped
+  profiles **out** so the optimization could land first.
+- **Two proposals are open and overlapping**, both `🟦 Proposal`:
+  - `feature-progressive-assurance-profiles.md` — Quick / Standard / Strict tiers.
+  - `feature-adaptative-assurance-opus.md` — a counter-design holding the tier as **project
+    state** and *rendering* it into the contract files, so lowering assurance actually
+    removes context rather than adding a conditional.
+- **Decide before executing.** These are alternatives, not a sequence; shipping both would
+  add exactly the layering both claim to remove. The rendering approach is more consistent
+  with how `profiles/*.tsv` already work (data → rendered contract), which is a point in its
+  favour, but that is a call for the human, not a foregone conclusion.
+- **Hard constraint carried over from #46:** a profile may change *how much ceremony* a
+  change pays. It may not make a gate, a hook, a review requirement, or CI optional.
+
+### 4.3 Derive this roadmap's status instead of hand-maintaining it — ⬜ new
+- **Problem:** this file opens by naming *staleness from manual bookkeeping* as the system's
+  biggest enemy, and is itself the worst offender in the repo. On 2026-07-25, **three items
+  (2.1, 2.4, 2.7) were marked open while their code was merged, tested, and shipping** — one
+  of them for a full cycle, with a stale "blocked on 2.6" edge that was never true.
+- **Why it matters beyond tidiness:** the Suggested order is read as a work queue. Stale
+  entries send the next pass at work that is already done, and hide the one item that
+  actually blocks 1.0.
+- **Fix — smallest thing that works:** roadmap items that correspond to shipped behaviour
+  should be **assertable**. Where an item's "Done when" is already a command
+  (`--approved-by` exists, `ci-setup` renders, `--verify-evidence` resolves a run), a
+  one-line check in the `contracts` group can fail when the roadmap claims otherwise. Do not
+  build a general roadmap-parsing engine — tie the handful of checkable claims to their
+  checks and accept prose for the rest.
+- **Cheaper interim:** make roadmap reconciliation an explicit step of plan close-out, in the
+  same pass that ticks the doc Tracker. Close-out already loads issue state and CI evidence,
+  which is exactly what the roadmap status needs.
+- **Done when:** an item cannot sit marked open while a test proves its behaviour ships.
 
 ---
 
 ## Suggested order
 
-**Revised 2026-07-24 after #16.** The old order (2.2 → 2.5 → 2.1 → 2.4 → 2.3) is spent:
-2.2 is done, 2.5 shipped inert, and 2.1/2.4 are each one small piece short. The binding
-constraint moved from *scripts* to *authority*.
+**Revised 2026-07-25 after #46.** The 2026-07-24 order is spent: its items 2 and 4 are done
+(2.1 rung 2, 2.4, 2.7 all shipped) and item 2's premise was wrong — 2.1 was never blocked on
+2.6. What is left is short, and it is no longer a queue of comparable work. **One item blocks
+1.0; everything else is optional.**
 
-1. ~~**Tier 1.5 as one batch**~~ — ✅ done.
-2. **2.6 — activate CI here, first.** Small, unblocks 2.1 rung 2, and ends the situation
-   where the standard recommends a gate it doesn't run. Nothing else in Tier 2 means much
-   until "green" is enforced by something other than an agent's word.
-3. **3.2 — the upgrade surface — pulled forward out of Tier 3.** Ranked above the rest of
-   Tier 2 deliberately. Tier 2 improves the loop *for a project already on the standard*;
-   3.2 is what every adopted project needs *every time the standard changes*, and the
-   foundation for it landed in #16, so it is now mostly surfacing work. Drift is the pain
-   that is actually being felt.
-4. **2.4's remainder (`--approved-by`), then 2.1 rung 2, then 2.7.** Each is small.
-   `--approved-by` removes a hand-typed field that a checker already enforces; 2.1 rung 2
-   turns a pasted URL into a queried CI conclusion; 2.7 finishes the stack-profile idea.
-5. **2.3 last**, unchanged in position but smaller in scope — the guardrail half is built,
-   so what's left is the ticking. Land its preview mode before its mutating flag.
-6. **Tier 2 exit test (dogfood):** unchanged in spirit, and now largely satisfied. #16 ran
+1. ~~**Tier 1.5 as one batch**~~ · ~~**2.2** · **2.5** · **2.1** · **2.4** · **2.7**~~ — ✅ done.
+2. **2.6's last third — a settings change, not a project.** Make the repo public (or go Pro)
+   and set `CI gate` as the single required check. Ten minutes, and it converts every "green"
+   in this system from self-reported to enforced. If the answer is "keep it private", that is
+   fine — but then correct the CI-authority claim in `METHODOLOGY.md` §10 and `CLAUDE.md` and
+   file it in `accepted_risks.md`. Do one or the other before 1.0; don't leave the claim
+   standing untrue.
+3. **3.2 — the upgrade surface. The only 1.0 blocker.** Start with **3.2a's git-ignore
+   check**, which is an afternoon and catches the failure that has already bitten two
+   projects. Then `status` → `diff` → `upgrade`, in that order — each is useful alone, and
+   `status`/`diff` are read-only, so they can ship and be trusted before anything mutates.
+   The exit test is migrating `collector` from `0.9.0+d507bf4` to current *with the tool*.
+4. **4.2 — pick one assurance design, then execute it.** Blocked on a human decision between
+   the two proposals, not on engineering. Do not start until the choice is made.
+5. **2.3 last**, unchanged in position and smaller in scope — the guardrail half is built, so
+   what remains is only the ticking. Land its preview mode before its mutating flag.
+6. **4.3 and 3.1 opportunistically** — both are about facts that rot (this roadmap; accepted
+   risks). Neither justifies its own pass; both are natural riders on the close-out of
+   whatever ships next.
+7. **Tier 2 exit test (dogfood):** unchanged in spirit, and now largely satisfied. #16 ran
    Feature doc → `plan-to-issues --apply` → nine execution commits on one branch →
    independent review → PR #27 → merge → derived `READY`, which is the loop end to end and
    the first time it has run for real. This is also the correct shape under METHODOLOGY §2
@@ -420,9 +644,39 @@ constraint moved from *scripts* to *authority*.
    into §2 and reverted. What #16 did **not** exercise: CI evidence (there was no CI to
    derive it from) and `--with-issues` sync. So the exit test narrows to: **CI-derived
    evidence on the pass's PR, auto-qualified to `done/`.** 2.6 is a hard prerequisite.
-7. **Tier 3 as each pain is felt** — except 3.2, promoted above.
+   **Update 2026-07-25:** the CI-evidence half is now buildable — `lifecycle-status.sh
+   --verify-evidence` resolves a run URL to its conclusion (2.1 rung 2 shipped). What is
+   still unexercised is `--with-issues` sync (2.3) and, strictly, the *required*-check half
+   of 2.6. #46 came closer than #16: it has real CI runs, but on a repo where nothing
+   enforces them.
+8. **Tier 3 as each pain is felt** — except 3.2, promoted above.
 
 Every Tier 2+ item should itself go through the loop: a Feature doc in `docs/inprogress/`
 with an implementation brief, then `plan-to-issues`. Under the delivery lanes added in
-METHODOLOGY §2, **2.6 is a Fast Fix** (bounded, one PR) and the rest are Planned Changes.
-(Tier 1.5 items were exempt — single-commit fixes; a doc apiece would have been ceremony.)
+METHODOLOGY §2, **2.6's remainder and 3.2a's git-ignore check are Fast Fixes** (bounded, one
+PR each) and the rest are Planned Changes. (Tier 1.5 items were exempt — single-commit fixes;
+a doc apiece would have been ceremony.)
+
+---
+
+## Retired / not worth doing
+
+Kept short, and kept — a closed decision that isn't recorded gets reopened.
+
+- **Splitting `self-test.sh` into multiple files** — superseded by #46's in-file groups,
+  which delivered the subsystem-level failure reporting and the fast per-step run that the
+  split was for. See 3.5 for the revised trigger.
+- **`docs-index.sh --check` flagging ticked Tracker boxes with no `#N` link** (2.1's planned
+  artifact) — dropped in favour of `lifecycle-status.sh` deriving ACTIVE/READY/BLOCKED, which
+  is strictly better and already shipped.
+- **`.github/workflows/agentic-flow.yml` shipped active in the payload** (2.5 as originally
+  written) — deliberately reversed: adopting a harness must never switch on CI or a deploy
+  behind your back. The reversal's costs became 2.6 and 2.7, both now resolved or scoped.
+- **A `sev:critical` severity level** — rejected in #46. A fifth level reduces neither
+  elapsed time nor context, and production urgency belongs to incident handling.
+- **A `mirror` payload-manifest disposition / generated adapters** — rejected in #46.
+  New parser modes and recovery cases to delete two physical copies is negative ROI; parity
+  assertions cover the actual risk.
+- **Local `pre-commit` / `pre-push` hooks as a gate** — they don't distribute via git and die
+  to `--no-verify`. Fine as convenience, never as authority. Don't build them before 2.6, or
+  they will be mistaken for it.
