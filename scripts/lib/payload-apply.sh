@@ -47,10 +47,13 @@ payload_load_manifest() { # <manifest-path>
 }
 
 payload_is_excluded() { # <relative-source-path>
-  local rel="$1" base x
+  local rel="$1" base x i
   base=$(basename "$rel")
   for x in "${EXCLUDE_BASENAMES[@]}"; do [ "$base" = "$x" ] && return 0; done
-  for x in "${EXCLUDE_PATHS[@]}"; do
+  i=0
+  while [ "$i" -lt "${#EXCLUDE_PATHS[@]}" ]; do
+    x="${EXCLUDE_PATHS[$i]}"
+    i=$((i + 1))
     case "$rel" in "$x"|"$x"/*) return 0 ;; esac
   done
   return 1

@@ -17,6 +17,14 @@ die() {
   exit 2
 }
 
+load_payload_lib() { # <root>
+  local root="$1"
+  [ -f "$root/scripts/lib/payload-apply.sh" ] \
+    || die "payload library not found: scripts/lib/payload-apply.sh"
+  # shellcheck disable=SC1091 # The library is resolved from the adopted project root.
+  . "$root/scripts/lib/payload-apply.sh"
+}
+
 find_root() {
   # Unlike doctor.sh, this walks from PWD so the CLI works when symlinked onto PATH.
   # The nearest stamp owns the subtree, preserving monorepo harness boundaries.
@@ -88,6 +96,124 @@ ignored_payload_paths() { # <root>
       printf '%s\n' "$path"
     fi
   done < <(payload_destination_files "$root")
+}
+
+run_with_timeout() { # <seconds> <command>...
+  local limit="$1" pid elapsed status
+  shift
+  "$@" &
+  pid=$!
+  elapsed=0
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$limit" ]; then
+      kill "$pid" >/dev/null 2>&1 || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  wait "$pid"
+  status=$?
+  return "$status"
+}
+
+fetch_standard() { # <origin> <ref>
+  local origin="$1" ref="$2" cache parent
+  parent=$(mktemp -d "${TMPDIR:-/tmp}/agentic-flow-fetch.XXXXXX")
+  cache="$parent/source"
+  FETCH_PARENT="$parent"
+  FETCHED_SOURCE="$cache"
+  if ! run_with_timeout 120 git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ref" "$origin" "$cache"; then
+    rm -rf "$parent"
+    die "failed to fetch agentic-flow source from $origin at ref $ref"
+  fi
+}
+
+diff_cmd() {
+  local json=false override_ref="" root installed origin ref source available
+  local created=0 same=0 merge=0 overwritten=0 changed=false classification rel dest s d
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=true; shift ;;
+      --ref)
+        [ "$#" -ge 2 ] || die "--ref requires a value"
+        override_ref="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown diff flag: $1" ;;
+    esac
+  done
+  root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
+  origin=$(read_source_field "$root" 1 origin)
+  ref=${override_ref:-$(read_source_field "$root" 2 ref)}
+  [ -n "$origin" ] || die "no .agentic-flow-source recorded; back-fill with: printf 'origin <url>\\nref main\\n' > .agentic-flow-source"
+  [ -n "$ref" ] || die ".agentic-flow-source has no ref"
+  installed=$(sed -n '1p' "$root/.agentic-flow-version")
+
+  FETCH_PARENT=""
+  FETCHED_SOURCE=""
+  trap '[ -z "${FETCH_PARENT:-}" ] || rm -rf "$FETCH_PARENT"' EXIT
+  fetch_standard "$origin" "$ref"
+  source="$FETCHED_SOURCE"
+  load_payload_lib "$root"
+  payload_load_manifest "$source/config/payload.tsv"
+  payload_expand_files "$source"
+  available=$(payload_compute_version "$source")
+  PAYLOAD_VERSION="$available"
+  PAYLOAD_DRY=true
+  PAYLOAD_FORCE=false
+  PAYLOAD_DST_ROOT="$root"
+
+  [ "$json" = true ] || {
+    echo "agentic-flow diff"
+    echo "source: $origin (ref $ref)"
+    echo "version: $installed -> $available"
+  }
+
+  i=0
+  while [ "$i" -lt "${#FILES[@]}" ]; do
+    rel="${FILES[$i]}"
+    dest="${DESTS[$i]}"
+    i=$((i + 1))
+    payload_is_excluded "$rel" && continue
+    s="$source/$rel"; d="$root/$dest"
+    payload_apply_entry "$s" "$d" dry-run >/dev/null
+    classification="$PAYLOAD_RESULT_CLASSIFICATION"
+    case "$classification" in
+      same)
+        same=$((same + 1))
+        ;;
+      create)
+        created=$((created + 1)); changed=true
+        [ "$json" = true ] || echo "  create      $dest"
+        ;;
+      candidate|pending)
+        merge=$((merge + 1)); changed=true
+        [ "$json" = true ] || echo "  would-merge $dest"
+        ;;
+      overwrite)
+        overwritten=$((overwritten + 1)); changed=true
+        [ "$json" = true ] || echo "  overwrite   $dest"
+        ;;
+    esac
+  done
+
+  if [ "$json" = true ]; then
+    jq -n \
+      --arg source "$origin" --arg ref "$ref" \
+      --arg installed "$installed" --arg available "$available" \
+      --argjson create "$created" --argjson merge "$merge" \
+      --argjson same "$same" --argjson overwrite "$overwritten" \
+      --argjson changed "$changed" \
+      '{source:{origin:$source, ref:$ref}, installed:$installed, available:$available,
+        summary:{create:$create, would_merge:$merge, overwrite:$overwrite, same:$same},
+        changes_available:$changed}'
+  else
+    echo "Summary: $created create, $merge would-merge, $overwritten overwrite, $same same."
+    [ "$changed" = true ] || echo "Already current."
+  fi
+
+  [ "$changed" = false ] || exit 1
 }
 
 status_cmd() {
@@ -177,6 +303,7 @@ case "$subcommand" in
   ""|-h|--help) usage; exit 0 ;;
   --version) version_cmd ;;
   status) shift; status_cmd "$@" ;;
-  diff|upgrade) die "$subcommand is not implemented yet" ;;
+  diff) shift; diff_cmd "$@" ;;
+  upgrade) die "$subcommand is not implemented yet" ;;
   *) usage; die "unknown subcommand: $subcommand" ;;
 esac

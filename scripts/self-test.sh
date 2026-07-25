@@ -63,6 +63,16 @@ assert_no_file() {
   [ ! -e "$1" ] || fail "unexpected file: $1"
 }
 
+tree_digest() { # <root>
+  (
+    cd "$1"
+    find . -path './.git' -prune -o -type f -print | sort | while IFS= read -r file; do
+      cksum "$file"
+      printf '%s\n' "$file"
+    done
+  ) | cksum
+}
+
 assert_exported_harness_file() { # <file> <expected-first-non-empty-line>
   file="$1"
   expected_heading="$2"
@@ -921,6 +931,87 @@ grep -q ".claude/settings.json" "$TMP/status-ignored.out" \
   || fail "doctor report failed on a fixture with ignored payload paths"
 grep -q "payload paths are git-ignored" "$TMP/doctor-ignored.out" \
   || fail "doctor did not report git-ignored payload paths"
+
+DIFF_SOURCE="$TMP/diff-source"
+mkdir -p "$DIFF_SOURCE/config" "$DIFF_SOURCE/scripts/lib" "$DIFF_SOURCE/templates/harness"
+printf '%s\n' '9.9.9' > "$DIFF_SOURCE/VERSION"
+printf 'templates/harness/CLAUDE.md\tCLAUDE.md\tcore\tpreserve\texport\nscripts/lib\tscripts/lib\tcore\tpreserve\texport\nconfig/payload.tsv\tconfig/payload.tsv\tcore\tpreserve\texport\n' \
+  > "$DIFF_SOURCE/config/payload.tsv"
+printf '%s\n' '# source heading' > "$DIFF_SOURCE/templates/harness/CLAUDE.md"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$DIFF_SOURCE/scripts/lib/payload-apply.sh"
+(
+  cd "$DIFF_SOURCE"
+  git init -q .
+  git config user.email selftest@example.invalid
+  git config user.name selftest
+  git config commit.gpgsign false
+  git add VERSION config/payload.tsv scripts/lib/payload-apply.sh templates/harness/CLAUDE.md
+  git commit -q -m "Seed source"
+  git branch -M main
+)
+DIFF_SOURCE_URL="file://$DIFF_SOURCE"
+
+DIFF_TARGET="$TMP/diff-target"
+mkdir -p "$DIFF_TARGET/config" "$DIFF_TARGET/scripts/lib"
+printf '%s\n' 'old+0000000' > "$DIFF_TARGET/.agentic-flow-version"
+cp "$DIFF_SOURCE/config/payload.tsv" "$DIFF_TARGET/config/payload.tsv"
+cp "$DIFF_SOURCE/scripts/lib/payload-apply.sh" "$DIFF_TARGET/scripts/lib/payload-apply.sh"
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff) > "$TMP/diff-no-source.out" 2>"$TMP/diff-no-source.err" \
+  && fail "diff accepted a project with no recorded source"
+grep -q "back-fill" "$TMP/diff-no-source.err" \
+  || fail "diff without .agentic-flow-source did not mention back-fill"
+
+printf 'origin %s\nref missing-ref\n' "$DIFF_SOURCE_URL" > "$DIFF_TARGET/.agentic-flow-source"
+before_digest=$(tree_digest "$DIFF_TARGET")
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff) > "$TMP/diff-missing-ref.out" 2>"$TMP/diff-missing-ref.err" \
+  && fail "diff accepted a missing source ref"
+after_digest=$(tree_digest "$DIFF_TARGET")
+[ "$before_digest" = "$after_digest" ] \
+  || fail "failed diff changed the project tree"
+grep -q "failed to fetch agentic-flow source" "$TMP/diff-missing-ref.err" \
+  || fail "diff fetch failure did not name the failed operation"
+
+printf 'origin %s\nref main\n' "$DIFF_SOURCE_URL" > "$DIFF_TARGET/.agentic-flow-source"
+printf '%s\n' '# source heading' > "$DIFF_TARGET/CLAUDE.md"
+same_digest=$(tree_digest "$DIFF_TARGET")
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff) > "$TMP/diff-current.out" \
+  || fail "diff returned non-zero for an already-current target"
+post_same_digest=$(tree_digest "$DIFF_TARGET")
+[ "$same_digest" = "$post_same_digest" ] \
+  || fail "same-version diff changed the project tree"
+grep -q "Already current" "$TMP/diff-current.out" \
+  || fail "diff did not report an already-current target"
+
+printf '%s\n' '# changed source heading' > "$DIFF_SOURCE/templates/harness/CLAUDE.md"
+(
+  cd "$DIFF_SOURCE"
+  git add templates/harness/CLAUDE.md
+  git commit -q -m "Change payload"
+)
+changed_digest=$(tree_digest "$DIFF_TARGET")
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff) > "$TMP/diff-changed.out" \
+  && fail "diff returned zero when source changes were available"
+post_changed_digest=$(tree_digest "$DIFF_TARGET")
+[ "$changed_digest" = "$post_changed_digest" ] \
+  || fail "changed diff wrote into the project tree"
+grep -q "would-merge CLAUDE.md" "$TMP/diff-changed.out" \
+  || fail "diff did not classify the changed payload file"
+
+printf '%s\n' '# ref override source heading' > "$DIFF_SOURCE/templates/harness/CLAUDE.md"
+(
+  cd "$DIFF_SOURCE"
+  git add templates/harness/CLAUDE.md
+  git commit -q -m "Ref override payload"
+  git tag v-selftest
+)
+override_digest=$(tree_digest "$DIFF_TARGET")
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff --ref v-selftest) > "$TMP/diff-ref.out" \
+  && fail "diff --ref returned zero when override changes were available"
+post_override_digest=$(tree_digest "$DIFF_TARGET")
+[ "$override_digest" = "$post_override_digest" ] \
+  || fail "diff --ref changed the project tree"
+grep -qx "ref main" "$DIFF_TARGET/.agentic-flow-source" \
+  || fail "diff --ref rewrote the recorded source ref"
 fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------
