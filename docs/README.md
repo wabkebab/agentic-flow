@@ -45,10 +45,11 @@ else under `docs/` — including `docs/` itself — fails the index build (and t
 `README.md` / `accepted_risks.md` / `templates/` are skipped entirely.
 
 A doc leaves `inprogress/` when its implementation steps are all shipped, independently
-reviewed, and verified. Reviewed step issues may accumulate at
-`agent:claude + needs-closing`; close the plan in one pass only after all steps qualify,
-CI evidence is recorded, and `scripts/lifecycle-status.sh --check --verify-evidence`
-passes. If the user accepts the risk / declines the feature, add an entry to
+reviewed, and verified. The reviewer closes each step issue on approval, so closed steps
+accumulate while the tracking issue stays open at `agent:claude + needs-closing`; close the
+plan in one pass only after all steps qualify, CI evidence is recorded, and
+`scripts/lifecycle-status.sh --check --verify-evidence` passes — then close the tracking
+issue. If the user accepts the risk / declines the feature, add an entry to
 `accepted_risks.md` and link it before moving the doc.
 
 ## Current docs

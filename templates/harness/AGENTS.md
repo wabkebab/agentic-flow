@@ -27,7 +27,7 @@ order, edge cases — not finished code. Read the brief for the step before writ
    It gives the problem, the approach, the regression test to add, and the Definition of Done.
 2. **Branch** as the brief specifies; work one step at a time, in the brief's order. The
    whole brief ships as **one branch and one PR** — each step is one issue and one commit
-   on that branch, closed via `Fixes #N` when the PR merges. If the brief instead calls for
+   on that branch, closed by the reviewer once that step passes review. If the brief instead calls for
    a separate branch/PR per step (unusual — only for a pass too large to hold on one
    branch), follow that explicitly; don't split by default.
 3. **Implement** the step. Add the regression test the brief asks for — it must fail against
@@ -37,11 +37,23 @@ order, edge cases — not finished code. Read the brief for the step before writ
    selector>` per step; run the full `make test` at the end. (The Stop hook runs
    `make check` regardless.)
 5. **Commit** (see contract below), one logical commit for the step, with `Fixes #N`.
-   Then hand the step to the reviewer — flip the label pair (`METHODOLOGY.md` §6):
-   `gh issue edit <N> --add-label "agent:opencode,needs-review" --remove-label "agent:codex,needs-execution"`.
-   Record the PR/CI evidence in the implementation doc; the issue closes when that PR merges.
-   (If the project opts out of OpenCode, `CLAUDE.md` says who reviews instead — hand off to them,
-   never to yourself.)
+   Then hand the step to the reviewer — **comment first, relabel second** (`METHODOLOGY.md` §6):
+
+   ```bash
+   gh issue comment <N> --body "Implemented in <sha>.
+   <what changed; anything the reviewer should look at first>
+
+   Verification: <commands run, with results>"
+
+   gh issue edit <N> --add-label "agent:opencode,needs-review" \
+                     --remove-label "agent:codex,needs-execution"
+   ```
+
+   The comment is not optional: without it the reviewer re-derives the step's commit from
+   `git log`, and close-out does it again later. Name the real sha(s) and only verification
+   you actually ran. The **reviewer** closes the issue on approval — do not close it
+   yourself, and do not expect the merge to. (If the project opts out of OpenCode,
+   `CLAUDE.md` says who reviews instead — hand off to them, never to yourself.)
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 
@@ -77,7 +89,8 @@ If the brief conflicts with any of these, stop and flag it — do not silently p
 - **Verbose, *why*-first commit body** — name the problem, the approach, the blast radius.
   A reviewer should understand the change from the message alone. This is the rule most
   often missed; an example follows.
-- **`Fixes #N`** so the PR merge closes the issue.
+- **`Fixes #N`** to link the commit to its step issue. The reviewer closes the issue on
+  approval, so by merge time the trailer is a no-op — keep it for traceability.
 - **Never push** — the human controls pushes and merges.
 
 Example:

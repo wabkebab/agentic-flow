@@ -17,15 +17,13 @@
   `docs/`, inline the implementation brief, generate issues with `plan-to-issues`, review
   execution commits, fix or delegate fixes. For planning, load the chosen template, relevant
   live code/tests, and only the methodology section the task needs. For close-out, load the
-  Tracker/Status, step issue states, review verdicts, CI evidence, and lifecycle output.
-  Commit with `git-claude`.
+  Tracker/Status, step issue states, the reviewer's verdict comments, CI evidence, and
+  lifecycle output — then close the tracking issue. Commit with `git-claude`.
 - **Execute — Codex.** Implements the issues. Commits with `git-codex`. See `AGENTS.md`.
-- **Review — OpenCode.** Human-operated today, or via the `/review` command
-  (`.opencode/agent/code-reviewer.md`) / the `review-execution` skill
-  (`.opencode/skills/review-execution/SKILL.md`) when OpenCode itself is available as an
-  agent. Reviews each completed Codex step by reading the diff against the implementation
-  brief, then either records findings as an issue comment and sends the step back to Codex,
-  or marks it ready for Claude close-out. Commits any review-note changes with `git-opencode`.
+- **Review — OpenCode.** Human-operated today, or via `/review`
+  (`.opencode/agent/code-reviewer.md`) / the `review-execution` skill when OpenCode is
+  available as an agent. Reviews each Codex step against the brief; the state machine below
+  is the contract. Commits review notes with `git-opencode`.
 - **Own / merge / deploy — the human.** Approves plans, merges PRs, controls all pushes.
 
 ### Step issue label state machine
@@ -34,28 +32,35 @@ Step issues move by label pair:
 
 ```
 agent:codex + needs-execution          (plan-to-issues default)
-      │  Codex finishes the step, commits with Fixes #N
+      │  Codex commits with Fixes #N, then comments the sha +
+      │  the verification it ran on the step issue
       ▼
 agent:opencode + needs-review
-      │  OpenCode (human) reviews
+      │  OpenCode reviews that commit against the brief
       ├─ findings noted as an issue comment ──▶ agent:codex + needs-execution
       │                                           (loop; capped at 2 findings returns)
-      └─ no findings ──────────────────────────▶ agent:claude + needs-closing
-                                                      │
-                                                      ▼
-                                      Claude updates doc Tracker/Status,
-                                      moves doc to docs/done/ if complete.
-                                      Human still owns the actual merge/close.
+      └─ approved ──▶ comments the verdict, then CLOSES the step issue.
+                      On the last open step, also sets the TRACKING issue to
+                      agent:claude + needs-closing and leaves it open.
+                                  │
+                                  ▼
+                  Claude ticks the Tracker, updates Status with review and CI
+                  evidence, moves the doc to docs/done/, then closes the
+                  tracking issue. The human still owns the PR merge.
 ```
 
-After OpenCode sends a step back with findings twice, a third return escalates to the human
-explicitly instead of sending it back to Codex again or silently stopping.
+After two findings returns, a third escalates to the human instead of returning it to Codex
+again or silently stopping.
 
-Close-out is batched at the plan level: reviewed steps may sit at
-`agent:claude + needs-closing` until all steps are reviewed. Then do one close-out pass that
+**Step issues never reach `needs-closing`** — the reviewer closes them, so that pair lives
+only on the tracker. A closed step means *reviewed clean*, not *shipped*; the doc's Status
+block plus CI evidence is the shipping record (`METHODOLOGY.md` §2).
+
+Close-out is batched: closed steps accumulate while the tracker stays open. Then one pass
 ticks the Tracker, records review and CI evidence, runs
-`scripts/lifecycle-status.sh --check --verify-evidence`, and moves the doc only when every
-step qualifies.
+`scripts/lifecycle-status.sh --check --verify-evidence`, moves the doc, and closes the
+tracker — only when every step qualifies. Confirm the steps are actually closed; the tracker
+label is a notification, not the authority.
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and
@@ -152,7 +157,8 @@ enforce the local stop gate, named staging, and no-push contract.
 ## Commit contract (Claude)
 
 - Commit with **`git-claude`**. **Stage files by name** — never `git add -A` / `git add .`.
-- **One logical commit per change.** Verbose, *why*-first body. `Fixes #N` to close issues.
+- **One logical commit per change.** Verbose, *why*-first body. `Fixes #N` links a commit to
+  its step issue — the reviewer does the closing.
 - **Never push** — the human controls pushes and merges.
 
 ## Document workflow

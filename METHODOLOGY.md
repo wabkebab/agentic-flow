@@ -25,9 +25,9 @@
 
 | Role | Who (default) | Output |
 |------|---------------|--------|
-| **Plan / Close-out** | Claude | Analysis & review documents (`docs/`), the inlined implementation brief, GitHub issues; then close-out — Tracker/Status updates and the doc move once a step is reviewed. Commits with `git-claude`. |
-| **Execute** | Codex | Code that satisfies the issues generated from a plan, one logical commit per step. Commits with `git-codex`. |
-| **Review** | OpenCode | The **independent** review of each completed step: reads the diff against the brief, then either records findings and returns the step to the executor, or marks it ready for close-out. Commits any review-note changes with `git-opencode`. |
+| **Plan / Close-out** | Claude | Analysis & review documents (`docs/`), the inlined implementation brief, GitHub issues; then close-out — Tracker/Status updates, the doc move, and closing the tracking issue once every step is reviewed and closed. Commits with `git-claude`. |
+| **Execute** | Codex | Code that satisfies the issues generated from a plan, one logical commit per step, each recorded as a comment on its step issue. Commits with `git-codex`. |
+| **Review** | OpenCode | The **independent** review of each completed step: reads the commit the executor recorded against the brief, then either records findings and returns the step to the executor, or records an approving verdict and closes the step issue. Commits any review-note changes with `git-opencode`. |
 | **Own / merge / deploy** | Human | Approves plans, merges PRs, controls all pushes and releases. |
 
 **Review is a separate role on purpose.** The value is independence: the agent that wrote the
@@ -64,18 +64,21 @@ opt-out reassigns the review, it never leaves it to both.
         │
         ▼
   Execute (Codex)                   one branch + PR per pass; one commit + "Fixes #N"
-        │                            per step; git-codex; then flips the step issue
+        │                            per step; git-codex; comments the commit sha and
+        │                            verification on the step issue, then flips it
         │                            to agent:opencode + needs-review
         ▼
-  Review (OpenCode)                 reads the step's diff against the brief
+  Review (OpenCode)                 reads the commented commit against the brief
         │                           ├─ findings ─▶ back to agent:codex (2 returns, then human)
-        │                           └─ none ─────▶ agent:claude + needs-closing
+        │                           └─ approved ─▶ comments the verdict and CLOSES the step
+        ▼                                          issue; the tracking issue stays open
+  Close-out (Claude)                once every step issue is closed: tick the Tracker,
+        │                           update Status, verify evidence, move the doc, then
+        │                           close the tracking issue
         ▼
-  Close-out (Claude)                once all steps are reviewed: tick the Tracker,
-        │                           update Status, verify evidence; then move the doc
-        ▼
-  Merge (human)  ────────────────▶  PR merge auto-closes #N
-        │
+  Merge (human)  ────────────────▶  the PR. Step issues are already closed, so their
+        │                           "Fixes #N" trailers are a no-op by then — the
+        │                           trailers stay for traceability, not for closing.
         ▼
   doc done  ─────────────────────▶  move to docs/done/ (or docs/done/security/),
                                     update the Status section; accepted-but-not-built
@@ -85,6 +88,19 @@ opt-out reassigns the review, it never leaves it to both.
 The label pair is what moves a step between roles; the project's `CLAUDE.md` holds the exact
 state machine. Automatic findings returns are capped at two; a third return escalates to the
 human without discarding the findings.
+
+**A closed step issue means "reviewed clean", not "shipped."** The reviewer closes it before
+the PR merges, so GitHub issue state is deliberately *not* the shipping signal. What shipped
+is recorded in the implementation doc's Status block and enforced by
+`scripts/lifecycle-status.sh --check --verify-evidence` against a CI run (§10). The tracking
+issue is the one that stays open across the whole pass, which is why it — not the steps —
+carries `agent:claude` + `needs-closing` at the end.
+
+**Why the handoffs carry data, not just labels.** Codex comments the commit sha and the
+verification it actually ran; OpenCode comments the verdict. Each role then starts from the
+issue instead of re-deriving state from `git log` and guesswork, and close-out can read the
+whole pass off GitHub rather than asking a human what the reviewer decided. A label with no
+comment behind it is a handoff that costs the next role a full re-investigation.
 
 The loop is **one-directional** (doc → issues), never the reverse. The document stays the
 source of design intent; issues are the disposable execution units.
@@ -209,18 +225,26 @@ holds the step, one `needs-*` naming what it needs:
 | Holder | Needs | Meaning |
 |--------|-------|---------|
 | `agent:codex` | `needs-execution` | the executor implements it (the `plan-to-issues` default) |
-| `agent:opencode` | `needs-review` | the reviewer has it; returns it to `agent:codex` with findings, or passes it on |
-| `agent:claude` | `needs-closing` | reviewed clean; waits for plan-level close-out to update Tracker and Status |
+| `agent:opencode` | `needs-review` | the reviewer has it; returns it to `agent:codex` with findings, or approves and closes it |
+| `agent:claude` | `needs-closing` | **on the tracking issue only** — every step is reviewed and closed; waits for plan-level close-out |
 
 Plus `plan` on the tracking issue and `sev:high|med|low|nit` on findings (§5).
 
+Note the asymmetry: step issues never reach `needs-closing`. The reviewer closes them
+outright, and the label pair that survives to close-out sits on the tracker.
+
 Rules:
 - One issue per independently-shippable step — not one giant issue, not one per commit.
-- Issues are the tracking granularity, not the shipping granularity. Each step is one issue,
-  closed by that step's own commit via `Fixes #N`. The whole plan ships as **one branch and
-  one PR** — a Feature/Security pass is the review unit, not each step. Split a pass across
-  multiple PRs only when the brief says so explicitly (e.g. a pass too large or long-running
-  to hold on one branch); don't default to a branch per step.
+- Issues are the tracking granularity, not the shipping granularity. A step issue is closed
+  by the **reviewer**, on an approving verdict, before the PR merges; its commit still
+  carries `Fixes #N` for traceability, but the merge no longer does the closing. The whole
+  plan ships as **one branch and one PR** — a Feature/Security pass is the review unit, not
+  each step. Split a pass across multiple PRs only when the brief says so explicitly (e.g. a
+  pass too large or long-running to hold on one branch); don't default to a branch per step.
+- **Every handoff carries its evidence in a comment.** Codex comments the commit sha and the
+  verification actually run before flipping to `needs-review`; OpenCode comments findings or
+  the approving verdict before relabelling or closing. The label says who holds it; the
+  comment says what they are holding.
 - Issue body = the step link, concise Definition of Done, and current labels. The approved
   brief owns intent; the `Makefile` owns executable command behavior, so do not copy Make
   recipes into issue bodies.

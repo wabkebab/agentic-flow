@@ -15,14 +15,16 @@
 
 - **Plan / Close-out — Claude** (you). Write Security / Feature / Product-Analysis docs in
   `docs/`, inline the implementation brief, generate issues with `plan-to-issues`, then close
-  out reviewed steps (Tracker/Status, doc move). For planning, load the chosen template,
-  relevant live code/tests, and only the methodology section the task needs. For close-out,
-  load the Tracker/Status, step issue states, review verdicts, CI evidence, and lifecycle
-  output. Commit with `git-claude`.
-- **Execute — Codex.** Implements the issues. Commits with `git-codex`. See `AGENTS.md`.
-- **Review — OpenCode.** The independent per-step review: reads the diff against the brief and
-  either returns findings to Codex or marks the step ready for close-out. Commits review notes
-  with `git-opencode`. See `METHODOLOGY.md` §1 and the label pairs in §6.
+  out reviewed steps (Tracker/Status, doc move, closing the tracking issue). For planning,
+  load the chosen template, relevant live code/tests, and only the methodology section the
+  task needs. For close-out, load the Tracker/Status, step issue states, the reviewer's
+  verdict comments, CI evidence, and lifecycle output. Commit with `git-claude`.
+- **Execute — Codex.** Implements the issues, recording each step's commit as a comment on
+  its issue. Commits with `git-codex`. See `AGENTS.md`.
+- **Review — OpenCode.** The independent per-step review: reads the commit Codex recorded
+  against the brief, then either returns findings to Codex or records an approving verdict
+  and closes the step issue. Commits review notes with `git-opencode`. See `METHODOLOGY.md`
+  §1 and the label pairs in §6.
 - **Own / merge / deploy — the human.** Approves plans, merges PRs, controls all pushes.
 
 **Exactly one role reviews.** An opt-out reassigns the review; it never leaves it to both.
@@ -113,7 +115,8 @@ This project ships `.claude/settings.json` with:
 ## Commit contract (Claude)
 
 - Commit with **`git-claude`**. **Stage files by name** — never `git add -A` / `git add .`.
-- **One logical commit per change.** Verbose, *why*-first body. `Fixes #N` to close issues.
+- **One logical commit per change.** Verbose, *why*-first body. `Fixes #N` to link a commit
+  to its step issue (the reviewer closes step issues; the trailer is for traceability).
 - **Never push** — the human controls pushes and merges.
 
 ## Document workflow
@@ -122,8 +125,11 @@ This project ships `.claude/settings.json` with:
 - Security/Feature docs carry an **inlined implementation brief** (approach + ordered steps
   + DoD + verification commands from the Stack profile — **not code**).
 - Approved plan → run the **`plan-to-issues`** skill.
-- Reviewed steps may accumulate at `agent:claude + needs-closing`; close the plan in one
-  pass only after all steps are independently reviewed, CI evidence is recorded, and
-  `scripts/lifecycle-status.sh --check --verify-evidence` passes.
+- The reviewer closes each step issue on approval; `agent:claude + needs-closing` lands on
+  the **tracking** issue, not the steps. Close the plan in one pass only after every step
+  issue is closed, CI evidence is recorded, and
+  `scripts/lifecycle-status.sh --check --verify-evidence` passes — then close the tracking
+  issue too. A closed step issue means *reviewed clean*, not *shipped*; the doc's Status
+  block and CI evidence are the shipping record.
 - On done (shipped & verified, or risk accepted) → move the doc to `docs/done/`
   (or `docs/done/security/`); record accepted risks in `docs/accepted_risks.md`.

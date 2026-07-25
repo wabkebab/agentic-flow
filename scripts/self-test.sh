@@ -729,15 +729,27 @@ done
 # "role used to preload METHODOLOGY.md" figure. A ceiling with 100%+ headroom passes no
 # matter what gets re-inlined, which turns the assertion into decoration. Raising one is
 # a deliberate act: move the content to its canonical home first (CLAUDE.md → routing).
+#
+# Raised once, deliberately, when the review handoff became data-carrying: Codex now
+# comments the commit sha and verification on the step issue, and the reviewer closes that
+# issue itself rather than parking it at needs-closing. Every bit of *rationale* for that
+# went to METHODOLOGY.md §2/§6 (uncapped, and the canonical home); what landed in the three
+# bundles is irreducible mechanics — the state machine and the gh commands each role runs.
+# Each ceiling keeps the original ~80-word headroom over its new measured size, so the
+# assertion still bites on re-inlining rather than on one contract change. For the executor
+# the binding measurement is templates/harness/AGENTS.md (947), not this repo's own root
+# instance (869) — the same check runs inside a fresh export, where the bundle carries the
+# opt-out notes too. Size a ceiling against the larger of the pair, or `make test` fails on
+# the export while `make check` passes here.
 planner_words=$(wc -w < "$ROOT/CLAUDE.md" | tr -d ' ')
 executor_words=$(wc -w < "$ROOT/AGENTS.md" | tr -d ' ')
 reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
-[ "$planner_words" -le 1450 ] \
-  || fail "planner static role bundle exceeds its ceiling: $planner_words words (max 1450)"
-[ "$executor_words" -le 870 ] \
-  || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 870)"
-[ "$reviewer_words" -le 820 ] \
-  || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 820)"
+[ "$planner_words" -le 1530 ] \
+  || fail "planner static role bundle exceeds its ceiling: $planner_words words (max 1530)"
+[ "$executor_words" -le 1030 ] \
+  || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1030)"
+[ "$reviewer_words" -le 965 ] \
+  || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 965)"
 
 # One severity vocabulary across every review surface — the SKILL.md pair AND the live
 # /review agent contract, which is where the old block/fix/nit scale survived an earlier

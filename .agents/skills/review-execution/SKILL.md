@@ -92,6 +92,24 @@ when missing scope or evidence prevents an honest decision.
 
 ## Preserve reviewer independence
 
-Keep the review read-only by default. Do not edit code or docs, stage, commit, push, merge,
-post comments, change labels, close issues, or update the implementation status without
-explicit authorization. The human owns merge and deployment.
+Keep the review **read-only on the work under review**: never edit code or docs, stage,
+commit, push, or merge. Report the defect, never repair it — a reviewer who patches the code
+is no longer reviewing it.
+
+## Record the verdict and move the issue
+
+Moving the step issue is the one exception, authorized standingly by the state machine in
+`CLAUDE.md`. Post the verdict as an issue comment **first** — findings, or an explicit
+no-findings approval, with the range reviewed and verification run. A verdict living only in
+chat is lost to close-out. Then:
+
+- **`changes requested`** — leave open and return it:
+  `gh issue edit <N> --add-label "agent:codex,needs-execution" --remove-label "agent:opencode,needs-review"`.
+  Capped at two returns; a third escalates to the human.
+- **`approved`** — `gh issue close <N>`. The merge will not close it for you; a closed step
+  records *reviewed clean*, not *shipped*.
+- **last open step of a plan** — also
+  `gh issue edit <TRACKER> --add-label "agent:claude,needs-closing"`, leaving the tracker open.
+- **`pending`** — change nothing; name the missing input.
+
+Never edit the doc's Status block — that is close-out's job.
