@@ -39,8 +39,11 @@ docs/
 
 `backlog/` → `inprogress/` (plan → execute → review) → `done/` (or `done/security/`).
 
-A doc leaves `inprogress/` when its implementation steps are all shipped & verified, **or**
-the user accepts the risk / declines the feature — in which case add an entry to
+A doc leaves `inprogress/` when its implementation steps are all shipped, independently
+reviewed, and verified. Reviewed step issues may accumulate at
+`agent:claude + needs-closing`; close the plan in one pass only after all steps qualify,
+CI evidence is recorded, and `scripts/lifecycle-status.sh --check --verify-evidence`
+passes. If the user accepts the risk / declines the feature, add an entry to
 `accepted_risks.md` and link it before moving the doc.
 
 ## Current docs

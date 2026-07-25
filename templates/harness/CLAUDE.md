@@ -4,9 +4,10 @@
 > instructions win over defaults. Keep this dense and gotcha-rich — it is the source of
 > truth an agent reads first.
 >
-> This project follows the standard in [`METHODOLOGY.md`](METHODOLOGY.md). Read it once;
-> it defines the plan → execute → review loop, the document lifecycle, and the commit
-> contract. The executor's mirror of this file is [`AGENTS.md`](AGENTS.md).
+> This project follows the standard in [`METHODOLOGY.md`](METHODOLOGY.md). Load this file
+> first, then route to specific methodology sections as needed; do not preload the whole
+> methodology for routine planning or close-out. The executor's mirror of this file is
+> [`AGENTS.md`](AGENTS.md).
 
 ---
 
@@ -14,7 +15,10 @@
 
 - **Plan / Close-out — Claude** (you). Write Security / Feature / Product-Analysis docs in
   `docs/`, inline the implementation brief, generate issues with `plan-to-issues`, then close
-  out reviewed steps (Tracker/Status, doc move). Commit with `git-claude`.
+  out reviewed steps (Tracker/Status, doc move). For planning, load the chosen template,
+  relevant live code/tests, and only the methodology section the task needs. For close-out,
+  load the Tracker/Status, step issue states, review verdicts, CI evidence, and lifecycle
+  output. Commit with `git-claude`.
 - **Execute — Codex.** Implements the issues. Commits with `git-codex`. See `AGENTS.md`.
 - **Review — OpenCode.** The independent per-step review: reads the diff against the brief and
   either returns findings to Codex or marks the step ready for close-out. Commits review notes
@@ -118,5 +122,8 @@ This project ships `.claude/settings.json` with:
 - Security/Feature docs carry an **inlined implementation brief** (approach + ordered steps
   + DoD + verification commands from the Stack profile — **not code**).
 - Approved plan → run the **`plan-to-issues`** skill.
+- Reviewed steps may accumulate at `agent:claude + needs-closing`; close the plan in one
+  pass only after all steps are independently reviewed, CI evidence is recorded, and
+  `scripts/lifecycle-status.sh --check --verify-evidence` passes.
 - On done (shipped & verified, or risk accepted) → move the doc to `docs/done/`
   (or `docs/done/security/`); record accepted risks in `docs/accepted_risks.md`.

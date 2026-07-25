@@ -3,6 +3,7 @@
 > The standard plan → execute → review loop, the document lifecycle, and the
 > conventions that make agentic work repeatable across projects. This file is the
 > source of truth; templates in `docs/templates/` are the fill-in-the-blanks forms.
+> Load this file by referenced section, not wholesale, during routine work.
 >
 > Stack-agnostic by design. The only project-specific thing is the **Stack profile** — the
 > [`Makefile`](Makefile), the one executable source of truth for build/test/run commands.
@@ -67,11 +68,11 @@ opt-out reassigns the review, it never leaves it to both.
         │                            to agent:opencode + needs-review
         ▼
   Review (OpenCode)                 reads the step's diff against the brief
-        │                           ├─ findings ─▶ back to agent:codex (loop, capped)
+        │                           ├─ findings ─▶ back to agent:codex (2 returns, then human)
         │                           └─ none ─────▶ agent:claude + needs-closing
         ▼
-  Close-out (Claude)                tick the Tracker, update Status; the doc moves
-        │                           when every step is reviewed and verified
+  Close-out (Claude)                once all steps are reviewed: tick the Tracker,
+        │                           update Status, verify evidence; then move the doc
         ▼
   Merge (human)  ────────────────▶  PR merge auto-closes #N
         │
@@ -82,7 +83,8 @@ opt-out reassigns the review, it never leaves it to both.
 ```
 
 The label pair is what moves a step between roles; the project's `CLAUDE.md` holds the exact
-state machine and the cap on findings rounds.
+state machine. Automatic findings returns are capped at two; a third return escalates to the
+human without discarding the findings.
 
 The loop is **one-directional** (doc → issues), never the reverse. The document stays the
 source of design intent; issues are the disposable execution units.
@@ -182,7 +184,10 @@ Use these consistently; they map 1:1 onto GitHub labels and onto `plan-to-issues
 | 🔴 | High — exploitable / data-loss / auth bypass | `sev:high` |
 | 🟠 | Medium — meaningful weakness, bounded blast radius | `sev:med` |
 | 🟡 | Low — hardening, defence-in-depth, hygiene | `sev:low` |
-| 🟦 | By-design / accepted — no action, or moved to `accepted_risks.md` | `sev:nit` / (none) |
+| 🟦 | Nit — wording, clarity, or tiny hygiene issue | `sev:nit` |
+
+Accepted/by-design is a disposition, not a severity. Move accepted material risk to
+`accepted_risks.md` or cite the explicit acceptance in the finding.
 
 Each finding states **location** (`file:line`), **what's wrong**, and a concrete **Fix:**.
 
@@ -205,7 +210,7 @@ holds the step, one `needs-*` naming what it needs:
 |--------|-------|---------|
 | `agent:codex` | `needs-execution` | the executor implements it (the `plan-to-issues` default) |
 | `agent:opencode` | `needs-review` | the reviewer has it; returns it to `agent:codex` with findings, or passes it on |
-| `agent:claude` | `needs-closing` | reviewed clean; close-out updates the Tracker and Status |
+| `agent:claude` | `needs-closing` | reviewed clean; waits for plan-level close-out to update Tracker and Status |
 
 Plus `plan` on the tracking issue and `sev:high|med|low|nit` on findings (§5).
 
@@ -216,8 +221,9 @@ Rules:
   one PR** — a Feature/Security pass is the review unit, not each step. Split a pass across
   multiple PRs only when the brief says so explicitly (e.g. a pass too large or long-running
   to hold on one branch); don't default to a branch per step.
-- Issue body = the step's Definition of Done + the exact verification commands. The *why*
-  and the ordering stay in the doc.
+- Issue body = the step link, concise Definition of Done, and current labels. The approved
+  brief owns intent; the `Makefile` owns executable command behavior, so do not copy Make
+  recipes into issue bodies.
 - Flow is one-directional. If the plan changes, regenerate or hand-edit issues; never
   reverse-sync issue edits into the doc.
 

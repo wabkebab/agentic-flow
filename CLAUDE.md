@@ -4,9 +4,10 @@
 > instructions win over defaults. Keep this dense and gotcha-rich — it is the source of
 > truth an agent reads first.
 >
-> This project follows the standard in [`METHODOLOGY.md`](METHODOLOGY.md). Read it once;
-> it defines the plan → execute → review loop, the document lifecycle, and the commit
-> contract. The executor's mirror of this file is [`AGENTS.md`](AGENTS.md).
+> This project follows the standard in [`METHODOLOGY.md`](METHODOLOGY.md). Load this file
+> first, then route to specific methodology sections as needed; do not preload the whole
+> methodology for routine planning, review, or close-out. The executor's mirror of this
+> file is [`AGENTS.md`](AGENTS.md).
 
 ---
 
@@ -14,7 +15,10 @@
 
 - **Plan / Review — Claude** (you). Write Security / Feature / Product-Analysis docs in
   `docs/`, inline the implementation brief, generate issues with `plan-to-issues`, review
-  execution commits, fix or delegate fixes. Commit with `git-claude`.
+  execution commits, fix or delegate fixes. For planning, load the chosen template, relevant
+  live code/tests, and only the methodology section the task needs. For close-out, load the
+  Tracker/Status, step issue states, review verdicts, CI evidence, and lifecycle output.
+  Commit with `git-claude`.
 - **Execute — Codex.** Implements the issues. Commits with `git-codex`. See `AGENTS.md`.
 - **Review — OpenCode.** Human-operated today, or via the `/review` command
   (`.opencode/agent/code-reviewer.md`) / the `review-execution` skill
@@ -35,7 +39,7 @@ agent:codex + needs-execution          (plan-to-issues default)
 agent:opencode + needs-review
       │  OpenCode (human) reviews
       ├─ findings noted as an issue comment ──▶ agent:codex + needs-execution
-      │                                           (loop; capped at 3 findings rounds)
+      │                                           (loop; capped at 2 findings returns)
       └─ no findings ──────────────────────────▶ agent:claude + needs-closing
                                                       │
                                                       ▼
@@ -44,9 +48,14 @@ agent:opencode + needs-review
                                       Human still owns the actual merge/close.
 ```
 
-After OpenCode sends a step back with findings three times, a fourth automatic bounce is not
-allowed. Escalate to the human explicitly instead of sending it back to Codex again or
-silently stopping.
+After OpenCode sends a step back with findings twice, a third return escalates to the human
+explicitly instead of sending it back to Codex again or silently stopping.
+
+Close-out is batched at the plan level: reviewed steps may sit at
+`agent:claude + needs-closing` until all steps are reviewed. Then do one close-out pass that
+ticks the Tracker, records review and CI evidence, runs
+`scripts/lifecycle-status.sh --check --verify-evidence`, and moves the doc only when every
+step qualifies.
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and
@@ -65,7 +74,7 @@ silently stopping.
 |--------|------------------------------|-----------------|
 | `make check` | Bash syntax for shipped scripts, docs index freshness, action-pin structure, and `scripts/self-test.sh` | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
 | `make test` | full offline scaffold regression suite, plus `shellcheck` over `scripts/` | no network or GitHub writes; **fails if `shellcheck` is missing** rather than skipping |
-| `make test-one F=…` | same offline suite; this harness has no finer-grained test runner yet | accepts `F` for interface compatibility and prints it |
+| `make test-one F=…` | one focused harness group (`export`, `contracts`, `hooks`, `plan-to-issues`, or `lifecycle`) | the Makefile owns exact behavior |
 | `make build` | dry-run export into a temporary directory | validates the payload assembles without writing a real target |
 | `make run` | `scripts/doctor.sh` report mode | the scaffold's "app" is its adoption report |
 
@@ -130,7 +139,8 @@ enforce the local stop gate, named staging, and no-push contract.
   must agree on the pattern. They build it with `printf` so the scripts never contain a
   literal placeholder that would self-match — keep that trick when editing, comments
   included. The pattern is deliberately narrow (double-brace UPPER_SNAKE) so shipped docs
-  can quote GitHub Actions `dollar-brace` expressions without tripping it.
+  can quote GitHub Actions `dollar-brace` expressions without tripping it. `make check`
+  asserts the local assignments stay byte-identical.
 - **Same rule for anything credential-shaped.** `scan-secrets.sh` reads the staged diff, so
   a real-looking key or a quoted `password = "…"` written literally into any file — hook
   patterns, test fixtures, docs examples — blocks every commit that touches that file.

@@ -351,10 +351,18 @@ codex/context-optimization
 make check
 make test
 make build
-scripts/doctor.sh --check
+scripts/doctor.sh --check --scope repo --skip-make-check
 ```
 
-Record exact focused commands per step after O-2 introduces named self-test groups.
+Focused verification groups introduced by O-2:
+
+```bash
+make test-one F=contracts
+make test-one F=hooks
+make test-one F=plan-to-issues
+make test-one F=lifecycle
+make test-one F=export
+```
 
 ---
 
@@ -644,48 +652,73 @@ existing functional gates remain green.
 
 ## Correctness
 
-- [ ] No hook or CI authority is removed.
+- [x] No hook or CI authority is removed.
 - [ ] Every implementation step remains independently reviewed.
-- [ ] Full tests and shellcheck still run at brief completion and in CI.
-- [ ] Fresh exports remain self-consistent and green.
-- [ ] `ADOPTION.md` remains exported and required by doctor.
-- [ ] `TOKEN_RE` cannot diverge silently between init, doctor, and self-test.
-- [ ] Legacy documents, issue markers, and labels retain their meaning.
-- [ ] No new manifest mode, severity label, or review runtime is introduced.
+- [x] Full tests and shellcheck still run at brief completion and in CI.
+- [x] Fresh exports remain self-consistent and green.
+- [x] `ADOPTION.md` remains exported and required by doctor.
+- [x] `TOKEN_RE` cannot diverge silently between init, doctor, and self-test.
+- [x] Legacy documents, issue markers, and labels retain their meaning.
+- [x] No new manifest mode, severity label, or review runtime is introduced.
 
 ## Time
 
-- [ ] `test-one` runs one named group.
-- [ ] CI invokes `make check` once.
-- [ ] The three-step benchmark drops materially from the approximately 12-minute modeled
+- [x] `test-one` runs one named group.
+- [x] CI invokes `make check` once.
+- [x] The three-step benchmark drops materially from the approximately 12-minute modeled
       baseline; target: at most 7 minutes on the same machine.
-- [ ] Any retained duplicate check has a documented distinct concern.
+- [x] Any retained duplicate check has a documented distinct concern.
 
 ## Context
 
-- [ ] No role preloads all of `METHODOLOGY.md`.
-- [ ] Static role bundles are at least 50% smaller than the measured baseline.
-- [ ] Four reviewed steps require one plan close-out context.
-- [ ] Two findings returns are the maximum before human escalation, if approved.
-- [ ] Issue bodies do not copy executable verification commands.
-- [ ] Recognized mechanical Stop failures emit a one-line remedy.
+- [x] No role preloads all of `METHODOLOGY.md`.
+- [x] Static role bundles are at least 50% smaller than the measured baseline.
+- [x] Four reviewed steps require one plan close-out context.
+- [x] Two findings returns are the maximum before human escalation, if approved.
+- [x] Issue bodies do not copy executable verification commands.
+- [x] Recognized mechanical Stop failures emit a one-line remedy.
 
 ## Evidence
 
-- [ ] Baseline commit, machine, and commands are recorded.
-- [ ] Before/after measurements use the same scenarios.
-- [ ] `make check`, `make test`, `make build`, and doctor pass.
+- [x] Baseline commit, machine, and commands are recorded.
+- [x] Before/after measurements use the same scenarios.
+- [x] `make check`, `make test`, `make build`, and doctor pass.
 - [ ] Independent review verdict is approved.
 - [ ] Authoritative CI is green.
 
 # Status / evidence
 
 - **Approval:** decisions approved by the human 2026-07-25 — close-out batching, findings cap
-  three → two, and no `Critical` severity level (see Decisions). Whole-plan approval to begin
-  execution: pending.
+  three → two, no `Critical` severity level (see Decisions), and whole-plan execution via
+  issue #46.
 - **Tracking issue:** [https://github.com/wabkebab/agentic-flow/issues/46](https://github.com/wabkebab/agentic-flow/issues/46).
-- **Branch:** pending activation.
-- **Verification evidence:** pending.
+- **Branch:** `codex/context-optimization`.
+- **Verification evidence:** local verification passed 2026-07-25:
+  - `make check`
+  - `make test`
+  - `make build`
+  - `scripts/doctor.sh --check --scope repo --skip-make-check`
+  - `make test-one F=contracts`
+  - `make test-one F=hooks`
+  - `make test-one F=plan-to-issues`
+  - `make test-one F=lifecycle`
+  - `make test-one F=export`
 - **Review verdict:** pending.
 - **Measurement basis:** original audit at `d507bf4`, 2026-07-25. Re-run from clean `main`
-  immediately before implementation.
+  before implementation measured `make check` at 11.72s from an archived clean tree; archived
+  `make test` / `test-one` could not complete because the export fixture expects Git metadata,
+  so the original clean-main full-suite measurements remain the before comparison.
+- **Benchmark after implementation:** same machine, five repetitions unless noted:
+  - `make check`: median 9.58s (9.53, 9.54, 9.58, 9.68, 10.07)
+  - `make test-one F=contracts`: median 1.59s (1.58, 1.59, 1.59, 1.59, 1.62)
+  - `make test-one F=hooks`: median 1.27s (1.26, 1.27, 1.27, 1.27, 1.27)
+  - `make test-one F=plan-to-issues`: median 2.11s (2.10, 2.11, 2.11, 2.12, 2.15)
+  - `make test-one F=lifecycle`: median 3.95s (3.94, 3.95, 3.95, 3.95, 3.96)
+  - `make test-one F=export`: median 73.73s (73.38, 73.45, 73.73, 74.43, 75.07)
+  - `make test`: median 84.15s (83.85, 83.93, 84.15, 84.26, 85.37)
+- **Static role bundles after implementation:** planner `CLAUDE.md` 1,362 words; executor
+  `AGENTS.md` 791 words; reviewer skill 738 words. Executable ceilings compare each bundle
+  against half of its former full-methodology baseline.
+- **State-machine transition model:** four reviewed steps now require four Codex handoffs,
+  four OpenCode reviews, and one Claude close-out pass, instead of four Claude close-out
+  passes. A third findings return escalates to the human.

@@ -43,6 +43,11 @@ if [ "$active" = "true" ]; then
   exit 0
 fi
 
+if grep -Eq 'docs index OUT OF DATE|docs index out of date' "$LOG"; then
+  echo "Stop blocked: docs index is stale. Run: scripts/docs-index.sh" >&2
+  exit 2
+fi
+
 echo "Stop blocked: \`make check\` failed. Fix type/lint errors before ending the turn." >&2
 echo "--- make check output ($LOG) ---" >&2
 tail -n 40 "$LOG" >&2

@@ -8,6 +8,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 SELF_TEST_MODE=fast
+ONLY_GROUP=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --fast)
@@ -18,8 +19,13 @@ while [ "$#" -gt 0 ]; do
       SELF_TEST_MODE=full
       shift
       ;;
+    --only)
+      [ "$#" -ge 2 ] || { echo "error: --only requires a group" >&2; exit 2; }
+      ONLY_GROUP="$2"
+      shift 2
+      ;;
     -h|--help)
-      echo "usage: $0 [--fast|--full]" >&2
+      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle]" >&2
       exit 0
       ;;
     *)
@@ -28,6 +34,10 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+case "$ONLY_GROUP" in
+  ""|export|contracts|hooks|plan-to-issues|lifecycle) ;;
+  *) echo "unknown self-test group: $ONLY_GROUP" >&2; exit 2 ;;
+esac
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
@@ -157,8 +167,20 @@ must_allow() { # <hook> <command>
   printf '{"tool_input":{"command":"%s"}}' "$2" | "$1" >/dev/null 2>&1 || fail "hook blocked: $2"
 }
 
+should_run() { # <group>
+  if [ -n "$ONLY_GROUP" ]; then
+    [ "$ONLY_GROUP" = "$1" ]
+    return
+  fi
+  if [ "$SELF_TEST_MODE" = full ]; then
+    return 0
+  fi
+  [ "$1" != export ]
+}
+
 # --- export invariants (scaffold repo only, full suite only) -----------------------------
-if [ -f "$ROOT/scripts/export.sh" ] && [ "$SELF_TEST_MODE" = full ]; then
+if should_run export; then
+if [ -f "$ROOT/scripts/export.sh" ]; then
   # Exercise mutations against an isolated copy of the current checkout. The old test
   # appended sentinels to the live CLAUDE.md and docs/inprogress, then restored them in a
   # trap. Two concurrent checks could back up each other's temporary state and leave the
@@ -538,8 +560,10 @@ if [ -f "$ROOT/scripts/export.sh" ] && [ "$SELF_TEST_MODE" = full ]; then
   "$SOURCE_FIXTURE/scripts/render-stack-profile.sh" bad-ci --ci "$BAD_WORKFLOW" >/dev/null 2>&1 \
     && fail "renderer accepted a ci-setup row containing a literal tab"
 fi
+fi
 
 # --- shellcheck is required, not optional ------------------------------------------------
+if should_run contracts; then
 # A lint that skips when its tool is missing reports green for the wrong reason — that is
 # exactly how `make test` sat red-but-passing until someone installed shellcheck.
 #
@@ -615,7 +639,102 @@ YAML
     || fail "shipped templates/ci workflows fail the pin guard"
 fi
 
+# Contract drift guards: these files are intentionally duplicated for adapter lookup, so
+# a one-sided edit must fail before an agent follows stale instructions.
+cmp -s "$ROOT/.agents/skills/review-execution/SKILL.md" \
+       "$ROOT/.opencode/skills/review-execution/SKILL.md" \
+  || fail "review-execution adapter copies diverged"
+cmp -s "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
+       "$ROOT/.claude/skills/plan-to-issues/SKILL.md" \
+  || fail "plan-to-issues adapter copies diverged"
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+grep -q 'Stack profile.*`CLAUDE.md`' "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
+  || fail "plan-to-issues guidance does not name CLAUDE.md as Stack profile owner"
+
+token_line=""
+token_seen=0
+for token_file in "$ROOT/scripts/init.sh" "$ROOT/scripts/doctor.sh" "$ROOT/scripts/self-test.sh"; do
+  [ -f "$token_file" ] || continue
+  line=$(grep '^TOKEN_RE=' "$token_file" || true)
+  [ -n "$line" ] || fail "$token_file lacks TOKEN_RE assignment"
+  token_seen=$((token_seen + 1))
+  if [ -z "$token_line" ]; then
+    token_line="$line"
+  elif [ "$line" != "$token_line" ]; then
+    fail "TOKEN_RE assignment diverged in $token_file"
+  fi
+done
+[ "$token_seen" -ge 2 ] || fail "not enough TOKEN_RE assignments to guard parity"
+printf '%s\n%s\n' "$(printf '{%sPROJECT_NAME}%s' '{' '}')" \
+  "$(printf '{%sPROJECT_123}%s' '{' '}')" | grep -Eq "$TOKEN_RE" \
+  || fail "TOKEN_RE rejected valid placeholder fixtures"
+# shellcheck disable=SC2016 # literal GitHub Actions expression fixture.
+printf '%s\n%s\n%s\n' '${{ matrix.node }}' '{project_name}' \
+  "$(printf '{%sproject-name}%s' '{' '}')" | grep -Eq "$TOKEN_RE" \
+  && fail "TOKEN_RE accepted invalid placeholder fixtures"
+
+grep -Eq '^ADOPTION\.md[[:space:]]+ADOPTION\.md[[:space:]]+core[[:space:]]+preserve[[:space:]]+export$' \
+  "$ROOT/config/payload.tsv" \
+  || fail "ADOPTION.md is not exported by the payload manifest"
+grep -q 'require_file ADOPTION.md' "$ROOT/scripts/doctor.sh" \
+  || fail "doctor no longer requires ADOPTION.md"
+AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo --skip-make-check \
+  >/dev/null 2>&1 \
+  || fail "doctor rejected explicit repo-scope --skip-make-check"
+"$ROOT/scripts/doctor.sh" --check --scope all --skip-make-check \
+  >/dev/null 2>"$TMP/doctor-skip-scope.err" \
+  && fail "doctor accepted --skip-make-check outside repo scope"
+grep -q "only valid with --scope repo" "$TMP/doctor-skip-scope.err" \
+  || fail "doctor skip-scope failure did not explain the constraint"
+
+for role_file in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" \
+                 "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
+  [ -f "$role_file" ] || continue
+  grep -qi 'preload the whole' "$role_file" \
+    || fail "$role_file lacks the minimal read-set rule"
+done
+planner_words=$(wc -w < "$ROOT/CLAUDE.md" | tr -d ' ')
+executor_words=$(wc -w < "$ROOT/AGENTS.md" | tr -d ' ')
+reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
+[ "$planner_words" -le 2976 ] \
+  || fail "planner static role bundle exceeds half-baseline ceiling: $planner_words words"
+[ "$executor_words" -le 2715 ] \
+  || fail "executor static role bundle exceeds half-baseline ceiling: $executor_words words"
+[ "$reviewer_words" -le 3099 ] \
+  || fail "reviewer static role bundle exceeds half-baseline ceiling: $reviewer_words words"
+grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-execution/SKILL.md" \
+  || fail "review skill does not route engineering standards to AGENTS.md"
+grep -qi '\*\*Nit\*\*' "$ROOT/.agents/skills/review-execution/SKILL.md" \
+  || fail "review skill lacks Nit severity"
+grep -qi 'Accepted/by-design' "$ROOT/.agents/skills/review-execution/SKILL.md" \
+  || fail "review skill treats accepted risk as severity"
+grep -qi '\*\*Blocker\*\*' "$ROOT/.agents/skills/review-execution/SKILL.md" \
+  && fail "review skill still defines Blocker severity"
+
+while IFS= read -r section; do
+  grep -q "^## $section\\. " "$ROOT/METHODOLOGY.md" \
+    || fail "METHODOLOGY.md §$section reference has no matching section"
+done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*§[0-9]+' \
+  "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" "$ROOT/templates" "$ROOT/docs/templates" \
+  "$ROOT/.agents" "$ROOT/.opencode" "$ROOT/scripts" "$ROOT/Makefile" \
+  | sed -E 's/.*§([0-9]+).*/\1/' | sort -u)
+
+DOC_STAGE_FIX="$TMP/docs-stage"
+mkdir -p "$DOC_STAGE_FIX/docs/unknown"
+cp "$ROOT/docs/README.md" "$DOC_STAGE_FIX/docs/README.md"
+cat > "$DOC_STAGE_FIX/docs/unknown/feature-bad.md" <<'MD'
+<!-- TRIAGE (first pass · 2026-01-01) -->
+> **Type:** Feature · **Status:** 🟦 Proposal
+MD
+AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check \
+  >/dev/null 2>"$TMP/docs-stage.err" \
+  && fail "docs-index accepted an undeclared docs stage"
+grep -q "undeclared docs stage" "$TMP/docs-stage.err" \
+  || fail "docs-index undeclared-stage failure did not explain the problem"
+fi
+
 # --- hook invariants (run everywhere) ----------------------------------------------------
+if should_run hooks; then
 ADD_GUARD="$ROOT/scripts/hooks/block-git-add-all.sh"
 
 "$ADD_GUARD" <<'JSON' >/dev/null 2>"$TMP/hook.err" && fail "git add -A was allowed"
@@ -633,6 +752,7 @@ must_block "$ADD_GUARD" 'git -C /some/path -c core.pager=cat add --all'
 must_allow "$ADD_GUARD" 'git add README.md'
 must_allow "$ADD_GUARD" 'git -C /some/path add README.md'
 must_allow "$ADD_GUARD" 'git add docs/inprogress/feature-x.md scripts/doctor.sh'
+must_allow "$ADD_GUARD" 'rg "git add -A" scripts/self-test.sh'
 
 # --- Stop gate (check-gate.sh) -----------------------------------------------------------
 # The highest-leverage hook and previously untested (ROADMAP 1.5.4). All four paths matter:
@@ -669,6 +789,21 @@ if [ -x "$GATE" ]; then
   # Dirty tree + failing check → block, so the turn can't end red.
   gate_makefile 'exit 1'
   gate_run false && fail "Stop gate allowed a turn while 'make check' was red"
+
+  (cd "$GATEFIX" && printf '{"stop_hook_active":false}' | "$GATE") \
+    >"$TMP/gate-unknown.out" 2>"$TMP/gate-unknown.err" \
+    && fail "Stop gate allowed an unknown failing check"
+  grep -q -- "--- make check output" "$TMP/gate-unknown.err" \
+    || fail "Stop gate unknown failure did not include diagnostic tail"
+
+  gate_makefile 'echo "docs index OUT OF DATE - run: scripts/docs-index.sh" >&2; exit 1'
+  (cd "$GATEFIX" && printf '{"stop_hook_active":false}' | "$GATE") \
+    >"$TMP/gate-docs.out" 2>"$TMP/gate-docs.err" \
+    && fail "Stop gate allowed a stale docs index"
+  grep -q "Run: scripts/docs-index.sh" "$TMP/gate-docs.err" \
+    || fail "Stop gate stale-docs failure did not print the one-line remedy"
+  grep -q -- "--- make check output" "$TMP/gate-docs.err" \
+    && fail "Stop gate stale-docs failure printed the full diagnostic tail"
 
   # Same failure, but already inside a stop-hook continuation → warn and allow, or the
   # agent is stuck in a loop it cannot exit.
@@ -775,8 +910,10 @@ must_block "$PUSH_GUARD" 'gh pr merge 12'
 must_allow "$PUSH_GUARD" 'git pull --rebase'
 must_allow "$PUSH_GUARD" 'gh pr view 12'
 must_allow "$PUSH_GUARD" 'echo push'
+fi
 
 # --- plan-to-issues spec validation ------------------------------------------------------
+if should_run plan-to-issues; then
 INVALID_SPEC="$TMP/invalid-spec.json"
 printf '%s\n' '{"tracking":{"title":"Plan: bad"},"steps":[]}' > "$INVALID_SPEC"
 "$ROOT/scripts/plan-to-issues.sh" "$INVALID_SPEC" >/dev/null 2>"$TMP/plan.err" && fail "invalid plan spec was accepted"
@@ -981,8 +1118,10 @@ PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PARTIAL_STATE" \
   || fail "plan apply did not resume after a partial failure"
 partial_count=$(find "$PARTIAL_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
 [ "$partial_count" -eq 3 ] || fail "partial resume duplicated or omitted plan issues"
+fi
 
 # --- lifecycle qualification -------------------------------------------------------------
+if should_run lifecycle; then
 LIFEFIX="$TMP/lifecycle-fixture"
 mkdir -p "$LIFEFIX/docs/inprogress"
 cat > "$LIFEFIX/docs/inprogress/feature-active.md" <<'MD'
@@ -1031,6 +1170,22 @@ write_lifecycle_ready_doc() { # <root> <verification-evidence>
 MD
 }
 
+LIFEGHFIX="$TMP/lifecycle-gh-fixture"
+mkdir -p "$LIFEGHFIX"
+cat > "$LIFEGHFIX/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-} ${2:-}" in
+  "run view")
+    printf '%s\n' "${FAKE_GH_RUN_CONCLUSION:-success}"
+    exit 0
+    ;;
+esac
+echo "unsupported fake gh call: $*" >&2
+exit 2
+FAKE_GH
+chmod +x "$LIFEGHFIX/gh"
+
 LIFE25_NO_GH="$TMP/lifecycle25-no-gh"
 write_lifecycle_ready_doc "$LIFE25_NO_GH" "https://github.com/owner/repo/actions/runs/100"
 NO_GH_BIN=$(path_without_tools "$TMP/no-gh-bin" gh)
@@ -1042,7 +1197,7 @@ grep -q 'UNVERIFIED.*feature-ready\.md.*gh is not available' "$TMP/lifecycle25-n
 
 LIFE25_NON_RUN="$TMP/lifecycle25-non-run"
 write_lifecycle_ready_doc "$LIFE25_NON_RUN" "https://example.invalid/actions/1"
-AGENTIC_PROJECT_ROOT="$LIFE25_NON_RUN" PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+AGENTIC_PROJECT_ROOT="$LIFE25_NON_RUN" PATH="$LIFEGHFIX:$PATH" \
   "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-non-run.out" \
   || fail "strict verified lifecycle check treated non-run evidence as fatal"
 grep -q 'UNVERIFIED.*feature-ready\.md.*not a GitHub Actions run URL' \
@@ -1051,7 +1206,7 @@ grep -q 'UNVERIFIED.*feature-ready\.md.*not a GitHub Actions run URL' \
 
 LIFE25_FAILURE="$TMP/lifecycle25-failure"
 write_lifecycle_ready_doc "$LIFE25_FAILURE" "https://github.com/owner/repo/actions/runs/200"
-AGENTIC_PROJECT_ROOT="$LIFE25_FAILURE" PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+AGENTIC_PROJECT_ROOT="$LIFE25_FAILURE" PATH="$LIFEGHFIX:$PATH" \
   FAKE_GH_RUN_CONCLUSION=failure \
   "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-failure.out" 2>&1 \
   && fail "strict verified lifecycle check accepted a resolved failing CI run"
@@ -1060,7 +1215,7 @@ grep -q 'BLOCKED.*feature-ready\.md.*concluded failure' "$TMP/lifecycle25-failur
 
 LIFE25_SUCCESS="$TMP/lifecycle25-success"
 write_lifecycle_ready_doc "$LIFE25_SUCCESS" "https://github.com/owner/repo/actions/runs/100"
-AGENTIC_PROJECT_ROOT="$LIFE25_SUCCESS" PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+AGENTIC_PROJECT_ROOT="$LIFE25_SUCCESS" PATH="$LIFEGHFIX:$PATH" \
   FAKE_GH_RUN_CONCLUSION=success \
   "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-success.out" \
   || fail "strict verified lifecycle check rejected a resolved successful CI run"
@@ -1116,5 +1271,6 @@ grep -q 'READY.*lc19-wrapped\.md' "$TMP/lifecycle19.out" \
 # silently satisfy the check (that would let the vocabulary fork instead of surfacing it).
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
   && fail "strict lifecycle check accepted a misnamed Approval field as though it were valid"
+fi
 
 echo "self-test passed."

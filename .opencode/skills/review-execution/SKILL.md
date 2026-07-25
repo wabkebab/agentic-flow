@@ -10,8 +10,10 @@ do not implement fixes unless the user separately asks for them.
 
 ## Establish the review contract
 
-1. Read `CLAUDE.md`, `AGENTS.md`, and the relevant parts of `METHODOLOGY.md`, especially
-   the engineering standards and review rules.
+1. Read this skill, the approved brief, the diff/range, changed code and affected callers,
+   actual verification output, and `AGENTS.md` → Engineering standards. Read `CLAUDE.md`
+   Stack profile/Gotchas or `METHODOLOGY.md` sections only when the diff or brief points
+   there.
 2. Locate and read the approved implementation brief under `docs/inprogress/`. Treat the
    document as design intent and its ordered steps, regression tests, Definition of Done,
    and verification commands as the acceptance contract.
@@ -26,20 +28,11 @@ do not implement fixes unless the user separately asks for them.
 
 ## Review the implementation
 
-Review the complete range and each step commit. Check that:
-
-- behavior matches the brief without silently expanding scope;
-- each step is coherent and the whole branch works as one shipping unit;
-- external input is validated once at the boundary;
-- authorization denies by default at a chokepoint;
-- interpreted values use safe structured APIs rather than constructed strings;
-- queries, loops over external data, and outbound requests are bounded;
-- timeout, malformed-input, partial-success, rollback, and concurrency paths are correct;
-- secrets come from configuration and sensitive values do not enter logs or errors;
-- migrations, persisted data, public APIs, configuration, and compatibility are safe;
-- regression tests reproduce the old failure and assert observable behavior, including a
-  relevant failure path;
-- comments, docs, and commit claims agree with actual behavior.
+Review the complete range and each step commit. Check behavior against the brief, trace
+changed code into callers and downstream consumers, and apply `AGENTS.md` Engineering
+standards rather than restating them here. Pay special attention to failure paths,
+migrations, persisted data, public APIs, configuration compatibility, and whether tests
+reproduce the old failure with observable behavior.
 
 Trace changed code into its callers and downstream consumers. Do not review only the diff
 when the defect depends on surrounding invariants. Look for duplicated contract files or
@@ -64,12 +57,15 @@ code finding unless the branch caused it.
 
 Lead with findings, ordered by severity:
 
-- **Blocker** — unsafe to merge; exploitable security issue, data loss, or fundamentally
-  broken acceptance behavior.
 - **High** — common path is incorrect or a serious regression has no safe workaround.
 - **Medium** — real defect under a bounded condition, or required failure-path coverage is
   missing in a way that can hide one.
 - **Low** — concrete, limited correctness or operability risk worth fixing before closure.
+- **Nit** — wording, clarity, or tiny hygiene issue that does not block closure.
+
+High blocks merge. Medium requires a fix or explicit accepted-risk disposition. Low and Nit
+do not block closure unless the brief makes them mandatory. Accepted/by-design is a
+disposition, not a severity.
 
 For every finding include:
 

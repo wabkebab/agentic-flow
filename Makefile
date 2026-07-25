@@ -19,9 +19,9 @@ test:           ## full test suite
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required for 'make test' — install it (brew install shellcheck / apt-get install shellcheck)." >&2; exit 1; }
 	@shellcheck scripts/*.sh scripts/hooks/*.sh
 
-test-one:       ## one targeted test:  make test-one F=path/to/file
-	@echo "No finer-grained harness test runner yet; running offline suite. F=$(F)"
-	@scripts/self-test.sh --full
+test-one:       ## one targeted harness group: make test-one F=hooks
+	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle" >&2; exit 2; }
+	@scripts/self-test.sh --only "$(F)"
 
 build:          ## production build
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/agentic-flow-build.XXXXXX"); \
