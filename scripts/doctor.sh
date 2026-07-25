@@ -217,6 +217,17 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
       *+*) ok "scaffold version: ${version%%+*} (commit ${version#*+})" ;;
       *)   ok "scaffold version: $version" ;;
     esac
+    if [ -f "$ROOT/.agentic-flow-source" ]; then
+      source_origin=$(sed -n '1s/^origin[[:space:]]*//p' "$ROOT/.agentic-flow-source")
+      source_ref=$(sed -n '2s/^ref[[:space:]]*//p' "$ROOT/.agentic-flow-source")
+      if [ -n "$source_origin" ] && [ -n "$source_ref" ]; then
+        ok "scaffold source: $source_origin (ref $source_ref)"
+      else
+        fail "scaffold source malformed: .agentic-flow-source"
+      fi
+    else
+      warn "scaffold source not recorded: .agentic-flow-source"
+    fi
   else
     warn "scaffold version stamp not found: .agentic-flow-version"
   fi

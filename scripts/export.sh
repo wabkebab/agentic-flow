@@ -130,6 +130,8 @@ semver=$(sed -n '1p' "$SRC/VERSION" 2>/dev/null || true)
 [ -n "$semver" ] || semver="0.0.0"
 sha=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
 version="$semver+$sha"
+source_origin=$(git -C "$SRC" remote get-url origin 2>/dev/null || true)
+source_ref=${AGENTIC_FLOW_SOURCE_REF:-main}
 created=0; overwritten=0; merge=0; same=0; candidate_created=0; candidate_reused=0
 i=0
 while [ "$i" -lt "${#FILES[@]}" ]; do
@@ -187,6 +189,27 @@ if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
   echo "  installed   .agentic-flow-version ($version)"
 else
   echo "  pending     .agentic-flow-candidate-version ($version)"
+fi
+
+if [ -n "$source_origin" ]; then
+  if [ -f "$DST/.agentic-flow-source" ]; then
+    recorded_origin=$(sed -n '1s/^origin[[:space:]]*//p' "$DST/.agentic-flow-source")
+    if [ "$recorded_origin" != "$source_origin" ]; then
+      echo "  source      .agentic-flow-source preserved (recorded origin differs: $recorded_origin)"
+    else
+      echo "  source      .agentic-flow-source preserved"
+    fi
+  else
+    if [ "$DRY" = false ]; then
+      {
+        printf 'origin %s\n' "$source_origin"
+        printf 'ref %s\n' "$source_ref"
+      } > "$DST/.agentic-flow-source"
+    fi
+    echo "  source      .agentic-flow-source ($source_origin @ $source_ref)"
+  fi
+else
+  echo "  source      not recorded (source repo has no origin remote)"
 fi
 
 echo

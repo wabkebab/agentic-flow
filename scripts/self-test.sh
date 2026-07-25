@@ -310,6 +310,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   [ -n "$expected_semver" ] || expected_semver="0.0.0"
   expected_sha=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
   expected_version="$expected_semver+$expected_sha"
+  expected_origin=$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)
 
   assert_file "$TARGET/METHODOLOGY.md"
   assert_file "$TARGET/ADOPTION.md"
@@ -352,6 +353,15 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/.agentic-flow-version"
   grep -qx "$expected_version" "$TARGET/.agentic-flow-version" \
     || fail "export version stamp did not match source HEAD"
+  if [ -n "$expected_origin" ]; then
+    assert_file "$TARGET/.agentic-flow-source"
+    grep -qx "origin $expected_origin" "$TARGET/.agentic-flow-source" \
+      || fail "export did not record the source origin"
+    grep -qx "ref main" "$TARGET/.agentic-flow-source" \
+      || fail "export did not record the default source ref"
+  else
+    assert_no_file "$TARGET/.agentic-flow-source"
+  fi
   # VERSION is this repo's own maintainer-facing semver source; not in the manifest, so
   # nothing copies it. Only the computed semver+SHA stamp reaches a target.
   assert_no_file "$TARGET/VERSION"
@@ -384,6 +394,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || { cat "$TMP/target-check-stripped.log" >&2; fail "make check failed in a fresh export on stripped PATH"; }
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
+  printf 'origin https://example.invalid/fork.git\nref v1.2.3\n' > "$TARGET/.agentic-flow-source"
   # Simulate an older installed scaffold so a conflict can prove that invoking a newer
   # exporter does not falsely promote the active version.
   printf '%s\n' older-source > "$TARGET/.agentic-flow-version"
@@ -394,6 +405,10 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail "export advanced installed version while merge conflicts remained"
   grep -qx "$expected_version" "$TARGET/.agentic-flow-candidate-version" \
     || fail "export did not record the pending candidate version"
+  grep -qx "origin https://example.invalid/fork.git" "$TARGET/.agentic-flow-source" \
+    || fail "re-export overwrote a hand-edited source origin"
+  grep -qx "ref v1.2.3" "$TARGET/.agentic-flow-source" \
+    || fail "re-export overwrote a tag-shaped source ref"
 
   cp "$TARGET/CLAUDE.md.agentic-new" "$TMP/first-candidate"
   printf '%s\n' "# second candidate content" >> "$SOURCE_FIXTURE/templates/harness/CLAUDE.md"
@@ -591,6 +606,32 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail "export --dry-run overwrote an existing target file"
   [ "$(find "$DRYRUN_EXISTING" -mindepth 1 | wc -l | tr -d ' ')" -eq 1 ] \
     || fail "export --dry-run added files to a populated target"
+
+  TAG_REF_TARGET="$TMP/tag-ref-target"
+  AGENTIC_FLOW_SOURCE_REF=v1.2.3 "$SOURCE_FIXTURE/scripts/export.sh" "$TAG_REF_TARGET" >/dev/null \
+    || fail "export failed with a tag-shaped source ref"
+  if [ -n "$expected_origin" ]; then
+    grep -qx "ref v1.2.3" "$TAG_REF_TARGET/.agentic-flow-source" \
+      || fail "export did not preserve a tag-shaped ref as opaque data"
+  fi
+
+  NO_REMOTE_SOURCE="$TMP/no-remote-source"
+  mkdir -p "$NO_REMOTE_SOURCE"
+  while IFS= read -r -d '' tracked; do
+    [ -e "$ROOT/$tracked" ] || continue
+    mkdir -p "$NO_REMOTE_SOURCE/$(dirname "$tracked")"
+    cp -p "$ROOT/$tracked" "$NO_REMOTE_SOURCE/$tracked"
+  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+  NO_REMOTE_TARGET="$TMP/no-remote-target"
+  "$NO_REMOTE_SOURCE/scripts/export.sh" "$NO_REMOTE_TARGET" > "$TMP/no-remote-export.out" \
+    || fail "export failed from a source with no git remote"
+  assert_no_file "$NO_REMOTE_TARGET/.agentic-flow-source"
+  grep -q "source repo has no origin remote" "$TMP/no-remote-export.out" \
+    || fail "export without remote did not explain why no source was recorded"
+  (cd "$NO_REMOTE_TARGET" && scripts/doctor.sh --scope repo) > "$TMP/no-source-doctor.out" \
+    || fail "doctor report failed for a stamped project with no source"
+  grep -q "scaffold source not recorded" "$TMP/no-source-doctor.out" \
+    || fail "doctor did not warn about a stamped project with no source"
 fi
 fi
 
