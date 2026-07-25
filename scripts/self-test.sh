@@ -1012,6 +1012,93 @@ post_override_digest=$(tree_digest "$DIFF_TARGET")
   || fail "diff --ref changed the project tree"
 grep -qx "ref main" "$DIFF_TARGET/.agentic-flow-source" \
   || fail "diff --ref rewrote the recorded source ref"
+
+UPGRADE_SOURCE="$TMP/upgrade-source"
+mkdir -p "$UPGRADE_SOURCE/config" "$UPGRADE_SOURCE/scripts/lib" "$UPGRADE_SOURCE/scripts" \
+  "$UPGRADE_SOURCE/templates/harness"
+printf '%s\n' '10.0.0' > "$UPGRADE_SOURCE/VERSION"
+printf 'templates/harness/CLAUDE.md\tCLAUDE.md\tcore\tpreserve\texport\nscripts/lib\tscripts/lib\tcore\tpreserve\texport\nscripts/docs-index.sh\tscripts/docs-index.sh\tcore\tpreserve\texport\nconfig/payload.tsv\tconfig/payload.tsv\tcore\tpreserve\texport\n' \
+  > "$UPGRADE_SOURCE/config/payload.tsv"
+printf '%s\n' '# upgraded harness' > "$UPGRADE_SOURCE/templates/harness/CLAUDE.md"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh"
+cat > "$UPGRADE_SOURCE/scripts/docs-index.sh" <<'DOCS_INDEX_SENTINEL'
+#!/usr/bin/env bash
+printf '%s\n' fetched-code-ran > docs-index-sentinel
+DOCS_INDEX_SENTINEL
+chmod +x "$UPGRADE_SOURCE/scripts/docs-index.sh"
+(
+  cd "$UPGRADE_SOURCE"
+  git init -q .
+  git config user.email selftest@example.invalid
+  git config user.name selftest
+  git config commit.gpgsign false
+  git add VERSION config/payload.tsv scripts/lib/payload-apply.sh scripts/docs-index.sh templates/harness/CLAUDE.md
+  git commit -q -m "Seed upgrade source"
+  git branch -M main
+)
+UPGRADE_SOURCE_URL="file://$UPGRADE_SOURCE"
+
+UPGRADE_TARGET="$TMP/upgrade-target"
+mkdir -p "$UPGRADE_TARGET/config" "$UPGRADE_TARGET/scripts/lib"
+printf '%s\n' 'old+1111111' > "$UPGRADE_TARGET/.agentic-flow-version"
+printf 'origin %s\nref main\n' "$UPGRADE_SOURCE_URL" > "$UPGRADE_TARGET/.agentic-flow-source"
+cp "$UPGRADE_SOURCE/config/payload.tsv" "$UPGRADE_TARGET/config/payload.tsv"
+cp "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh" "$UPGRADE_TARGET/scripts/lib/payload-apply.sh"
+(cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade) > "$TMP/upgrade-no-yes.out" 2>"$TMP/upgrade-no-yes.err" \
+  && fail "upgrade wrote without --yes in a non-interactive run"
+grep -q "pass --yes" "$TMP/upgrade-no-yes.err" \
+  || fail "upgrade without --yes did not explain confirmation"
+
+printf '%s\n' '# local project edits' > "$UPGRADE_TARGET/CLAUDE.md"
+printf '%s\n' '# occupied candidate' > "$UPGRADE_TARGET/CLAUDE.md.agentic-new"
+(cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-pending.out" \
+  || fail "upgrade with merge candidates failed"
+grep -qx 'old+1111111' "$UPGRADE_TARGET/.agentic-flow-version" \
+  || fail "upgrade advanced installed version while candidates remained"
+assert_file "$UPGRADE_TARGET/.agentic-flow-candidate-version"
+grep -q "pending     .agentic-flow-candidate-version" "$TMP/upgrade-pending.out" \
+  || fail "upgrade did not report pending candidate version"
+assert_no_file "$UPGRADE_TARGET/docs-index-sentinel"
+grep -q "Docs index was not run automatically" "$TMP/upgrade-pending.out" \
+  || fail "upgrade did not explain that docs-index was not executed"
+grep -qx '# occupied candidate' "$UPGRADE_TARGET/CLAUDE.md.agentic-new" \
+  || fail "upgrade clobbered an occupied merge candidate"
+suffixed_candidates=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new.*' | wc -l | tr -d ' ')
+[ "$suffixed_candidates" -eq 1 ] \
+  || fail "upgrade did not create exactly one suffixed candidate for occupied content"
+candidate_count_before=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new*' | wc -l | tr -d ' ')
+(cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-rerun.out" \
+  || fail "rerunning upgrade with pending candidates failed"
+candidate_count_after=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new*' | wc -l | tr -d ' ')
+[ "$candidate_count_before" = "$candidate_count_after" ] \
+  || fail "rerunning upgrade duplicated existing merge candidates"
+
+CHANGED_ORIGIN_TARGET="$TMP/upgrade-origin-target"
+mkdir -p "$CHANGED_ORIGIN_TARGET/config" "$CHANGED_ORIGIN_TARGET/scripts/lib"
+printf '%s\n' 'old+2222222' > "$CHANGED_ORIGIN_TARGET/.agentic-flow-version"
+printf 'origin file:///old-standard\nref main\n' > "$CHANGED_ORIGIN_TARGET/.agentic-flow-source-applied"
+printf 'origin %s\nref main\n' "$UPGRADE_SOURCE_URL" > "$CHANGED_ORIGIN_TARGET/.agentic-flow-source"
+cp "$UPGRADE_SOURCE/config/payload.tsv" "$CHANGED_ORIGIN_TARGET/config/payload.tsv"
+cp "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh" "$CHANGED_ORIGIN_TARGET/scripts/lib/payload-apply.sh"
+(cd "$CHANGED_ORIGIN_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-origin.out" 2>"$TMP/upgrade-origin.err" \
+  && fail "upgrade accepted a changed origin without --force"
+grep -q "origin changed" "$TMP/upgrade-origin.err" \
+  || fail "changed-origin refusal did not explain the hard stop"
+
+UPGRADE_CLEAN="$TMP/upgrade-clean"
+mkdir -p "$UPGRADE_CLEAN/config" "$UPGRADE_CLEAN/scripts/lib"
+printf '%s\n' 'old+3333333' > "$UPGRADE_CLEAN/.agentic-flow-version"
+printf 'origin %s\nref main\n' "$UPGRADE_SOURCE_URL" > "$UPGRADE_CLEAN/.agentic-flow-source"
+cp "$UPGRADE_SOURCE/config/payload.tsv" "$UPGRADE_CLEAN/config/payload.tsv"
+cp "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh" "$UPGRADE_CLEAN/scripts/lib/payload-apply.sh"
+(cd "$UPGRADE_CLEAN" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-clean.out" \
+  || fail "clean upgrade failed"
+expected_upgrade_version=$(cd "$UPGRADE_SOURCE" && printf '10.0.0+%s\n' "$(git rev-parse --short HEAD)")
+grep -qx "$expected_upgrade_version" "$UPGRADE_CLEAN/.agentic-flow-version" \
+  || fail "clean upgrade did not advance the installed version"
+assert_no_file "$UPGRADE_CLEAN/.agentic-flow-candidate-version"
+assert_file "$UPGRADE_CLEAN/.agentic-flow-source-applied"
+assert_no_file "$UPGRADE_CLEAN/docs-index-sentinel"
 fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------
