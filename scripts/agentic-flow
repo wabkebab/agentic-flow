@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+# agentic-flow — project-local upgrade surface for adopted harnesses.
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  agentic-flow status [--json]
+  agentic-flow diff [--ref <ref>] [--json]
+  agentic-flow upgrade [--ref <ref>] [--force] [--yes]
+  agentic-flow --help | --version
+
+  --version reports the adopted project's installed harness stamp.
+EOF
+}
+
+die() {
+  echo "error: $*" >&2
+  exit 2
+}
+
+load_payload_lib() { # <root>
+  local root="$1"
+  [ -f "$root/scripts/lib/payload-apply.sh" ] \
+    || die "payload library not found: scripts/lib/payload-apply.sh"
+  # shellcheck disable=SC1091 # The library is resolved from the adopted project root.
+  . "$root/scripts/lib/payload-apply.sh"
+}
+
+find_root() {
+  # Unlike doctor.sh, this walks from PWD so the CLI works when symlinked onto PATH.
+  # The nearest stamp owns the subtree, preserving monorepo harness boundaries.
+  local dir
+  dir=$(pwd -P)
+  while :; do
+    if [ -f "$dir/.agentic-flow-version" ]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    [ "$dir" = / ] && return 1
+    dir=$(dirname "$dir")
+  done
+}
+
+read_source_field() { # <root> <line-number> <key>
+  local root="$1" line_no="$2" key="$3"
+  [ -f "$root/.agentic-flow-source" ] || return 0
+  sed -n "${line_no}s/^${key}[[:space:]]*//p" "$root/.agentic-flow-source"
+}
+
+read_applied_source_field() { # <root> <line-number> <key>
+  local root="$1" line_no="$2" key="$3"
+  [ -f "$root/.agentic-flow-source-applied" ] || return 0
+  sed -n "${line_no}s/^${key}[[:space:]]*//p" "$root/.agentic-flow-source-applied"
+}
+
+record_applied_source() { # <root> <origin> <ref>
+  local root="$1" origin="$2" ref="$3"
+  {
+    printf 'origin %s\n' "$origin"
+    printf 'ref %s\n' "$ref"
+  } > "$root/.agentic-flow-source-applied"
+}
+
+adapter_status() { # <root>
+  local root="$1" adapters="" adapter path
+  for adapter in claude:.claude codex:.codex agents:.agents opencode:.opencode; do
+    path=${adapter#*:}
+    if [ -e "$root/$path" ]; then
+      adapters="${adapters}${adapters:+,}${adapter%%:*}"
+    fi
+  done
+  printf '%s\n' "${adapters:-none}"
+}
+
+run_with_timeout() { # <seconds> <command>...
+  local limit="$1" pid elapsed status group_kill=false
+  shift
+  if command -v perl >/dev/null 2>&1; then
+    perl -MPOSIX=setsid -e 'setsid() or die "setsid failed: $!"; exec @ARGV' "$@" &
+    group_kill=true
+  else
+    "$@" &
+  fi
+  pid=$!
+  elapsed=0
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$limit" ]; then
+      if [ "$group_kill" = true ]; then
+        kill -TERM -- "-$pid" >/dev/null 2>&1 || true
+      else
+        kill "$pid" >/dev/null 2>&1 || true
+      fi
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  wait "$pid"
+  status=$?
+  return "$status"
+}
+
+fetch_standard() { # <origin> <ref>
+  local origin="$1" ref="$2" cache parent
+  parent=$(mktemp -d "${TMPDIR:-/tmp}/agentic-flow-fetch.XXXXXX")
+  cache="$parent/source"
+  FETCH_PARENT="$parent"
+  FETCHED_SOURCE="$cache"
+  if ! run_with_timeout "${AGENTIC_FLOW_FETCH_TIMEOUT:-120}" git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ref" "$origin" "$cache"; then
+    rm -rf "$parent"
+    die "failed to fetch agentic-flow source from $origin at ref $ref"
+  fi
+}
+
+confirm_upgrade() { # <yes>
+  local yes="$1" answer
+  [ "$yes" = true ] && return 0
+  if [ ! -t 0 ]; then
+    die "upgrade writes files; pass --yes to confirm in non-interactive runs"
+  fi
+  printf 'Apply agentic-flow upgrade now? [y/N] ' >&2
+  IFS= read -r answer
+  case "$answer" in
+    y|Y|yes|YES) return 0 ;;
+    *) die "upgrade cancelled" ;;
+  esac
+}
+
+diff_cmd() {
+  local json=false override_ref="" root installed origin ref source available
+  local created=0 same=0 merge=0 overwritten=0 changed=false classification rel dest s d
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=true; shift ;;
+      --ref)
+        [ "$#" -ge 2 ] || die "--ref requires a value"
+        override_ref="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown diff flag: $1" ;;
+    esac
+  done
+  root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
+  origin=$(read_source_field "$root" 1 origin)
+  ref=${override_ref:-$(read_source_field "$root" 2 ref)}
+  [ -n "$origin" ] || die "no .agentic-flow-source recorded; back-fill with: printf 'origin <url>\\nref main\\n' > .agentic-flow-source"
+  [ -n "$ref" ] || die ".agentic-flow-source has no ref"
+  installed=$(sed -n '1p' "$root/.agentic-flow-version")
+
+  FETCH_PARENT=""
+  FETCHED_SOURCE=""
+  trap '[ -z "${FETCH_PARENT:-}" ] || rm -rf "$FETCH_PARENT"' EXIT
+  fetch_standard "$origin" "$ref"
+  source="$FETCHED_SOURCE"
+  load_payload_lib "$root"
+  payload_load_manifest "$source/config/payload.tsv"
+  payload_expand_files "$source"
+  available=$(payload_compute_version "$source")
+  PAYLOAD_VERSION="$available"
+  PAYLOAD_DRY=true
+  PAYLOAD_FORCE=false
+  PAYLOAD_DST_ROOT="$root"
+
+  [ "$json" = true ] || {
+    echo "agentic-flow diff"
+    echo "source: $origin (ref $ref)"
+    echo "version: $installed -> $available"
+  }
+
+  i=0
+  while [ "$i" -lt "${#FILES[@]}" ]; do
+    rel="${FILES[$i]}"
+    dest="${DESTS[$i]}"
+    i=$((i + 1))
+    payload_is_excluded "$rel" && continue
+    s="$source/$rel"; d="$root/$dest"
+    payload_apply_entry "$s" "$d" dry-run >/dev/null
+    classification="$PAYLOAD_RESULT_CLASSIFICATION"
+    case "$classification" in
+      same)
+        same=$((same + 1))
+        ;;
+      create)
+        created=$((created + 1)); changed=true
+        [ "$json" = true ] || echo "  create      $dest"
+        ;;
+      candidate|pending)
+        merge=$((merge + 1)); changed=true
+        [ "$json" = true ] || echo "  would-merge $dest"
+        ;;
+      overwrite)
+        overwritten=$((overwritten + 1)); changed=true
+        [ "$json" = true ] || echo "  overwrite   $dest"
+        ;;
+    esac
+  done
+
+  if [ "$json" = true ]; then
+    jq -n \
+      --arg source "$origin" --arg ref "$ref" \
+      --arg installed "$installed" --arg available "$available" \
+      --argjson create "$created" --argjson merge "$merge" \
+      --argjson same "$same" --argjson overwrite "$overwritten" \
+      --argjson changed "$changed" \
+      '{source:{origin:$source, ref:$ref}, installed:$installed, available:$available,
+        summary:{create:$create, would_merge:$merge, overwrite:$overwrite, same:$same},
+        changes_available:$changed}'
+  else
+    echo "Summary: $created create, $merge would-merge, $overwritten overwrite, $same same."
+    [ "$changed" = true ] || echo "Already current."
+  fi
+
+  [ "$changed" = false ] || exit 1
+}
+
+upgrade_cmd() {
+  local yes=false force=false override_ref="" root installed origin ref last_origin source available
+  local created=0 same=0 merge=0 overwritten=0 candidate_created=0 candidate_reused=0
+  local classification rel dest s d pending_count
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --yes) yes=true; shift ;;
+      --force) force=true; shift ;;
+      --ref)
+        [ "$#" -ge 2 ] || die "--ref requires a value"
+        override_ref="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown upgrade flag: $1" ;;
+    esac
+  done
+
+  root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
+  origin=$(read_source_field "$root" 1 origin)
+  ref=${override_ref:-$(read_source_field "$root" 2 ref)}
+  [ -n "$origin" ] || die "no .agentic-flow-source recorded; back-fill with: printf 'origin <url>\\nref main\\n' > .agentic-flow-source"
+  [ -n "$ref" ] || die ".agentic-flow-source has no ref"
+  last_origin=$(read_applied_source_field "$root" 1 origin)
+  if [ -n "$last_origin" ] && [ "$last_origin" != "$origin" ] && [ "$force" = false ]; then
+    die ".agentic-flow-source origin changed since the last upgrade; inspect the change and rerun with --force to accept it"
+  fi
+  installed=$(sed -n '1p' "$root/.agentic-flow-version")
+
+  confirm_upgrade "$yes"
+
+  FETCH_PARENT=""
+  FETCHED_SOURCE=""
+  trap '[ -z "${FETCH_PARENT:-}" ] || rm -rf "$FETCH_PARENT"' EXIT
+  fetch_standard "$origin" "$ref"
+  source="$FETCHED_SOURCE"
+  load_payload_lib "$root"
+  payload_load_manifest "$source/config/payload.tsv"
+  payload_expand_files "$source"
+  available=$(payload_compute_version "$source")
+  PAYLOAD_VERSION="$available"
+  PAYLOAD_DRY=false
+  PAYLOAD_FORCE="$force"
+  PAYLOAD_DST_ROOT="$root"
+
+  echo "agentic-flow upgrade"
+  echo "source: $origin (ref $ref)"
+  echo "version: $installed -> $available"
+  echo "mode: $([ "$force" = true ] && echo FORCE-overwrite || echo non-destructive)"
+  echo
+
+  i=0
+  while [ "$i" -lt "${#FILES[@]}" ]; do
+    rel="${FILES[$i]}"
+    dest="${DESTS[$i]}"
+    i=$((i + 1))
+    payload_is_excluded "$rel" && continue
+    s="$source/$rel"; d="$root/$dest"
+    payload_apply_entry "$s" "$d" "$([ "$force" = true ] && echo force || echo apply)" >/dev/null
+    classification="$PAYLOAD_RESULT_CLASSIFICATION"
+    case "$classification" in
+      same)
+        same=$((same + 1))
+        ;;
+      overwrite)
+        echo "  overwrite   $dest"; overwritten=$((overwritten + 1))
+        ;;
+      candidate|pending)
+        if [ "$classification" = candidate ]; then
+          candidate_created=$((candidate_created + 1))
+        else
+          candidate_reused=$((candidate_reused + 1))
+        fi
+        echo "  exists →    ${PAYLOAD_RESULT_PATH#"$root"/}   ($PAYLOAD_RESULT_CANDIDATE_ACTION — merge by hand)"
+        merge=$((merge + 1))
+        ;;
+      create)
+        echo "  create      $dest"; created=$((created + 1))
+        ;;
+    esac
+  done
+
+  pending_count="$merge"
+  if [ "$force" = false ] && find "$root" -type f -name '*.agentic-new*' -print -quit 2>/dev/null | grep -q .; then
+    pending_count=1
+  fi
+  payload_stamp_version "$source" "$root" "$pending_count"
+  record_applied_source "$root" "$origin" "$ref"
+  if [ "$force" = true ] || [ "$pending_count" -eq 0 ]; then
+    echo "  installed   .agentic-flow-version ($available)"
+  else
+    echo "  pending     .agentic-flow-candidate-version ($available)"
+  fi
+
+  echo
+  echo "Summary: $created created, $overwritten overwritten, $merge to-merge, $same already up to date."
+  if [ "$merge" -gt 0 ]; then
+    echo "         $candidate_created merge candidate(s) created, $candidate_reused already pending."
+  fi
+  echo "Docs index was not run automatically; after reviewing the upgrade, run:"
+  echo "  scripts/docs-index.sh"
+
+  if [ "$pending_count" -gt 0 ] && [ "$force" = false ]; then
+    echo
+    echo "⚠ $pending_count file(s) already existed and differ — installed version was not advanced."
+    echo "  Review the merge candidates, merge them into the active files, then upgrade again:"
+    echo "    find \"$root\" -name '*.agentic-new*'"
+  fi
+}
+
+status_cmd() {
+  local json=false root version candidate stack origin ref adapters candidates ignored action_needed=false
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=true; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown status flag: $1" ;;
+    esac
+  done
+  root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
+  version=$(sed -n '1p' "$root/.agentic-flow-version")
+  candidate=$(sed -n '1p' "$root/.agentic-flow-candidate-version" 2>/dev/null || true)
+  stack=$(sed -n '1p' "$root/.agentic-flow-stack" 2>/dev/null || true)
+  origin=$(read_source_field "$root" 1 origin)
+  ref=$(read_source_field "$root" 2 ref)
+  adapters=$(adapter_status "$root")
+  candidates=$(find "$root" -type f -name '*.agentic-new*' -print 2>/dev/null | sed "s|^$root/||" | sort)
+  load_payload_lib "$root"
+  ignored=$(payload_ignored_paths "$root")
+  [ -n "$candidate$candidates$ignored" ] && action_needed=true
+
+  if [ "$json" = true ]; then
+    jq -n \
+      --arg root "$root" \
+      --arg installed "$version" \
+      --arg candidate "$candidate" \
+      --arg stack "${stack:-unknown}" \
+      --arg origin "$origin" \
+      --arg ref "$ref" \
+      --arg adapters "$adapters" \
+      --arg candidates "$candidates" \
+      --arg ignored "$ignored" \
+      --argjson action_needed "$action_needed" \
+      '{
+        root: $root,
+        installed: $installed,
+        candidate: (if $candidate == "" then null else $candidate end),
+        stack: $stack,
+        source: (if $origin == "" then null else {origin: $origin, ref: $ref} end),
+        adapters: ($adapters | split(",") | map(select(length > 0))),
+        merge_candidates: ($candidates | split("\n") | map(select(length > 0))),
+        git_ignored_payload: ($ignored | split("\n") | map(select(length > 0))),
+        action_needed: $action_needed
+      }'
+  else
+    echo "agentic-flow status"
+    echo "root: $root"
+    echo "installed: $version"
+    if [ -n "$candidate" ]; then
+      echo "candidate: $candidate"
+    else
+      echo "candidate: none"
+    fi
+    echo "stack: ${stack:-unknown}"
+    if [ -n "$origin" ]; then
+      echo "source: $origin (ref ${ref:-unknown})"
+    else
+      echo "source: no origin recorded"
+    fi
+    echo "adapters: $adapters"
+    if [ -n "$candidates" ]; then
+      echo "merge candidates:"
+      printf '%s\n' "$candidates" | sed 's/^/  /'
+    else
+      echo "merge candidates: none"
+    fi
+    if [ -n "$ignored" ]; then
+      echo "git-ignored payload paths:"
+      printf '%s\n' "$ignored" | sed 's/^/  /'
+    else
+      echo "git-ignored payload paths: none"
+    fi
+  fi
+
+  [ "$action_needed" = false ] || exit 1
+}
+
+version_cmd() {
+  local root
+  root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
+  sed -n '1p' "$root/.agentic-flow-version"
+}
+
+subcommand="${1:-}"
+case "$subcommand" in
+  ""|-h|--help) usage; exit 0 ;;
+  --version) version_cmd ;;
+  status) shift; status_cmd "$@" ;;
+  diff) shift; diff_cmd "$@" ;;
+  upgrade) shift; upgrade_cmd "$@" ;;
+  *) usage; die "unknown subcommand: $subcommand" ;;
+esac

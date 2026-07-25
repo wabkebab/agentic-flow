@@ -79,7 +79,7 @@ label is a notification, not the authority.
 |--------|------------------------------|-----------------|
 | `make check` | Bash syntax for shipped scripts, docs index freshness, action-pin structure, and `scripts/self-test.sh` | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
 | `make test` | full offline scaffold regression suite, plus `shellcheck` over `scripts/` | no network or GitHub writes; **fails if `shellcheck` is missing** rather than skipping |
-| `make test-one F=…` | one focused harness group (`export`, `contracts`, `hooks`, `plan-to-issues`, or `lifecycle`) | the Makefile owns exact behavior |
+| `make test-one F=…` | one focused harness group (`export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, or `upgrade`) | the Makefile owns exact behavior |
 | `make build` | dry-run export into a temporary directory | validates the payload assembles without writing a real target |
 | `make run` | `scripts/doctor.sh` report mode | the scaffold's "app" is its adoption report |
 

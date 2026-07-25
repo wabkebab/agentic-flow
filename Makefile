@@ -8,7 +8,7 @@ help:           ## list available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-10s %s\n",$$1,$$2}'
 
 check:          ## fast sanity gate: harness checks + your type-check/lint. Run by the Stop hook.
-	@for f in scripts/*.sh scripts/hooks/*.sh; do bash -n "$$f" || exit 1; done
+	@for f in scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh; do bash -n "$$f" || exit 1; done
 	@scripts/docs-index.sh --check
 	@scripts/check-payload-manifest.sh
 	@scripts/check-action-pins.sh
@@ -17,10 +17,10 @@ check:          ## fast sanity gate: harness checks + your type-check/lint. Run 
 test:           ## full test suite
 	@scripts/self-test.sh --full
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required for 'make test' — install it (brew install shellcheck / apt-get install shellcheck)." >&2; exit 1; }
-	@shellcheck scripts/*.sh scripts/hooks/*.sh
+	@shellcheck scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh
 
 test-one:       ## one targeted harness group: make test-one F=hooks
-	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle" >&2; exit 2; }
+	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade" >&2; exit 2; }
 	@scripts/self-test.sh --only "$(F)"
 
 build:          ## production build

@@ -25,7 +25,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle]" >&2
+      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade]" >&2
       exit 0
       ;;
     *)
@@ -35,7 +35,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 # The one list both the flag parser and every `should_run` call site are checked against.
-SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle"
+SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade"
 GROUPS_RAN=" "
 case " $SELF_TEST_GROUPS " in
   *" $ONLY_GROUP "*) ;;
@@ -61,6 +61,16 @@ assert_file() {
 
 assert_no_file() {
   [ ! -e "$1" ] || fail "unexpected file: $1"
+}
+
+tree_digest() { # <root>
+  (
+    cd "$1"
+    find . -path './.git' -prune -o -type f -print | sort | while IFS= read -r file; do
+      cksum "$file"
+      printf '%s\n' "$file"
+    done
+  ) | cksum
 }
 
 assert_exported_harness_file() { # <file> <expected-first-non-empty-line>
@@ -310,6 +320,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   [ -n "$expected_semver" ] || expected_semver="0.0.0"
   expected_sha=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
   expected_version="$expected_semver+$expected_sha"
+  expected_origin=$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)
 
   assert_file "$TARGET/METHODOLOGY.md"
   assert_file "$TARGET/ADOPTION.md"
@@ -322,6 +333,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/config/payload.tsv"
   assert_file "$TARGET/scripts/plan-to-issues.sh"
   assert_file "$TARGET/scripts/doctor.sh"
+  assert_file "$TARGET/scripts/lib/payload-apply.sh"
   assert_file "$TARGET/scripts/render-stack-profile.sh"
   assert_file "$TARGET/profiles/generic.tsv"
   assert_file "$TARGET/profiles/node.tsv"
@@ -352,6 +364,15 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/.agentic-flow-version"
   grep -qx "$expected_version" "$TARGET/.agentic-flow-version" \
     || fail "export version stamp did not match source HEAD"
+  if [ -n "$expected_origin" ]; then
+    assert_file "$TARGET/.agentic-flow-source"
+    grep -qx "origin $expected_origin" "$TARGET/.agentic-flow-source" \
+      || fail "export did not record the source origin"
+    grep -qx "ref main" "$TARGET/.agentic-flow-source" \
+      || fail "export did not record the default source ref"
+  else
+    assert_no_file "$TARGET/.agentic-flow-source"
+  fi
   # VERSION is this repo's own maintainer-facing semver source; not in the manifest, so
   # nothing copies it. Only the computed semver+SHA stamp reaches a target.
   assert_no_file "$TARGET/VERSION"
@@ -364,6 +385,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"
   assert_no_file "$TARGET/scripts/init.sh"
+  # shellcheck disable=SC1091 # The target is generated during this fixture.
+  (cd "$TARGET" && . scripts/lib/payload-apply.sh && . scripts/lib/payload-apply.sh) \
+    || fail "payload apply library was not safe to source twice"
   # templates/harness holds the pristine forms, which export to project-root destinations
   # (CLAUDE.md, AGENTS.md, Makefile) — never to templates/harness in the target. So the whole
   # subtree must be absent, which also keeps its maintainer-only README out of adopters.
@@ -384,6 +408,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || { cat "$TMP/target-check-stripped.log" >&2; fail "make check failed in a fresh export on stripped PATH"; }
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
+  printf 'origin https://example.invalid/fork.git\nref v1.2.3\n' > "$TARGET/.agentic-flow-source"
   # Simulate an older installed scaffold so a conflict can prove that invoking a newer
   # exporter does not falsely promote the active version.
   printf '%s\n' older-source > "$TARGET/.agentic-flow-version"
@@ -394,6 +419,10 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail "export advanced installed version while merge conflicts remained"
   grep -qx "$expected_version" "$TARGET/.agentic-flow-candidate-version" \
     || fail "export did not record the pending candidate version"
+  grep -qx "origin https://example.invalid/fork.git" "$TARGET/.agentic-flow-source" \
+    || fail "re-export overwrote a hand-edited source origin"
+  grep -qx "ref v1.2.3" "$TARGET/.agentic-flow-source" \
+    || fail "re-export overwrote a tag-shaped source ref"
 
   cp "$TARGET/CLAUDE.md.agentic-new" "$TMP/first-candidate"
   printf '%s\n' "# second candidate content" >> "$SOURCE_FIXTURE/templates/harness/CLAUDE.md"
@@ -591,6 +620,32 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail "export --dry-run overwrote an existing target file"
   [ "$(find "$DRYRUN_EXISTING" -mindepth 1 | wc -l | tr -d ' ')" -eq 1 ] \
     || fail "export --dry-run added files to a populated target"
+
+  TAG_REF_TARGET="$TMP/tag-ref-target"
+  AGENTIC_FLOW_SOURCE_REF=v1.2.3 "$SOURCE_FIXTURE/scripts/export.sh" "$TAG_REF_TARGET" >/dev/null \
+    || fail "export failed with a tag-shaped source ref"
+  if [ -n "$expected_origin" ]; then
+    grep -qx "ref v1.2.3" "$TAG_REF_TARGET/.agentic-flow-source" \
+      || fail "export did not preserve a tag-shaped ref as opaque data"
+  fi
+
+  NO_REMOTE_SOURCE="$TMP/no-remote-source"
+  mkdir -p "$NO_REMOTE_SOURCE"
+  while IFS= read -r -d '' tracked; do
+    [ -e "$ROOT/$tracked" ] || continue
+    mkdir -p "$NO_REMOTE_SOURCE/$(dirname "$tracked")"
+    cp -p "$ROOT/$tracked" "$NO_REMOTE_SOURCE/$tracked"
+  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+  NO_REMOTE_TARGET="$TMP/no-remote-target"
+  "$NO_REMOTE_SOURCE/scripts/export.sh" "$NO_REMOTE_TARGET" > "$TMP/no-remote-export.out" \
+    || fail "export failed from a source with no git remote"
+  assert_no_file "$NO_REMOTE_TARGET/.agentic-flow-source"
+  grep -q "source repo has no origin remote" "$TMP/no-remote-export.out" \
+    || fail "export without remote did not explain why no source was recorded"
+  (cd "$NO_REMOTE_TARGET" && scripts/doctor.sh --scope repo) > "$TMP/no-source-doctor.out" \
+    || fail "doctor report failed for a stamped project with no source"
+  grep -q "scaffold source not recorded" "$TMP/no-source-doctor.out" \
+    || fail "doctor did not warn about a stamped project with no source"
 fi
 fi
 
@@ -817,6 +872,286 @@ AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check \
   && fail "docs-index accepted an undeclared docs stage"
 grep -q "undeclared docs stage" "$TMP/docs-stage.err" \
   || fail "docs-index undeclared-stage failure did not explain the problem"
+fi
+
+# --- upgrade surface --------------------------------------------------------------------
+if should_run upgrade; then
+AGENTIC_FLOW_CLI="$ROOT/scripts/agentic-flow"
+assert_file "$AGENTIC_FLOW_CLI"
+
+OUTSIDE="$TMP/outside-project"
+mkdir -p "$OUTSIDE"
+(cd "$OUTSIDE" && "$AGENTIC_FLOW_CLI" status) >"$TMP/status-outside.out" 2>"$TMP/status-outside.err" \
+  && fail "agentic-flow status succeeded outside an adopted project"
+grep -q "no .agentic-flow-version found" "$TMP/status-outside.err" \
+  || fail "status outside a project did not explain the missing stamp"
+
+STATUS_FIX="$TMP/status-fixture"
+mkdir -p "$STATUS_FIX/.claude" "$STATUS_FIX/.codex" "$STATUS_FIX/.agents" \
+  "$STATUS_FIX/.opencode" "$STATUS_FIX/config" "$STATUS_FIX/scripts/lib" "$STATUS_FIX/sub/dir"
+printf '%s\n' '1.2.3+abcdef0' > "$STATUS_FIX/.agentic-flow-version"
+printf '%s\n' generic > "$STATUS_FIX/.agentic-flow-stack"
+printf 'origin https://example.invalid/agentic-flow.git\nref main\n' \
+  > "$STATUS_FIX/.agentic-flow-source"
+printf '{}' > "$STATUS_FIX/.claude/settings.json"
+printf '{}' > "$STATUS_FIX/.codex/hooks.json"
+printf '# source\tdestination\tscope\tmerge-policy\tdisposition\n.claude/settings.json\t.claude/settings.json\tclaude\tpreserve\texport\n' \
+  > "$STATUS_FIX/config/payload.tsv"
+cp "$ROOT/scripts/doctor.sh" "$STATUS_FIX/scripts/doctor.sh"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$STATUS_FIX/scripts/lib/payload-apply.sh"
+chmod +x "$STATUS_FIX/scripts/doctor.sh"
+"$AGENTIC_FLOW_CLI" --help > "$TMP/agentic-flow-help.out" 2>&1
+grep -q "project's installed harness stamp" "$TMP/agentic-flow-help.out" \
+  || fail "agentic-flow --help did not document --version as the project stamp"
+(cd "$STATUS_FIX/sub/dir" && "$AGENTIC_FLOW_CLI" status) > "$TMP/status-clean.out" \
+  || fail "status did not find the nearest stamped root from a nested directory"
+grep -q "installed: 1.2.3+abcdef0" "$TMP/status-clean.out" \
+  || fail "status did not report the installed version"
+grep -q "source: https://example.invalid/agentic-flow.git (ref main)" "$TMP/status-clean.out" \
+  || fail "status did not report the recorded source"
+grep -q "adapters: claude,codex,agents,opencode" "$TMP/status-clean.out" \
+  || fail "status did not report adapter presence"
+
+NO_GIT_BIN="$TMP/no-git-bin"
+mkdir -p "$NO_GIT_BIN"
+cat > "$NO_GIT_BIN/git" <<'FAKE_GIT'
+#!/usr/bin/env bash
+exit 127
+FAKE_GIT
+chmod +x "$NO_GIT_BIN/git"
+(cd "$STATUS_FIX" && PATH="$NO_GIT_BIN:$PATH" "$AGENTIC_FLOW_CLI" status) > "$TMP/status-no-git.out" \
+  || fail "offline status failed when git was absent from PATH"
+
+printf '%s\n' '1.2.4+beef123' > "$STATUS_FIX/.agentic-flow-candidate-version"
+printf '%s\n' pending > "$STATUS_FIX/CLAUDE.md.agentic-new"
+(cd "$STATUS_FIX" && "$AGENTIC_FLOW_CLI" status) > "$TMP/status-pending.out" \
+  && fail "status accepted a project with pending merge candidates"
+grep -q "candidate: 1.2.4+beef123" "$TMP/status-pending.out" \
+  || fail "status did not report the pending candidate version"
+grep -q "CLAUDE.md.agentic-new" "$TMP/status-pending.out" \
+  || fail "status did not name the unresolved merge candidate"
+rm -f "$STATUS_FIX/.agentic-flow-candidate-version" "$STATUS_FIX/CLAUDE.md.agentic-new"
+
+(
+  cd "$STATUS_FIX"
+  git init -q .
+  git config user.email selftest@example.invalid
+  git config user.name selftest
+  printf '%s\n' '.claude/' > .gitignore
+)
+(cd "$STATUS_FIX" && "$AGENTIC_FLOW_CLI" status) > "$TMP/status-ignored.out" \
+  && fail "status accepted a git-ignored payload path"
+grep -q ".claude/settings.json" "$TMP/status-ignored.out" \
+  || fail "status did not report the git-ignored payload path"
+(cd "$STATUS_FIX" && AGENTIC_SELFTEST=1 scripts/doctor.sh --scope repo) > "$TMP/doctor-ignored.out" \
+  || fail "doctor report failed on a fixture with ignored payload paths"
+grep -q "payload paths are git-ignored" "$TMP/doctor-ignored.out" \
+  || fail "doctor did not report git-ignored payload paths"
+
+DIFF_SOURCE="$TMP/diff-source"
+mkdir -p "$DIFF_SOURCE/config" "$DIFF_SOURCE/scripts/lib" "$DIFF_SOURCE/templates/harness"
+printf '%s\n' '9.9.9' > "$DIFF_SOURCE/VERSION"
+printf 'templates/harness/CLAUDE.md\tCLAUDE.md\tcore\tpreserve\texport\nscripts/lib\tscripts/lib\tcore\tpreserve\texport\nconfig/payload.tsv\tconfig/payload.tsv\tcore\tpreserve\texport\n' \
+  > "$DIFF_SOURCE/config/payload.tsv"
+printf '%s\n' '# source heading' > "$DIFF_SOURCE/templates/harness/CLAUDE.md"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$DIFF_SOURCE/scripts/lib/payload-apply.sh"
+(
+  cd "$DIFF_SOURCE"
+  git init -q .
+  git config user.email selftest@example.invalid
+  git config user.name selftest
+  git config commit.gpgsign false
+  git add VERSION config/payload.tsv scripts/lib/payload-apply.sh templates/harness/CLAUDE.md
+  git commit -q -m "Seed source"
+  git branch -M main
+)
+DIFF_SOURCE_URL="file://$DIFF_SOURCE"
+
+DIFF_TARGET="$TMP/diff-target"
+mkdir -p "$DIFF_TARGET/config" "$DIFF_TARGET/scripts/lib"
+printf '%s\n' 'old+0000000' > "$DIFF_TARGET/.agentic-flow-version"
+cp "$DIFF_SOURCE/config/payload.tsv" "$DIFF_TARGET/config/payload.tsv"
+cp "$DIFF_SOURCE/scripts/lib/payload-apply.sh" "$DIFF_TARGET/scripts/lib/payload-apply.sh"
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff) > "$TMP/diff-no-source.out" 2>"$TMP/diff-no-source.err" \
+  && fail "diff accepted a project with no recorded source"
+grep -q "back-fill" "$TMP/diff-no-source.err" \
+  || fail "diff without .agentic-flow-source did not mention back-fill"
+
+printf 'origin %s\nref missing-ref\n' "$DIFF_SOURCE_URL" > "$DIFF_TARGET/.agentic-flow-source"
+before_digest=$(tree_digest "$DIFF_TARGET")
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff) > "$TMP/diff-missing-ref.out" 2>"$TMP/diff-missing-ref.err" \
+  && fail "diff accepted a missing source ref"
+after_digest=$(tree_digest "$DIFF_TARGET")
+[ "$before_digest" = "$after_digest" ] \
+  || fail "failed diff changed the project tree"
+grep -q "failed to fetch agentic-flow source" "$TMP/diff-missing-ref.err" \
+  || fail "diff fetch failure did not name the failed operation"
+
+printf 'origin %s\nref main\n' "$DIFF_SOURCE_URL" > "$DIFF_TARGET/.agentic-flow-source"
+printf '%s\n' '# source heading' > "$DIFF_TARGET/CLAUDE.md"
+same_digest=$(tree_digest "$DIFF_TARGET")
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff) > "$TMP/diff-current.out" \
+  || fail "diff returned non-zero for an already-current target"
+post_same_digest=$(tree_digest "$DIFF_TARGET")
+[ "$same_digest" = "$post_same_digest" ] \
+  || fail "same-version diff changed the project tree"
+grep -q "Already current" "$TMP/diff-current.out" \
+  || fail "diff did not report an already-current target"
+
+printf '%s\n' '# changed source heading' > "$DIFF_SOURCE/templates/harness/CLAUDE.md"
+(
+  cd "$DIFF_SOURCE"
+  git add templates/harness/CLAUDE.md
+  git commit -q -m "Change payload"
+)
+changed_digest=$(tree_digest "$DIFF_TARGET")
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff) > "$TMP/diff-changed.out" \
+  && fail "diff returned zero when source changes were available"
+post_changed_digest=$(tree_digest "$DIFF_TARGET")
+[ "$changed_digest" = "$post_changed_digest" ] \
+  || fail "changed diff wrote into the project tree"
+grep -q "would-merge CLAUDE.md" "$TMP/diff-changed.out" \
+  || fail "diff did not classify the changed payload file"
+
+printf '%s\n' '# ref override source heading' > "$DIFF_SOURCE/templates/harness/CLAUDE.md"
+(
+  cd "$DIFF_SOURCE"
+  git add templates/harness/CLAUDE.md
+  git commit -q -m "Ref override payload"
+  git tag v-selftest
+)
+override_digest=$(tree_digest "$DIFF_TARGET")
+(cd "$DIFF_TARGET" && "$AGENTIC_FLOW_CLI" diff --ref v-selftest) > "$TMP/diff-ref.out" \
+  && fail "diff --ref returned zero when override changes were available"
+post_override_digest=$(tree_digest "$DIFF_TARGET")
+[ "$override_digest" = "$post_override_digest" ] \
+  || fail "diff --ref changed the project tree"
+grep -qx "ref main" "$DIFF_TARGET/.agentic-flow-source" \
+  || fail "diff --ref rewrote the recorded source ref"
+
+TIMEOUT_TARGET="$TMP/timeout-target"
+mkdir -p "$TIMEOUT_TARGET/config" "$TIMEOUT_TARGET/scripts/lib"
+printf '%s\n' 'old+timeout' > "$TIMEOUT_TARGET/.agentic-flow-version"
+printf 'origin https://example.invalid/slow.git\nref main\n' > "$TIMEOUT_TARGET/.agentic-flow-source"
+printf 'scripts/lib\tscripts/lib\tcore\tpreserve\texport\n' > "$TIMEOUT_TARGET/config/payload.tsv"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$TIMEOUT_TARGET/scripts/lib/payload-apply.sh"
+TIMEOUT_BIN="$TMP/timeout-bin"
+TIMEOUT_SENTINEL="$TMP/timeout-child-survived"
+mkdir -p "$TIMEOUT_BIN"
+cat > "$TIMEOUT_BIN/git" <<'FAKE_TIMEOUT_GIT'
+#!/usr/bin/env bash
+case " $* " in
+  *" clone "*)
+    (sleep 2; printf '%s\n' survived > "__TIMEOUT_SENTINEL__") &
+    sleep 30
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+FAKE_TIMEOUT_GIT
+sed "s|__TIMEOUT_SENTINEL__|$TIMEOUT_SENTINEL|g" "$TIMEOUT_BIN/git" > "$TIMEOUT_BIN/git.tmp"
+mv "$TIMEOUT_BIN/git.tmp" "$TIMEOUT_BIN/git"
+chmod +x "$TIMEOUT_BIN/git"
+(cd "$TIMEOUT_TARGET" && PATH="$TIMEOUT_BIN:$PATH" AGENTIC_FLOW_FETCH_TIMEOUT=1 "$AGENTIC_FLOW_CLI" diff) \
+  > "$TMP/diff-timeout.out" 2>"$TMP/diff-timeout.err" \
+  && fail "diff accepted a timed-out fetch"
+if command -v perl >/dev/null 2>&1; then
+  sleep 3
+  assert_no_file "$TIMEOUT_SENTINEL"
+else
+  # Without Perl's POSIX setsid helper, run_with_timeout deliberately falls back to killing
+  # only the immediate child. Keep the basic timeout assertion above, but do not pretend the
+  # fallback can enforce descendant cleanup that it cannot actually perform.
+  rm -f "$TIMEOUT_SENTINEL"
+fi
+
+UPGRADE_SOURCE="$TMP/upgrade-source"
+mkdir -p "$UPGRADE_SOURCE/config" "$UPGRADE_SOURCE/scripts/lib" "$UPGRADE_SOURCE/scripts" \
+  "$UPGRADE_SOURCE/templates/harness"
+printf '%s\n' '10.0.0' > "$UPGRADE_SOURCE/VERSION"
+printf 'templates/harness/CLAUDE.md\tCLAUDE.md\tcore\tpreserve\texport\nscripts/lib\tscripts/lib\tcore\tpreserve\texport\nscripts/docs-index.sh\tscripts/docs-index.sh\tcore\tpreserve\texport\nconfig/payload.tsv\tconfig/payload.tsv\tcore\tpreserve\texport\n' \
+  > "$UPGRADE_SOURCE/config/payload.tsv"
+printf '%s\n' '# upgraded harness' > "$UPGRADE_SOURCE/templates/harness/CLAUDE.md"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh"
+cat > "$UPGRADE_SOURCE/scripts/docs-index.sh" <<'DOCS_INDEX_SENTINEL'
+#!/usr/bin/env bash
+printf '%s\n' fetched-code-ran > docs-index-sentinel
+DOCS_INDEX_SENTINEL
+chmod +x "$UPGRADE_SOURCE/scripts/docs-index.sh"
+(
+  cd "$UPGRADE_SOURCE"
+  git init -q .
+  git config user.email selftest@example.invalid
+  git config user.name selftest
+  git config commit.gpgsign false
+  git add VERSION config/payload.tsv scripts/lib/payload-apply.sh scripts/docs-index.sh templates/harness/CLAUDE.md
+  git commit -q -m "Seed upgrade source"
+  git branch -M main
+)
+UPGRADE_SOURCE_URL="file://$UPGRADE_SOURCE"
+
+UPGRADE_TARGET="$TMP/upgrade-target"
+mkdir -p "$UPGRADE_TARGET/config" "$UPGRADE_TARGET/scripts/lib"
+printf '%s\n' 'old+1111111' > "$UPGRADE_TARGET/.agentic-flow-version"
+printf 'origin %s\nref main\n' "$UPGRADE_SOURCE_URL" > "$UPGRADE_TARGET/.agentic-flow-source"
+cp "$UPGRADE_SOURCE/config/payload.tsv" "$UPGRADE_TARGET/config/payload.tsv"
+cp "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh" "$UPGRADE_TARGET/scripts/lib/payload-apply.sh"
+(cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade) > "$TMP/upgrade-no-yes.out" 2>"$TMP/upgrade-no-yes.err" \
+  && fail "upgrade wrote without --yes in a non-interactive run"
+grep -q "pass --yes" "$TMP/upgrade-no-yes.err" \
+  || fail "upgrade without --yes did not explain confirmation"
+
+printf '%s\n' '# local project edits' > "$UPGRADE_TARGET/CLAUDE.md"
+printf '%s\n' '# occupied candidate' > "$UPGRADE_TARGET/CLAUDE.md.agentic-new"
+(cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-pending.out" \
+  || fail "upgrade with merge candidates failed"
+grep -qx 'old+1111111' "$UPGRADE_TARGET/.agentic-flow-version" \
+  || fail "upgrade advanced installed version while candidates remained"
+assert_file "$UPGRADE_TARGET/.agentic-flow-candidate-version"
+grep -q "pending     .agentic-flow-candidate-version" "$TMP/upgrade-pending.out" \
+  || fail "upgrade did not report pending candidate version"
+assert_no_file "$UPGRADE_TARGET/docs-index-sentinel"
+grep -q "Docs index was not run automatically" "$TMP/upgrade-pending.out" \
+  || fail "upgrade did not explain that docs-index was not executed"
+grep -qx '# occupied candidate' "$UPGRADE_TARGET/CLAUDE.md.agentic-new" \
+  || fail "upgrade clobbered an occupied merge candidate"
+suffixed_candidates=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new.*' | wc -l | tr -d ' ')
+[ "$suffixed_candidates" -eq 1 ] \
+  || fail "upgrade did not create exactly one suffixed candidate for occupied content"
+candidate_count_before=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new*' | wc -l | tr -d ' ')
+(cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-rerun.out" \
+  || fail "rerunning upgrade with pending candidates failed"
+candidate_count_after=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new*' | wc -l | tr -d ' ')
+[ "$candidate_count_before" = "$candidate_count_after" ] \
+  || fail "rerunning upgrade duplicated existing merge candidates"
+
+CHANGED_ORIGIN_TARGET="$TMP/upgrade-origin-target"
+mkdir -p "$CHANGED_ORIGIN_TARGET/config" "$CHANGED_ORIGIN_TARGET/scripts/lib"
+printf '%s\n' 'old+2222222' > "$CHANGED_ORIGIN_TARGET/.agentic-flow-version"
+printf 'origin file:///old-standard\nref main\n' > "$CHANGED_ORIGIN_TARGET/.agentic-flow-source-applied"
+printf 'origin %s\nref main\n' "$UPGRADE_SOURCE_URL" > "$CHANGED_ORIGIN_TARGET/.agentic-flow-source"
+cp "$UPGRADE_SOURCE/config/payload.tsv" "$CHANGED_ORIGIN_TARGET/config/payload.tsv"
+cp "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh" "$CHANGED_ORIGIN_TARGET/scripts/lib/payload-apply.sh"
+(cd "$CHANGED_ORIGIN_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-origin.out" 2>"$TMP/upgrade-origin.err" \
+  && fail "upgrade accepted a changed origin without --force"
+grep -q "origin changed" "$TMP/upgrade-origin.err" \
+  || fail "changed-origin refusal did not explain the hard stop"
+
+UPGRADE_CLEAN="$TMP/upgrade-clean"
+mkdir -p "$UPGRADE_CLEAN/config" "$UPGRADE_CLEAN/scripts/lib"
+printf '%s\n' 'old+3333333' > "$UPGRADE_CLEAN/.agentic-flow-version"
+printf 'origin %s\nref main\n' "$UPGRADE_SOURCE_URL" > "$UPGRADE_CLEAN/.agentic-flow-source"
+cp "$UPGRADE_SOURCE/config/payload.tsv" "$UPGRADE_CLEAN/config/payload.tsv"
+cp "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh" "$UPGRADE_CLEAN/scripts/lib/payload-apply.sh"
+(cd "$UPGRADE_CLEAN" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-clean.out" \
+  || fail "clean upgrade failed"
+expected_upgrade_version=$(cd "$UPGRADE_SOURCE" && printf '10.0.0+%s\n' "$(git rev-parse --short HEAD)")
+grep -qx "$expected_upgrade_version" "$UPGRADE_CLEAN/.agentic-flow-version" \
+  || fail "clean upgrade did not advance the installed version"
+assert_no_file "$UPGRADE_CLEAN/.agentic-flow-candidate-version"
+assert_file "$UPGRADE_CLEAN/.agentic-flow-source-applied"
+assert_no_file "$UPGRADE_CLEAN/docs-index-sentinel"
 fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------

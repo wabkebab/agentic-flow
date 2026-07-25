@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-07-25) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > Give an adopted project a first-class upgrade surface — `agentic-flow status | diff |
 > upgrade` — that runs **in the project** and pulls from the standard, instead of the
 > standard pushing into it.
@@ -8,12 +8,12 @@
 
 ## Tracker
 
-- [ ] F-1 Record the standard's origin at adoption time (`.agentic-flow-source`) — open
-- [ ] F-2 Extract the payload applier into a shared, exported library — open
-- [ ] F-3 `agentic-flow status` — offline, read-only, plus the git-ignore trap check — open
-- [ ] F-4 `agentic-flow diff` — fetch the standard, report what would change — open
-- [ ] F-5 `agentic-flow upgrade` — apply under the existing `.agentic-new` policy — open
-- [ ] F-6 Document the upgrade path and back-fill existing adopters — open
+- [x] F-1 Record the standard's origin at adoption time (`.agentic-flow-source`) — `d2a80c9`, #54
+- [x] F-2 Extract the payload applier into a shared, exported library — `ed25563`, #55
+- [x] F-3 `agentic-flow status` — offline, read-only, plus the git-ignore trap check — `9f60b52`, #56
+- [x] F-4 `agentic-flow diff` — fetch the standard, report what would change — `8cd499f`, #57
+- [x] F-5 `agentic-flow upgrade` — apply under the existing `.agentic-new` policy — `cde2af2`, #58
+- [x] F-6 Document the upgrade path and back-fill existing adopters — `b9553b5`, #59
 
 ---
 
@@ -495,13 +495,33 @@ following `ADOPTION.md` alone.
 
 ## Status / Implementation status
 
-- **Tracking issue:** pending — run `plan-to-issues --approved-by <name>` to create it. That
-  invocation *is* the approval event (METHODOLOGY §6); no issues, no execution.
-- **Approval:** design decisions approved by the human 2026-07-25 — ship the applier as
-  exported payload, track `main`, tag after this lands (see Decisions). Plan approval for
-  execution is pending that `plan-to-issues --apply`.
-- **Verification evidence:** pending.
-- **Review verdict:** pending.
+<!-- Keep every `- **Field:**` value on ONE physical line. `plan-to-issues.sh --doc` rewrites
+     the first line of a field and leaves wrapped continuation lines orphaned — it did
+     exactly that here on 2026-07-25. Put context in prose below, not in a wrapped value. -->
+
+- **Tracking issue:** [#53](https://github.com/wabkebab/agentic-flow/issues/53) — sub-issues: F-1 #54 · F-2 #55 · F-3 #56 · F-4 #57 · F-5 #58 · F-6 #59.
+- **Approval:** wabkebab approved on 2026-07-25 via plan-to-issues --apply.
+- **Verification evidence:** https://github.com/wabkebab/agentic-flow/issues/53#issuecomment-5080540104 — whole-brief verification green at `7fbc3fc` on 2026-07-25 (`make check`; `make test`; `make build`; `make test-one F=export`; `make test-one F=upgrade`; `scripts/doctor.sh --check --scope repo --skip-make-check`).
+- **Review verdict:** approved on 2026-07-25 — the reviewer returned findings once, Codex fixed them in `c3f4da0` and `7fbc3fc`, and the reviewer then approved all six steps; #54–#59 moved to `agent:claude` + `needs-closing`.
+- **Branch:** `codex/upgrade-surface` — created locally at the merged tip of #52; not yet pushed.
+
+The verification evidence above is **local, not CI**. The branch is unpushed — the human
+controls pushes — so no GitHub Actions run exists; the evidence URL is an issue comment, not
+a run URL, which satisfies `lifecycle-status.sh`'s field check but would resolve as
+`UNVERIFIED` rather than `READY` under `--verify-evidence`. CI green on the PR stays the
+authority per METHODOLOGY §8; this record is what was verifiable at close-out. The six step
+issues remain open until the PR merges and their `Fixes #N` trailers close them.
+
+Approval covers both the design decisions recorded in Part A (ship the applier as exported
+payload; track `main`, tag after this lands) and execution of the brief. Running
+`plan-to-issues --apply` *is* the approval event under METHODOLOGY §6 — no issues, no
+execution.
 - **Related:** ROADMAP 3.2 (this plan), 3.2a (folded into F-3 and F-6), 1.5.5 (the version
   stamp this builds on), `accepted_risks.md` F-4 (the drift F-2 is structured to prevent).
-- Steps not yet started.
+- F-1 implemented in `d2a80c9` (`Fixes #54`): fresh exports record `.agentic-flow-source`; re-export preserves project-edited provenance; doctor reports/warns on source state.
+- F-2 implemented in `ed25563` (`Fixes #55`): `scripts/lib/payload-apply.sh` is the shared exported applier and `export.sh` now renders around its classifications.
+- F-3 implemented in `9f60b52` (`Fixes #56`): `scripts/agentic-flow status` is offline/read-only and mirrors the git-ignore payload trap into doctor.
+- F-4 implemented in `8cd499f` (`Fixes #57`): `scripts/agentic-flow diff` fetches the recorded source/ref into a temp cache and reports read-only classifications.
+- F-5 implemented in `cde2af2` (`Fixes #58`): `scripts/agentic-flow upgrade` applies under the `.agentic-new` policy, requires confirmation, executes nothing fetched, and refuses changed origins without `--force`.
+- F-6 implemented in `b9553b5` (`Fixes #59`): `ADOPTION.md` gains the Upgrading section and the two-line back-fill, adoption-into-an-existing-project is documented as a first-class path with the blanket-`.claude/` gitignore trap called out, and ROADMAP 3.2/3.2a are reconciled.
+- Post-review follow-ups: `c3f4da0` moved payload git-ignore expansion into `scripts/lib/payload-apply.sh` so `status` and `doctor.sh` report the trap from one implementation, and made the fetch timeout terminate the process group when Perl's POSIX `setsid` is available; `7fbc3fc` gated only the descendant-cleanup assertion on Perl so `make test-one F=upgrade` adds no new required tool.

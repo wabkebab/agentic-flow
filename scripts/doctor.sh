@@ -48,6 +48,11 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 failures=0
 warnings=0
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
+PAYLOAD_LIB="$ROOT/scripts/lib/payload-apply.sh"
+if [ -f "$PAYLOAD_LIB" ]; then
+  # shellcheck disable=SC1090 # The library is resolved from this adopted project root.
+  . "$PAYLOAD_LIB"
+fi
 
 ok() { printf 'ok      %s\n' "$*"; }
 warn() { printf 'warning %s\n' "$*"; warnings=$((warnings + 1)); }
@@ -150,6 +155,7 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_file scripts/docs-index.sh
   require_file scripts/check-payload-manifest.sh
   require_file scripts/lifecycle-status.sh
+  require_file scripts/agentic-flow
   require_file scripts/render-stack-profile.sh
   require_file scripts/plan-to-issues.sh
   require_file scripts/doctor.sh
@@ -217,6 +223,17 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
       *+*) ok "scaffold version: ${version%%+*} (commit ${version#*+})" ;;
       *)   ok "scaffold version: $version" ;;
     esac
+    if [ -f "$ROOT/.agentic-flow-source" ]; then
+      source_origin=$(sed -n '1s/^origin[[:space:]]*//p' "$ROOT/.agentic-flow-source")
+      source_ref=$(sed -n '2s/^ref[[:space:]]*//p' "$ROOT/.agentic-flow-source")
+      if [ -n "$source_origin" ] && [ -n "$source_ref" ]; then
+        ok "scaffold source: $source_origin (ref $source_ref)"
+      else
+        fail "scaffold source malformed: .agentic-flow-source"
+      fi
+    else
+      warn "scaffold source not recorded: .agentic-flow-source"
+    fi
   else
     warn "scaffold version stamp not found: .agentic-flow-version"
   fi
@@ -248,6 +265,7 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_executable scripts/docs-index.sh
   require_executable scripts/check-payload-manifest.sh
   require_executable scripts/lifecycle-status.sh
+  require_executable scripts/agentic-flow
   require_executable scripts/render-stack-profile.sh
   require_executable scripts/plan-to-issues.sh
   require_executable scripts/doctor.sh
@@ -298,6 +316,18 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     ok "docs index up to date"
   else
     fail "docs index up to date (run scripts/docs-index.sh)"
+  fi
+
+  if command -v payload_ignored_paths >/dev/null 2>&1; then
+    ignored_payload=$(payload_ignored_paths "$ROOT")
+  else
+    ignored_payload=""
+  fi
+  if [ -n "$ignored_payload" ]; then
+    fail "payload paths are git-ignored:"
+    printf '%s\n' "$ignored_payload" | sed 's/^/        /'
+  else
+    ok "payload paths are not git-ignored"
   fi
 
   # Behavior-derived, not text-derived: a `check` recipe can look wired yet still be red.
