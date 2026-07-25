@@ -36,6 +36,19 @@ Flags:
 When stdin is a TTY and `--yes` is absent, `init.sh` prompts for missing flags. Each prompt
 names the flag it fills, so an interactive run teaches the scriptable form.
 
+## Adopting into an existing project
+
+Existing projects are the normal case. The harness is intentionally non-destructive:
+existing files that differ are preserved and the incoming harness copy lands beside them as
+`<file>.agentic-new` (or a suffixed variant when that name is occupied). Merge those by
+hand, then run the verifier again.
+
+Watch for blanket ignore rules before committing the harness. A rule like `.claude/` can
+hide the exported hook configuration from git even though it exists on disk. Both
+`scripts/doctor.sh --check` and `scripts/agentic-flow status` report manifest payload paths
+that are git-ignored; fix the ignore rule or explicitly unignore the harness files before
+you treat the adoption as complete.
+
 ## Verify
 
 `scripts/doctor.sh` is the verifier. It reports required tools, agent adapters, stack
@@ -50,8 +63,8 @@ make check
 ```
 
 `make test-one F=<group>` runs one focused harness group when the scaffold itself is under
-change: `export`, `contracts`, `hooks`, `plan-to-issues`, or `lifecycle`. `make test` still
-runs the complete suite plus `shellcheck`.
+change: `export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, or `upgrade`.
+`make test` still runs the complete suite plus `shellcheck`.
 
 Agent context is intentionally progressive. Executors start from `AGENTS.md`, the issue,
 the linked brief step, `CLAUDE.md` Stack profile/Gotchas, and live call sites/tests.
@@ -68,6 +81,54 @@ semver half (from this repo's `VERSION`) is what you compare against release not
 already on an older stamp writes `.agentic-flow-candidate-version` and leaves `.agentic-new`
 merge candidates until you resolve them by hand — see `METHODOLOGY.md`'s header for the bump
 policy.
+
+`.agentic-flow-source` records where upgrades come from:
+
+```text
+origin https://github.com/wabkebab/agentic-flow
+ref main
+```
+
+Fresh adoptions get this automatically when the source scaffold has a git remote. Projects
+adopted before this file existed must back-fill it once, replacing the URL/ref as needed:
+
+```bash
+printf 'origin https://github.com/wabkebab/agentic-flow\nref main\n' > .agentic-flow-source
+```
+
+The ref is opaque data. It is `main` today, and can be a tag later.
+
+## Upgrading
+
+Adopted projects receive `scripts/agentic-flow`:
+
+```bash
+scripts/agentic-flow status
+scripts/agentic-flow diff
+scripts/agentic-flow upgrade --yes
+```
+
+- `status` is offline and read-only. It reports the installed version, pending candidate
+  version, unresolved `.agentic-new` files, stack profile, detected adapters, recorded
+  source, and git-ignored payload paths.
+- `diff` fetches the recorded source/ref into a temporary cache and reports what would
+  create, overwrite, or land as a merge candidate. It writes nothing. Use
+  `scripts/agentic-flow diff --ref <tag-or-branch>` for a one-off comparison without
+  changing `.agentic-flow-source`.
+- `upgrade` fetches the recorded source/ref and applies only files declared by
+  `config/payload.tsv`. It follows the same `.agentic-new` policy as export: customized
+  files are not silently overwritten, and `.agentic-flow-version` advances only when no
+  merge candidates remain. Otherwise `.agentic-flow-candidate-version` records the pending
+  standard version.
+
+The pull-side upgrade path executes nothing from the fetched standard. If docs changed,
+review the result and then run `scripts/docs-index.sh` yourself. After resolving any
+`.agentic-new` files, rerun `scripts/agentic-flow upgrade --yes`; matching pending
+candidates are reused rather than duplicated.
+
+`upgrade` also records the source it last applied in `.agentic-flow-source-applied`. If the
+origin in `.agentic-flow-source` later changes, upgrade stops until you inspect the change
+and rerun with `--force`.
 
 ## CI
 

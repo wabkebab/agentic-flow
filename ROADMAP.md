@@ -21,9 +21,9 @@
 - 🚧 **Tier 2 — close the loop honestly** — **all but one item delivered.**
   2.1 ✅ · 2.2 ✅ · 2.4 ✅ · 2.5 ✅ · 2.7 ✅ · 2.6 🚧 (blocked on repo settings, not code) ·
   2.3 ⬜. See the 2026-07-25 re-evaluation.
-- ⬜ **Tier 3 — durability & scale** — below. **3.2 is now the only thing between here and
-  1.0**: the manifest and installed/candidate version split make an upgrade surface cheap,
-  and it is the largest *user-facing* gap in the system.
+- 🚧 **Tier 3 — durability & scale** — below. **3.2 / 3.2a shipped on
+  `codex/upgrade-surface`**; the remaining 1.0 blocker is using the tool on a real adopter
+  and resolving 2.6's repo-settings authority gap.
 - ✅ **Tier 4 — cost of running the standard** — new axis, opened and half-delivered by
   [#46](https://github.com/wabkebab/agentic-flow/issues/46). 4.1 ✅ · 4.2 ⬜.
 
@@ -39,9 +39,10 @@ pre-commit secret scanning, and a loop that has now run end-to-end for real twic
 
 So the bar is exactly two things:
 
-1. **3.2 ships, and is used** — an existing adopter is migrated across a real contract
-   change by the tool, not by hand. `collector` is pinned at `0.9.0+d507bf4`, the commit
-   immediately *before* #46; that migration is the exit test.
+1. **3.2 ships, and is used** — the upgrade surface now exists on
+   `codex/upgrade-surface`; an existing adopter still needs to be migrated across a real
+   contract change by the tool, not by hand. `collector` is pinned at `0.9.0+d507bf4`, the
+   commit immediately *before* #46; that migration remains the exit test.
 2. **2.6's authority claim becomes true** — either `main` gets a required check, or
    `METHODOLOGY.md` §10 stops calling CI authoritative for this repo.
 
@@ -425,7 +426,7 @@ adopt each piece when the pain is real.
   1.0 — its trigger has fired once, and the mitigation it declined ("a strict template drift
   checker") now partly exists.
 
-### 3.2 Upgrade as a first-class surface — **rescoped and promoted** (was "anti-drift")
+### 3.2 Upgrade as a first-class surface — ✅ shipped on `codex/upgrade-surface`
 - **Problem:** adoption happens **once**; drift lasts the **lifetime of every project**. The
   system has an excellent install story (`init.sh`) and no upgrade story at all. Today,
   bringing an adopted project up to date means running `export.sh` from the standard, then
@@ -498,15 +499,15 @@ adopt each piece when the pain is real.
   having the standard checked out, and `upgrade` never advances the installed version past
   what is actually active.
 - **Plan:** [`docs/inprogress/feature-upgrade-surface.md`](docs/inprogress/feature-upgrade-surface.md).
-- **Status 2026-07-25 — not started, and now the sole 1.0 blocker.**
-  `grep -rn upgrade scripts/ ADOPTION.md` returns nothing. Meanwhile
-  `collector/.agentic-flow-version` reads `0.9.0+d507bf4` — the commit immediately *before*
-  #46 — so a live adopter is already one contract generation behind with no supported way
-  forward. #46 widened the gap: it changed the review severity vocabulary, made
-  `docs-index.sh` hard-fail on an unrecognized docs stage, and added a CI step. That is
-  precisely the class of change an upgrade command exists to carry.
+- **Status 2026-07-25 — shipped locally on `codex/upgrade-surface`.**
+  The payload now includes `scripts/agentic-flow` with `status`, `diff`, and `upgrade`.
+  Fresh exports record `.agentic-flow-source`; existing adopters can back-fill it from
+  `ADOPTION.md`; the shared applier is exported; pull-side upgrade executes nothing fetched
+  and preserves the `.agentic-new` installed/candidate stamp rule. The remaining 1.0 exit
+  test is operational rather than structural: migrate `collector` from `0.9.0+d507bf4` to
+  current with the tool and review the result.
 
-#### 3.2a Adoption into an existing project is the normal case, and it isn't handled
+#### 3.2a Adoption into an existing project is the normal case — ✅ shipped with 3.2
 
 Split out 2026-07-25 from three real adoptions (film-festival-manager, print-traffic,
 collector). `init.sh` handles greenfield well. What actually happens is a **merge**:
@@ -520,17 +521,17 @@ collector). `init.sh` handles greenfield well. What actually happens is a **merg
   cost-to-detect failure in the whole adoption path.
 - One adoption found `docs/` largely uncommitted for the same reason.
 
-Concrete, small fixes — all cheaper than the general upgrade engine:
+Concrete, small fixes — shipped with the upgrade surface:
 
 - **Warn when a payload path is git-ignored in the target.** One `git check-ignore` pass
   over the manifest catches every instance of the trap above. This is the single
   highest-value item in 3.2, it does not depend on the rest of it, and `agentic-flow status`
   is its natural home — "what is on disk but not actually installed" is a status question.
-  Mirror it in `doctor.sh` so adoption checks catch it too.
-- **`export.sh`: report a summary of what landed as `.agentic-new`**, so a merge that needs
-  attention is visible at the end of the run rather than discovered later.
+  Mirrored in `doctor.sh` so adoption checks catch it too.
+- **`export.sh`: report a summary of what landed as `.agentic-new`** — already present and
+  preserved through the shared applier extraction.
 - Treat "adopt into an existing repo" as a first-class documented path in `ADOPTION.md`,
-  not a footnote on the greenfield one.
+  not a footnote on the greenfield one — now documented alongside upgrade/back-fill.
 
 ### 3.3 Wire in agent memory
 - **Problem:** durable decisions (the chosen stack profile, accepted risks, recurring review

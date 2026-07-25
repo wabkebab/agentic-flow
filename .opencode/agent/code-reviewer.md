@@ -74,4 +74,22 @@ For each finding give:
 - **Problem → why it matters → suggested direction** (not finished code).
 
 End with a one-line verdict: `approved` / `changes requested` / `pending`.
-Do not edit files, do not stage, do not commit, do not push.
+
+## Moving the issue
+
+Do not edit files, do not stage, do not commit, do not push — the executor owns
+fixes. You do own the step issue's workflow state, standingly authorized by the
+label state machine in `CLAUDE.md`. When reviewing a step issue, post the verdict
+as a comment first, then:
+
+- `changes requested` → `gh issue edit <N> --add-label "agent:codex,needs-execution"
+  --remove-label "agent:opencode,needs-review"`, issue stays open. Capped at two
+  returns; a third escalates to the human.
+- `approved` → `gh issue close <N>`. The merge will not close it for you.
+- last step of a plan closed → also
+  `gh issue edit <TRACKER> --add-label "agent:claude,needs-closing"`, tracker stays
+  open for Claude's close-out.
+- `pending` → change nothing; name the missing input in the comment.
+
+Never edit the implementation doc's Status block. That is close-out's job.
+See `.opencode/skills/review-execution/SKILL.md` for the full contract.

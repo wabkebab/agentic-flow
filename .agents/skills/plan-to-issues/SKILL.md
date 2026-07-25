@@ -53,6 +53,9 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
      rationale stays in the doc; Make recipes stay in the Makefile.
    - Labels follow METHODOLOGY.md §6: `plan` on the tracker; `needs-execution` + `agent:codex`
      on steps. For a **Security** doc add the matching `sev:high|med|low|nit` per step.
+   - Do **not** pre-apply `needs-closing` to steps. The reviewer closes step issues outright,
+     so `agent:claude` + `needs-closing` only ever lands on the tracking issue, and only when
+     the last step is closed. The tracker is created with `plan` alone.
 3. **Dry run** — show the user exactly what the spec describes. This is fully offline:
    ```
    scripts/plan-to-issues.sh <spec.json>

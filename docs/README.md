@@ -45,10 +45,11 @@ else under `docs/` — including `docs/` itself — fails the index build (and t
 `README.md` / `accepted_risks.md` / `templates/` are skipped entirely.
 
 A doc leaves `inprogress/` when its implementation steps are all shipped, independently
-reviewed, and verified. Reviewed step issues may accumulate at
-`agent:claude + needs-closing`; close the plan in one pass only after all steps qualify,
-CI evidence is recorded, and `scripts/lifecycle-status.sh --check --verify-evidence`
-passes. If the user accepts the risk / declines the feature, add an entry to
+reviewed, and verified. The reviewer closes each step issue on approval, so closed steps
+accumulate while the tracking issue stays open at `agent:claude + needs-closing`; close the
+plan in one pass only after all steps qualify, CI evidence is recorded, and
+`scripts/lifecycle-status.sh --check --verify-evidence` passes — then close the tracking
+issue. If the user accepts the risk / declines the feature, add an entry to
 `accepted_risks.md` and link it before moving the doc.
 
 ## Current docs
@@ -64,8 +65,8 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-init-and-template-split | Feature | ✅ Done | done |
 | feature-opencode-reviewer-role | Feature | ✅ Done | done |
+| feature-upgrade-surface | Feature | ✅ Done | done |
 | context_optimization | Feature | 🚧 In progress | inprogress |
 | feature-adaptative-assurance-opus | Feature | 🟦 Proposal | inprogress |
 | feature-progressive-assurance-profiles | Feature | 🟦 Proposal | inprogress |
-| feature-upgrade-surface | Feature | 🟦 Proposal | inprogress |
 <!-- END: generated index -->
