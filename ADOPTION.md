@@ -49,6 +49,16 @@ scripts/doctor.sh --check
 make check
 ```
 
+## Versioning
+
+`.agentic-flow-version` in the target holds `<semver>+<sha>` — e.g. `0.9.0+661d9da`. The
+semver half (from this repo's `VERSION`) is what you compare against release notes; the
+`+sha` half pins the exact commit an update was cut from, for tooling that needs it exactly.
+`doctor.sh` reports both halves split apart. Re-running `scripts/export.sh` against a target
+already on an older stamp writes `.agentic-flow-candidate-version` and leaves `.agentic-new`
+merge candidates until you resolve them by hand — see `METHODOLOGY.md`'s header for the bump
+policy.
+
 ## CI
 
 `templates/ci/ci.yml` is exported **inert** — adoption never activates a workflow on its

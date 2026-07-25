@@ -9,6 +9,14 @@
 > Everything here, in the templates, and in the hooks calls its targets: `make check`
 > (fast type-check + lint gate), `make test`, `make test-one F=…`, `make build`, `make run`.
 > `CLAUDE.md` explains those targets and their gotchas; the `Makefile` runs them.
+>
+> **Standard version:** [`VERSION`](VERSION) — a human-facing semver, bumped deliberately
+> on a contract change (a section here, in `CLAUDE.md`/`AGENTS.md`, or a hook/script
+> behavior an adopted project depends on). `scripts/export.sh` and `scripts/init.sh` combine
+> it with the exact commit as `<semver>+<sha>` (semver build-metadata syntax) and stamp it
+> into a target's `.agentic-flow-version` — the semver half is what a human compares release
+> notes against, the `+sha` half is what tooling diffs exactly. `scripts/doctor.sh` reports
+> both halves split back apart.
 
 ---
 
@@ -315,19 +323,24 @@ rather than typing the one you remember.
 The reference structure, extracted from a working two-workflow setup. Stack-agnostic: the
 *shape* is the standard, the commands inside it come from the `Makefile`.
 
-> **Working templates ship in [`templates/ci/`](templates/ci/README.md)** — `ci.yml` and
-> `deploy.yml`, exported **inert** so adoption never activates a workflow (least of all a
-> deploy) behind you. Copy into `.github/workflows/` and fill the `<ANGLE-BRACKET>` spots.
-> This section is the *why*; those files are the *what*.
+> **Working templates ship in [`templates/ci/`](templates/ci/README.md)** — `ci.yml`,
+> `deploy.yml`, and `release-native.yml`, exported **inert** so adoption never activates a
+> workflow (least of all a deploy, or a release with `contents: write`) behind you. Copy
+> into `.github/workflows/` and fill the `<ANGLE-BRACKET>` spots. This section is the *why*;
+> those files are the *what*.
 
-**Two workflows, two different risk postures.**
+**Three workflows, three different risk postures.**
 
-| | `ci.yml` | `deploy.yml` |
-|---|---|---|
-| Trigger | `pull_request` | `push` to release branches + `workflow_dispatch` |
-| Concurrency group | per PR number | per ref name |
-| `cancel-in-progress` | **`true`** — superseded runs are waste | **`false`** — finishing a deploy beats half-deploying |
-| Permissions | `contents: read` (+ `pull-requests: read` for path filtering) | `contents: read` + only the write scope the registry push needs |
+| | `ci.yml` | `deploy.yml` | `release-native.yml` |
+|---|---|---|---|
+| Trigger | `pull_request` | `push` to release branches + `workflow_dispatch` | push of a `v*` tag + `workflow_dispatch` |
+| Concurrency group | per PR number | per ref name | none — parallel releases of different tags are fine |
+| `cancel-in-progress` | **`true`** — superseded runs are waste | **`false`** — finishing a deploy beats half-deploying | n/a |
+| Permissions | `contents: read` (+ `pull-requests: read` for path filtering) | `contents: read` + only the write scope the registry push needs | `contents: write` — creating the release and uploading assets needs it |
+
+`release-native.yml` only fits a stack that compiles to a standalone native binary (Go,
+Rust, a bundled Node CLI, …); a service deployed via `deploy.yml` has nothing to attach
+there and should not ship both.
 
 ### Rules that apply to both
 
@@ -411,6 +424,30 @@ secrets-scan  (never filtered — always runs)
    gracefully (don't fail) when the URL secret isn't configured.
 6. **Gate optional stacks** (monitoring, workers) on their own path filter *or* a
    `workflow_dispatch` input, so routine app deploys don't restart them.
+
+### `release-native.yml` — job structure
+
+```
+create-release ──┬─▶ build-linux    (matrix: target triples)
+                  ├─▶ build-macos    (matrix: target triples)
+                  └─▶ build-windows
+```
+
+1. **`create-release`** resolves the tag once — from the pushed ref, or from a
+   `workflow_dispatch` input so a failed platform can be re-run without re-tagging — and
+   creates the (draft-free) GitHub release every build job then uploads to. A hyphen in the
+   tag (`v1.2.3-rc1`) marks it prerelease automatically via SemVer's own convention, so
+   there is nothing separate to keep in sync.
+2. **One job per OS**, matrixed over target triples within a job where cross-compilation
+   supports it (e.g. Rust). Packaging genuinely differs per OS — archive format, binary
+   extension, shell — which is why these are three explicit jobs, not one OS-matrixed job
+   branching three ways internally.
+3. **Each platform job**: checkout → native build (stack-specific, the fill-in block) →
+   smoke-test the binary exists and is executable → package into an archive → upload it to
+   the release created in step 1.
+4. **No `ci-gate`-style aggregation job.** Unlike `ci.yml`, nothing here is a required
+   status check gating a merge — a failed platform build fails its own job, visibly, and
+   can be re-run individually via `workflow_dispatch` without re-running the others.
 
 ### Wiring it to the harness
 

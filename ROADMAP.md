@@ -338,9 +338,11 @@ adopt each piece when the pain is real.
 - **Deliberately not doing:** a full transactional render-validate-plan-apply engine. For a
   ~25-entry manifest, render-to-temp then move is the valuable 20%; the rest is machinery
   looking for a problem.
-- **Also still here from the original item:** a `Standard version:` line in `METHODOLOGY.md`,
-  and doctor detecting *hand-edited* harness files by comparing against the stamped version
-  (distinct from unresolved candidates, which it already catches).
+- **Also still here from the original item:** ~~a `Standard version:` line in
+  `METHODOLOGY.md`~~ — **done**: `VERSION` holds the semver, the header names it, and the
+  stamp is `<semver>+<sha>`. Still open: doctor detecting *hand-edited* harness files by
+  comparing against the stamped version (distinct from unresolved candidates, which it
+  already catches).
 - **Done when:** an adopted project can answer "am I current, what would change, and what is
   half-applied" without reading `export.sh`, and `upgrade` never advances the installed
   version past what is actually active.

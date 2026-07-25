@@ -8,6 +8,7 @@ so adopting the harness never activates CI or a deploy behind your back.
 |------|---------|-------------|
 | `ci.yml` | `pull_request` | `cp templates/ci/ci.yml .github/workflows/ci.yml` |
 | `deploy.yml` | push to a release branch | `cp templates/ci/deploy.yml .github/workflows/deploy.yml` |
+| `release-native.yml` | push of a `v*` tag | `cp templates/ci/release-native.yml .github/workflows/release-native.yml` |
 
 ## Activating `ci.yml`
 
@@ -71,3 +72,17 @@ workflow deliberately does not create the runtime `.env`, TLS certs, or shared n
 If your topology isn't "container image → compose stack over SSH", keep the structure —
 build → push → **pull by digest** → wait for healthy → verify from outside — and swap
 the mechanism underneath it.
+
+## Activating `release-native.yml`
+
+Only fits a stack that compiles to a standalone native binary (Go, Rust, a bundled Node
+CLI, …). Fill the `<ANGLE-BRACKET>` spots — target triples, artifact names, binary paths —
+and each platform job's native-build block (marked the same way as `ci.yml`'s runtime-setup
+block, but distinctly worded so `init.sh --stack <profile>` never auto-fills it; this one
+you fill by hand). Drop whichever platform job your stack doesn't target.
+
+Cut a release with `git tag v1.2.3 && git push origin v1.2.3`; a hyphen in the tag
+(`v1.2.3-rc1`) marks it prerelease automatically. No repository secrets beyond the default
+`GITHUB_TOKEN` are required. If you need an SBOM attached to the release, add a job that
+generates one with your ecosystem's tool and uploads it the same way as a release archive —
+none ships here since the tooling is stack-specific.

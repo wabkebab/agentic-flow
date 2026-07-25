@@ -123,7 +123,13 @@ echo "  to:   $DST"
 echo "  mode: $([ "$FORCE" = true ] && echo FORCE-overwrite || echo non-destructive)$($DRY && echo ' (dry-run)')"
 echo
 
-version=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
+# Two-part stamp: a human-facing semver (bumped deliberately in VERSION on a contract
+# change) plus a `+`-joined git short SHA (semver build-metadata syntax) that machines can
+# diff exactly, since two exports on the same unreleased semver still need to compare.
+semver=$(sed -n '1p' "$SRC/VERSION" 2>/dev/null || true)
+[ -n "$semver" ] || semver="0.0.0"
+sha=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
+version="$semver+$sha"
 created=0; overwritten=0; merge=0; same=0; candidate_created=0; candidate_reused=0
 i=0
 while [ "$i" -lt "${#FILES[@]}" ]; do
