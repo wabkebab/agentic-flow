@@ -38,6 +38,7 @@ scripts/docs-index.sh             regenerate docs/README.md's index from TRIAGE 
 scripts/check-payload-manifest.sh  reject unclassified adapter/template/profile files
 scripts/lifecycle-status.sh       derive ACTIVE / READY / BLOCKED document state
 scripts/doctor.sh                 adoption checklist / scaffold health check
+scripts/agentic-flow              adopted-project status / diff / upgrade command
 scripts/self-test.sh              offline regression checks for this scaffold
 scripts/hooks/                    the two hook scripts settings.json calls
 templates/harness/                pristine CLAUDE/AGENTS/Makefile forms shipped by export.sh
@@ -79,6 +80,22 @@ codebase, start a doc from `docs/templates/`, and keep the index current with
 `scripts/docs-index.sh`.
 
 See [`ADOPTION.md`](ADOPTION.md) for flags and verification.
+
+## Upgrade an adopted project
+
+Fresh adoptions record the standard's origin in `.agentic-flow-source`. From inside an
+adopted project:
+
+```bash
+scripts/agentic-flow status
+scripts/agentic-flow diff
+scripts/agentic-flow upgrade --yes
+```
+
+`status` is offline and read-only. `diff` and `upgrade` fetch the recorded source/ref into a
+temporary cache; `diff` writes nothing, and `upgrade` applies only manifest-declared payload
+files under the existing `.agentic-new` policy. Older adopters can back-fill
+`.agentic-flow-source` by following [`ADOPTION.md`](ADOPTION.md#upgrading).
 
 ## Required tools
 

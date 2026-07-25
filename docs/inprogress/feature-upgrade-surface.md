@@ -501,7 +501,7 @@ following `ADOPTION.md` alone.
 
 - **Tracking issue:** [#53](https://github.com/wabkebab/agentic-flow/issues/53) — sub-issues: F-1 #54 · F-2 #55 · F-3 #56 · F-4 #57 · F-5 #58 · F-6 #59.
 - **Approval:** wabkebab approved on 2026-07-25 via plan-to-issues --apply.
-- **Verification evidence:** pending.
+- **Verification evidence:** local whole-brief verification green on 2026-07-25: `make check`; `make test`; `make build`; `make test-one F=export`; `make test-one F=upgrade`; `scripts/doctor.sh --check --scope repo --skip-make-check`.
 - **Review verdict:** pending.
 - **Branch:** `codex/upgrade-surface` — created locally at the merged tip of #52; not yet pushed.
 
@@ -511,4 +511,9 @@ payload; track `main`, tag after this lands) and execution of the brief. Running
 execution.
 - **Related:** ROADMAP 3.2 (this plan), 3.2a (folded into F-3 and F-6), 1.5.5 (the version
   stamp this builds on), `accepted_risks.md` F-4 (the drift F-2 is structured to prevent).
-- Steps not yet started.
+- F-1 implemented in `d2a80c9` (`Fixes #54`): fresh exports record `.agentic-flow-source`; re-export preserves project-edited provenance; doctor reports/warns on source state.
+- F-2 implemented in `ed25563` (`Fixes #55`): `scripts/lib/payload-apply.sh` is the shared exported applier and `export.sh` now renders around its classifications.
+- F-3 implemented in `9f60b52` (`Fixes #56`): `scripts/agentic-flow status` is offline/read-only and mirrors the git-ignore payload trap into doctor.
+- F-4 implemented in `8cd499f` (`Fixes #57`): `scripts/agentic-flow diff` fetches the recorded source/ref into a temp cache and reports read-only classifications.
+- F-5 implemented in `cde2af2` (`Fixes #58`): `scripts/agentic-flow upgrade` applies under the `.agentic-new` policy, requires confirmation, executes nothing fetched, and refuses changed origins without `--force`.
+- F-6 implemented in this branch: documentation/back-fill guidance and ROADMAP reconciliation.
