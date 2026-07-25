@@ -495,13 +495,20 @@ following `ADOPTION.md` alone.
 
 ## Status / Implementation status
 
-- **Tracking issue:** pending — run `plan-to-issues --approved-by <name>` to create it. That
-  invocation *is* the approval event (METHODOLOGY §6); no issues, no execution.
-- **Approval:** design decisions approved by the human 2026-07-25 — ship the applier as
-  exported payload, track `main`, tag after this lands (see Decisions). Plan approval for
-  execution is pending that `plan-to-issues --apply`.
+<!-- Keep every `- **Field:**` value on ONE physical line. `plan-to-issues.sh --doc` rewrites
+     the first line of a field and leaves wrapped continuation lines orphaned — it did
+     exactly that here on 2026-07-25. Put context in prose below, not in a wrapped value. -->
+
+- **Tracking issue:** [#53](https://github.com/wabkebab/agentic-flow/issues/53) — sub-issues: F-1 #54 · F-2 #55 · F-3 #56 · F-4 #57 · F-5 #58 · F-6 #59.
+- **Approval:** wabkebab approved on 2026-07-25 via plan-to-issues --apply.
 - **Verification evidence:** pending.
 - **Review verdict:** pending.
+- **Branch:** `codex/upgrade-surface` — created locally at the merged tip of #52; not yet pushed.
+
+Approval covers both the design decisions recorded in Part A (ship the applier as exported
+payload; track `main`, tag after this lands) and execution of the brief. Running
+`plan-to-issues --apply` *is* the approval event under METHODOLOGY §6 — no issues, no
+execution.
 - **Related:** ROADMAP 3.2 (this plan), 3.2a (folded into F-3 and F-6), 1.5.5 (the version
   stamp this builds on), `accepted_risks.md` F-4 (the drift F-2 is structured to prevent).
 - Steps not yet started.
