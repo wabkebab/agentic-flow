@@ -300,11 +300,14 @@ if [ -f "$ROOT/scripts/export.sh" ] && [ "$SELF_TEST_MODE" = full ]; then
   assert_file "$TARGET/docs/accepted_risks.md"
   assert_file "$TARGET/templates/ci/ci.yml"
   assert_file "$TARGET/templates/ci/deploy.yml"
+  assert_file "$TARGET/templates/ci/release-native.yml"
   assert_file "$TARGET/templates/ci/README.md"
   # CI templates ship inert: adopting the harness must never activate a workflow —
-  # least of all deploy.yml — behind the adopter's back.
+  # least of all deploy.yml or a release workflow with `contents: write` — behind the
+  # adopter's back.
   assert_no_file "$TARGET/.github/workflows/ci.yml"
   assert_no_file "$TARGET/.github/workflows/deploy.yml"
+  assert_no_file "$TARGET/.github/workflows/release-native.yml"
   assert_no_file "$TARGET/.github"
   # Every job in ci-gate's needs must also be asserted in its result loop, or the gate
   # reports green for a job nothing checked.
