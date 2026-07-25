@@ -25,7 +25,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle]" >&2
+      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade]" >&2
       exit 0
       ;;
     *)
@@ -35,7 +35,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 # The one list both the flag parser and every `should_run` call site are checked against.
-SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle"
+SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade"
 GROUPS_RAN=" "
 case " $SELF_TEST_GROUPS " in
   *" $ONLY_GROUP "*) ;;
@@ -375,6 +375,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"
   assert_no_file "$TARGET/scripts/init.sh"
+  # shellcheck disable=SC1091 # The target is generated during this fixture.
   (cd "$TARGET" && . scripts/lib/payload-apply.sh && . scripts/lib/payload-apply.sh) \
     || fail "payload apply library was not safe to source twice"
   # templates/harness holds the pristine forms, which export to project-root destinations
@@ -849,6 +850,77 @@ AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check \
   && fail "docs-index accepted an undeclared docs stage"
 grep -q "undeclared docs stage" "$TMP/docs-stage.err" \
   || fail "docs-index undeclared-stage failure did not explain the problem"
+fi
+
+# --- upgrade surface --------------------------------------------------------------------
+if should_run upgrade; then
+AGENTIC_FLOW_CLI="$ROOT/scripts/agentic-flow"
+assert_file "$AGENTIC_FLOW_CLI"
+
+OUTSIDE="$TMP/outside-project"
+mkdir -p "$OUTSIDE"
+(cd "$OUTSIDE" && "$AGENTIC_FLOW_CLI" status) >"$TMP/status-outside.out" 2>"$TMP/status-outside.err" \
+  && fail "agentic-flow status succeeded outside an adopted project"
+grep -q "no .agentic-flow-version found" "$TMP/status-outside.err" \
+  || fail "status outside a project did not explain the missing stamp"
+
+STATUS_FIX="$TMP/status-fixture"
+mkdir -p "$STATUS_FIX/.claude" "$STATUS_FIX/.codex" "$STATUS_FIX/.agents" \
+  "$STATUS_FIX/.opencode" "$STATUS_FIX/config" "$STATUS_FIX/scripts" "$STATUS_FIX/sub/dir"
+printf '%s\n' '1.2.3+abcdef0' > "$STATUS_FIX/.agentic-flow-version"
+printf '%s\n' generic > "$STATUS_FIX/.agentic-flow-stack"
+printf 'origin https://example.invalid/agentic-flow.git\nref main\n' \
+  > "$STATUS_FIX/.agentic-flow-source"
+printf '{}' > "$STATUS_FIX/.claude/settings.json"
+printf '{}' > "$STATUS_FIX/.codex/hooks.json"
+printf '# source\tdestination\tscope\tmerge-policy\tdisposition\n.claude/settings.json\t.claude/settings.json\tclaude\tpreserve\texport\n' \
+  > "$STATUS_FIX/config/payload.tsv"
+cp "$ROOT/scripts/doctor.sh" "$STATUS_FIX/scripts/doctor.sh"
+chmod +x "$STATUS_FIX/scripts/doctor.sh"
+(cd "$STATUS_FIX/sub/dir" && "$AGENTIC_FLOW_CLI" status) > "$TMP/status-clean.out" \
+  || fail "status did not find the nearest stamped root from a nested directory"
+grep -q "installed: 1.2.3+abcdef0" "$TMP/status-clean.out" \
+  || fail "status did not report the installed version"
+grep -q "source: https://example.invalid/agentic-flow.git (ref main)" "$TMP/status-clean.out" \
+  || fail "status did not report the recorded source"
+grep -q "adapters: claude,codex,agents,opencode" "$TMP/status-clean.out" \
+  || fail "status did not report adapter presence"
+
+NO_GIT_BIN="$TMP/no-git-bin"
+mkdir -p "$NO_GIT_BIN"
+cat > "$NO_GIT_BIN/git" <<'FAKE_GIT'
+#!/usr/bin/env bash
+exit 127
+FAKE_GIT
+chmod +x "$NO_GIT_BIN/git"
+(cd "$STATUS_FIX" && PATH="$NO_GIT_BIN:$PATH" "$AGENTIC_FLOW_CLI" status) > "$TMP/status-no-git.out" \
+  || fail "offline status failed when git was absent from PATH"
+
+printf '%s\n' '1.2.4+beef123' > "$STATUS_FIX/.agentic-flow-candidate-version"
+printf '%s\n' pending > "$STATUS_FIX/CLAUDE.md.agentic-new"
+(cd "$STATUS_FIX" && "$AGENTIC_FLOW_CLI" status) > "$TMP/status-pending.out" \
+  && fail "status accepted a project with pending merge candidates"
+grep -q "candidate: 1.2.4+beef123" "$TMP/status-pending.out" \
+  || fail "status did not report the pending candidate version"
+grep -q "CLAUDE.md.agentic-new" "$TMP/status-pending.out" \
+  || fail "status did not name the unresolved merge candidate"
+rm -f "$STATUS_FIX/.agentic-flow-candidate-version" "$STATUS_FIX/CLAUDE.md.agentic-new"
+
+(
+  cd "$STATUS_FIX"
+  git init -q .
+  git config user.email selftest@example.invalid
+  git config user.name selftest
+  printf '%s\n' '.claude/' > .gitignore
+)
+(cd "$STATUS_FIX" && "$AGENTIC_FLOW_CLI" status) > "$TMP/status-ignored.out" \
+  && fail "status accepted a git-ignored payload path"
+grep -q ".claude/settings.json" "$TMP/status-ignored.out" \
+  || fail "status did not report the git-ignored payload path"
+(cd "$STATUS_FIX" && AGENTIC_SELFTEST=1 scripts/doctor.sh --scope repo) > "$TMP/doctor-ignored.out" \
+  || fail "doctor report failed on a fixture with ignored payload paths"
+grep -q "payload paths are git-ignored" "$TMP/doctor-ignored.out" \
+  || fail "doctor did not report git-ignored payload paths"
 fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------

@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# agentic-flow — project-local upgrade surface for adopted harnesses.
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  agentic-flow status [--json]
+  agentic-flow diff [--ref <ref>] [--json]
+  agentic-flow upgrade [--ref <ref>] [--force] [--yes]
+  agentic-flow --help | --version
+EOF
+}
+
+die() {
+  echo "error: $*" >&2
+  exit 2
+}
+
+find_root() {
+  # Unlike doctor.sh, this walks from PWD so the CLI works when symlinked onto PATH.
+  # The nearest stamp owns the subtree, preserving monorepo harness boundaries.
+  local dir
+  dir=$(pwd -P)
+  while :; do
+    if [ -f "$dir/.agentic-flow-version" ]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    [ "$dir" = / ] && return 1
+    dir=$(dirname "$dir")
+  done
+}
+
+read_source_field() { # <root> <line-number> <key>
+  local root="$1" line_no="$2" key="$3"
+  [ -f "$root/.agentic-flow-source" ] || return 0
+  sed -n "${line_no}s/^${key}[[:space:]]*//p" "$root/.agentic-flow-source"
+}
+
+adapter_status() { # <root>
+  local root="$1" adapters="" adapter path
+  for adapter in claude:.claude codex:.codex agents:.agents opencode:.opencode; do
+    path=${adapter#*:}
+    if [ -e "$root/$path" ]; then
+      adapters="${adapters}${adapters:+,}${adapter%%:*}"
+    fi
+  done
+  printf '%s\n' "${adapters:-none}"
+}
+
+payload_destination_files() { # <root>
+  local root="$1"
+  local manifest="$root/config/payload.tsv" source destination _scope _merge disposition file rel suffix
+  [ -f "$manifest" ] || return 0
+  while IFS="$(printf '\t')" read -r source destination _scope _merge disposition; do
+    case "${source:-}" in ""|\#*) continue ;; esac
+    [ "${disposition:-}" = export ] || continue
+    if [ -f "$root/$destination" ]; then
+      printf '%s\n' "$destination"
+    elif [ -d "$root/$destination" ]; then
+      while IFS= read -r file; do
+        rel="${file#"$root"/}"
+        printf '%s\n' "$rel"
+      done < <(find "$root/$destination" -type f | sort)
+    elif [ -d "$root/$source" ]; then
+      while IFS= read -r file; do
+        rel="${file#"$root/$source"/}"
+        if [ "$source" = "$destination" ]; then
+          printf '%s/%s\n' "$destination" "$rel"
+        else
+          suffix="${rel#"$source"/}"
+          printf '%s/%s\n' "$destination" "$suffix"
+        fi
+      done < <(find "$root/$source" -type f | sort)
+    else
+      printf '%s\n' "$destination"
+    fi
+  done < "$manifest" | sort -u
+}
+
+ignored_payload_paths() { # <root>
+  local root="$1" path
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if git -C "$root" check-ignore -q -- "$path" 2>/dev/null; then
+      printf '%s\n' "$path"
+    fi
+  done < <(payload_destination_files "$root")
+}
+
+status_cmd() {
+  local json=false root version candidate stack origin ref adapters candidates ignored action_needed=false
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=true; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown status flag: $1" ;;
+    esac
+  done
+  root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
+  version=$(sed -n '1p' "$root/.agentic-flow-version")
+  candidate=$(sed -n '1p' "$root/.agentic-flow-candidate-version" 2>/dev/null || true)
+  stack=$(sed -n '1p' "$root/.agentic-flow-stack" 2>/dev/null || true)
+  origin=$(read_source_field "$root" 1 origin)
+  ref=$(read_source_field "$root" 2 ref)
+  adapters=$(adapter_status "$root")
+  candidates=$(find "$root" -type f -name '*.agentic-new*' -print 2>/dev/null | sed "s|^$root/||" | sort)
+  ignored=$(ignored_payload_paths "$root")
+  [ -n "$candidate$candidates$ignored" ] && action_needed=true
+
+  if [ "$json" = true ]; then
+    jq -n \
+      --arg root "$root" \
+      --arg installed "$version" \
+      --arg candidate "$candidate" \
+      --arg stack "${stack:-unknown}" \
+      --arg origin "$origin" \
+      --arg ref "$ref" \
+      --arg adapters "$adapters" \
+      --arg candidates "$candidates" \
+      --arg ignored "$ignored" \
+      --argjson action_needed "$action_needed" \
+      '{
+        root: $root,
+        installed: $installed,
+        candidate: (if $candidate == "" then null else $candidate end),
+        stack: $stack,
+        source: (if $origin == "" then null else {origin: $origin, ref: $ref} end),
+        adapters: ($adapters | split(",") | map(select(length > 0))),
+        merge_candidates: ($candidates | split("\n") | map(select(length > 0))),
+        git_ignored_payload: ($ignored | split("\n") | map(select(length > 0))),
+        action_needed: $action_needed
+      }'
+  else
+    echo "agentic-flow status"
+    echo "root: $root"
+    echo "installed: $version"
+    if [ -n "$candidate" ]; then
+      echo "candidate: $candidate"
+    else
+      echo "candidate: none"
+    fi
+    echo "stack: ${stack:-unknown}"
+    if [ -n "$origin" ]; then
+      echo "source: $origin (ref ${ref:-unknown})"
+    else
+      echo "source: no origin recorded"
+    fi
+    echo "adapters: $adapters"
+    if [ -n "$candidates" ]; then
+      echo "merge candidates:"
+      printf '%s\n' "$candidates" | sed 's/^/  /'
+    else
+      echo "merge candidates: none"
+    fi
+    if [ -n "$ignored" ]; then
+      echo "git-ignored payload paths:"
+      printf '%s\n' "$ignored" | sed 's/^/  /'
+    else
+      echo "git-ignored payload paths: none"
+    fi
+  fi
+
+  [ "$action_needed" = false ] || exit 1
+}
+
+version_cmd() {
+  local root
+  root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
+  sed -n '1p' "$root/.agentic-flow-version"
+}
+
+subcommand="${1:-}"
+case "$subcommand" in
+  ""|-h|--help) usage; exit 0 ;;
+  --version) version_cmd ;;
+  status) shift; status_cmd "$@" ;;
+  diff|upgrade) die "$subcommand is not implemented yet" ;;
+  *) usage; die "unknown subcommand: $subcommand" ;;
+esac

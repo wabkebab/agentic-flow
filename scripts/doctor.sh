@@ -112,6 +112,47 @@ real_make_target() {
   fi
 }
 
+payload_destination_files() { # <root>
+  local root="$1"
+  local manifest="$root/config/payload.tsv" source destination _scope _merge disposition file rel suffix
+  [ -f "$manifest" ] || return 0
+  while IFS="$(printf '\t')" read -r source destination _scope _merge disposition; do
+    case "${source:-}" in ""|\#*) continue ;; esac
+    [ "${disposition:-}" = export ] || continue
+    if [ -f "$root/$destination" ]; then
+      printf '%s\n' "$destination"
+    elif [ -d "$root/$destination" ]; then
+      while IFS= read -r file; do
+        rel="${file#"$root"/}"
+        printf '%s\n' "$rel"
+      done < <(find "$root/$destination" -type f | sort)
+    elif [ -d "$root/$source" ]; then
+      while IFS= read -r file; do
+        rel="${file#"$root/$source"/}"
+        if [ "$source" = "$destination" ]; then
+          printf '%s/%s\n' "$destination" "$rel"
+        else
+          suffix="${rel#"$source"/}"
+          printf '%s/%s\n' "$destination" "$suffix"
+        fi
+      done < <(find "$root/$source" -type f | sort)
+    else
+      printf '%s\n' "$destination"
+    fi
+  done < "$manifest" | sort -u
+}
+
+ignored_payload_paths() { # <root>
+  local root="$1" path
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if git -C "$root" check-ignore -q -- "$path" 2>/dev/null; then
+      printf '%s\n' "$path"
+    fi
+  done < <(payload_destination_files "$root")
+}
+
 echo "agentic-flow adoption checklist"
 echo "root: $ROOT"
 [ "$SCOPE" = all ] || echo "scope: $SCOPE"
@@ -150,6 +191,7 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_file scripts/docs-index.sh
   require_file scripts/check-payload-manifest.sh
   require_file scripts/lifecycle-status.sh
+  require_file scripts/agentic-flow
   require_file scripts/render-stack-profile.sh
   require_file scripts/plan-to-issues.sh
   require_file scripts/doctor.sh
@@ -259,6 +301,7 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_executable scripts/docs-index.sh
   require_executable scripts/check-payload-manifest.sh
   require_executable scripts/lifecycle-status.sh
+  require_executable scripts/agentic-flow
   require_executable scripts/render-stack-profile.sh
   require_executable scripts/plan-to-issues.sh
   require_executable scripts/doctor.sh
@@ -309,6 +352,14 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     ok "docs index up to date"
   else
     fail "docs index up to date (run scripts/docs-index.sh)"
+  fi
+
+  ignored_payload=$(ignored_payload_paths "$ROOT")
+  if [ -n "$ignored_payload" ]; then
+    fail "payload paths are git-ignored:"
+    printf '%s\n' "$ignored_payload" | sed 's/^/        /'
+  else
+    ok "payload paths are not git-ignored"
   fi
 
   # Behavior-derived, not text-derived: a `check` recipe can look wired yet still be red.
