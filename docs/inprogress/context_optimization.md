@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-07-25) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > Optimize the existing harness before adding assurance profiles: reduce repeated execution,
 > repeated context loading, and unnecessary role transitions without weakening any gate,
 > review requirement, or source-of-truth rule.

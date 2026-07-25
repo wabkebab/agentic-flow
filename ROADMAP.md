@@ -430,26 +430,64 @@ adopt each piece when the pain is real.
   `config/payload.tsv` declares what belongs and under which policy; `.agentic-flow-version`
   vs `.agentic-flow-candidate-version` distinguish *installed* from *pending*; doctor already
   fails on unresolved merge candidates. What's missing is only the surface over them.
-- **Fix — three commands, mirroring the review's install/upgrade split:**
-  - `status` — installed version, candidate version if an update is half-applied, unresolved
-    merge candidates, stack profile, and adapter set. Mostly a re-presentation of facts
-    doctor already computes.
-  - `diff` — what a re-export *would* change, per manifest entry, without writing. `export.sh
-    --dry-run` already computes this; it just isn't legible.
-  - `upgrade` — apply, preserving conflicts under the existing `.agentic-new` policy, and
-    advance `.agentic-flow-version` only when nothing is left pending (that rule already
-    exists in `export.sh`; the command makes it visible).
-- **Deliberately not doing:** a full transactional render-validate-plan-apply engine. For a
-  ~25-entry manifest, render-to-temp then move is the valuable 20%; the rest is machinery
-  looking for a problem.
+- **Direction: pull, from the project (decided 2026-07-25).** This was ambiguous in every
+  earlier draft of this item and the ambiguity mattered, so it is now explicit:
+
+  > `export.sh` **pushes** from the standard into a target. The upgrade surface **pulls**,
+  > and runs **inside the adopted project**.
+
+  Push doesn't scale past the repos you happen to have checked out, and it puts the work on
+  the person who isn't feeling the pain. "Am I current?" is asked by the project's
+  maintainer, in the project, so that is where it must be answerable. Prior art is exact:
+  **cruft** solved this for cookiecutter by stamping the template commit into the project
+  and running `cruft update` from inside it — the same shape as `.agentic-flow-version`.
+
+- **Fix — one command, three subcommands:**
+
+  ```
+  agentic-flow status     # offline. what am I on, what's half-applied, what's ignored
+  agentic-flow diff       # read-only. what would change if I upgraded
+  agentic-flow upgrade    # apply, under the existing .agentic-new policy
+  ```
+
+  Ships in the payload as `scripts/agentic-flow`, so every adopted project has it. Resolves
+  the project root by walking **up from `$PWD`** for `.agentic-flow-version` — unlike
+  `doctor.sh`, which resolves from its own location — so it also works symlinked onto
+  `PATH`. The monorepo semantics are preserved either way: the nearest stamp upward owns
+  that subtree.
+
+- **The origin gap — the blocker nobody had written down.** An adopted project today has the
+  manifest (`config/payload.tsv`, exported) and the stamp (`.agentic-flow-version`), but
+  **no record of where the standard lives** and no copy of the apply logic
+  (`scripts/export.sh` is `source-only`). So it knows what version it *is* and cannot
+  discover what version *exists*. Two consequences:
+  - **`.agentic-flow-source` must be recorded at adoption time**, holding the standard's
+    origin (and the ref to track). It cannot be back-derived later — same argument that
+    pulled the version stamp forward as 1.5.5, and the reason this is step one.
+  - **The manifest walk has to ship.** Either export `export.sh`, or — better — extract its
+    manifest-walk + merge-policy core into a small exported library that both `export.sh`
+    (push) and `agentic-flow upgrade` (pull) call. `export.sh` also does init and
+    placeholder work an adopted project has no use for, so exporting it whole is the worse
+    of the two.
+  - **Price this honestly:** shipping the applier means an adopted project carries code that
+    rewrites its own harness files. That is a larger blast radius than anything currently in
+    the payload, and is probably why `export.sh` was `source-only` to begin with. It should
+    be a deliberate decision, not a side effect. Mitigation: `upgrade` copies
+    manifest-declared files and **executes nothing** it fetched.
+- **Deliberately not doing:** a full transactional render-validate-plan-apply engine; 3-way
+  or automatic merge (`.agentic-new` + a human stays the policy); downgrade; multiple
+  origins; the CLI self-updating. For a ~29-entry manifest, render-to-temp then move is the
+  valuable 20%; the rest is machinery looking for a problem.
 - **Also still here from the original item:** ~~a `Standard version:` line in
   `METHODOLOGY.md`~~ — **done**: `VERSION` holds the semver, the header names it, and the
   stamp is `<semver>+<sha>`. Still open: doctor detecting *hand-edited* harness files by
   comparing against the stamped version (distinct from unresolved candidates, which it
   already catches).
-- **Done when:** an adopted project can answer "am I current, what would change, and what is
-  half-applied" without reading `export.sh`, and `upgrade` never advances the installed
-  version past what is actually active.
+- **Done when:** running `agentic-flow status` **inside an adopted project** answers "am I
+  current, what would change, and what is half-applied" without reading `export.sh` or
+  having the standard checked out, and `upgrade` never advances the installed version past
+  what is actually active.
+- **Plan:** [`docs/inprogress/feature-upgrade-surface.md`](docs/inprogress/feature-upgrade-surface.md).
 - **Status 2026-07-25 — not started, and now the sole 1.0 blocker.**
   `grep -rn upgrade scripts/ ADOPTION.md` returns nothing. Meanwhile
   `collector/.agentic-flow-version` reads `0.9.0+d507bf4` — the commit immediately *before*
@@ -474,9 +512,11 @@ collector). `init.sh` handles greenfield well. What actually happens is a **merg
 
 Concrete, small fixes — all cheaper than the general upgrade engine:
 
-- **`doctor.sh`: warn when a payload path is git-ignored in the target.** One `git
-  check-ignore` pass over the manifest catches every instance of the trap above. This is the
-  single highest-value item in 3.2 and does not depend on the rest of it.
+- **Warn when a payload path is git-ignored in the target.** One `git check-ignore` pass
+  over the manifest catches every instance of the trap above. This is the single
+  highest-value item in 3.2, it does not depend on the rest of it, and `agentic-flow status`
+  is its natural home — "what is on disk but not actually installed" is a status question.
+  Mirror it in `doctor.sh` so adoption checks catch it too.
 - **`export.sh`: report a summary of what landed as `.agentic-new`**, so a merge that needs
   attention is visible at the end of the run rather than discovered later.
 - Treat "adopt into an existing repo" as a first-class documented path in `ADOPTION.md`,
