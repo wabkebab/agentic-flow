@@ -323,6 +323,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/config/payload.tsv"
   assert_file "$TARGET/scripts/plan-to-issues.sh"
   assert_file "$TARGET/scripts/doctor.sh"
+  assert_file "$TARGET/scripts/lib/payload-apply.sh"
   assert_file "$TARGET/scripts/render-stack-profile.sh"
   assert_file "$TARGET/profiles/generic.tsv"
   assert_file "$TARGET/profiles/node.tsv"
@@ -374,6 +375,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_no_file "$TARGET/docs/inprogress/self-test-export-leak.md"
   assert_no_file "$TARGET/scripts/export.sh"
   assert_no_file "$TARGET/scripts/init.sh"
+  (cd "$TARGET" && . scripts/lib/payload-apply.sh && . scripts/lib/payload-apply.sh) \
+    || fail "payload apply library was not safe to source twice"
   # templates/harness holds the pristine forms, which export to project-root destinations
   # (CLAUDE.md, AGENTS.md, Makefile) — never to templates/harness in the target. So the whole
   # subtree must be absent, which also keeps its maintainer-only README out of adopters.

@@ -16,6 +16,7 @@
 set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/.." && pwd -P)
+. "$SRC/scripts/lib/payload-apply.sh"
 
 DRY=false
 FORCE=false
@@ -36,47 +37,7 @@ die() { echo "error: $*" >&2; exit 1; }
 # The manifest is the one source of truth for payload membership. Export, doctor, and
 # self-test all consume or validate it so a new adapter cannot silently exist only here.
 MANIFEST="$SRC/config/payload.tsv"
-[ -f "$MANIFEST" ] || die "payload manifest not found: $MANIFEST"
-
-# Never export these basenames anywhere. Exact source-only paths come from the manifest.
-EXCLUDE_BASENAMES=( settings.local.json .DS_Store )
-EXCLUDE_PATHS=()
-ITEM_SRCS=()
-ITEM_DSTS=()
-
-while IFS="$(printf '\t')" read -r src_item dst_item scope merge_policy disposition; do
-  case "${src_item:-}" in ""|\#*) continue ;; esac
-  [ -n "${dst_item:-}" ] || die "manifest entry has no destination: $src_item"
-  case "${disposition:-}" in
-    export)
-      ITEM_SRCS+=("$src_item")
-      ITEM_DSTS+=("$dst_item")
-      ;;
-    source-only)
-      EXCLUDE_PATHS+=("$src_item")
-      ;;
-    *)
-      die "manifest entry has invalid disposition '${disposition:-}': $src_item"
-      ;;
-  esac
-  case "${merge_policy:-}" in preserve|force|none) ;; *)
-    die "manifest entry has invalid merge policy '$merge_policy': $src_item" ;;
-  esac
-  [ -n "${scope:-}" ] || die "manifest entry has no scope: $src_item"
-done < "$MANIFEST"
-
-is_excluded() {
-  local rel="$1" base; base=$(basename "$rel")
-  local x
-  for x in "${EXCLUDE_BASENAMES[@]}"; do [ "$base" = "$x" ] && return 0; done
-  # Prefix match, not exact-equality: a source-only manifest entry can name a directory
-  # (e.g. a future installer-only subtree), and its files reach us here as paths beneath
-  # it, never as the directory path itself.
-  for x in "${EXCLUDE_PATHS[@]}"; do
-    case "$rel" in "$x"|"$x"/*) return 0 ;; esac
-  done
-  return 1
-}
+payload_load_manifest "$MANIFEST"
 
 # Create / validate target.
 if [ ! -d "$DST" ]; then
@@ -89,33 +50,7 @@ fi
 DST=$(cd "$DST" 2>/dev/null && pwd -P || echo "$DST")
 [ "$DST" != "$SRC" ] || die "target is the agentic-flow repo itself"
 
-# Expand the manifest into parallel source/destination file lists (bash 3.2 safe).
-FILES=()
-DESTS=()
-manifest_i=0
-while [ "$manifest_i" -lt "${#ITEM_SRCS[@]}" ]; do
-  src_item="${ITEM_SRCS[$manifest_i]}"
-  dst_item="${ITEM_DSTS[$manifest_i]}"
-  manifest_i=$((manifest_i + 1))
-
-  if [ -f "$SRC/$src_item" ]; then
-    FILES+=("$src_item")
-    DESTS+=("$dst_item")
-  elif [ -d "$SRC/$src_item" ]; then
-    while IFS= read -r f; do
-      rel="${f#"$SRC"/}"
-      FILES+=("$rel")
-      if [ "$src_item" = "$dst_item" ]; then
-        DESTS+=("$rel")
-      else
-        suffix="${rel#"$src_item"/}"
-        DESTS+=("$dst_item/$suffix")
-      fi
-    done < <(find "$SRC/$src_item" -type f | sort)
-  else
-    die "manifest source does not exist: $src_item"
-  fi
-done
+payload_expand_files "$SRC"
 
 echo "Exporting agentic-flow standard"
 echo "  from: $SRC"
@@ -126,10 +61,11 @@ echo
 # Two-part stamp: a human-facing semver (bumped deliberately in VERSION on a contract
 # change) plus a `+`-joined git short SHA (semver build-metadata syntax) that machines can
 # diff exactly, since two exports on the same unreleased semver still need to compare.
-semver=$(sed -n '1p' "$SRC/VERSION" 2>/dev/null || true)
-[ -n "$semver" ] || semver="0.0.0"
-sha=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || printf '%s\n' unknown)
-version="$semver+$sha"
+version=$(payload_compute_version "$SRC")
+PAYLOAD_VERSION="$version"
+PAYLOAD_DRY="$DRY"
+PAYLOAD_FORCE="$FORCE"
+PAYLOAD_DST_ROOT="$DST"
 source_origin=$(git -C "$SRC" remote get-url origin 2>/dev/null || true)
 source_ref=${AGENTIC_FLOW_SOURCE_REF:-main}
 created=0; overwritten=0; merge=0; same=0; candidate_created=0; candidate_reused=0
@@ -139,52 +75,33 @@ while [ "$i" -lt "${#FILES[@]}" ]; do
   dest="${DESTS[$i]}"
   i=$((i + 1))
 
-  is_excluded "$rel" && continue
+  payload_is_excluded "$rel" && continue
   s="$SRC/$rel"; d="$DST/$dest"
-  if [ -e "$d" ]; then
-    if cmp -s "$s" "$d"; then
-      same=$((same + 1)); continue
-    fi
-    if [ "$FORCE" = true ]; then
-      $DRY || { mkdir -p "$(dirname "$d")"; cp -p "$s" "$d"; }
+  payload_apply_entry "$s" "$d" "$([ "$FORCE" = true ] && echo force || echo apply)" >/dev/null
+  classification="$PAYLOAD_RESULT_CLASSIFICATION"
+  case "$classification" in
+    same)
+      same=$((same + 1))
+      ;;
+    overwrite)
       echo "  overwrite   $dest"; overwritten=$((overwritten + 1))
-    else
-      candidate="$d.agentic-new"
-      if [ -e "$candidate" ] && ! cmp -s "$s" "$candidate"; then
-        candidate="$d.agentic-new.$version"
-      fi
-      if [ -e "$candidate" ] && ! cmp -s "$s" "$candidate"; then
-        content_id=$(git hash-object "$s" 2>/dev/null | cut -c1-12)
-        [ -n "$content_id" ] || content_id=$(cksum "$s" | awk '{print $1}')
-        candidate="$d.agentic-new.$version.$content_id"
-      fi
-      if [ -e "$candidate" ]; then
-        cmp -s "$s" "$candidate" \
-          || die "refusing to overwrite occupied merge candidate: ${candidate#"$DST"/}"
-        candidate_reused=$((candidate_reused + 1))
-        candidate_action="pending"
-      else
-        $DRY || { mkdir -p "$(dirname "$candidate")"; cp -p "$s" "$candidate"; }
+      ;;
+    candidate|pending)
+      if [ "$classification" = candidate ]; then
         candidate_created=$((candidate_created + 1))
-        candidate_action="candidate"
+      else
+        candidate_reused=$((candidate_reused + 1))
       fi
-      echo "  exists →    ${candidate#"$DST"/}   ($candidate_action — merge by hand)"
+      echo "  exists →    ${PAYLOAD_RESULT_PATH#"$DST"/}   ($PAYLOAD_RESULT_CANDIDATE_ACTION — merge by hand)"
       merge=$((merge + 1))
-    fi
-  else
-    $DRY || { mkdir -p "$(dirname "$d")"; cp -p "$s" "$d"; }
-    echo "  create      $dest"; created=$((created + 1))
-  fi
+      ;;
+    create)
+      echo "  create      $dest"; created=$((created + 1))
+      ;;
+  esac
 done
 
-if [ "$DRY" = false ]; then
-  if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
-    printf '%s\n' "$version" > "$DST/.agentic-flow-version"
-    rm -f "$DST/.agentic-flow-candidate-version"
-  else
-    printf '%s\n' "$version" > "$DST/.agentic-flow-candidate-version"
-  fi
-fi
+payload_stamp_version "$SRC" "$DST" "$merge"
 if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
   echo "  installed   .agentic-flow-version ($version)"
 else
