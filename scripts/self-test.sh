@@ -34,9 +34,12 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-case "$ONLY_GROUP" in
-  ""|export|contracts|hooks|plan-to-issues|lifecycle) ;;
-  *) echo "unknown self-test group: $ONLY_GROUP" >&2; exit 2 ;;
+# The one list both the flag parser and every `should_run` call site are checked against.
+SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle"
+GROUPS_RAN=" "
+case " $SELF_TEST_GROUPS " in
+  *" $ONLY_GROUP "*) ;;
+  *) [ -z "$ONLY_GROUP" ] || { echo "unknown self-test group: $ONLY_GROUP" >&2; exit 2; } ;;
 esac
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
@@ -168,14 +171,22 @@ must_allow() { # <hook> <command>
 }
 
 should_run() { # <group>
+  # Validate the CALL SITE, not just the user's --only value. A drifted label here would
+  # match nothing, so `--only <group>` would fall through to "self-test passed." having
+  # asserted nothing — green for the wrong reason, on the gate AGENTS.md tells the
+  # executor to run per step. GROUPS_RAN + the tail check below close the other half:
+  # a group whose guard stops firing at all.
+  case " $SELF_TEST_GROUPS " in
+    *" $1 "*) ;;
+    *) fail "unknown self-test group at call site: $1" ;;
+  esac
   if [ -n "$ONLY_GROUP" ]; then
-    [ "$ONLY_GROUP" = "$1" ]
-    return
+    [ "$ONLY_GROUP" = "$1" ] || return 1
+  elif [ "$SELF_TEST_MODE" != full ] && [ "$1" = export ]; then
+    return 1
   fi
-  if [ "$SELF_TEST_MODE" = full ]; then
-    return 0
-  fi
-  [ "$1" != export ]
+  GROUPS_RAN="$GROUPS_RAN $1 "
+  return 0
 }
 
 # --- export invariants (scaffold repo only, full suite only) -----------------------------
@@ -559,6 +570,27 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   cp "$SOURCE_FIXTURE/templates/ci/ci.yml" "$BAD_WORKFLOW"
   "$SOURCE_FIXTURE/scripts/render-stack-profile.sh" bad-ci --ci "$BAD_WORKFLOW" >/dev/null 2>&1 \
     && fail "renderer accepted a ci-setup row containing a literal tab"
+
+  # `make build` is the production assembly check and pipes dry-run output to /dev/null
+  # into a temp dir it then deletes — so it would not notice a dry run that started
+  # writing. Assert the promise in the flag's own name: it writes nothing.
+  DRYRUN_TARGET="$TMP/dryrun-target"
+  mkdir -p "$DRYRUN_TARGET"
+  "$SOURCE_FIXTURE/scripts/export.sh" --dry-run "$DRYRUN_TARGET" >/dev/null \
+    || fail "export --dry-run failed against an empty target"
+  [ -z "$(find "$DRYRUN_TARGET" -mindepth 1 -print -quit)" ] \
+    || fail "export --dry-run wrote into the target directory"
+
+  # ...and does not clobber a target that already holds files.
+  DRYRUN_EXISTING="$TMP/dryrun-existing"
+  mkdir -p "$DRYRUN_EXISTING"
+  printf 'sentinel\n' > "$DRYRUN_EXISTING/CLAUDE.md"
+  "$SOURCE_FIXTURE/scripts/export.sh" --dry-run "$DRYRUN_EXISTING" >/dev/null \
+    || fail "export --dry-run failed against a populated target"
+  grep -qx 'sentinel' "$DRYRUN_EXISTING/CLAUDE.md" \
+    || fail "export --dry-run overwrote an existing target file"
+  [ "$(find "$DRYRUN_EXISTING" -mindepth 1 | wc -l | tr -d ' ')" -eq 1 ] \
+    || fail "export --dry-run added files to a populated target"
 fi
 fi
 
@@ -693,31 +725,73 @@ for role_file in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" \
   grep -qi 'preload the whole' "$role_file" \
     || fail "$role_file lacks the minimal read-set rule"
 done
+# Ceilings are set just above the MEASURED size of each bundle, not above a modelled
+# "role used to preload METHODOLOGY.md" figure. A ceiling with 100%+ headroom passes no
+# matter what gets re-inlined, which turns the assertion into decoration. Raising one is
+# a deliberate act: move the content to its canonical home first (CLAUDE.md → routing).
 planner_words=$(wc -w < "$ROOT/CLAUDE.md" | tr -d ' ')
 executor_words=$(wc -w < "$ROOT/AGENTS.md" | tr -d ' ')
 reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
-[ "$planner_words" -le 2976 ] \
-  || fail "planner static role bundle exceeds half-baseline ceiling: $planner_words words"
-[ "$executor_words" -le 2715 ] \
-  || fail "executor static role bundle exceeds half-baseline ceiling: $executor_words words"
-[ "$reviewer_words" -le 3099 ] \
-  || fail "reviewer static role bundle exceeds half-baseline ceiling: $reviewer_words words"
+[ "$planner_words" -le 1450 ] \
+  || fail "planner static role bundle exceeds its ceiling: $planner_words words (max 1450)"
+[ "$executor_words" -le 870 ] \
+  || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 870)"
+[ "$reviewer_words" -le 820 ] \
+  || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 820)"
+
+# One severity vocabulary across every review surface — the SKILL.md pair AND the live
+# /review agent contract, which is where the old block/fix/nit scale survived an earlier
+# normalization pass precisely because nothing asserted over it.
+for review_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
+                      "$ROOT/.opencode/skills/review-execution/SKILL.md" \
+                      "$ROOT/.opencode/agent/code-reviewer.md"; do
+  [ -f "$review_surface" ] || fail "missing review surface: $review_surface"
+  for level in High Medium Low Nit; do
+    grep -q "\*\*$level\*\*" "$review_surface" \
+      || fail "$review_surface lacks $level severity"
+  done
+  grep -qi 'accepted/by-design' "$review_surface" \
+    || fail "$review_surface does not name accepted/by-design as a disposition"
+  # shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+  grep -qE '\*\*(Blocker|Critical)\*\*|`block`|`fix`|LGTM' "$review_surface" \
+    && fail "$review_surface still uses a retired severity or verdict vocabulary"
+done
 grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-execution/SKILL.md" \
   || fail "review skill does not route engineering standards to AGENTS.md"
-grep -qi '\*\*Nit\*\*' "$ROOT/.agents/skills/review-execution/SKILL.md" \
-  || fail "review skill lacks Nit severity"
-grep -qi 'Accepted/by-design' "$ROOT/.agents/skills/review-execution/SKILL.md" \
-  || fail "review skill treats accepted risk as severity"
-grep -qi '\*\*Blocker\*\*' "$ROOT/.agents/skills/review-execution/SKILL.md" \
-  && fail "review skill still defines Blocker severity"
 
+# Every §N route an agent is told to follow must resolve. Emit each section on a line
+# individually: a greedy `.*§([0-9]+)` keeps only the LAST one, so "§3, §5" silently
+# stopped checking §3. ADOPTION.md and the docs README carry routes too.
 while IFS= read -r section; do
   grep -q "^## $section\\. " "$ROOT/METHODOLOGY.md" \
     || fail "METHODOLOGY.md §$section reference has no matching section"
-done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*§[0-9]+' \
-  "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" "$ROOT/templates" "$ROOT/docs/templates" \
+done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*' \
+  "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" "$ROOT/ADOPTION.md" "$ROOT/docs/README.md" \
+  "$ROOT/templates" "$ROOT/docs/templates" \
   "$ROOT/.agents" "$ROOT/.opencode" "$ROOT/scripts" "$ROOT/Makefile" \
-  | sed -E 's/.*§([0-9]+).*/\1/' | sort -u)
+  | grep -oE '§[0-9]+' | tr -d '§' | sort -u)
+
+# Failure-first coverage for the focused-group dispatcher itself. `make test-one F=…` is
+# the executor's per-step gate, so both ways it can go quietly empty must be red.
+DISPATCH_FIX="$TMP/dispatch/scripts"
+mkdir -p "$DISPATCH_FIX"
+sed 's/^if should_run hooks; then$/if should_run hook; then/' "$ROOT/scripts/self-test.sh" \
+  > "$DISPATCH_FIX/self-test.sh"
+chmod +x "$DISPATCH_FIX/self-test.sh"
+cmp -s "$ROOT/scripts/self-test.sh" "$DISPATCH_FIX/self-test.sh" \
+  && fail "dispatch fixture failed to rename a should_run call site"
+"$DISPATCH_FIX/self-test.sh" --only hooks >/dev/null 2>"$TMP/dispatch-drift.err" \
+  && fail "focused run passed with a drifted should_run call-site label"
+grep -q "unknown self-test group at call site" "$TMP/dispatch-drift.err" \
+  || fail "drifted call-site label did not name the problem"
+
+sed 's/^if should_run hooks; then$/if false; then/' "$ROOT/scripts/self-test.sh" \
+  > "$DISPATCH_FIX/self-test.sh"
+chmod +x "$DISPATCH_FIX/self-test.sh"
+"$DISPATCH_FIX/self-test.sh" --only hooks >/dev/null 2>"$TMP/dispatch-empty.err" \
+  && fail "focused run passed with its group block disabled"
+grep -q "self-test group 'hooks' never executed" "$TMP/dispatch-empty.err" \
+  || fail "disabled group did not report that it never executed"
 
 DOC_STAGE_FIX="$TMP/docs-stage"
 mkdir -p "$DOC_STAGE_FIX/docs/unknown"
@@ -1272,5 +1346,29 @@ grep -q 'READY.*lc19-wrapped\.md' "$TMP/lifecycle19.out" \
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
   && fail "strict lifecycle check accepted a misnamed Approval field as though it were valid"
 fi
+
+# --- the run did what the mode promised --------------------------------------------------
+# Without this, deleting or mis-guarding a group's `if should_run` block still prints
+# "self-test passed." A pass has to mean the groups for this mode actually executed.
+if [ -n "$ONLY_GROUP" ]; then
+  EXPECTED_GROUPS="$ONLY_GROUP"
+elif [ "$SELF_TEST_MODE" = full ]; then
+  EXPECTED_GROUPS="$SELF_TEST_GROUPS"
+else
+  EXPECTED_GROUPS=$(printf '%s\n' "$SELF_TEST_GROUPS" | sed 's/export //')
+fi
+for group in $EXPECTED_GROUPS; do
+  case "$GROUPS_RAN" in
+    *" $group "*) ;;
+    *) fail "self-test group '$group' never executed in $([ -n "$ONLY_GROUP" ] \
+         && echo "--only $ONLY_GROUP" || echo "--$SELF_TEST_MODE") mode" ;;
+  esac
+done
+for group in $GROUPS_RAN; do
+  case " $EXPECTED_GROUPS " in
+    *" $group "*) ;;
+    *) fail "self-test ran unrelated group '$group'" ;;
+  esac
+done
 
 echo "self-test passed."

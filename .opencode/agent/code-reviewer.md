@@ -33,8 +33,9 @@ standards"). Flag, with severity, any diff that:
 
 - Scripts are **POSIX-ish shell, Bash 3.2 for macOS** — no `mapfile`, no
   associative arrays, watch empty arrays under `set -u`.
-- `make check` and `make test` are the gates (`make test-one F=<file>` for one
-  test). `make test` fails if `shellcheck` is missing — do not treat a
+- `make check` and `make test` are the gates (`make test-one F=<group>` for one
+  focused harness group: `export`, `contracts`, `hooks`, `plan-to-issues`,
+  `lifecycle`). `make test` fails if `shellcheck` is missing — do not treat a
   missing shellcheck as green.
 - Staging is **by file name** — `git add -A`/`.`/`--all` are blocked by hook.
 - **Never push** is enforced; a review never recommends pushing.
@@ -52,13 +53,25 @@ cases above.
 
 ## Output format
 
-For each finding:
-- **Severity:** `block` (won't pass `make check && make test` or violates a
-  non-negotiable standard) / `fix` (should change before merge) / `nit`
-  (optional).
+One severity scale, shared with `review-execution/SKILL.md` and METHODOLOGY.md §5,
+so a finding keeps its meaning when it becomes a `sev:*` label:
+
+- **High** — common path is incorrect or a serious regression has no safe
+  workaround. Blocks merge.
+- **Medium** — real defect under a bounded condition, or required failure-path
+  coverage is missing in a way that can hide one. Needs a fix or an explicit
+  accepted-risk disposition.
+- **Low** — concrete, limited correctness or operability risk worth fixing
+  before closure. Does not block.
+- **Nit** — wording, clarity, or tiny hygiene issue. Does not block.
+
+Accepted/by-design is a disposition, not a severity: record it against the
+finding, or move material accepted risk to `docs/accepted_risks.md`.
+
+For each finding give:
 - **Location:** `file_path:line` (use the diff hunk, not the patched file, when
   citing added lines).
 - **Problem → why it matters → suggested direction** (not finished code).
 
-End with a one-line verdict: `BLOCK` / `fix N findings` / `LGTM`.
+End with a one-line verdict: `approved` / `changes requested` / `pending`.
 Do not edit files, do not stage, do not commit, do not push.

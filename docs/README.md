@@ -39,6 +39,11 @@ docs/
 
 `backlog/` → `inprogress/` (plan → execute → review) → `done/` (or `done/security/`).
 
+Those four are the **only** stages `scripts/docs-index.sh` accepts. A `.md` file anywhere
+else under `docs/` — including `docs/` itself — fails the index build (and therefore
+`make check`) rather than being listed under an invented stage. Non-Markdown files and
+`README.md` / `accepted_risks.md` / `templates/` are skipped entirely.
+
 A doc leaves `inprogress/` when its implementation steps are all shipped, independently
 reviewed, and verified. Reviewed step issues may accumulate at
 `agent:claude + needs-closing`; close the plan in one pass only after all steps qualify,

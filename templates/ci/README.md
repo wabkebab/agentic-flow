@@ -28,6 +28,22 @@ so adopting the harness never activates CI or a deploy behind your back.
 Adding a job later means adding it to `ci-gate`'s `needs` **and** to the result loop
 inside it. A job missing from the loop is a job nothing enforces.
 
+### The `Repo-scope scaffold doctor` step
+
+The `app` job runs `scripts/doctor.sh --check --scope repo --skip-make-check` right after
+`make check`. It gates the *harness* invariants CI would otherwise never see — payload
+files present, hooks wired, docs index derived, no unfilled placeholders left behind.
+
+`--skip-make-check` exists only for this call site: doctor's last check is behavioural
+(it shells out to `make check` to prove the recipe is actually green, not merely wired),
+and the step above already did exactly that. Without the flag, every CI run paid for
+`make check` twice. The flag is rejected outside `--scope repo`, so it cannot be used to
+quietly drop the behavioural check from a full doctor run.
+
+If your project is still mid-adoption, run `scripts/doctor.sh --check` locally and clear
+its findings before you make `CI gate` a required check — otherwise this step is the one
+that will fail.
+
 ## Keeping the pins honest
 
 `scripts/check-action-pins.sh` scans `.github/workflows/` and `templates/ci/`:

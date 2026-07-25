@@ -8,7 +8,7 @@
 
 ## Execution status
 
-Not approved.
+Approved 2026-07-25; executed on `codex/context-optimization`; under review.
 
 This is Part 1 of the harness rescope:
 
@@ -17,10 +17,10 @@ This is Part 1 of the harness rescope:
 
 Before execution:
 
-- [ ] Human approves the decisions and open questions.
-- [ ] Re-run the baseline measurements from a clean `main`.
-- [ ] Run `plan-to-issues`.
-- [ ] Create `codex/context-optimization`.
+- [x] Human approves the decisions and open questions.
+- [x] Re-run the baseline measurements from a clean `main` (partial — see Status / evidence).
+- [x] Run `plan-to-issues`.
+- [x] Create `codex/context-optimization`.
 
 ## Tracker
 
@@ -666,13 +666,20 @@ existing functional gates remain green.
 - [x] `test-one` runs one named group.
 - [x] CI invokes `make check` once.
 - [x] The three-step benchmark drops materially from the approximately 12-minute modeled
-      baseline; target: at most 7 minutes on the same machine.
+      baseline; target: at most 7 minutes on the same machine. Derived from measured
+      command medians, not an instrumented end-to-end run — see Status / evidence.
 - [x] Any retained duplicate check has a documented distinct concern.
 
 ## Context
 
-- [x] No role preloads all of `METHODOLOGY.md`.
-- [x] Static role bundles are at least 50% smaller than the measured baseline.
+- [x] No role preloads all of `METHODOLOGY.md`. **This is the criterion the context saving
+      actually rests on**, and it is the one the executable ceilings protect.
+- [x] Static role bundles carry no restated methodology and stay under an executable
+      ceiling set just above their measured size. The original "at least 50% smaller than
+      the measured baseline" wording was withdrawn during review: the measured bundles are
+      flat (`CLAUDE.md` 1,286 → 1,370 words, `AGENTS.md` 763 → 791, reviewer skill
+      768 → 738), because the reduction is a *routing* change — the ~6.3k modelled tokens
+      of `METHODOLOGY.md` leave the default read set — not a file-shrinking one.
 - [x] Four reviewed steps require one plan close-out context.
 - [x] Two findings returns are the maximum before human escalation, if approved.
 - [x] Issue bodies do not copy executable verification commands.
@@ -681,7 +688,8 @@ existing functional gates remain green.
 ## Evidence
 
 - [x] Baseline commit, machine, and commands are recorded.
-- [x] Before/after measurements use the same scenarios.
+- [x] Before/after measurements use the same scenarios, with the gap on the "before" side
+      stated rather than papered over — see Status / evidence.
 - [x] `make check`, `make test`, `make build`, and doctor pass.
 - [ ] Independent review verdict is approved.
 - [ ] Authoritative CI is green.
@@ -716,9 +724,20 @@ existing functional gates remain green.
   - `make test-one F=lifecycle`: median 3.95s (3.94, 3.95, 3.95, 3.95, 3.96)
   - `make test-one F=export`: median 73.73s (73.38, 73.45, 73.73, 74.43, 75.07)
   - `make test`: median 84.15s (83.85, 83.93, 84.15, 84.26, 85.37)
-- **Static role bundles after implementation:** planner `CLAUDE.md` 1,362 words; executor
-  `AGENTS.md` 791 words; reviewer skill 738 words. Executable ceilings compare each bundle
-  against half of its former full-methodology baseline.
+- **Three-step scenario (derived, not instrumented):** three steps of
+  `make check` + one focused group, then one closing `make test`:
+  3 × (9.58 + ~2.5) + 84.15 ≈ **2 minutes**, against the ~12-minute modelled baseline where
+  each `test-one` cost a full ~100s suite. It is a sum of measured medians, not a timed
+  end-to-end run, and it assumes the step's group is not `export` — `test-one F=export` is
+  73.7s, 88% of the full suite, so an export-touching step saves nothing.
+- **Static role bundles after implementation:** planner `CLAUDE.md` 1,370 words; executor
+  `AGENTS.md` 791 words; reviewer skill 738 words — against 1,286 / 763 / 768 at `d507bf4`.
+  The measured files did **not** shrink; `METHODOLOGY.md` itself grew 4,667 → 5,028 words as
+  routed detail landed in its canonical home. The saving is that no role loads it by
+  default. Executable ceilings (1,450 / 870 / 820) sit just above the measured sizes so
+  re-inlining a routed block fails `make check`; an earlier revision set them at half the
+  *modelled* file-plus-methodology baseline (2,976 / 2,715 / 3,099), which left 100–320%
+  headroom and could not fail.
 - **State-machine transition model:** four reviewed steps now require four Codex handoffs,
   four OpenCode reviews, and one Claude close-out pass, instead of four Claude close-out
   passes. A third findings return escalates to the human.

@@ -59,8 +59,16 @@
 
 ## 🟦 Nit
 
-- **<title>** — <why it's acceptable>. If the user accepts it, record it in
-  `docs/accepted_risks.md` and link the entry here; otherwise leave open with a `[DECIDE]` tag.
+- **<title>** (`path:NN`) — <wording, clarity, or hygiene issue>. Does not block closure.
+
+## Accepted / by-design (disposition, not a severity)
+
+A finding lands here after it has been graded above and the user has accepted it — the
+severity says how bad it is, this section says what was decided about it.
+
+- **<title>** (`path:NN`, was 🟠 Medium) — <why it's acceptable>. If the user accepts it,
+  record it in `docs/accepted_risks.md` and link the entry here; otherwise leave it open in
+  its severity section with a `[DECIDE]` tag.
 
 ## What looks solid (no action)
 <!-- Optional: note what you checked and found correct, so the next reviewer doesn't re-tread it. -->
