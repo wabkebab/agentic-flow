@@ -876,7 +876,7 @@ grep -q "no .agentic-flow-version found" "$TMP/status-outside.err" \
 
 STATUS_FIX="$TMP/status-fixture"
 mkdir -p "$STATUS_FIX/.claude" "$STATUS_FIX/.codex" "$STATUS_FIX/.agents" \
-  "$STATUS_FIX/.opencode" "$STATUS_FIX/config" "$STATUS_FIX/scripts" "$STATUS_FIX/sub/dir"
+  "$STATUS_FIX/.opencode" "$STATUS_FIX/config" "$STATUS_FIX/scripts/lib" "$STATUS_FIX/sub/dir"
 printf '%s\n' '1.2.3+abcdef0' > "$STATUS_FIX/.agentic-flow-version"
 printf '%s\n' generic > "$STATUS_FIX/.agentic-flow-stack"
 printf 'origin https://example.invalid/agentic-flow.git\nref main\n' \
@@ -886,7 +886,11 @@ printf '{}' > "$STATUS_FIX/.codex/hooks.json"
 printf '# source\tdestination\tscope\tmerge-policy\tdisposition\n.claude/settings.json\t.claude/settings.json\tclaude\tpreserve\texport\n' \
   > "$STATUS_FIX/config/payload.tsv"
 cp "$ROOT/scripts/doctor.sh" "$STATUS_FIX/scripts/doctor.sh"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$STATUS_FIX/scripts/lib/payload-apply.sh"
 chmod +x "$STATUS_FIX/scripts/doctor.sh"
+"$AGENTIC_FLOW_CLI" --help > "$TMP/agentic-flow-help.out" 2>&1
+grep -q "project's installed harness stamp" "$TMP/agentic-flow-help.out" \
+  || fail "agentic-flow --help did not document --version as the project stamp"
 (cd "$STATUS_FIX/sub/dir" && "$AGENTIC_FLOW_CLI" status) > "$TMP/status-clean.out" \
   || fail "status did not find the nearest stamped root from a nested directory"
 grep -q "installed: 1.2.3+abcdef0" "$TMP/status-clean.out" \
@@ -1012,6 +1016,36 @@ post_override_digest=$(tree_digest "$DIFF_TARGET")
   || fail "diff --ref changed the project tree"
 grep -qx "ref main" "$DIFF_TARGET/.agentic-flow-source" \
   || fail "diff --ref rewrote the recorded source ref"
+
+TIMEOUT_TARGET="$TMP/timeout-target"
+mkdir -p "$TIMEOUT_TARGET/config" "$TIMEOUT_TARGET/scripts/lib"
+printf '%s\n' 'old+timeout' > "$TIMEOUT_TARGET/.agentic-flow-version"
+printf 'origin https://example.invalid/slow.git\nref main\n' > "$TIMEOUT_TARGET/.agentic-flow-source"
+printf 'scripts/lib\tscripts/lib\tcore\tpreserve\texport\n' > "$TIMEOUT_TARGET/config/payload.tsv"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$TIMEOUT_TARGET/scripts/lib/payload-apply.sh"
+TIMEOUT_BIN="$TMP/timeout-bin"
+TIMEOUT_SENTINEL="$TMP/timeout-child-survived"
+mkdir -p "$TIMEOUT_BIN"
+cat > "$TIMEOUT_BIN/git" <<'FAKE_TIMEOUT_GIT'
+#!/usr/bin/env bash
+case " $* " in
+  *" clone "*)
+    (sleep 2; printf '%s\n' survived > "__TIMEOUT_SENTINEL__") &
+    sleep 30
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+FAKE_TIMEOUT_GIT
+sed "s|__TIMEOUT_SENTINEL__|$TIMEOUT_SENTINEL|g" "$TIMEOUT_BIN/git" > "$TIMEOUT_BIN/git.tmp"
+mv "$TIMEOUT_BIN/git.tmp" "$TIMEOUT_BIN/git"
+chmod +x "$TIMEOUT_BIN/git"
+(cd "$TIMEOUT_TARGET" && PATH="$TIMEOUT_BIN:$PATH" AGENTIC_FLOW_FETCH_TIMEOUT=1 "$AGENTIC_FLOW_CLI" diff) \
+  > "$TMP/diff-timeout.out" 2>"$TMP/diff-timeout.err" \
+  && fail "diff accepted a timed-out fetch"
+sleep 3
+assert_no_file "$TIMEOUT_SENTINEL"
 
 UPGRADE_SOURCE="$TMP/upgrade-source"
 mkdir -p "$UPGRADE_SOURCE/config" "$UPGRADE_SOURCE/scripts/lib" "$UPGRADE_SOURCE/scripts" \

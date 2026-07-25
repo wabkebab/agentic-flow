@@ -59,6 +59,47 @@ payload_is_excluded() { # <relative-source-path>
   return 1
 }
 
+payload_destination_files() { # <root>
+  local root="$1"
+  local manifest="$root/config/payload.tsv" source destination _scope _merge disposition file rel suffix
+  [ -f "$manifest" ] || return 0
+  while IFS="$(printf '\t')" read -r source destination _scope _merge disposition; do
+    case "${source:-}" in ""|\#*) continue ;; esac
+    [ "${disposition:-}" = export ] || continue
+    if [ -f "$root/$destination" ]; then
+      printf '%s\n' "$destination"
+    elif [ -d "$root/$destination" ]; then
+      while IFS= read -r file; do
+        rel="${file#"$root"/}"
+        printf '%s\n' "$rel"
+      done < <(find "$root/$destination" -type f | sort)
+    elif [ -d "$root/$source" ]; then
+      while IFS= read -r file; do
+        rel="${file#"$root/$source"/}"
+        if [ "$source" = "$destination" ]; then
+          printf '%s/%s\n' "$destination" "$rel"
+        else
+          suffix="${rel#"$source"/}"
+          printf '%s/%s\n' "$destination" "$suffix"
+        fi
+      done < <(find "$root/$source" -type f | sort)
+    else
+      printf '%s\n' "$destination"
+    fi
+  done < "$manifest" | sort -u
+}
+
+payload_ignored_paths() { # <root>
+  local root="$1" path
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if git -C "$root" check-ignore -q -- "$path" 2>/dev/null; then
+      printf '%s\n' "$path"
+    fi
+  done < <(payload_destination_files "$root")
+}
+
 payload_expand_files() { # <src-root>
   local src_root="$1" manifest_i src_item dst_item f rel suffix
   FILES=()

@@ -48,6 +48,11 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 failures=0
 warnings=0
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
+PAYLOAD_LIB="$ROOT/scripts/lib/payload-apply.sh"
+if [ -f "$PAYLOAD_LIB" ]; then
+  # shellcheck disable=SC1090 # The library is resolved from this adopted project root.
+  . "$PAYLOAD_LIB"
+fi
 
 ok() { printf 'ok      %s\n' "$*"; }
 warn() { printf 'warning %s\n' "$*"; warnings=$((warnings + 1)); }
@@ -110,47 +115,6 @@ real_make_target() {
   else
     ok "Makefile target wired: $target"
   fi
-}
-
-payload_destination_files() { # <root>
-  local root="$1"
-  local manifest="$root/config/payload.tsv" source destination _scope _merge disposition file rel suffix
-  [ -f "$manifest" ] || return 0
-  while IFS="$(printf '\t')" read -r source destination _scope _merge disposition; do
-    case "${source:-}" in ""|\#*) continue ;; esac
-    [ "${disposition:-}" = export ] || continue
-    if [ -f "$root/$destination" ]; then
-      printf '%s\n' "$destination"
-    elif [ -d "$root/$destination" ]; then
-      while IFS= read -r file; do
-        rel="${file#"$root"/}"
-        printf '%s\n' "$rel"
-      done < <(find "$root/$destination" -type f | sort)
-    elif [ -d "$root/$source" ]; then
-      while IFS= read -r file; do
-        rel="${file#"$root/$source"/}"
-        if [ "$source" = "$destination" ]; then
-          printf '%s/%s\n' "$destination" "$rel"
-        else
-          suffix="${rel#"$source"/}"
-          printf '%s/%s\n' "$destination" "$suffix"
-        fi
-      done < <(find "$root/$source" -type f | sort)
-    else
-      printf '%s\n' "$destination"
-    fi
-  done < "$manifest" | sort -u
-}
-
-ignored_payload_paths() { # <root>
-  local root="$1" path
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    if git -C "$root" check-ignore -q -- "$path" 2>/dev/null; then
-      printf '%s\n' "$path"
-    fi
-  done < <(payload_destination_files "$root")
 }
 
 echo "agentic-flow adoption checklist"
@@ -354,7 +318,11 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     fail "docs index up to date (run scripts/docs-index.sh)"
   fi
 
-  ignored_payload=$(ignored_payload_paths "$ROOT")
+  if command -v payload_ignored_paths >/dev/null 2>&1; then
+    ignored_payload=$(payload_ignored_paths "$ROOT")
+  else
+    ignored_payload=""
+  fi
   if [ -n "$ignored_payload" ]; then
     fail "payload paths are git-ignored:"
     printf '%s\n' "$ignored_payload" | sed 's/^/        /'
