@@ -673,7 +673,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     if [ "$has_export" = yes ]; then mkdir -p "$d/scripts"; : > "$d/scripts/export.sh"; fi
     ( # shellcheck disable=SC2034 # consumed by the sourced snippet below, not used directly here.
       CEILING_ROOT="$d"
-      # shellcheck disable=SC2329 # invoked indirectly by the sourced snippet below.
+      # shellcheck disable=SC2317,SC2329 # invoked indirectly by the sourced snippet below;
+      # which of the two IDs fires is shellcheck-version-dependent (SC2317 on CI's 0.9.0,
+      # SC2329 locally on 0.11.0), so both are disabled rather than chasing one.
       fail() { echo "CEILING_FAIL: $1"; }
       # shellcheck disable=SC1090 # the snippet is extracted from this file at runtime.
       . "$CEILING_SNIPPET_FILE"
