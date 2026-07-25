@@ -653,7 +653,8 @@ existing functional gates remain green.
 ## Correctness
 
 - [x] No hook or CI authority is removed.
-- [ ] Every implementation step remains independently reviewed.
+- [x] Every implementation step remains independently reviewed — **at branch granularity
+      only**; see the accepted delivery deviation in Status / evidence.
 - [x] Full tests and shellcheck still run at brief completion and in CI.
 - [x] Fresh exports remain self-consistent and green.
 - [x] `ADOPTION.md` remains exported and required by doctor.
@@ -711,7 +712,13 @@ existing functional gates remain green.
   - `make test-one F=plan-to-issues`
   - `make test-one F=lifecycle`
   - `make test-one F=export`
-- **Review verdict:** pending.
+- **Delivery deviation (accepted):** O-1..O-5 shipped as one commit (`e70fe64`) rather than
+  the five the brief names, so all five step issues close together. Per-step independent
+  review was therefore collapsed into one branch-level review. Accepted by the human
+  2026-07-25; the acceptance criterion "every implementation step remains independently
+  reviewed" is met at branch granularity only. Review findings were fixed in `9134c41`.
+- **Review verdict:** changes requested 2026-07-25 (8 findings, 4 requiring change);
+  fixes applied in `9134c41`; re-review pending.
 - **Measurement basis:** original audit at `d507bf4`, 2026-07-25. Re-run from clean `main`
   before implementation measured `make check` at 11.72s from an archived clean tree; archived
   `make test` / `test-one` could not complete because the export fixture expects Git metadata,
