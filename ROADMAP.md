@@ -47,6 +47,12 @@ So the bar is exactly two things:
 
 Everything else in Tier 3 is post-1.0 by construction ("defer until felt").
 
+**Release mechanics, decided 2026-07-25:** there are no version tags yet, and none are being
+invented before 3.2 lands — adopters track `main` in the meantime. Tagging starts *after*
+the upgrade surface exists, which is the right order: a tag nothing can consume is
+ceremony. `v1.0.0` is then the first tag that means something, because it is the first
+version an adopted project can actually be moved onto.
+
 ### Re-evaluation after #46 (2026-07-25)
 
 #46 was not on this roadmap — it opened a **fourth axis the tier structure never
@@ -464,16 +470,20 @@ adopt each piece when the pain is real.
   - **`.agentic-flow-source` must be recorded at adoption time**, holding the standard's
     origin (and the ref to track). It cannot be back-derived later — same argument that
     pulled the version stamp forward as 1.5.5, and the reason this is step one.
-  - **The manifest walk has to ship.** Either export `export.sh`, or — better — extract its
-    manifest-walk + merge-policy core into a small exported library that both `export.sh`
-    (push) and `agentic-flow upgrade` (pull) call. `export.sh` also does init and
-    placeholder work an adopted project has no use for, so exporting it whole is the worse
-    of the two.
-  - **Price this honestly:** shipping the applier means an adopted project carries code that
-    rewrites its own harness files. That is a larger blast radius than anything currently in
-    the payload, and is probably why `export.sh` was `source-only` to begin with. It should
-    be a deliberate decision, not a side effect. Mitigation: `upgrade` copies
-    manifest-declared files and **executes nothing** it fetched.
+  - **The manifest walk has to ship** — **decided 2026-07-25: it ships.** Not by exporting
+    `export.sh` whole (it also does init and placeholder work an adopted project has no use
+    for) but by extracting its manifest-walk + merge-policy core into a small exported
+    library that both `export.sh` (push) and `agentic-flow upgrade` (pull) call.
+  - **The cost was priced, not assumed.** Shipping the applier means an adopted project
+    carries code that rewrites its own harness files — a larger blast radius than anything
+    currently in the payload, and probably why `export.sh` was `source-only`. Accepted
+    deliberately, because the alternative is no upgrade story. Three mitigations are terms
+    of the acceptance rather than nice-to-haves: `upgrade` executes nothing it fetched; a
+    changed origin is a hard stop; `.agentic-new` still means no silent overwrite.
+  - **Ref tracking: `main` for now, tags after this lands.** `.agentic-flow-source` line 2
+    is opaque data passed to `git clone --branch`, which takes a tag or a branch
+    identically — so moving a project to deliberate, tagged updates later is a one-line edit
+    with no code change. Deliberately **not** designing a release process in this pass.
 - **Deliberately not doing:** a full transactional render-validate-plan-apply engine; 3-way
   or automatic merge (`.agentic-new` + a human stays the policy); downgrade; multiple
   origins; the CLI self-updating. For a ~29-entry manifest, render-to-temp then move is the

@@ -197,16 +197,29 @@ cache is `mktemp -d` and removed on `EXIT`; the manifest is bounded by its own f
 - Deriving `.agentic-flow-source` for projects that lack it — F-6 documents a one-line
   back-fill instead. Guessing provenance is exactly the kind of inference this repo avoids.
 
+## Decisions
+
+Recorded 2026-07-25. Both blocking questions are answered; the plan is unblocked.
+
+- ✅ **The applier ships.** `scripts/lib/payload-apply.sh` becomes exported payload, so an
+  adopted project carries code that rewrites its own harness files. This is the larger
+  blast radius named in the Threat model and it is accepted deliberately, because the
+  alternative is no upgrade story at all. The three mitigations are therefore **not
+  optional and not nice-to-have** — they are the terms on which this was accepted:
+  1. `upgrade` copies manifest-declared files and executes nothing it fetched (F-5.3);
+  2. a changed origin is a hard stop requiring `--force` (F-5.4);
+  3. the `.agentic-new` policy stands — no automatic overwrite of a customized file.
+  Any step that cannot hold all three should stop and escalate rather than ship without one.
+- ✅ **Track `main` by default.** `.agentic-flow-source` line 2 is `main` for now. F-1 must
+  still read the ref as data rather than assuming a branch, because:
+- ✅ **Tags come after this implementation lands.** Once `v<semver>` tags exist, a project
+  switches to deliberate updates by editing one line of `.agentic-flow-source` — no code
+  change, no migration. This is why F-1 writes the ref as a plain second line and F-4/F-5
+  pass it to `git clone --branch`, which accepts a tag or a branch identically. **Do not
+  design a release process in this pass**; just don't foreclose one.
+
 ## Open questions
 
-- **[BLOCKING]** Shipping the applier means adopted projects carry code that rewrites their
-  own harness files (see Threat model). Confirm that is acceptable, or the whole pull
-  direction collapses back to Option B. **Recommendation: accept it** — the mitigations
-  above are real, and the alternative is no upgrade story.
-- **[BLOCKING]** Does `.agentic-flow-source` track a **branch** (`main`, always latest) or a
-  **tag** (`v0.10.0`, deliberate)? **Recommendation: default `main`, allow either.** A tag
-  is the better long-term answer but there are no release tags yet, and inventing a release
-  process is a different piece of work.
 - Should `status` reach the network at all by default? **Recommendation: no.** Offline by
   default, `--check-remote` to compare against the origin. An offline command that
   occasionally hangs on DNS is worse than one that says less.
@@ -268,7 +281,11 @@ it, and the same argument pulled the version stamp forward as ROADMAP 1.5.5.
 
 1. `export.sh` writes `.agentic-flow-source` into the target: origin on line 1, ref on line
    2. Derive the origin from `git -C "$SRC" remote get-url origin`; if there is no remote,
-   write nothing and say so rather than inventing a value.
+   write nothing and say so rather than inventing a value. The ref defaults to `main` per
+   Decisions — but **read and write it as opaque data**, never branch-specific logic:
+   `git clone --branch` takes a tag or a branch identically, and tags are coming after this
+   plan lands. A test asserting `ref = main` is testing the default, not the mechanism;
+   include a fixture with a tag-shaped ref so the assumption cannot creep in.
 2. Never overwrite an existing `.agentic-flow-source` — a project may deliberately track a
    fork. Report when the derived origin differs from the recorded one.
 3. `doctor.sh` reports the recorded origin alongside the version stamp, and warns when a
@@ -478,9 +495,11 @@ following `ADOPTION.md` alone.
 
 ## Status / Implementation status
 
-- **Tracking issue:** pending — run `plan-to-issues` after approval.
-- **Approval:** pending. Two `[BLOCKING]` open questions in Part A must be answered first;
-  the applier-ships question decides whether this plan is viable at all.
+- **Tracking issue:** pending — run `plan-to-issues --approved-by <name>` to create it. That
+  invocation *is* the approval event (METHODOLOGY §6); no issues, no execution.
+- **Approval:** design decisions approved by the human 2026-07-25 — ship the applier as
+  exported payload, track `main`, tag after this lands (see Decisions). Plan approval for
+  execution is pending that `plan-to-issues --apply`.
 - **Verification evidence:** pending.
 - **Review verdict:** pending.
 - **Related:** ROADMAP 3.2 (this plan), 3.2a (folded into F-3 and F-6), 1.5.5 (the version
