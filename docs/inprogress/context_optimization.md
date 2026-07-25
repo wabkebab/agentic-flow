@@ -669,7 +669,7 @@ existing functional gates remain green.
 # Status / evidence
 
 - **Approval:** pending.
-- **Tracking issue:** pending.
+- **Tracking issue:** [https://github.com/wabkebab/agentic-flow/issues/46](https://github.com/wabkebab/agentic-flow/issues/46).
 - **Branch:** pending activation.
 - **Verification evidence:** pending.
 - **Review verdict:** pending.
