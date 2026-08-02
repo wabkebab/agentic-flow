@@ -67,7 +67,7 @@ if [ -n "$MAKEFILE" ]; then
     }
     function base_commands(target) {
       if (target == "check") {
-        print "\t@for f in scripts/*.sh scripts/hooks/*.sh; do bash -n \"$$f\" || exit 1; done"
+        print "\t@for f in scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh; do bash -n \"$$f\" || exit 1; done"
         print "\t@scripts/docs-index.sh --check"
         print "\t@scripts/check-payload-manifest.sh"
         print "\t@scripts/check-action-pins.sh"
@@ -75,7 +75,7 @@ if [ -n "$MAKEFILE" ]; then
       } else if (target == "test") {
         print "\t@scripts/self-test.sh --full"
         print "\t@command -v shellcheck >/dev/null 2>&1 || { echo \"shellcheck is required for make test.\" >&2; exit 1; }"
-        print "\t@shellcheck scripts/*.sh scripts/hooks/*.sh"
+        print "\t@shellcheck scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh"
       }
     }
     skip == 1 && /^[A-Za-z0-9_.-]+:/ { skip=0 }
