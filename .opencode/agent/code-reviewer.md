@@ -92,4 +92,5 @@ as a comment first, then:
 - `pending` → change nothing; name the missing input in the comment.
 
 Never edit the implementation doc's Status block. That is close-out's job.
-See `.opencode/skills/review-execution/SKILL.md` for the full contract.
+See `.agents/skills/review-execution/SKILL.md` for the full contract — OpenCode discovers
+skills there natively, so it is the single copy.

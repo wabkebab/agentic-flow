@@ -12,7 +12,6 @@ templates/harness/README.md	templates/harness/README.md	source-only	none	source-
 .agents/skills	.agents/skills	codex	preserve	export
 .opencode/agent	.opencode/agent	opencode	preserve	export
 .opencode/command	.opencode/command	opencode	preserve	export
-.opencode/skills	.opencode/skills	opencode	preserve	export
 scripts	scripts	core	preserve	export
 scripts/agentic-flow	scripts/agentic-flow	core	preserve	export
 scripts/lib	scripts/lib	core	preserve	export
