@@ -181,10 +181,11 @@ diff_cmd() {
   while [ "$i" -lt "${#FILES[@]}" ]; do
     rel="${FILES[$i]}"
     dest="${DESTS[$i]}"
+    policy="${FILE_POLICIES[$i]:-preserve}"
     i=$((i + 1))
     payload_is_excluded "$rel" && continue
     s="$source/$rel"; d="$root/$dest"
-    payload_apply_entry "$s" "$d" dry-run >/dev/null
+    payload_apply_entry "$s" "$d" dry-run "$policy" >/dev/null
     classification="$PAYLOAD_RESULT_CLASSIFICATION"
     case "$classification" in
       same)
@@ -193,6 +194,10 @@ diff_cmd() {
       create)
         created=$((created + 1)); changed=true
         [ "$json" = true ] || echo "  create      $dest"
+        ;;
+      merged)
+        merge=$((merge + 1)); changed=true
+        [ "$json" = true ] || echo "  would-merge $dest (in place)"
         ;;
       candidate|pending)
         merge=$((merge + 1)); changed=true
@@ -277,10 +282,12 @@ upgrade_cmd() {
   while [ "$i" -lt "${#FILES[@]}" ]; do
     rel="${FILES[$i]}"
     dest="${DESTS[$i]}"
+    policy="${FILE_POLICIES[$i]:-preserve}"
     i=$((i + 1))
     payload_is_excluded "$rel" && continue
     s="$source/$rel"; d="$root/$dest"
-    payload_apply_entry "$s" "$d" "$([ "$force" = true ] && echo force || echo apply)" >/dev/null
+    payload_apply_entry "$s" "$d" \
+      "$([ "$force" = true ] && echo force || echo apply)" "$policy" >/dev/null
     classification="$PAYLOAD_RESULT_CLASSIFICATION"
     case "$classification" in
       same)
@@ -288,6 +295,10 @@ upgrade_cmd() {
         ;;
       overwrite)
         echo "  overwrite   $dest"; overwritten=$((overwritten + 1))
+        ;;
+      merged)
+        echo "  merged      $dest   (kept your settings; added the scaffold's)"
+        merge=$((merge + 1))
         ;;
       candidate|pending)
         if [ "$classification" = candidate ]; then

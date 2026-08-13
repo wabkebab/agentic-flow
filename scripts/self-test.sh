@@ -286,6 +286,52 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$SCOPED_TARGET/.claude/settings.json"
   assert_file "$SCOPED_TARGET/.claude/skills/plan-to-issues/SKILL.md"
 
+  # merge-policy: .claude/settings.json is the file an adopter is guaranteed to already have,
+  # and `preserve` handed them two files of nested hook-matcher JSON to reconcile by hand.
+  # The merge must add the scaffold's hooks without dropping the adopter's own settings.
+  MERGE_TARGET="$TMP/merge-settings"
+  mkdir -p "$MERGE_TARGET/.claude"
+  cat > "$MERGE_TARGET/.claude/settings.json" <<'MERGEJSON'
+{
+  "model": "opus",
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "adopter-guard.sh" } ] }
+    ],
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "adopter-session.sh" } ] }
+    ]
+  }
+}
+MERGEJSON
+  "$SOURCE_FIXTURE/scripts/export.sh" "$MERGE_TARGET" >/dev/null
+  assert_no_file "$MERGE_TARGET/.claude/settings.json.agentic-new"
+  merged_settings="$MERGE_TARGET/.claude/settings.json"
+  [ "$(jq -r '.model' "$merged_settings")" = opus ] \
+    || fail "merge dropped an adopter-only settings key"
+  jq -e '[.hooks.PreToolUse[].hooks[].command] | any(. == "adopter-guard.sh")' \
+    "$merged_settings" >/dev/null || fail "merge dropped the adopter's own PreToolUse hook"
+  jq -e '.hooks.SessionStart' "$merged_settings" >/dev/null \
+    || fail "merge dropped an adopter-only hook event"
+  jq -e '[.hooks.PreToolUse[].hooks[].command] | any(test("scan-secrets"))' \
+    "$merged_settings" >/dev/null || fail "merge did not add the scaffold's PreToolUse hooks"
+  jq -e '.hooks.Stop' "$merged_settings" >/dev/null \
+    || fail "merge did not add the scaffold's Stop gate"
+  # Idempotent: a second export must not restack the same hook entries.
+  before_count=$(jq '[.hooks.PreToolUse[].hooks[].command] | length' "$merged_settings")
+  "$SOURCE_FIXTURE/scripts/export.sh" "$MERGE_TARGET" >/dev/null
+  [ "$(jq '[.hooks.PreToolUse[].hooks[].command] | length' "$merged_settings")" = "$before_count" ] \
+    || fail "re-running export duplicated merged hook entries"
+
+  # Unmergeable input must degrade to the candidate path, never clobber the adopter's file.
+  BADMERGE_TARGET="$TMP/merge-bad"
+  mkdir -p "$BADMERGE_TARGET/.claude"
+  printf '%s' '{ not json' > "$BADMERGE_TARGET/.claude/settings.json"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$BADMERGE_TARGET" >/dev/null
+  assert_file "$BADMERGE_TARGET/.claude/settings.json.agentic-new"
+  grep -q 'not json' "$BADMERGE_TARGET/.claude/settings.json" \
+    || fail "unmergeable settings.json was overwritten instead of preserved"
+
   printf '%s\n' unresolved > "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
     && fail "doctor accepted an unresolved scaffold merge candidate"

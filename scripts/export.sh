@@ -75,15 +75,18 @@ PAYLOAD_DST_ROOT="$DST"
 source_origin=$(git -C "$SRC" remote get-url origin 2>/dev/null || true)
 source_ref=${AGENTIC_FLOW_SOURCE_REF:-main}
 created=0; overwritten=0; merge=0; same=0; candidate_created=0; candidate_reused=0
+merged_count=0
 i=0
 while [ "$i" -lt "${#FILES[@]}" ]; do
   rel="${FILES[$i]}"
   dest="${DESTS[$i]}"
+  policy="${FILE_POLICIES[$i]:-preserve}"
   i=$((i + 1))
 
   payload_is_excluded "$rel" && continue
   s="$SRC/$rel"; d="$DST/$dest"
-  payload_apply_entry "$s" "$d" "$([ "$FORCE" = true ] && echo force || echo apply)" >/dev/null
+  payload_apply_entry "$s" "$d" \
+    "$([ "$FORCE" = true ] && echo force || echo apply)" "$policy" >/dev/null
   classification="$PAYLOAD_RESULT_CLASSIFICATION"
   case "$classification" in
     same)
@@ -91,6 +94,10 @@ while [ "$i" -lt "${#FILES[@]}" ]; do
       ;;
     overwrite)
       echo "  overwrite   $dest"; overwritten=$((overwritten + 1))
+      ;;
+    merged)
+      echo "  merged      $dest   (kept your settings; added the scaffold's)"
+      merged_count=$((merged_count + 1))
       ;;
     candidate|pending)
       if [ "$classification" = candidate ]; then

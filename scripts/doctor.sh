@@ -188,7 +188,7 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
         fail "manifest scope for $source"
         manifest_failures=$((manifest_failures + 1))
       }
-      case "${merge_policy:-}" in preserve|force|none) ;; *)
+      case "${merge_policy:-}" in preserve|merge|force|none) ;; *)
         fail "manifest merge policy for $source"
         manifest_failures=$((manifest_failures + 1))
         ;;
