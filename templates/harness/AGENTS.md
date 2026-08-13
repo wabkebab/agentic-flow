@@ -20,6 +20,11 @@ order, edge cases — not finished code. Read the brief for the step before writ
 - Required for Codex execution unless the project opts out: `git-codex`.
 - Run `scripts/doctor.sh --check` if the scaffold was just adopted or hook/build wiring looks
   suspicious.
+- **Codex hooks need explicit trust.** `.codex/hooks.json` is discovered but not executed until
+  the hooks are reviewed and trusted: run `/hooks` once per checkout. Trust is recorded against
+  each hook's hash, so any change — including an `agentic-flow upgrade` — un-trusts them again
+  and they silently stop running. `scripts/doctor.sh` checks that hooks are *wired*, which is
+  not the same as trusted.
 
 ## How to work a step
 
