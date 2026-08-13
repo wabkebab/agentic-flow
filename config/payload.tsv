@@ -2,7 +2,7 @@
 METHODOLOGY.md	METHODOLOGY.md	core	preserve	export
 ADOPTION.md	ADOPTION.md	core	preserve	export
 templates/harness/CLAUDE.md	CLAUDE.md	claude	preserve	export
-templates/harness/AGENTS.md	AGENTS.md	codex	preserve	export
+templates/harness/AGENTS.md	AGENTS.md	core	preserve	export
 templates/harness/Makefile	Makefile	core	preserve	export
 templates/harness/README.md	templates/harness/README.md	source-only	none	source-only
 .claude/settings.json	.claude/settings.json	claude	preserve	export

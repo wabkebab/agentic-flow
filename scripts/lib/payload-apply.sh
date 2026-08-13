@@ -11,6 +11,21 @@ payload_die() {
   exit 1
 }
 
+# Scopes this export/upgrade leaves out, space-separated (e.g. "codex opencode" for a
+# Claude-only project). Set before payload_load_manifest; deliberately NOT cleared by
+# payload_reset_manifest so a caller sets it once. The scope column was validated and then
+# discarded, which is why --claude-only used to ship every Codex and OpenCode file anyway;
+# consuming it here is what makes the flag mean what its name says.
+PAYLOAD_EXCLUDED_SCOPES="${PAYLOAD_EXCLUDED_SCOPES:-}"
+
+payload_scope_excluded() { # <scope>
+  local s
+  for s in $PAYLOAD_EXCLUDED_SCOPES; do
+    [ "$s" = "$1" ] && return 0
+  done
+  return 1
+}
+
 payload_reset_manifest() {
   EXCLUDE_BASENAMES=( settings.local.json .DS_Store )
   EXCLUDE_PATHS=()
@@ -27,10 +42,20 @@ payload_load_manifest() { # <manifest-path>
   while IFS="$(printf '\t')" read -r src_item dst_item scope merge_policy disposition; do
     case "${src_item:-}" in ""|\#*) continue ;; esac
     [ -n "${dst_item:-}" ] || payload_die "manifest entry has no destination: $src_item"
+    case "${merge_policy:-}" in preserve|force|none) ;; *)
+      payload_die "manifest entry has invalid merge policy '$merge_policy': $src_item" ;;
+    esac
+    [ -n "${scope:-}" ] || payload_die "manifest entry has no scope: $src_item"
     case "${disposition:-}" in
       export)
-        ITEM_SRCS+=("$src_item")
-        ITEM_DSTS+=("$dst_item")
+        # An excluded scope is treated as source-only: kept out of the copy list AND out of
+        # directory walks, so a parent entry cannot sweep it back in.
+        if payload_scope_excluded "$scope"; then
+          EXCLUDE_PATHS+=("$src_item")
+        else
+          ITEM_SRCS+=("$src_item")
+          ITEM_DSTS+=("$dst_item")
+        fi
         ;;
       source-only)
         EXCLUDE_PATHS+=("$src_item")
@@ -39,10 +64,6 @@ payload_load_manifest() { # <manifest-path>
         payload_die "manifest entry has invalid disposition '${disposition:-}': $src_item"
         ;;
     esac
-    case "${merge_policy:-}" in preserve|force|none) ;; *)
-      payload_die "manifest entry has invalid merge policy '$merge_policy': $src_item" ;;
-    esac
-    [ -n "${scope:-}" ] || payload_die "manifest entry has no scope: $src_item"
   done < "$manifest"
 }
 

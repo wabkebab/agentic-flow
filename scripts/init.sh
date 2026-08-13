@@ -183,8 +183,16 @@ is_kebab "$PROJECT_NAME" || die "--name must be kebab-case lowercase letters, nu
 [ -f "$SRC/profiles/$STACK.tsv" ] \
   || die "--stack must name a profile in profiles/ ('none' aliases generic)"
 
+# Claude-only means the Codex and OpenCode adapters are dead weight in the target: hooks
+# that no tool reads, skills no runtime scans. AGENTS.md is deliberately not in this set —
+# it is `core` scope and ships with its OPT-OUT banner so CLAUDE.md's link still resolves.
+EXCLUDE_SCOPE_ARGS=()
+if [ "$CLAUDE_ONLY" = true ]; then
+  EXCLUDE_SCOPE_ARGS=( --exclude-scope=codex --exclude-scope=opencode )
+fi
+
 if [ "$DRY" = true ]; then
-  "$SRC/scripts/export.sh" --dry-run "$DST"
+  "$SRC/scripts/export.sh" --dry-run "${EXCLUDE_SCOPE_ARGS[@]+"${EXCLUDE_SCOPE_ARGS[@]}"}" "$DST"
   echo
   echo "Dry run only; no files were initialized."
   exit 0
@@ -212,7 +220,7 @@ preexisting_ci_template=false
 [ -e "$TARGET_ABS/Makefile" ] && preexisting_makefile=true
 [ -e "$TARGET_ABS/templates/ci/ci.yml" ] && preexisting_ci_template=true
 
-"$SRC/scripts/export.sh" "$TARGET_ABS"
+"$SRC/scripts/export.sh" "${EXCLUDE_SCOPE_ARGS[@]+"${EXCLUDE_SCOPE_ARGS[@]}"}" "$TARGET_ABS"
 
 fill_project_name() {
   local file="$1" tmp
@@ -255,6 +263,12 @@ if [ "$CLAUDE_ONLY" = true ]; then
   fi
   apply_claude_only "$TARGET_ABS/CLAUDE.md.agentic-new"
   apply_claude_only "$TARGET_ABS/AGENTS.md.agentic-new"
+fi
+
+# Record the exclusion so `agentic-flow upgrade` keeps honouring it. Without this the first
+# upgrade re-installs every excluded adapter and silently undoes --claude-only.
+if [ "${#EXCLUDE_SCOPE_ARGS[@]}" -gt 0 ]; then
+  printf '%s\n' codex opencode > "$TARGET_ABS/.agentic-flow-scopes-excluded"
 fi
 
 if [ "$preexisting_makefile" = false ]; then
