@@ -13,18 +13,24 @@
 # Exit 2 = block the call and show stderr to the agent; exit 0 = allow.
 set -uo pipefail
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "Warning: jq not found; cannot inspect Bash command for staged secrets." >&2
-  exit 0
+# jq is the documented requirement and the clean path, but it is only ever used to pull the
+# command out of the payload — every check below runs on git's own staged diff. Exiting 0
+# when jq was missing therefore disabled the whole scanner for no structural reason, and
+# exit 0 is a silent allow (only exit 2 blocks). Degrade to scanning the raw payload for the
+# commit verb instead; the command text is still in there, JSON-quoted, so the pattern also
+# tolerates a leading/trailing `"`. On a jq-less machine this hook now still blocks secrets.
+raw=$(cat 2>/dev/null || true)
+if command -v jq >/dev/null 2>&1; then
+  cmd=$(printf '%s' "$raw" | jq -r '.tool_input.command // ""' 2>/dev/null) || cmd=""
+else
+  cmd=$raw
 fi
-
-cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null) || cmd=""
 [ -n "$cmd" ] || exit 0
 
 # Only interested in commit commands (git, or the git-claude / git-codex wrappers,
 # with intervening -C/-c args).
 printf '%s' "$cmd" \
-  | grep -Eq '(^|[[:space:];&|(])(git|git-claude|git-codex)([[:space:]]+-[Cc][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)' \
+  | grep -Eq '(^|[[:space:];&|("])(git|git-claude|git-codex)([[:space:]]+-[Cc][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]"]|$)' \
   || exit 0
 
 # Deliberate escape hatch. False positives are inevitable in a pattern-based scanner, and a

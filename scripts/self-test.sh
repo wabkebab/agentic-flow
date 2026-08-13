@@ -180,6 +180,22 @@ must_allow() { # <hook> <command>
   printf '{"tool_input":{"command":"%s"}}' "$2" | "$1" >/dev/null 2>&1 || fail "hook blocked: $2"
 }
 
+# Same two assertions with jq absent. The guards used jq only to pull the command out of the
+# payload and exited 0 — a silent allow — when it was missing, so a jq-less machine ran with
+# every PreToolUse guard quietly disabled. Behaviour may not depend on which tools happen to
+# be installed, exactly as already asserted for gitleaks below. NOJQ_PATH is set by the hooks
+# group before these run.
+must_block_nojq() { # <hook> <command>
+  printf '{"tool_input":{"command":"%s"}}' "$2" \
+    | PATH="$NOJQ_PATH" "$1" >/dev/null 2>&1 && fail "hook allowed without jq: $2"
+  true
+}
+
+must_allow_nojq() { # <hook> <command>
+  printf '{"tool_input":{"command":"%s"}}' "$2" \
+    | PATH="$NOJQ_PATH" "$1" >/dev/null 2>&1 || fail "hook blocked without jq: $2"
+}
+
 should_run() { # <group>
   # Validate the CALL SITE, not just the user's --only value. A drifted label here would
   # match nothing, so `--only <group>` would fall through to "self-test passed." having
@@ -1216,6 +1232,11 @@ fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------
 if should_run hooks; then
+NOJQ_PATH=$(path_without_tools "$TMP/nojq-bin" jq)
+PATH="$NOJQ_PATH" command -v jq >/dev/null 2>&1 && fail "jq-less PATH still contains jq"
+PATH="$NOJQ_PATH" command -v git >/dev/null 2>&1 \
+  || fail "jq-less PATH accidentally removed ordinary git"
+
 ADD_GUARD="$ROOT/scripts/hooks/block-git-add-all.sh"
 
 "$ADD_GUARD" <<'JSON' >/dev/null 2>"$TMP/hook.err" && fail "git add -A was allowed"
@@ -1234,6 +1255,10 @@ must_allow "$ADD_GUARD" 'git add README.md'
 must_allow "$ADD_GUARD" 'git -C /some/path add README.md'
 must_allow "$ADD_GUARD" 'git add docs/inprogress/feature-x.md scripts/doctor.sh'
 must_allow "$ADD_GUARD" 'rg "git add -A" scripts/self-test.sh'
+# Verdicts must not change when jq is absent (previously: silent exit 0, guard disabled).
+must_block_nojq "$ADD_GUARD" 'git add -A'
+must_block_nojq "$ADD_GUARD" 'git -C /some/path add --all'
+must_allow_nojq "$ADD_GUARD" 'git add README.md'
 
 # --- Stop gate (check-gate.sh) -----------------------------------------------------------
 # The highest-leverage hook and previously untested (ROADMAP 1.5.4). All four paths matter:
@@ -1339,6 +1364,13 @@ if [ -x "$SECRET_GUARD" ]; then
     (cd "$SECFIX" && printf '{"tool_input":{"command":"%s"}}' "$1" \
       | AGENTIC_SKIP_GITLEAKS=1 "$SECRET_GUARD") >/dev/null 2>&1
   }
+  # Same call with jq absent. jq was only ever used to read the command out of the payload —
+  # every scan below runs on git's own staged diff — so exiting 0 without it disabled the
+  # whole scanner for no structural reason.
+  secret_hook_nojq() { # <command> -> exit status
+    (cd "$SECFIX" && printf '{"tool_input":{"command":"%s"}}' "$1" \
+      | PATH="$NOJQ_PATH" "$SECRET_GUARD") >/dev/null 2>&1
+  }
   stage() { # <content>
     (cd "$SECFIX" && git reset -q && printf '%s\n' "$1" > staged.txt && git add staged.txt)
   }
@@ -1347,7 +1379,11 @@ if [ -x "$SECRET_GUARD" ]; then
   secret_hook 'git-claude commit -m x' && fail "secret scanner allowed a staged AWS-format key"
   secret_hook_nogl 'git-claude commit -m x' \
     && fail "secret scanner allowed an AWS-format key with gitleaks unavailable"
+  secret_hook_nojq 'git-claude commit -m x' \
+    && fail "secret scanner allowed an AWS-format key with jq unavailable"
   secret_hook 'git status' || fail "secret scanner blocked a non-commit command"
+  secret_hook_nojq 'git status' \
+    || fail "secret scanner blocked a non-commit command with jq unavailable"
 
   stage "$(printf -- '-----BEGIN RSA PRIVATE %s-----' 'KEY')"
   secret_hook 'git commit -m x' && fail "secret scanner allowed a staged private key block"
@@ -1391,6 +1427,11 @@ must_block "$PUSH_GUARD" 'gh pr merge 12'
 must_allow "$PUSH_GUARD" 'git pull --rebase'
 must_allow "$PUSH_GUARD" 'gh pr view 12'
 must_allow "$PUSH_GUARD" 'echo push'
+# Verdicts must not change when jq is absent (previously: silent exit 0, guard disabled).
+must_block_nojq "$PUSH_GUARD" 'git push'
+must_block_nojq "$PUSH_GUARD" 'git-claude push origin HEAD'
+must_block_nojq "$PUSH_GUARD" 'gh pr merge 12'
+must_allow_nojq "$PUSH_GUARD" 'git pull --rebase'
 fi
 
 # --- plan-to-issues spec validation ------------------------------------------------------
