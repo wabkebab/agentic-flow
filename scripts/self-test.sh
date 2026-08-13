@@ -1303,6 +1303,49 @@ if [ -x "$GATE" ]; then
     || fail "gate fixture commit failed (git exit $?) — fixture is not hermetic"
   gate_run false || fail "Stop gate blocked a no-edit turn on a clean working tree"
 
+  # Tree-state cache: the clean-tree exit keys on cleanliness, not on who is stopping, so a
+  # fan-out of subagents against one dirty worktree paid a full `make check` each, plus once
+  # more for the parent turn. Re-running is skipped only while the tree is byte-identical to
+  # the state that last passed. The counter lives outside the fixture: a log written inside
+  # it would itself change the tree and defeat what is being measured.
+  GATE_RUNS="$TMP/gate-run-counter"
+  : > "$GATE_RUNS"
+  printf 'check:\n\t@echo run >> %s\n' "$GATE_RUNS" > "$GATEFIX/Makefile"
+  gate_runs() { wc -l < "$GATE_RUNS" | tr -d ' '; }
+
+  gate_run false || fail "Stop gate blocked while the check was green (cache cold)"
+  [ "$(gate_runs)" = 1 ] || fail "cold Stop gate did not run make check exactly once"
+  gate_run false || fail "Stop gate blocked on an unchanged tree"
+  [ "$(gate_runs)" = 1 ] || fail "Stop gate re-ran make check with nothing changed"
+
+  # A new untracked file is a real change and must invalidate the cache.
+  printf 'x\n' > "$GATEFIX/cache-probe.txt"
+  gate_run false || fail "Stop gate blocked after adding an untracked file"
+  [ "$(gate_runs)" = 2 ] || fail "Stop gate reused a stale verdict after a new file appeared"
+
+  # The trap this cache must not fall into: editing a tracked file leaves
+  # `git status --porcelain` byte-identical ("M <path>"), so a porcelain-only state id would
+  # skip a gate that has to run. The id hashes content, not just status.
+  (cd "$GATEFIX" && git add cache-probe.txt && git commit -q --no-gpg-sign -m probe) >/dev/null 2>&1 \
+    || fail "gate cache fixture commit failed"
+  printf 'first\n' > "$GATEFIX/cache-probe.txt"
+  gate_run false || fail "Stop gate blocked after modifying a tracked file"
+  [ "$(gate_runs)" = 3 ] || fail "Stop gate did not re-run after a tracked file changed"
+  printf 'second\n' > "$GATEFIX/cache-probe.txt"
+  gate_run false || fail "Stop gate blocked after a second modification"
+  [ "$(gate_runs)" = 4 ] \
+    || fail "Stop gate reused a verdict across different content with identical git status"
+
+  # The escape hatch must always force a real run.
+  AGENTIC_CHECK_GATE_NO_CACHE=1 gate_run false \
+    || fail "Stop gate blocked with the cache disabled"
+  [ "$(gate_runs)" = 5 ] || fail "AGENTIC_CHECK_GATE_NO_CACHE did not force a make check run"
+
+  # A cached green must never mask a genuinely red check on a changed tree.
+  printf 'check:\n\t@exit 1\n' > "$GATEFIX/Makefile"
+  gate_run false && fail "Stop gate allowed a red check after a cached green"
+  rm -f "$GATEFIX/cache-probe.txt"
+
   # Failure output must go somewhere unique per run, not a fixed shared path
   # (ROADMAP 1.5.2) — two sessions sharing one log show each other's errors.
   #
