@@ -171,13 +171,22 @@ path_without_tools() { # <output-dir> <tool>...
 }
 
 # Feed a PreToolUse hook a Bash tool call and assert it blocks / allows.
+# Build the payload with jq, not printf. Interpolating a command straight into a JSON string
+# breaks the moment it contains a quote — `rg "git add -A" notes.md` produced invalid JSON,
+# jq returned empty, and the hook exited on the empty-command guard before reaching any
+# pattern. Those assertions passed without testing anything, which is how a false positive on
+# exactly that command reached main.
+hook_payload() { # <command>
+  printf '%s' "$1" | jq -Rs '{tool_input: {command: .}}'
+}
+
 must_block() { # <hook> <command>
-  printf '{"tool_input":{"command":"%s"}}' "$2" | "$1" >/dev/null 2>&1 && fail "hook allowed: $2"
+  hook_payload "$2" | "$1" >/dev/null 2>&1 && fail "hook allowed: $2"
   true
 }
 
 must_allow() { # <hook> <command>
-  printf '{"tool_input":{"command":"%s"}}' "$2" | "$1" >/dev/null 2>&1 || fail "hook blocked: $2"
+  hook_payload "$2" | "$1" >/dev/null 2>&1 || fail "hook blocked: $2"
 }
 
 # Same two assertions with jq absent. The guards used jq only to pull the command out of the
@@ -186,13 +195,13 @@ must_allow() { # <hook> <command>
 # be installed, exactly as already asserted for gitleaks below. NOJQ_PATH is set by the hooks
 # group before these run.
 must_block_nojq() { # <hook> <command>
-  printf '{"tool_input":{"command":"%s"}}' "$2" \
+  hook_payload "$2" \
     | PATH="$NOJQ_PATH" "$1" >/dev/null 2>&1 && fail "hook allowed without jq: $2"
   true
 }
 
 must_allow_nojq() { # <hook> <command>
-  printf '{"tool_input":{"command":"%s"}}' "$2" \
+  hook_payload "$2" \
     | PATH="$NOJQ_PATH" "$1" >/dev/null 2>&1 || fail "hook blocked without jq: $2"
 }
 
@@ -1317,6 +1326,13 @@ must_allow "$ADD_GUARD" 'git add README.md'
 must_allow "$ADD_GUARD" 'git -C /some/path add README.md'
 must_allow "$ADD_GUARD" 'git add docs/inprogress/feature-x.md scripts/doctor.sh'
 must_allow "$ADD_GUARD" 'rg "git add -A" scripts/self-test.sh'
+# Global git options between `git` and the verb are everyday usage, not evasion; the
+# tolerance previously covered only -C/-c, so `git --no-pager add -A` walked straight past.
+must_block "$ADD_GUARD" 'git --no-pager add -A'
+must_block "$ADD_GUARD" 'git -p add .'
+must_block "$ADD_GUARD" 'git --git-dir=/tmp/x add --all'
+must_block "$ADD_GUARD" 'git --no-pager -C /some/path add -A'
+must_allow "$ADD_GUARD" 'git --no-pager add README.md'
 # Verdicts must not change when jq is absent (previously: silent exit 0, guard disabled).
 must_block_nojq "$ADD_GUARD" 'git add -A'
 must_block_nojq "$ADD_GUARD" 'git -C /some/path add --all'
@@ -1532,6 +1548,14 @@ must_block "$PUSH_GUARD" 'gh pr merge 12'
 must_allow "$PUSH_GUARD" 'git pull --rebase'
 must_allow "$PUSH_GUARD" 'gh pr view 12'
 must_allow "$PUSH_GUARD" 'echo push'
+must_block "$PUSH_GUARD" 'git --no-pager push'
+must_block "$PUSH_GUARD" 'git -p push'
+must_block "$PUSH_GUARD" 'git --git-dir=/tmp/x push'
+# Quoting a command in prose is not running it. `"` delimits the command inside the raw JSON
+# payload, so it counts as a boundary only in the no-jq path — conflating the two blocked
+# this.
+must_allow "$PUSH_GUARD" 'rg "git push" METHODOLOGY.md'
+must_allow "$PUSH_GUARD" 'git commit -m push'
 # Verdicts must not change when jq is absent (previously: silent exit 0, guard disabled).
 must_block_nojq "$PUSH_GUARD" 'git push'
 must_block_nojq "$PUSH_GUARD" 'git-claude push origin HEAD'
