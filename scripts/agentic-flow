@@ -27,6 +27,14 @@ load_payload_lib() { # <root>
   . "$root/scripts/lib/payload-apply.sh"
 }
 
+load_excluded_scopes() { # <root>
+  # A project initialized with --claude-only recorded the scopes it left out. Replay them,
+  # or `upgrade` reinstalls every Codex and OpenCode adapter and silently undoes the flag.
+  local root="$1" file="$1/.agentic-flow-scopes-excluded"
+  [ -f "$file" ] || return 0
+  PAYLOAD_EXCLUDED_SCOPES=$(tr '\n' ' ' < "$file")
+}
+
 find_root() {
   # Unlike doctor.sh, this walks from PWD so the CLI works when symlinked onto PATH.
   # The nearest stamp owns the subtree, preserving monorepo harness boundaries.
@@ -154,6 +162,7 @@ diff_cmd() {
   fetch_standard "$origin" "$ref"
   source="$FETCHED_SOURCE"
   load_payload_lib "$root"
+  load_excluded_scopes "$root"
   payload_load_manifest "$source/config/payload.tsv"
   payload_expand_files "$source"
   available=$(payload_compute_version "$source")
@@ -249,6 +258,7 @@ upgrade_cmd() {
   fetch_standard "$origin" "$ref"
   source="$FETCHED_SOURCE"
   load_payload_lib "$root"
+  load_excluded_scopes "$root"
   payload_load_manifest "$source/config/payload.tsv"
   payload_expand_files "$source"
   available=$(payload_compute_version "$source")

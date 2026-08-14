@@ -285,6 +285,23 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     && fail "repo-scope doctor accepted a structurally unwired Codex hook configuration"
   cp "$TMP/codex-hooks.orig" "$SOURCE_FIXTURE/.codex/hooks.json"
 
+  # --claude-only must actually scope the export. The scope column was validated and then
+  # discarded, so the flag only rewrote opt-out prose and shipped every Codex and OpenCode
+  # file regardless. AGENTS.md is `core`, not `codex`, so it must survive: CLAUDE.md links
+  # to it and its OPT-OUT banner is the documented Claude-only behaviour.
+  SCOPED_TARGET="$TMP/scoped-export"
+  mkdir -p "$SCOPED_TARGET"
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+    "$SCOPED_TARGET" >/dev/null
+  assert_no_file "$SCOPED_TARGET/.codex/hooks.json"
+  assert_no_file "$SCOPED_TARGET/.agents/skills/plan-to-issues/SKILL.md"
+  assert_no_file "$SCOPED_TARGET/.opencode/agent/code-reviewer.md"
+  assert_file "$SCOPED_TARGET/AGENTS.md"
+  assert_file "$SCOPED_TARGET/CLAUDE.md"
+  assert_file "$SCOPED_TARGET/METHODOLOGY.md"
+  assert_file "$SCOPED_TARGET/.claude/settings.json"
+  assert_file "$SCOPED_TARGET/.claude/skills/plan-to-issues/SKILL.md"
+
   printf '%s\n' unresolved > "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
     && fail "doctor accepted an unresolved scaffold merge candidate"

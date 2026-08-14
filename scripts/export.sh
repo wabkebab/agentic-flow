@@ -5,6 +5,9 @@
 #   scripts/export.sh <target-dir>            non-destructive copy (default)
 #   scripts/export.sh --dry-run <target-dir>  show what would happen, write nothing
 #   scripts/export.sh --force <target-dir>    overwrite existing files (destructive)
+#   scripts/export.sh --exclude-scope=codex <target-dir>
+#                                             skip every manifest row in that scope
+#                                             (repeatable: core|claude|codex|opencode|ci|docs)
 #
 # Copies the entries declared in config/payload.tsv and leaves behind entries marked
 # source-only plus this repo's live docs and metadata.
@@ -25,6 +28,9 @@ for arg in "$@"; do
   case "$arg" in
     -n|--dry-run) DRY=true ;;
     -f|--force)   FORCE=true ;;
+    # Repeatable. `=` form because this loop does not shift.
+    --exclude-scope=*)
+      PAYLOAD_EXCLUDED_SCOPES="${PAYLOAD_EXCLUDED_SCOPES:-} ${arg#*=}" ;;
     -h|--help)    sed -n '2,18p' "$0"; exit 0 ;;
     -*)           echo "unknown flag: $arg" >&2; exit 2 ;;
     *)            DST="$arg" ;;
