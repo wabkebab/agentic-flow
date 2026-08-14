@@ -808,6 +808,53 @@ YAML
     || fail "shipped templates/ci workflows fail the pin guard"
 fi
 
+# --- harness/template section sync -------------------------------------------------------
+# CLAUDE.md and AGENTS.md exist twice on purpose and their prose legitimately differs, so
+# nothing compared them and a section added to one side shipped unnoticed. The guard asserts
+# structure only; assert it fires in both directions, or it is decoration.
+SYNC="$ROOT/scripts/check-harness-sync.sh"
+if [ -x "$SYNC" ]; then
+  SYNCFIX="$TMP/harness-sync-fixture"
+  mkdir -p "$SYNCFIX/templates/harness"
+  sync_fixture() { # <root-body> <template-body>
+    printf '# Contract\n\n%s\n' "$1" > "$SYNCFIX/CLAUDE.md"
+    printf '# Contract\n\n%s\n' "$2" > "$SYNCFIX/templates/harness/CLAUDE.md"
+    printf '# Executor\n\n## Your job\n' > "$SYNCFIX/AGENTS.md"
+    printf '# Executor\n\n## Your job\n' > "$SYNCFIX/templates/harness/AGENTS.md"
+  }
+  sync_run() { AGENTIC_PROJECT_ROOT="$SYNCFIX" "$SYNC" >/dev/null 2>&1; }
+
+  sync_fixture '## Roles' '## Roles'
+  sync_run || fail "harness sync rejected files with matching section structure"
+
+  # The template's "needs wiring" marker is not a structural change.
+  sync_fixture '## Stack profile' '## Stack profile  ⚠️ WIRE THIS UP'
+  sync_run || fail "harness sync treated the WIRE THIS UP marker as a section difference"
+
+  sync_fixture '## Roles' '## Roles
+## Extra section'
+  sync_run && fail "harness sync missed a section present only in the template"
+
+  sync_fixture '## Roles
+## Root only' '## Roles'
+  sync_run && fail "harness sync missed a section present only in the root contract"
+
+  # Prose differences are expected and must not fail: only structure is compared.
+  sync_fixture '## Roles
+
+Hand the issue to OpenCode review.' '## Roles
+
+Hand the step to the reviewer.'
+  sync_run || fail "harness sync compared prose instead of section structure"
+
+  # An adopted project has no templates/harness/ and must not fail on its absence.
+  ADOPTEDFIX="$TMP/harness-sync-adopted"
+  mkdir -p "$ADOPTEDFIX"
+  printf '# Contract\n\n## Roles\n' > "$ADOPTEDFIX/CLAUDE.md"
+  AGENTIC_PROJECT_ROOT="$ADOPTEDFIX" "$SYNC" >/dev/null 2>&1 \
+    || fail "harness sync failed in an adopted project with no templates/harness"
+fi
+
 # Contract drift guard: plan-to-issues genuinely needs two copies, because Codex scans only
 # .agents/skills and Claude Code only .claude/skills — neither reads the other's directory —
 # so a one-sided edit must fail before an agent follows stale instructions. review-execution

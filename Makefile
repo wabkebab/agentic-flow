@@ -11,6 +11,7 @@ check:          ## fast sanity gate: harness checks + your type-check/lint. Run 
 	@for f in scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh; do bash -n "$$f" || exit 1; done
 	@scripts/docs-index.sh --check
 	@scripts/check-payload-manifest.sh
+	@scripts/check-harness-sync.sh
 	@scripts/check-action-pins.sh
 	@scripts/self-test.sh --fast
 
