@@ -972,6 +972,38 @@ reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -
 [ "$reviewer_words" -le 965 ] \
   || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 965)"
 
+# One set of engineering standards across every surface that states them. METHODOLOGY.md §11
+# is canonical; AGENTS.md (both instances) compresses them into the executor's always-loaded
+# checklist, and the /review agent contract restates them for the reviewer. Those copies are
+# deliberate — routing an executor to a 5,000-word document for six rules would cost more per
+# turn than it saves — but nothing kept the *set* in sync, so a rule added or retired in one
+# place could silently not exist in the others.
+#
+# Anchor on the distinctive phrase, not the full sentence: each surface words the rule for its
+# own audience ("Validate…" for the executor, "Validates…" for the reviewer), and asserting
+# identical prose would fail on correct, audience-tuned text.
+# templates/harness/AGENTS.md only exists in the source repo — an adopted project receives it
+# as its own AGENTS.md — so it joins the list only when present, the same source-vs-adopted
+# distinction the export ceilings already make.
+standards_surfaces="$ROOT/METHODOLOGY.md $ROOT/AGENTS.md $ROOT/.opencode/agent/code-reviewer.md"
+[ -f "$ROOT/templates/harness/AGENTS.md" ] \
+  && standards_surfaces="$standards_surfaces $ROOT/templates/harness/AGENTS.md"
+for standards_surface in $standards_surfaces; do
+  [ -f "$standards_surface" ] || fail "missing engineering-standards surface: $standards_surface"
+  while IFS= read -r standards_rule; do
+    [ -n "$standards_rule" ] || continue
+    grep -qiF "$standards_rule" "$standards_surface" \
+      || fail "${standards_surface#"$ROOT"/} does not state the standard: \"$standards_rule\""
+  done <<'RULES'
+at the boundary, once
+strings that get interpreted
+Deny by default
+never literals
+No unbounded
+failure path
+RULES
+done
+
 # One severity vocabulary across every review surface — the SKILL.md pair AND the live
 # /review agent contract, which is where the old block/fix/nit scale survived an earlier
 # normalization pass precisely because nothing asserted over it.
