@@ -312,7 +312,14 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     fail "CI workflow or inert template"
   fi
 
-  if "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
+  # --skip-make-check says the caller already ran an equivalent gate, and `make check` runs
+  # docs-index.sh --check as its first step. Running it again here is the same command
+  # against the same state — it cannot reach a different verdict, so it only costs time. The
+  # flag existed to stop exactly this double-run for the rest of the gate; it just never
+  # covered this one, which fires unconditionally.
+  if [ "$SKIP_MAKE_CHECK" = true ]; then
+    ok "docs index up to date (checked by the caller's gate)"
+  elif "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
     ok "docs index up to date"
   else
     fail "docs index up to date (run scripts/docs-index.sh)"
