@@ -855,10 +855,14 @@ Hand the step to the reviewer.'
     || fail "harness sync failed in an adopted project with no templates/harness"
 fi
 
-# Contract drift guard: plan-to-issues genuinely needs two copies, because Codex scans only
-# .agents/skills and Claude Code only .claude/skills — neither reads the other's directory —
-# so a one-sided edit must fail before an agent follows stale instructions. review-execution
-# needs no such pair: OpenCode discovers .agents/skills natively, so one copy serves both.
+# Contract drift guard. The second plan-to-issues copy is kept for optionality, not need:
+# METHODOLOGY.md §6 points at `.claude/skills/plan-to-issues/`, CLAUDE.md lists the skill
+# under the Plan role, and AGENTS.md never mentions it — so nothing has Codex running it
+# today. Codex scans only .agents/skills and Claude Code only .claude/skills, so the copy is
+# what would let the executor take this over if a project ever switched; the guard keeps the
+# two identical so that option stays real rather than quietly rotting.
+# review-execution needed no such pair for a different reason: OpenCode discovers
+# .agents/skills natively, so one copy already served both and the third was deleted.
 cmp -s "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
        "$ROOT/.claude/skills/plan-to-issues/SKILL.md" \
   || fail "plan-to-issues adapter copies diverged"
