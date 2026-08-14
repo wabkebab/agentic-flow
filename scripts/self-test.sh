@@ -1648,7 +1648,7 @@ cat > "$APPROVAL_DOC" <<'MD'
 - **Tracking issue:** pending.
 - **Approval:** pending.
 - **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** approved.
+- **Review verdict:** approved by OpenCode.
 MD
 PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
   "$PLAN_DRIVER" --apply --approved-by "Test User" --doc "$APPROVAL_DOC" "$PLAN_SPEC" >/dev/null \
@@ -1730,11 +1730,62 @@ AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/de
 
 sed \
   -e 's|^- \*\*Verification evidence:\*\* pending\.$|- **Verification evidence:** https://example.invalid/actions/1|' \
-  -e 's|^- \*\*Review verdict:\*\* pending\.$|- **Review verdict:** approved — https://example.invalid/reviews/1|' \
+  -e 's|^- \*\*Review verdict:\*\* pending\.$|- **Review verdict:** approved by OpenCode — https://example.invalid/reviews/1|' \
   "$LIFEFIX/docs/inprogress/feature-blocked.md" > "$TMP/lifecycle-ready.md"
 mv "$TMP/lifecycle-ready.md" "$LIFEFIX/docs/inprogress/feature-blocked.md"
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
   || fail "strict lifecycle check rejected a tracker with complete closure evidence"
+
+# --- lifecycle: the review verdict must say who reviewed ---------------------------------
+# METHODOLOGY.md §1 makes review a separate role, but the verdict pattern accepted a bare
+# "approved." with no reviewer named — so a plan closed out with no independent review at all
+# passed this gate unchanged. Requiring an identity is the difference between a record and an
+# assertion; naming the planning role is warned about, not blocked, because standing in for an
+# unavailable reviewer is legitimate when it is declared.
+REVFIX="$TMP/reviewer-fixture"
+write_verdict_doc() { # <verdict-text> [claude-md-contents]
+  mkdir -p "$REVFIX/docs/inprogress"
+  printf '%s\n' "${2:-placeholder}" > "$REVFIX/CLAUDE.md"
+  cat > "$REVFIX/docs/inprogress/feature-review.md" <<MD
+## Tracker
+- [x] F-1 done
+## Status
+- **Approval:** user approved 2026-01-01.
+- **Tracking issue:** https://example.invalid/issues/1
+- **Verification evidence:** https://example.invalid/actions/1
+- **Review verdict:** $1
+MD
+}
+rev_status() { AGENTIC_PROJECT_ROOT="$REVFIX" "$ROOT/scripts/lifecycle-status.sh" 2>&1; }
+
+write_verdict_doc 'approved.'
+rev_status > "$TMP/review-anon.out"
+grep -q 'review-verdict-reviewer' "$TMP/review-anon.out" \
+  || fail "lifecycle accepted an approval that names no reviewer"
+AGENTIC_PROJECT_ROOT="$REVFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
+  && fail "strict lifecycle check accepted an approval that names no reviewer"
+
+write_verdict_doc 'approved by OpenCode on 2026-01-02.'
+rev_status > "$TMP/review-named.out"
+grep -q 'review-verdict-reviewer' "$TMP/review-named.out" \
+  && fail "lifecycle rejected a verdict that does name its reviewer"
+grep -q 'WARN' "$TMP/review-named.out" \
+  && fail "lifecycle warned about an independent reviewer"
+
+# The real historical shape: the planner standing in, undeclared. Warn, do not block.
+write_verdict_doc 'approved (Claude standing in for OpenCode, which was unavailable).'
+rev_status > "$TMP/review-self.out"
+grep -q 'review-independence' "$TMP/review-self.out" \
+  || fail "lifecycle did not warn when the planning role reviewed its own plan"
+grep -q 'READY' "$TMP/review-self.out" \
+  || fail "self-review warning blocked closure instead of warning"
+
+# Declared opt-out: the substitution is the documented arrangement, so stay quiet.
+write_verdict_doc 'approved by Claude (reviewer role).' \
+  'This project opts out of the default two-agent split.'
+rev_status > "$TMP/review-optout.out"
+grep -q 'review-independence' "$TMP/review-optout.out" \
+  && fail "lifecycle warned about self-review in a project that declared the opt-out"
 
 # --- lifecycle: CI run evidence verification (#25) --------------------------------------
 write_lifecycle_ready_doc() { # <root> <verification-evidence>
@@ -1746,7 +1797,7 @@ write_lifecycle_ready_doc() { # <root> <verification-evidence>
 - **Approval:** user approved 2026-01-01.
 - **Tracking issue:** https://example.invalid/issues/1
 - **Verification evidence:** $2
-- **Review verdict:** approved.
+- **Review verdict:** approved by OpenCode.
 MD
 }
 
@@ -1814,7 +1865,7 @@ cat > "$LIFEFIX/docs/inprogress/lc19-misnamed.md" <<'MD'
 - **Approved:** user approved 2026-01-01.
 - **Tracking issue:** https://example.invalid/issues/1
 - **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** approved.
+- **Review verdict:** approved by OpenCode.
 MD
 cat > "$LIFEFIX/docs/inprogress/lc19-absent.md" <<'MD'
 ## Tracker
@@ -1822,7 +1873,7 @@ cat > "$LIFEFIX/docs/inprogress/lc19-absent.md" <<'MD'
 ## Status
 - **Tracking issue:** https://example.invalid/issues/1
 - **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** approved.
+- **Review verdict:** approved by OpenCode.
 MD
 cat > "$LIFEFIX/docs/inprogress/lc19-wrapped.md" <<'MD'
 ## Tracker
@@ -1832,7 +1883,7 @@ cat > "$LIFEFIX/docs/inprogress/lc19-wrapped.md" <<'MD'
 - **Tracking issue:** https://example.invalid/issues/1
 - **Verification evidence:** see the CI run recorded at
   https://example.invalid/actions/1
-- **Review verdict:** approved.
+- **Review verdict:** approved by OpenCode.
 MD
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" > "$TMP/lifecycle19.out"
 
