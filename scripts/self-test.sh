@@ -791,11 +791,10 @@ YAML
     || fail "shipped templates/ci workflows fail the pin guard"
 fi
 
-# Contract drift guards: these files are intentionally duplicated for adapter lookup, so
-# a one-sided edit must fail before an agent follows stale instructions.
-cmp -s "$ROOT/.agents/skills/review-execution/SKILL.md" \
-       "$ROOT/.opencode/skills/review-execution/SKILL.md" \
-  || fail "review-execution adapter copies diverged"
+# Contract drift guard: plan-to-issues genuinely needs two copies, because Codex scans only
+# .agents/skills and Claude Code only .claude/skills — neither reads the other's directory —
+# so a one-sided edit must fail before an agent follows stale instructions. review-execution
+# needs no such pair: OpenCode discovers .agents/skills natively, so one copy serves both.
 cmp -s "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
        "$ROOT/.claude/skills/plan-to-issues/SKILL.md" \
   || fail "plan-to-issues adapter copies diverged"
@@ -886,7 +885,6 @@ reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -
 # /review agent contract, which is where the old block/fix/nit scale survived an earlier
 # normalization pass precisely because nothing asserted over it.
 for review_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
-                      "$ROOT/.opencode/skills/review-execution/SKILL.md" \
                       "$ROOT/.opencode/agent/code-reviewer.md"; do
   [ -f "$review_surface" ] || fail "missing review surface: $review_surface"
   for level in High Medium Low Nit; do
