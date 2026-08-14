@@ -130,10 +130,34 @@ while IFS= read -r doc; do
 
   missing=""
   unrecognized=""
+  warnings=""
   check_field "$doc" "Approval" approval 'approved|accepted|user approved'
   check_field "$doc" "Tracking issue" tracking-link 'https?://'
   check_field "$doc" "Verification evidence" verification-evidence 'https?://'
   check_field "$doc" "Review verdict" review-verdict 'approved|pass|accepted'
+
+  # "Review is a separate role on purpose" (METHODOLOGY.md §1) had nothing enforcing it: the
+  # verdict pattern above accepts a bare "approved." with no reviewer named, so a plan closed
+  # out with no independent review passed this gate unchanged. Require the verdict to say who
+  # reviewed — that is the difference between a record and an assertion.
+  review_block=$(field_block "$doc" "Review verdict")
+  if [ -n "$review_block" ] \
+     && ! printf '%s' "$review_block" | grep -Eiq 'opencode|claude|codex|by [A-Za-z]'; then
+    missing="$missing review-verdict-reviewer"
+  fi
+
+  # Naming the planning role as reviewer is not automatically wrong — the reviewer can be
+  # unavailable, and METHODOLOGY.md §1 allows declaring an opt-out. It is only wrong when it
+  # happens silently, so warn rather than block, and stay quiet where the project declared it.
+  if printf '%s' "$review_block" | grep -Eiq '(^|[^a-z])claude([^a-z]|$)' \
+     && ! grep -qi 'opts out' "$ROOT/CLAUDE.md" 2>/dev/null; then
+    warnings="$warnings review-independence(verdict names Claude, the planning role;"
+    warnings="$warnings declare the opt-out in CLAUDE.md or have a separate reviewer)"
+  fi
+
+  if [ -n "$warnings" ]; then
+    printf 'WARN    %s %s\n' "$rel" "$warnings"
+  fi
 
   if [ -z "$missing" ] && [ -z "$unrecognized" ]; then
     if [ "$VERIFY_EVIDENCE" = true ]; then
