@@ -906,6 +906,20 @@ AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo --skip-make-check \
 grep -q "only valid with --scope repo" "$TMP/doctor-skip-scope.err" \
   || fail "doctor skip-scope failure did not explain the constraint"
 
+# --skip-make-check means the caller already ran an equivalent gate, and `make check` runs
+# docs-index.sh --check first. CI ran `make check` and then doctor --skip-make-check, so the
+# same command ran twice against the same state — it cannot reach a different verdict.
+AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo --skip-make-check \
+  > "$TMP/doctor-skip-docs.out" 2>&1 \
+  || fail "doctor rejected repo-scope --skip-make-check"
+grep -q "docs index up to date (checked by the caller's gate)" "$TMP/doctor-skip-docs.out" \
+  || fail "doctor re-ran the docs index check the caller's gate already covered"
+# Without the flag it must still run the check itself.
+AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo \
+  > "$TMP/doctor-docs.out" 2>&1 || true
+grep -q "docs index up to date$" "$TMP/doctor-docs.out" \
+  || fail "doctor stopped checking the docs index when no gate was declared"
+
 for role_file in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" \
                  "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
   [ -f "$role_file" ] || continue
