@@ -25,7 +25,7 @@ ADOPTION.md                       init.sh usage, flags, and verification notes
 CLAUDE.md                         planner/reviewer contract + the Stack-profile explainer
 AGENTS.md                         executor (Codex) contract + commit format
 Makefile                          the Stack profile: make check / test / test-one / build / run
-.claude/settings.json             enforced hooks (Stop→make check; block git add -A; block git push)
+.claude/settings.json             enforced hooks (Stop→make check; block git add -A; block git push; scan staged secrets)
 .claude/skills/plan-to-issues/    skill: approved brief → GitHub tracking issue + sub-issues
 .codex/hooks.json                 Codex mirror of the enforced lifecycle hooks
 .agents/skills/plan-to-issues/    Codex skill mirror
@@ -40,7 +40,7 @@ scripts/lifecycle-status.sh       derive ACTIVE / READY / BLOCKED document state
 scripts/doctor.sh                 adoption checklist / scaffold health check
 scripts/agentic-flow              adopted-project status / diff / upgrade command
 scripts/self-test.sh              offline regression checks for this scaffold
-scripts/hooks/                    the two hook scripts settings.json calls
+scripts/hooks/                    the four hook scripts settings.json calls
 templates/harness/                pristine CLAUDE/AGENTS/Makefile forms shipped by export.sh
 ROADMAP.md                        planned evolution of the standard (Tier 2 / Tier 3)
 docs/
