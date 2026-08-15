@@ -334,7 +334,13 @@ These make the handoff explicit and parallel instead of sequential:
   file changes. Matches "Claude designs, then hands off."
 - **`Explore` / `Plan` subagents** — fan-out research before writing a plan.
 - **Worktrees** (`isolation: "worktree"`) — run execution and review on isolated worktrees
-  of the same branch so review can start while execution continues.
+  of the same branch so review can start while execution continues. Fanning out at all is
+  optional; **isolation stops being optional once two agents edit at the same time.**
+  Subagents without it share the parent's working directory, so one can stage or overwrite
+  another's half-finished edit, and a green `make check` covers whatever mixture of both
+  changes was on disk at the time. The Stop gate does not save you: its state stamp lives in
+  the shared git-dir and is keyed on the whole tree, so it certifies the mixture rather than
+  either change. A read-only fan-out (`Explore` / `Plan`) needs no isolation.
 - **`/code-review`** (`low|medium|high|max`, and **`ultra`** for a deep multi-agent cloud
   review of a whole branch) — a whole-branch or second-opinion pass, **not** a substitute for
   §1's independent per-step review, and the reviewer's role if a project opts out of OpenCode.

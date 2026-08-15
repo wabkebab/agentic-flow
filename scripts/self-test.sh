@@ -1023,6 +1023,13 @@ done
 grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-execution/SKILL.md" \
   || fail "review skill does not route engineering standards to AGENTS.md"
 
+# §8 files worktrees under "Optional capabilities", which is true of fanning out and false of
+# isolating writers: nothing required isolation for parallel *editing* agents, so a fan-out of
+# writers shared one tree. The tree-state cache made that cheaper, not correct. Anchor on the
+# distinctive phrase so the requirement cannot be softened back into an optional nicety.
+grep -qi 'isolation stops being optional' "$ROOT/METHODOLOGY.md" \
+  || fail "METHODOLOGY.md §8 does not require worktree isolation for concurrent editing agents"
+
 # The shipped-hook count is stated in prose in two exported documents and was wrong in both:
 # METHODOLOGY.md §8 offered ideas "beyond the shipped two" and README.md's source-tree
 # inventory called scripts/hooks/ "the two hook scripts", while four ship and settings.json
