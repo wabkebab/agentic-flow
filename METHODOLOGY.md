@@ -191,16 +191,17 @@ executor ticks as commits land:
 
 ---
 
-## 5. Severity legend (Security reviews)
+## 5. Severity legend
 
-Use these consistently; they map 1:1 onto GitHub labels and onto `plan-to-issues`.
+One scale for every review surface — Security reviews, per-step execution review, and any
+other diff. Use these consistently; they map 1:1 onto GitHub labels and onto `plan-to-issues`.
 
-| Symbol | Severity | Label |
-|--------|----------|-------|
-| 🔴 | High — exploitable / data-loss / auth bypass | `sev:high` |
-| 🟠 | Medium — meaningful weakness, bounded blast radius | `sev:med` |
-| 🟡 | Low — hardening, defence-in-depth, hygiene | `sev:low` |
-| 🟦 | Nit — wording, clarity, or tiny hygiene issue | `sev:nit` |
+| Symbol | Severity | Blocks? | Label |
+|--------|----------|---------|-------|
+| 🔴 | High — common path is incorrect, or a serious regression has no safe workaround. In a Security review: exploitable, data-loss, or auth bypass. | **Blocks merge** | `sev:high` |
+| 🟠 | Medium — real defect under a bounded condition, or required failure-path coverage is missing in a way that can hide one. In a Security review: a meaningful weakness with bounded blast radius. | Needs a fix or an explicit acceptance | `sev:med` |
+| 🟡 | Low — concrete but limited correctness or operability risk, worth fixing before closure. In a Security review: hardening, defence-in-depth, hygiene. | Does not block | `sev:low` |
+| 🟦 | Nit — wording, clarity, or tiny hygiene issue. | Does not block | `sev:nit` |
 
 Accepted/by-design is a disposition, not a severity. Move accepted material risk to
 `accepted_risks.md` or cite the explicit acceptance in the finding.

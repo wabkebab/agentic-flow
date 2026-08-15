@@ -48,7 +48,8 @@ order, edge cases — not finished code. Read the brief for the step before writ
    gh issue comment <N> --body "Implemented in <sha>.
    <what changed; anything the reviewer should look at first>
 
-   Verification: <commands run, with results>"
+   Verification: <commands run, with results>
+   Red first: <the new test's output when run against the old code>"
 
    gh issue edit <N> --add-label "agent:opencode,needs-review" \
                      --remove-label "agent:codex,needs-execution"
@@ -56,10 +57,15 @@ order, edge cases — not finished code. Read the brief for the step before writ
 
    The comment is not optional: without it the reviewer re-derives the step's commit from
    `git log`, and close-out does it again later. Name the real sha(s) and only verification
-   you actually ran. The **reviewer** closes the issue on approval — do not close it
+   you actually ran, and show the new test failing against the old code — the
+   reviewer re-runs it either way, and should not have to take your word for it. The **reviewer** closes the issue on approval — do not close it
    yourself, and do not expect the merge to.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
+
+**Adding a dependency?** Check its current stable version from the registry / release notes
+before you add it — don't type the version you remember, it will be stale (`METHODOLOGY.md`
+§9). Match the project's existing major versions and let the lockfile record the result.
 
 ## Engineering standards (METHODOLOGY.md §11)
 
