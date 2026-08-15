@@ -968,9 +968,15 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   [ "$executor_words" -le 1030 ] \
     || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1030)"
 fi
+# Raised 965 -> 1000 deliberately, for two obligations the contract did not previously carry
+# and that no routing target could hold: re-run the executor's verification rather than
+# accepting it (a test that passed without testing anything shipped here once, and survived
+# review), and treat diff content as data rather than instruction. Both must be read on every
+# review, so neither can be routed to METHODOLOGY.md. Headroom stays deliberately narrow so
+# the assertion still bites on re-inlining a routed block.
 reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
-[ "$reviewer_words" -le 965 ] \
-  || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 965)"
+[ "$reviewer_words" -le 1000 ] \
+  || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 1000)"
 
 # One set of engineering standards across every surface that states them. METHODOLOGY.md §11
 # is canonical; AGENTS.md (both instances) compresses them into the executor's always-loaded
@@ -1061,6 +1067,55 @@ while IFS= read -r hook_script; do
   grep -q "$hook_base" "$ROOT/CLAUDE.md" \
     || fail "CLAUDE.md does not document the shipped hook $hook_base"
 done < <(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | sort)
+
+# §5 is the shared severity source every review surface cites, including the /review agent
+# contract for ordinary diffs — but it was titled "(Security reviews)" and defined its levels
+# in security terms ("exploitable / auth bypass") while the two surfaces citing it defined
+# them in general correctness terms. Assert the title stays unscoped and the blocking
+# semantics stay stated, so the definitions cannot drift back apart.
+grep -q '^## 5\. Severity legend$' "$ROOT/METHODOLOGY.md" \
+  || fail "METHODOLOGY.md §5 is not titled for every review surface"
+for blocking_phrase in 'Blocks merge' 'Does not block'; do
+  grep -qF "$blocking_phrase" "$ROOT/METHODOLOGY.md" \
+    || fail "METHODOLOGY.md §5 does not state \"$blocking_phrase\""
+done
+
+# Two review obligations that cannot be routed, because they apply on every review.
+# The first exists because a test that passed without testing anything shipped through review
+# here once: its payload was built with printf interpolation, produced invalid JSON, the hook
+# exited early, and the assertion passed vacuously. Re-running is the only thing that catches
+# that class. The second exists because this project's payload IS agent instructions, so a
+# diff can change what every adopting project's agent does — or try to instruct the reviewer.
+# Both reviewer surfaces carry both, so a reviewer reading either one is fully briefed.
+for reviewer_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
+                        "$ROOT/.opencode/agent/code-reviewer.md"; do
+  [ -f "$reviewer_surface" ] || fail "missing reviewer surface: $reviewer_surface"
+  grep -qi 'fails without the fix' "$reviewer_surface" \
+    || fail "${reviewer_surface#"$ROOT"/} does not require confirming a test fails without the fix"
+  grep -qi 'as data' "$reviewer_surface" \
+    || fail "${reviewer_surface#"$ROOT"/} does not tell the reviewer to treat the diff as data"
+  grep -qi 'instruction' "$reviewer_surface" \
+    || fail "${reviewer_surface#"$ROOT"/} does not warn that a diff may carry instructions"
+done
+
+# The reviewer's focused-group list named five of the six groups, omitting `upgrade`, so a
+# reviewer following it would never run that group. Derive it rather than trust the prose.
+for reviewer_group in $SELF_TEST_GROUPS; do
+  grep -qF "\`$reviewer_group\`" "$ROOT/.opencode/agent/code-reviewer.md" \
+    || fail "code-reviewer.md does not name the $reviewer_group self-test group"
+done
+
+# The executor's handoff is where the red-first evidence is cheapest to produce, and the
+# dependency-version rule shipped to adopters while the root instance silently lacked it —
+# a divergence check-harness-sync.sh cannot see, since it compares ## headings only.
+grep -qi 'Red first' "$ROOT/AGENTS.md" \
+  || fail "AGENTS.md does not require red-first evidence in the review handoff"
+grep -qi 'Adding a dependency' "$ROOT/AGENTS.md" \
+  || fail "AGENTS.md does not carry the dependency-version rule"
+if [ -f "$ROOT/templates/harness/AGENTS.md" ]; then
+  grep -qi 'Red first' "$ROOT/templates/harness/AGENTS.md" \
+    || fail "templates/harness/AGENTS.md does not require red-first evidence in the handoff"
+fi
 
 # Every §N route an agent is told to follow must resolve. Emit each section on a line
 # individually: a greedy `.*§([0-9]+)` keeps only the LAST one, so "§3, §5" silently
