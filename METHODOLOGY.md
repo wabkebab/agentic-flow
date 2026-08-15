@@ -345,6 +345,18 @@ These make the handoff explicit and parallel instead of sequential:
   review of a whole branch) — a whole-branch or second-opinion pass, **not** a substitute for
   §1's independent per-step review, and the reviewer's role if a project opts out of OpenCode.
   Keep hand-written review docs for architecture-level passes.
+- **Multi-reviewer ensemble** — N reviewers over the *same* diff, when independence *between
+  reviewers* is worth paying for: an architecture-level pass, a security-critical change, or
+  a branch already shipping. Never a default, never a substitute for §1's per-step review.
+  Severity and verdict vocabulary come from §5 unchanged — an ensemble adds reviewers, not a
+  scale. Each verdict names its own reviewer, as §10's close-out check already requires.
+  **Aggregation is not a vote.** One named arbiter re-checks every `high` finding, and every
+  finding the reviewers disagree on, against the source before it counts; disagreement is
+  settled by that check, and unresolved disagreement is reported as unresolved rather than
+  averaged away. Two things an ensemble does not fix: reviewers drawn from similar models
+  share blind spots, so a plausible-but-false premise can be held unanimously and survive a
+  vote; and agreement is not verification, so N-of-N convergence still needs the arbiter's
+  source-check. If you will not fund that check, run one reviewer and spend the rest on tests.
 - **`/security-review`** — a security pass on the pending branch diff; complements a
   Security doc.
 - **`/verify` and `/run`** — drive the app to confirm a fix behaves, not just that tests pass.
