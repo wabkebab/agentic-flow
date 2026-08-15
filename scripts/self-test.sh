@@ -870,11 +870,21 @@ fi
 # today. Codex scans only .agents/skills and Claude Code only .claude/skills, so the copy is
 # what would let the executor take this over if a project ever switched; the guard keeps the
 # two identical so that option stays real rather than quietly rotting.
-# review-execution needed no such pair for a different reason: OpenCode discovers
-# .agents/skills natively, so one copy already served both and the third was deleted.
 cmp -s "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
        "$ROOT/.claude/skills/plan-to-issues/SKILL.md" \
   || fail "plan-to-issues adapter copies diverged"
+
+# review-execution is a pair for the opposite reason: need, not optionality. The three
+# harnesses do not read the same directory — Codex scans only .agents/skills, Claude Code only
+# .claude/skills, and OpenCode reads both. One .agents/ copy therefore serves Codex and
+# OpenCode, which is why the .opencode/ third copy was genuinely redundant and removed; it has
+# never served Claude Code, which had no path to the review contract at all. METHODOLOGY.md §1
+# routes a project without OpenCode to Claude for review, so the copy is what gives that
+# reviewer the severity scale, verdict vocabulary, and label state machine instead of a
+# built-in that knows none of them. The guard keeps the two from drifting apart.
+cmp -s "$ROOT/.agents/skills/review-execution/SKILL.md" \
+       "$ROOT/.claude/skills/review-execution/SKILL.md" \
+  || fail "review-execution adapter copies diverged"
 # shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
 grep -q 'Stack profile.*`CLAUDE.md`' "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
   || fail "plan-to-issues guidance does not name CLAUDE.md as Stack profile owner"
