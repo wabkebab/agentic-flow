@@ -1023,6 +1023,45 @@ done
 grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-execution/SKILL.md" \
   || fail "review skill does not route engineering standards to AGENTS.md"
 
+# The shipped-hook count is stated in prose in two exported documents and was wrong in both:
+# METHODOLOGY.md §8 offered ideas "beyond the shipped two" and README.md's source-tree
+# inventory called scripts/hooks/ "the two hook scripts", while four ship and settings.json
+# calls all four. Nothing counted. Derive the count and assert the prose agrees, so adding or
+# retiring a hook fails here instead of leaving a stale number in two adopter-facing files.
+# Anchored on the distinctive phrase for the same reason as the standards surfaces above.
+hook_count=$(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | wc -l | tr -d ' ')
+case "$hook_count" in
+  1) hook_word=one ;;
+  2) hook_word=two ;;
+  3) hook_word=three ;;
+  4) hook_word=four ;;
+  5) hook_word=five ;;
+  6) hook_word=six ;;
+  *) hook_word="" ;;
+esac
+if [ -z "$hook_word" ]; then
+  fail "no english number word for the shipped hook count ($hook_count) — extend the case above"
+fi
+grep -q "the $hook_word shipped hooks" "$ROOT/METHODOLOGY.md" \
+  || fail "METHODOLOGY.md does not say \"the $hook_word shipped hooks\" ($hook_count ship)"
+# METHODOLOGY.md is payload and carries this claim into every adoption, so that assertion is
+# unconditional. The root README.md is NOT in config/payload.tsv — it describes this repo's own
+# source tree, and an adopted project's README is its own document about its own project. Assert
+# it only in the scaffold, the same source-vs-adopted split the role-bundle ceilings make.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  grep -q "the $hook_word hook scripts" "$ROOT/README.md" \
+    || fail "README.md does not say \"the $hook_word hook scripts\" ($hook_count ship)"
+fi
+
+# Counting alone would still let a new hook ship undocumented as long as someone bumped the
+# number. CLAUDE.md is the surface that names each hook and what it enforces, so require every
+# shipped script to appear there by filename.
+while IFS= read -r hook_script; do
+  hook_base=$(basename "$hook_script")
+  grep -q "$hook_base" "$ROOT/CLAUDE.md" \
+    || fail "CLAUDE.md does not document the shipped hook $hook_base"
+done < <(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | sort)
+
 # Every §N route an agent is told to follow must resolve. Emit each section on a line
 # individually: a greedy `.*§([0-9]+)` keeps only the LAST one, so "§3, §5" silently
 # stopped checking §3. ADOPTION.md and the docs README carry routes too.
