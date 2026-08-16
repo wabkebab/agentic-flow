@@ -965,8 +965,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   executor_words=$(wc -w < "$ROOT/AGENTS.md" | tr -d ' ')
   [ "$planner_words" -le 1530 ] \
     || fail "planner static role bundle exceeds its ceiling: $planner_words words (max 1530)"
-  [ "$executor_words" -le 1030 ] \
-    || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1030)"
+  # Raised 1030 -> 1090 for the red-first handoff line, the dependency-version rule the root
+  # instance was missing, and the docs/MEMORY.md entry in the minimal read set. That last one
+  # is the whole multi-harness reach of the memory index in a single line: Codex and OpenCode
+  # both read AGENTS.md, so nothing else has to be added anywhere for either of them to find
+  # it. Sized against templates/harness/AGENTS.md, the larger of the pair and the file that
+  # becomes an adopter's AGENTS.md, with the usual narrow headroom.
+  [ "$executor_words" -le 1090 ] \
+    || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1090)"
 fi
 # Raised 965 -> 1000 deliberately, for two obligations the contract did not previously carry
 # and that no routing target could hold: re-run the executor's verification rather than
@@ -1071,6 +1077,39 @@ done
 # a divergence check-harness-sync.sh cannot see, since it compares ## headings only.
 grep -qi 'Red first' "$ROOT/AGENTS.md" \
   || fail "AGENTS.md does not require red-first evidence in the review handoff"
+
+# The memory index reaches all three harnesses through exactly two files: Claude reads
+# CLAUDE.md, and Codex and OpenCode both read AGENTS.md (OpenCode prefers AGENTS.md over
+# CLAUDE.md outright). Lose either pointer and the layer silently becomes single-harness,
+# which nothing else would catch. Both contract pairs must carry it.
+for memory_surface in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md"; do
+  grep -qF 'docs/MEMORY.md' "$memory_surface" \
+    || fail "${memory_surface#"$ROOT"/} does not point at the docs/MEMORY.md index"
+done
+if [ -d "$ROOT/templates/harness" ]; then
+  for memory_template in "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
+    grep -qF 'docs/MEMORY.md' "$memory_template" \
+      || fail "${memory_template#"$ROOT"/} does not point at the docs/MEMORY.md index"
+  done
+fi
+
+# docs-index.sh treats every .md under docs/ as a lifecycle document and fails make check on
+# anything outside its four stages. The memory tree is not a lifecycle stage, so it has to be
+# skipped explicitly — assert with a real file rather than by reading the case statement.
+MEMDOC_FIXTURE="$ROOT/docs/memory/self-test-stage-probe.md"
+printf '%s\n' '# probe' > "$MEMDOC_FIXTURE"
+if ! "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
+  rm -f "$MEMDOC_FIXTURE"
+  fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
+fi
+rm -f "$MEMDOC_FIXTURE"
+
+# The tree ships empty. docs/MEMORY.md must NOT be payload: it accumulates adopter-local
+# entries in place, and upgrade --force overwrites a manifest row unconditionally.
+grep -q '^docs/memory/\.gitkeep' "$ROOT/config/payload.tsv" \
+  || fail "config/payload.tsv does not ship the docs/memory/ tree"
+grep -q '^docs/MEMORY\.md' "$ROOT/config/payload.tsv" \
+  && fail "docs/MEMORY.md is a manifest row — upgrade --force would overwrite an adopter's index"
 grep -qi 'Adding a dependency' "$ROOT/AGENTS.md" \
   || fail "AGENTS.md does not carry the dependency-version rule"
 if [ -f "$ROOT/templates/harness/AGENTS.md" ]; then

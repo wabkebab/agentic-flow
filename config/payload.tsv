@@ -24,6 +24,7 @@ profiles	profiles	core	preserve	export
 docs/templates	docs/templates	docs	preserve	export
 docs/README.md	docs/README.md	docs	preserve	export
 docs/accepted_risks.md	docs/accepted_risks.md	docs	preserve	export
+docs/memory/.gitkeep	docs/memory/.gitkeep	docs	preserve	export
 docs/backlog/.gitkeep	docs/backlog/.gitkeep	docs	preserve	export
 docs/inprogress/.gitkeep	docs/inprogress/.gitkeep	docs	preserve	export
 docs/done/.gitkeep	docs/done/.gitkeep	docs	preserve	export
