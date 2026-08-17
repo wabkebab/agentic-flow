@@ -12,6 +12,7 @@ check:          ## fast sanity gate: harness checks + your type-check/lint. Run 
 	@scripts/docs-index.sh --check
 	@scripts/check-payload-manifest.sh
 	@scripts/check-harness-sync.sh
+	@scripts/check-memory-index.sh
 	@scripts/check-action-pins.sh
 	@scripts/self-test.sh --fast
 

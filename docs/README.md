@@ -10,6 +10,8 @@ this is the quick reference.
 docs/
 ├── README.md            ← this file
 ├── accepted_risks.md    ← register of reviewed-and-accepted risks / declined features
+├── MEMORY.md            ← one-line index of durable traps (not exported)
+├── memory/              ← one fact per file; read via the index above
 ├── backlog/             ← identified but not started
 ├── inprogress/          ← active (being written, executed, or reviewed)
 ├── done/                ← completed Feature / Product analyses
@@ -42,7 +44,7 @@ docs/
 Those four are the **only** stages `scripts/docs-index.sh` accepts. A `.md` file anywhere
 else under `docs/` — including `docs/` itself — fails the index build (and therefore
 `make check`) rather than being listed under an invented stage. Non-Markdown files and
-`README.md` / `accepted_risks.md` / `templates/` are skipped entirely.
+`README.md` / `accepted_risks.md` / `templates/` and the memory tree are skipped entirely.
 
 A doc leaves `inprogress/` when its implementation steps are all shipped, independently
 reviewed, and verified. The reviewer closes each step issue on approval, so closed steps
@@ -63,12 +65,12 @@ The index is **not** shipped by `config/payload.tsv` — only the empty `docs/me
 An adopted project's memories are its own, and an upstream index would overwrite them on
 `agentic-flow upgrade --force`.
 
-Index line — `| File | Type | Description |`, where `Type` is `trap` or `fact` and the
+Index line — `| Entry | Type | Description |`, where `Type` is `trap` or `fact` and the
 description is the trap itself, not a title. A description that does not let a reader decide
 relevance without opening the file is a broken index line.
 
 ```markdown
-| `docs-index-stage-allowlist` | trap | `docs-index.sh:36` rejects any `.md` under `docs/`
+| `docs-index-stage-allowlist` | trap | `docs-index.sh:37` rejects any `.md` under `docs/`
 outside the four declared stages, exit 2 — extend the skip list at `:30` first. |
 ```
 
