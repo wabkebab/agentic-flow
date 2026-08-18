@@ -27,7 +27,7 @@ build_table() {
   local found=0 f rel stage triage type status name
   while IFS= read -r f; do
     case "$f" in
-      */templates/*|*/README.md|*/accepted_risks.md) continue ;;
+      */templates/*|*/README.md|*/accepted_risks.md|*/memory/*|*/MEMORY.md) continue ;;
     esac
     rel="${f#"$DOCS_DIR"/}"
     stage="${rel%/*}"

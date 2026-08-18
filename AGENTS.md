@@ -4,7 +4,8 @@
 > The planner/reviewer's file is [`CLAUDE.md`](CLAUDE.md); the full process is in
 > [`METHODOLOGY.md`](METHODOLOGY.md). Do not preload the whole methodology by default:
 > load this file, the issue, the linked brief step, `CLAUDE.md` Stack profile/Gotchas,
-> target code, direct callers/callees, and relevant tests. Route to methodology sections
+> `docs/MEMORY.md` (the index only — open a `docs/memory/` entry when a line looks
+> relevant), target code, direct callers/callees, and relevant tests. Route to methodology sections
 > only when the brief or a local rule cites them.
 
 ## Your job

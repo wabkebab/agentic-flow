@@ -52,6 +52,39 @@ plan in one pass only after all steps qualify, CI evidence is recorded, and
 issue. If the user accepts the risk / declines the feature, add an entry to
 `accepted_risks.md` and link it before moving the doc.
 
+## memory/ — durable traps, indexed
+
+`docs/memory/` holds one fact per file; `docs/MEMORY.md` is a one-line-per-entry index. The
+split is the point: the index is cheap enough to read every session, so "is there anything
+about X?" never means loading the corpus. Read an entry only when its index line looks
+relevant.
+
+The index is **not** shipped by `config/payload.tsv` — only the empty `docs/memory/` tree is.
+An adopted project's memories are its own, and an upstream index would overwrite them on
+`agentic-flow upgrade --force`.
+
+Index line — `| File | Type | Description |`, where `Type` is `trap` or `fact` and the
+description is the trap itself, not a title. A description that does not let a reader decide
+relevance without opening the file is a broken index line.
+
+```markdown
+| `docs-index-stage-allowlist` | trap | `docs-index.sh:36` rejects any `.md` under `docs/`
+outside the four declared stages, exit 2 — extend the skip list at `:30` first. |
+```
+
+Entry — frontmatter `id`, `type`, `status` (`active` or `superseded`, plus `superseded-by:`
+when superseded), then the fact, then **Why** and **How to apply**. Cite `path:line` where one
+exists; `make check` asserts those still resolve, which is what stops an entry rotting into a
+confident lie.
+
+What does **not** belong here: anything `docs/accepted_risks.md` already answers (a reviewed
+decision *not* to act), and anything a single `grep` recovers. A memory earns its index line
+by being expensive or dangerous to re-derive.
+
+When an entry keeps proving itself, promote it — a `CLAUDE.md` Gotchas bullet if agents must
+read it every turn, or a `make check` assertion if a machine can. Promotion is the goal;
+an index that only grows is a cost centre.
+
 ## Current docs
 
 This table is **generated** — run `scripts/docs-index.sh` to refresh it from each doc's

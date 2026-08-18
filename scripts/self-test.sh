@@ -965,8 +965,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   executor_words=$(wc -w < "$ROOT/AGENTS.md" | tr -d ' ')
   [ "$planner_words" -le 1530 ] \
     || fail "planner static role bundle exceeds its ceiling: $planner_words words (max 1530)"
-  [ "$executor_words" -le 1030 ] \
-    || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1030)"
+  # Raised 1030 -> 1090 for the red-first handoff line, the dependency-version rule the root
+  # instance was missing, and the docs/MEMORY.md entry in the minimal read set. That last one
+  # is the whole multi-harness reach of the memory index in a single line: Codex and OpenCode
+  # both read AGENTS.md, so nothing else has to be added anywhere for either of them to find
+  # it. Sized against templates/harness/AGENTS.md, the larger of the pair and the file that
+  # becomes an adopter's AGENTS.md, with the usual narrow headroom.
+  [ "$executor_words" -le 1090 ] \
+    || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1090)"
 fi
 # Raised 965 -> 1000 deliberately, for two obligations the contract did not previously carry
 # and that no routing target could hold: re-run the executor's verification rather than
