@@ -965,8 +965,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   executor_words=$(wc -w < "$ROOT/AGENTS.md" | tr -d ' ')
   [ "$planner_words" -le 1530 ] \
     || fail "planner static role bundle exceeds its ceiling: $planner_words words (max 1530)"
-  [ "$executor_words" -le 1030 ] \
-    || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1030)"
+  # Raised 1030 -> 1090 for the red-first handoff line, the dependency-version rule the root
+  # instance was missing, and the docs/MEMORY.md entry in the minimal read set. That last one
+  # is the whole multi-harness reach of the memory index in a single line: Codex and OpenCode
+  # both read AGENTS.md, so nothing else has to be added anywhere for either of them to find
+  # it. Sized against templates/harness/AGENTS.md, the larger of the pair and the file that
+  # becomes an adopter's AGENTS.md, with the usual narrow headroom.
+  [ "$executor_words" -le 1090 ] \
+    || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1090)"
 fi
 # Raised 965 -> 1000 deliberately, for two obligations the contract did not previously carry
 # and that no routing target could hold: re-run the executor's verification rather than
@@ -1117,6 +1123,121 @@ done
 # a divergence check-harness-sync.sh cannot see, since it compares ## headings only.
 grep -qi 'Red first' "$ROOT/AGENTS.md" \
   || fail "AGENTS.md does not require red-first evidence in the review handoff"
+
+# The memory index reaches all three harnesses through exactly two files: Claude reads
+# CLAUDE.md, and Codex and OpenCode both read AGENTS.md (OpenCode prefers AGENTS.md over
+# CLAUDE.md outright). Lose either pointer and the layer silently becomes single-harness,
+# which nothing else would catch. Both contract pairs must carry it.
+for memory_surface in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md"; do
+  grep -qF 'docs/MEMORY.md' "$memory_surface" \
+    || fail "${memory_surface#"$ROOT"/} does not point at the docs/MEMORY.md index"
+done
+if [ -d "$ROOT/templates/harness" ]; then
+  for memory_template in "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
+    grep -qF 'docs/MEMORY.md' "$memory_template" \
+      || fail "${memory_template#"$ROOT"/} does not point at the docs/MEMORY.md index"
+  done
+fi
+
+# docs-index.sh treats every .md under docs/ as a lifecycle document and fails make check on
+# anything outside its four stages. The memory tree is not a lifecycle stage, so it has to be
+# skipped explicitly — assert with a real file rather than by reading the case statement.
+MEMDOC_FIXTURE="$ROOT/docs/memory/self-test-stage-probe.md"
+printf '%s\n' '# probe' > "$MEMDOC_FIXTURE"
+if ! "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
+  rm -f "$MEMDOC_FIXTURE"
+  fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
+fi
+rm -f "$MEMDOC_FIXTURE"
+
+# The tree ships empty. docs/MEMORY.md must NOT be payload: it accumulates adopter-local
+# entries in place, and upgrade --force overwrites a manifest row unconditionally.
+grep -q '^docs/memory/\.gitkeep' "$ROOT/config/payload.tsv" \
+  || fail "config/payload.tsv does not ship the docs/memory/ tree"
+grep -q '^docs/MEMORY\.md' "$ROOT/config/payload.tsv" \
+  && fail "docs/MEMORY.md is a manifest row — upgrade --force would overwrite an adopter's index"
+
+# The memory index carries TWO ceilings and the split is the whole point, so it gets a fixture
+# rather than a reading of the source. The tight one is this repo's housekeeping and must never
+# fire downstream: an adopter's memory is their own project knowledge, and a ceiling sized to
+# our habits firing on their content is precisely the bug recorded at the role-bundle ceilings
+# ("broke the first real adopter upgrade past this check"). The 200-line one is the reading
+# harness's own hard limit, past which entries are silently dropped, so it is true everywhere
+# and must fire even with no scripts/export.sh present.
+MEMCEIL="$TMP/memory-ceiling"
+memceil_index() { # <entry-count>
+  rm -rf "$MEMCEIL"
+  mkdir -p "$MEMCEIL/docs/memory" "$MEMCEIL/scripts"
+  printf '# MEMORY.md — index\n\n| Entry | Type | Description |\n|---|---|---|\n' \
+    > "$MEMCEIL/docs/MEMORY.md"
+  memceil_i=0
+  while [ "$memceil_i" -lt "$1" ]; do
+    # shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+    printf '| `e%s` | trap | filler |\n' "$memceil_i" >> "$MEMCEIL/docs/MEMORY.md"
+    printf -- '---\nid: e%s\n---\nbody\n' "$memceil_i" > "$MEMCEIL/docs/memory/e$memceil_i.md"
+    memceil_i=$((memceil_i + 1))
+  done
+}
+# `|| true` is load-bearing, not defensive. The checker exits 1 when it finds a problem, and
+# under `set -o pipefail` (line 7) that non-zero status propagates through
+# `memceil_run | grep -q ...` even when grep matches — so every assertion below would have
+# reported "did not fire" regardless of what the checker actually printed, and the
+# expect-no-match ones could never have failed at all. Swallow the status; assert on the text.
+memceil_run() { AGENTIC_PROJECT_ROOT="$MEMCEIL" "$ROOT/scripts/check-memory-index.sh" 2>&1 || true; }
+
+memceil_index 60
+memceil_run | grep -q "50-line ceiling" \
+  && fail "the scaffold-only memory ceiling fired in an adopted project — adopters must be allowed their own memories"
+touch "$MEMCEIL/scripts/export.sh"
+memceil_run | grep -q "50-line ceiling" \
+  || fail "the scaffold memory ceiling did not fire on a 60-entry index inside the scaffold"
+rm -f "$MEMCEIL/scripts/export.sh"
+memceil_index 205
+memceil_run | grep -q "200-line read limit" \
+  || fail "the harness read-limit ceiling did not fire on a 205-entry index in an adopted project"
+
+# The three ways an index rots apart from size. Same fixture, one entry, so each failure is
+# unambiguous.
+memceil_index 1
+printf -- '---\nid: orphan\n---\nbody\n' > "$MEMCEIL/docs/memory/orphan.md"
+memceil_run | grep -q "has no line in docs/MEMORY.md" \
+  || fail "an entry file with no index line was not reported"
+rm -f "$MEMCEIL/docs/memory/orphan.md"
+
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+printf '| `ghost` | trap | nothing backs this |\n' >> "$MEMCEIL/docs/MEMORY.md"
+memceil_run | grep -q "has a row for ghost" \
+  || fail "an index row with no entry file was not reported"
+
+memceil_index 1
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+printf 'cites `scripts/does-not-exist.sh:12`\n' >> "$MEMCEIL/docs/memory/e0.md"
+memceil_run | grep -q "does not exist" \
+  || fail "a memory citing a nonexistent path was not reported"
+
+# The cited file has to exist in the fixture, or this lands on the "does not exist" branch and
+# proves nothing about the line-count check.
+memceil_index 1
+mkdir -p "$MEMCEIL/config"
+printf 'a\nb\nc\n' > "$MEMCEIL/config/payload.tsv"
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+printf 'cites `config/payload.tsv:99999`\n' >> "$MEMCEIL/docs/memory/e0.md"
+memceil_run | grep -q "has only 3 lines" \
+  || fail "a memory citing a line past end-of-file was not reported"
+
+# A description is prose and will contain inline code spans. Only the first table cell names an
+# entry; reading every backticked token as a filename is what the first draft did, and it
+# reported `cp` and `merge-policy` as missing files.
+memceil_index 1
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+printf '| `e0` | trap | mentions `cp` and `merge-policy` inline |\n' > "$MEMCEIL/docs/MEMORY.md.body"
+{ printf '# MEMORY.md\n\n| Entry | Type | Description |\n|---|---|---|\n'; cat "$MEMCEIL/docs/MEMORY.md.body"; } \
+  > "$MEMCEIL/docs/MEMORY.md"
+rm -f "$MEMCEIL/docs/MEMORY.md.body"
+memceil_run | grep -q "memory index ok" \
+  || fail "inline code spans in a description were misread as entry filenames"
+
+rm -rf "$MEMCEIL"
 grep -qi 'Adding a dependency' "$ROOT/AGENTS.md" \
   || fail "AGENTS.md does not carry the dependency-version rule"
 if [ -f "$ROOT/templates/harness/AGENTS.md" ]; then

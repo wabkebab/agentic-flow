@@ -130,6 +130,8 @@ enforce the local stop gate, named staging, and no-push contract.
 
 ## Gotchas (the top traps)
 
+- A trap worth keeping lives in `docs/memory/` as one file, with a one-line entry in
+  `docs/MEMORY.md`. Check that index before re-deriving a trap, and add to it at close-out.
 - Contract changes to `CLAUDE.md`, `AGENTS.md`, or `Makefile` usually need matching edits
   in both the repo-root instance and `templates/harness/`.
 - Payload membership belongs in `config/payload.tsv`; do not add another file list to

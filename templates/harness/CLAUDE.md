@@ -108,6 +108,8 @@ This project ships `.claude/settings.json` with:
 ## Gotchas (the top traps)
 <!-- The non-obvious things that bite. Migration ordering, caches, cross-module type quirks,
      env vars that fail-hard, "never run X". This section pays for itself. -->
+- A trap worth keeping lives in `docs/memory/` as one file, with a one-line entry in
+  `docs/MEMORY.md`. Check that index before re-deriving a trap, and add to it at close-out.
 - <…>
 
 ---

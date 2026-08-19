@@ -19,6 +19,7 @@ check:          ## fast sanity gate: harness checks + your type-check/lint. Run 
 	@scripts/docs-index.sh --check
 	@scripts/check-payload-manifest.sh
 	@scripts/check-action-pins.sh
+	@scripts/check-memory-index.sh
 	@scripts/self-test.sh --fast
 #	npm run typecheck && npm run lint
 
