@@ -1992,6 +1992,7 @@ cat > "$APPROVAL_DOC" <<'MD'
 - **Approval:** pending.
 - **Verification evidence:** https://example.invalid/actions/1
 - **Review verdict:** approved by OpenCode.
+- **Memory:** n/a.
 MD
 PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
   "$PLAN_DRIVER" --apply --approved-by "Test User" --doc "$APPROVAL_DOC" "$PLAN_SPEC" >/dev/null \
@@ -2065,7 +2066,7 @@ AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" \
   > "$TMP/lifecycle.out"
 grep -q "ACTIVE.*feature-active.md" "$TMP/lifecycle.out" \
   || fail "lifecycle report did not retain an open tracker as active"
-grep -q "BLOCKED.*feature-blocked.md.*verification-evidence.*review-verdict" \
+grep -q "BLOCKED.*feature-blocked.md.*verification-evidence.*review-verdict.*memory" \
   "$TMP/lifecycle.out" \
   || fail "lifecycle report did not name missing closure evidence"
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
@@ -2076,8 +2077,42 @@ sed \
   -e 's|^- \*\*Review verdict:\*\* pending\.$|- **Review verdict:** approved by OpenCode — https://example.invalid/reviews/1|' \
   "$LIFEFIX/docs/inprogress/feature-blocked.md" > "$TMP/lifecycle-ready.md"
 mv "$TMP/lifecycle-ready.md" "$LIFEFIX/docs/inprogress/feature-blocked.md"
+# Closure now also requires a recorded memory decision; n/a is a real answer.
+printf -- '- **Memory:** n/a.\n' >> "$LIFEFIX/docs/inprogress/feature-blocked.md"
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
   || fail "strict lifecycle check rejected a tracker with complete closure evidence"
+
+# Capture is the one obligation make check cannot enforce: check-memory-index.sh proves the
+# index is well-formed, never that a memory was written when one was learned. Close-out is the
+# only choke point every doc already passes. "n/a" satisfies it because most passes teach
+# nothing durable — but an empty or hand-waving answer does not, or the field would be a
+# formality that records nothing.
+MEMFIX="$TMP/lifecycle-memory"
+mkdir -p "$MEMFIX/docs/inprogress"
+memfix_doc() { # <memory-line>
+  {
+    printf '## Tracker\n- [x] F-1 done\n## Status\n'
+    printf -- '- **Approval:** user approved 2026-01-01.\n'
+    printf -- '- **Tracking issue:** https://example.invalid/issues/1\n'
+    printf -- '- **Verification evidence:** https://example.invalid/actions/1\n'
+    printf -- '- **Review verdict:** approved by OpenCode — https://example.invalid/reviews/1\n'
+    if [ -n "$1" ]; then printf -- '%s\n' "$1"; fi
+  } > "$MEMFIX/docs/inprogress/feature-mem.md"
+}
+memfix_check() { AGENTIC_PROJECT_ROOT="$MEMFIX" "$ROOT/scripts/lifecycle-status.sh" --check 2>&1 || true; }
+
+memfix_doc ""
+memfix_check | grep -q 'memory' \
+  || fail "close-out accepted a plan with no Memory field"
+memfix_doc '- **Memory:** we should probably write one.'
+memfix_check | grep -q 'memory' \
+  || fail "close-out accepted a Memory field that names neither an entry nor n/a"
+memfix_doc '- **Memory:** n/a.'
+memfix_check | grep -q 'memory' \
+  && fail "close-out rejected an explicit n/a memory decision"
+memfix_doc '- **Memory:** docs/memory/cp-restores-interactively.md'
+memfix_check | grep -q 'memory' \
+  && fail "close-out rejected a Memory field naming a real entry"
 
 # --- lifecycle: the review verdict must say who reviewed ---------------------------------
 # METHODOLOGY.md §1 makes review a separate role, but the verdict pattern accepted a bare
@@ -2097,6 +2132,7 @@ write_verdict_doc() { # <verdict-text> [claude-md-contents]
 - **Tracking issue:** https://example.invalid/issues/1
 - **Verification evidence:** https://example.invalid/actions/1
 - **Review verdict:** $1
+- **Memory:** n/a.
 MD
 }
 rev_status() { AGENTIC_PROJECT_ROOT="$REVFIX" "$ROOT/scripts/lifecycle-status.sh" 2>&1; }
@@ -2141,6 +2177,7 @@ write_lifecycle_ready_doc() { # <root> <verification-evidence>
 - **Tracking issue:** https://example.invalid/issues/1
 - **Verification evidence:** $2
 - **Review verdict:** approved by OpenCode.
+- **Memory:** n/a.
 MD
 }
 
@@ -2209,6 +2246,7 @@ cat > "$LIFEFIX/docs/inprogress/lc19-misnamed.md" <<'MD'
 - **Tracking issue:** https://example.invalid/issues/1
 - **Verification evidence:** https://example.invalid/actions/1
 - **Review verdict:** approved by OpenCode.
+- **Memory:** n/a.
 MD
 cat > "$LIFEFIX/docs/inprogress/lc19-absent.md" <<'MD'
 ## Tracker
@@ -2217,6 +2255,7 @@ cat > "$LIFEFIX/docs/inprogress/lc19-absent.md" <<'MD'
 - **Tracking issue:** https://example.invalid/issues/1
 - **Verification evidence:** https://example.invalid/actions/1
 - **Review verdict:** approved by OpenCode.
+- **Memory:** n/a.
 MD
 cat > "$LIFEFIX/docs/inprogress/lc19-wrapped.md" <<'MD'
 ## Tracker
@@ -2227,6 +2266,7 @@ cat > "$LIFEFIX/docs/inprogress/lc19-wrapped.md" <<'MD'
 - **Verification evidence:** see the CI run recorded at
   https://example.invalid/actions/1
 - **Review verdict:** approved by OpenCode.
+- **Memory:** n/a.
 MD
 AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" > "$TMP/lifecycle19.out"
 

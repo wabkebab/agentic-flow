@@ -139,5 +139,6 @@ passes after.>
 - **Approval:** <approved by whom and when>.
 - **Verification evidence:** <CI run or PR checks URL; pending until execution>.
 - **Review verdict:** <pending | approved with review URL>.
+- **Memory:** <docs/memory/<entry>.md captured this pass, or n/a>.
 - Steps not yet started. Executor closes each via a PR with `Fixes #N`, records the commit
   SHA per step here, and ticks the matching SEC-N box in the Tracker above.

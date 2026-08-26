@@ -136,6 +136,13 @@ while IFS= read -r doc; do
   check_field "$doc" "Verification evidence" verification-evidence 'https?://'
   check_field "$doc" "Review verdict" review-verdict 'approved|pass|accepted'
 
+  # Capture is the half of the memory layer no file check can enforce: check-memory-index.sh
+  # proves the index is well-formed, never that a memory was written when one was learned.
+  # Close-out is the only choke point every doc already passes, so the obligation lands here
+  # rather than in a new hook. "n/a" is a real answer — most passes teach nothing durable —
+  # but it has to be given, because the point is that someone considered it once per plan.
+  check_field "$doc" "Memory" memory 'docs/memory/[A-Za-z0-9._-]+\.md|n/a'
+
   # "Review is a separate role on purpose" (METHODOLOGY.md §1) had nothing enforcing it: the
   # verdict pattern above accepts a bare "approved." with no reviewer named, so a plan closed
   # out with no independent review passed this gate unchanged. Require the verdict to say who
