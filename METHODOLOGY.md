@@ -223,13 +223,17 @@ independently-shippable step**, from the implementation brief.
 **Label convention (encodes the loop).** Labels move in **pairs** — one `agent:*` naming who
 holds the step, one `needs-*` naming what it needs:
 
-| Holder | Needs | Meaning |
-|--------|-------|---------|
-| `agent:codex` | `needs-execution` | the executor implements it (the `plan-to-issues` default) |
-| `agent:opencode` | `needs-review` | the reviewer has it; returns it to `agent:codex` with findings, or approves and closes it |
-| `agent:claude` | `needs-closing` | **on the tracking issue only** — every step is reviewed and closed; waits for plan-level close-out |
+| Holder | Color | Needs | Color | Meaning |
+|--------|-------|-------|-------|---------|
+| `agent:codex` | blue `#0052CC` | `needs-execution` | yellow `#FBCA04` | the executor implements it (the `plan-to-issues` default) |
+| `agent:opencode` | black `#000000` | `needs-review` | orange `#FFA500` | the reviewer has it; returns it to `agent:codex` with findings, or approves and closes it |
+| `agent:claude` | orange `#FFA500` | `needs-closing` | purple `#5319E7` | **on the tracking issue only** — every step is reviewed and closed; waits for plan-level close-out |
 
-Plus `plan` on the tracking issue and `sev:high|med|low|nit` on findings (§5).
+`scripts/plan-to-issues.sh` creates all six with these colors on every run (idempotent), so a
+label a spec never mentions — `agent:opencode` + `needs-review`, added later by the reviewer,
+not by the spec — already exists by the time `gh issue edit --add-label` needs it. Anything
+else (`plan` on the tracker, `sev:high|med|low|nit` on findings, §5) gets a neutral gray
+(`#CCCCCC`).
 
 Note the asymmetry: step issues never reach `needs-closing`. The reviewer closes them
 outright, and the label pair that survives to close-out sits on the tracker.
