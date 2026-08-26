@@ -192,6 +192,17 @@ jq -r '[(.labels // [])[], (.steps[].labels // [])[]] | unique[]' "$SPEC" \
       gh label create "$label" --repo "$REPO" --color CCCCCC >/dev/null 2>&1 || true
     done
 
+# The six workflow labels (agent:*/needs-*) get their standard colors from the create-tags
+# skill (scripts/create-tags.sh), not this loop's flat gray. Run it once, the first time none
+# of the six exist yet — a repo `init.sh` already seeded, or a repeat plan, has no reason to
+# re-invoke it every apply.
+WORKFLOW_LABEL_HIT=$(gh label list --repo "$REPO" --json name \
+  --jq '[.[] | select(.name == "agent:claude" or .name == "agent:codex" or .name == "agent:opencode" or .name == "needs-review" or .name == "needs-execution" or .name == "needs-closing")] | length' \
+  2>/dev/null || echo 0)
+if [ "$WORKFLOW_LABEL_HIT" -eq 0 ]; then
+  "$(dirname "$0")/create-tags.sh" --repo "$REPO"
+fi
+
 # Create the tracker first. If a later step fails, the stamped tracker is the durable
 # recovery anchor and the next --apply resumes from it.
 if [ -z "$existing_tracker" ]; then

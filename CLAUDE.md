@@ -118,6 +118,10 @@ This project ships `.claude/settings.json` with:
   layers, both always**: `gitleaks`, plus a local high-signal pattern set — the local set is
   not a fallback, it covers what gitleaks' default config allowlists (documented sample
   keys). Override a false positive with `AGENTIC_ALLOW_SECRET=1` on the commit.
+- **PreToolUse(Bash) → require a comment before a step issue relabels**
+  (`scripts/hooks/require-step-comment.sh`) — blocks the `gh issue edit`/`close` calls below
+  unless the matching comment landed first. Claude/Codex only; **OpenCode has no hook engine
+  here**, so its side still relies on `.opencode/agent/code-reviewer.md`.
 
 ## Architecture (orient an agent fast)
 
