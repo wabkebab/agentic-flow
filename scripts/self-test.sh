@@ -1042,6 +1042,23 @@ grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-executio
 grep -qi 'isolation stops being optional' "$ROOT/METHODOLOGY.md" \
   || fail "METHODOLOGY.md §8 does not require worktree isolation for concurrent editing agents"
 
+# The ensemble entry is the sixth surface that could have restated the severity scale, which
+# is already written out in ten places. It must route to §5 and carry the two failure modes
+# that make an ensemble worth less than its headcount suggests — otherwise it reads as "more
+# reviewers is better", which is the belief it exists to correct.
+ensemble_block=$(awk '
+  /^- \*\*Multi-reviewer ensemble\*\*/ { inblock = 1; print; next }
+  inblock && /^- \*\*/ { exit }
+  inblock { print }
+' "$ROOT/METHODOLOGY.md")
+[ -n "$ensemble_block" ] || fail "METHODOLOGY.md §8 has no multi-reviewer ensemble entry"
+printf '%s' "$ensemble_block" | grep -qi 'not a vote' \
+  || fail "the ensemble entry does not say aggregation is not a vote"
+printf '%s' "$ensemble_block" | grep -qi 'blind spot' \
+  || fail "the ensemble entry does not name the correlated-blind-spot failure mode"
+printf '%s' "$ensemble_block" | grep -q 'sev:' \
+  && fail "the ensemble entry restates the severity labels instead of routing to METHODOLOGY.md §5"
+
 # The shipped-hook count is stated in prose in two exported documents and was wrong in both:
 # METHODOLOGY.md §8 offered ideas "beyond the shipped two" and README.md's source-tree
 # inventory called scripts/hooks/ "the two hook scripts", while four ship and settings.json
