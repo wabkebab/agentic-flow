@@ -229,11 +229,13 @@ holds the step, one `needs-*` naming what it needs:
 | `agent:opencode` | black `#000000` | `needs-review` | orange `#FFA500` | the reviewer has it; returns it to `agent:codex` with findings, or approves and closes it |
 | `agent:claude` | orange `#FFA500` | `needs-closing` | purple `#5319E7` | **on the tracking issue only** — every step is reviewed and closed; waits for plan-level close-out |
 
-`scripts/plan-to-issues.sh` creates all six with these colors on every run (idempotent), so a
-label a spec never mentions — `agent:opencode` + `needs-review`, added later by the reviewer,
-not by the spec — already exists by the time `gh issue edit --add-label` needs it. Anything
-else (`plan` on the tracker, `sev:high|med|low|nit` on findings, §5) gets a neutral gray
-(`#CCCCCC`).
+The `create-tags` skill (`scripts/create-tags.sh`) creates all six with these colors.
+`scripts/init.sh` runs it once at adoption; `plan-to-issues.sh` checks whether any of the six
+already exist and only invokes it when none do, so a label a spec never mentions —
+`agent:opencode` + `needs-review`, added later by the reviewer, not by the spec — still
+exists by the time `gh issue edit --add-label` needs it, without recreating labels on every
+apply. Anything else (`plan` on the tracker, `sev:high|med|low|nit` on findings, §5) gets a
+neutral gray (`#CCCCCC`) from `plan-to-issues.sh`'s own per-spec label loop.
 
 Note the asymmetry: step issues never reach `needs-closing`. The reviewer closes them
 outright, and the label pair that survives to close-out sits on the tracker.

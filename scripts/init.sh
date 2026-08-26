@@ -301,6 +301,14 @@ echo
 (cd "$TARGET_ABS" && scripts/doctor.sh)
 
 echo
+if command -v gh >/dev/null 2>&1 && (cd "$TARGET_ABS" && gh repo view >/dev/null 2>&1); then
+  (cd "$TARGET_ABS" && scripts/create-tags.sh) \
+    || echo "warning: could not create GitHub workflow labels — rerun scripts/create-tags.sh later." >&2
+else
+  echo "Skipping GitHub workflow labels (no gh auth / GitHub remote yet) — run scripts/create-tags.sh once the repo exists on GitHub."
+fi
+
+echo
 echo "Initialized agentic-flow scaffold in $TARGET_ABS."
 if [ "$YES" = true ]; then
   echo "Ran non-interactively with --yes."

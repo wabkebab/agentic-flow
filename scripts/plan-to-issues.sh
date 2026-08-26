@@ -186,31 +186,22 @@ fi
 
 # Labels are idempotent support data. A create failure may mean the label already exists;
 # issue mutations below still fail loudly if a required label is actually unavailable.
-#
-# The six workflow labels are colored per CLAUDE.md's label state machine so the board
-# reads at a glance; anything else (spec-defined labels like "plan" or sev:*) gets the
-# neutral default. Always seed the workflow set, not just whatever this spec's own steps
-# happen to carry — a role/label an early plan never touches (e.g. agent:opencode +
-# needs-review, added later by the reviewer) must already exist by the time it's needed,
-# and `gh issue edit --add-label` fails on a label that was never created.
-label_color() {
-  case "$1" in
-    agent:claude) echo FFA500 ;;
-    agent:codex) echo 0052CC ;;
-    agent:opencode) echo 000000 ;;
-    needs-review) echo FFA500 ;;
-    needs-execution) echo FBCA04 ;;
-    needs-closing) echo 5319E7 ;;
-    *) echo CCCCCC ;;
-  esac
-}
-{
-  jq -r '[(.labels // [])[], (.steps[].labels // [])[]] | unique[]' "$SPEC"
-  printf '%s\n' agent:claude agent:codex agent:opencode needs-review needs-execution needs-closing
-} | sort -u | while IFS= read -r label; do
+jq -r '[(.labels // [])[], (.steps[].labels // [])[]] | unique[]' "$SPEC" \
+  | while IFS= read -r label; do
       [ -n "$label" ] || continue
-      gh label create "$label" --repo "$REPO" --color "$(label_color "$label")" >/dev/null 2>&1 || true
+      gh label create "$label" --repo "$REPO" --color CCCCCC >/dev/null 2>&1 || true
     done
+
+# The six workflow labels (agent:*/needs-*) get their standard colors from the create-tags
+# skill (scripts/create-tags.sh), not this loop's flat gray. Run it once, the first time none
+# of the six exist yet — a repo `init.sh` already seeded, or a repeat plan, has no reason to
+# re-invoke it every apply.
+WORKFLOW_LABEL_HIT=$(gh label list --repo "$REPO" --json name \
+  --jq '[.[] | select(.name == "agent:claude" or .name == "agent:codex" or .name == "agent:opencode" or .name == "needs-review" or .name == "needs-execution" or .name == "needs-closing")] | length' \
+  2>/dev/null || echo 0)
+if [ "$WORKFLOW_LABEL_HIT" -eq 0 ]; then
+  "$(dirname "$0")/create-tags.sh" --repo "$REPO"
+fi
 
 # Create the tracker first. If a later step fails, the stamped tracker is the durable
 # recovery anchor and the next --apply resumes from it.
