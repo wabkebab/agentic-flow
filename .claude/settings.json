@@ -18,6 +18,11 @@
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/hooks/scan-secrets.sh",
             "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/hooks/require-step-comment.sh",
+            "timeout": 20
           }
         ]
       }

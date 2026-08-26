@@ -46,7 +46,7 @@ order, edge cases — not finished code. Read the brief for the step before writ
    Then hand the step to the reviewer — **comment first, relabel second** (`METHODOLOGY.md` §6):
 
    ```bash
-   gh issue comment <N> --body "Implemented in <sha>.
+   gh issue comment <N> --body "Implemented in <sha> — <commit title>.
    <what changed; anything the reviewer should look at first>
 
    Verification: <commands run, with results>
@@ -57,11 +57,14 @@ order, edge cases — not finished code. Read the brief for the step before writ
    ```
 
    The comment is not optional: without it the reviewer re-derives the step's commit from
-   `git log`, and close-out does it again later. Name the real sha(s) and only verification
-   you actually ran, and show the new test failing against the old code — the
-   reviewer re-runs it either way, and should not have to take your word for it. The **reviewer** closes the issue on approval — do not close it
-   yourself, and do not expect the merge to. (If the project opts out of OpenCode,
-   `CLAUDE.md` says who reviews instead — hand off to them, never to yourself.)
+   `git log`, and close-out does it again later. Name the real sha(s) and title, and only
+   verification you actually ran, and show the new test failing against the old code — the
+   reviewer re-runs it either way, and should not have to take your word for it. Where the
+   stack wires a `require-step-comment.sh`-style hook, the label edit above is blocked if the
+   comment doesn't already name a sha, so a skipped comment fails loudly instead of silently.
+   The **reviewer** closes the issue on approval — do not close it yourself, and do not
+   expect the merge to. (If the project opts out of OpenCode, `CLAUDE.md` says who reviews
+   instead — hand off to them, never to yourself.)
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 

@@ -349,7 +349,7 @@ These make the handoff explicit and parallel instead of sequential:
 - **`/security-review`** — a security pass on the pending branch diff; complements a
   Security doc.
 - **`/verify` and `/run`** — drive the app to confirm a fix behaves, not just that tests pass.
-- **More hooks** — beyond the four shipped hooks: a PostToolUse reminder on shared-type edits,
+- **More hooks** — beyond the five shipped hooks: a PostToolUse reminder on shared-type edits,
   a commit-message-format check, etc.
 - **Memory** — persist durable decisions (this methodology, the commit contract, recurring
   review themes) so each session doesn't re-derive them.
