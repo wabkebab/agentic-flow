@@ -85,28 +85,17 @@
   committing it in a target project.
 
 ### Hooks (enforced, not optional)
-This project ships `.claude/settings.json` with:
-- **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`) — blocks ending a
-  turn while type-check/lint is red (one blocked retry, then warn-and-allow; skipped when
-  the working tree is clean). `check` ships prefilled with harness sanity checks; extend
-  it with the stack's type-check + lint.
+This project ships `.claude/settings.json` with five hooks that mechanize the contract —
+full mechanism and rationale for each in `METHODOLOGY.md` §8:
+- **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`)
 - **PreToolUse(Bash) → block `git add -A` / `.` / `--all`** (`scripts/hooks/block-git-add-all.sh`)
-  — enforces "stage files by name" mechanically.
 - **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)
-  — enforces "never push; the human controls pushes and merges" mechanically.
 - **PreToolUse(Bash) → scan staged content before a commit** (`scripts/hooks/scan-secrets.sh`)
-  — blocks a commit whose staged diff looks like it carries a credential. CI-side scanning
-  is one step too late: a committed secret must be rotated, not just removed. Runs **two
-  layers, both always**: `gitleaks`, plus a local high-signal pattern set — the local set is
-  not a fallback, it covers what gitleaks' default config allowlists (documented sample
-  keys). Override a false positive with `AGENTIC_ALLOW_SECRET=1` on the commit.
+  — override a false positive with `AGENTIC_ALLOW_SECRET=1` on the commit.
 - **PreToolUse(Bash) → require a comment before a step issue's label flips**
-  (`scripts/hooks/require-step-comment.sh`) — blocks `gh issue edit --add-label
-  ...needs-review`, `...needs-execution` (bounce-back), and `gh issue close` on a step issue
-  unless the required comment (sha + title, findings, or verdict) already landed. Wired for
-  Claude and Codex, whose bash calls go through a hook engine. **OpenCode has no hook engine
-  in this stack**, so the reviewer side still relies on `.opencode/agent/code-reviewer.md`
-  being followed, not on mechanical enforcement.
+  (`scripts/hooks/require-step-comment.sh`) — Claude/Codex only; **OpenCode has no hook
+  engine in this stack**, so the reviewer side still relies on
+  `.opencode/agent/code-reviewer.md` being followed, not on mechanical enforcement.
 
 ## Architecture (orient an agent fast)
 <!-- The map: top-level components, where the domain logic lives, the data model, the

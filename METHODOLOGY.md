@@ -315,6 +315,13 @@ Fixes #73
   secret has to be rotated. Runs `gitleaks` (required) **and** a local high-signal pattern
   set, always both — see §11.1 on why the second layer is not a fallback.
   `AGENTIC_ALLOW_SECRET=1` overrides a false positive, visibly.
+- **PreToolUse(Bash) → require a comment before a step issue's label flips**
+  (`scripts/hooks/require-step-comment.sh`): blocks `gh issue edit --add-label
+  ...needs-review`, `...needs-execution` (bounce-back), and `gh issue close` on a step issue
+  unless the required comment (sha + title, findings, or verdict) already landed. Wired for
+  Claude and Codex, whose bash calls go through a hook engine. **OpenCode has no hook engine
+  in this stack**, so the reviewer side still relies on `.opencode/agent/code-reviewer.md`
+  being followed, not on mechanical enforcement.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
 - **`scripts/check-payload-manifest.sh`** fails when an agent adapter, harness template, or
