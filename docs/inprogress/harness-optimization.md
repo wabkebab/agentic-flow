@@ -1,3 +1,8 @@
+<!-- TRIAGE (first pass · 2026-09-11) -->
+> **Type:** Feature · **Status:** 🟦 Proposal
+> Audit of the harness's correctness gates, duplicated contracts, and token/ceremony
+> overhead, with a recommended fix order. Not an approved implementation brief.
+
 # Harness optimization review
 
 Reviewed `main` at `87d6ae9` on 2026-09-11. This is an audit and improvement proposal, not an approved implementation brief.

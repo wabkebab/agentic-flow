@@ -104,4 +104,5 @@ TRIAGE header. Don't edit between the markers by hand.
 | context_optimization | Feature | 🚧 In progress | inprogress |
 | feature-adaptative-assurance-opus | Feature | 🟦 Proposal | inprogress |
 | feature-progressive-assurance-profiles | Feature | 🟦 Proposal | inprogress |
+| harness-optimization | Feature | 🟦 Proposal | inprogress |
 <!-- END: generated index -->
