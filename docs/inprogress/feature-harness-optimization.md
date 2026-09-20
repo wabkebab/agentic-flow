@@ -1,8 +1,8 @@
 <!-- TRIAGE (first pass · 2026-09-11) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > **Assurance:** Strict. Make the harness's correctness gates prove the state they report, then
-> reduce duplicated contracts, routine validation cost, and low-risk workflow ceremony. Ready for human approval;
-> do not run `plan-to-issues` until approved.
+> reduce duplicated contracts, routine validation cost, and low-risk workflow ceremony. Approved
+> 2026-09-20; execution is tracked on the `plan-to-issues` tracker.
 
 # Feature — Trustworthy and proportionate harness execution
 
@@ -1696,8 +1696,8 @@ and all whole-brief verification commands pass.
 ## Status / Implementation status
 
 - **Evidence schema:** v2
-- **Tracking issue:** pending approval and `plan-to-issues`.
-- **Approval:** status=pending.
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/93
+- **Approval:** status=approved; by=wabkebab; at=2026-09-20
 - **Implementation head:** pending.
 - **Implementation PR:** pending.
 - **Verification evidence:** pending.

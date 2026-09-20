@@ -103,6 +103,6 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-upgrade-surface | Feature | ✅ Done | done |
 | context_optimization | Feature | 🚧 In progress | inprogress |
 | feature-adaptative-assurance-opus | Feature | 🟦 Proposal | inprogress |
-| feature-harness-optimization | Feature | 🟦 Proposal | inprogress |
+| feature-harness-optimization | Feature | 🚧 In progress | inprogress |
 | feature-progressive-assurance-profiles | Feature | 🟦 Proposal | inprogress |
 <!-- END: generated index -->
