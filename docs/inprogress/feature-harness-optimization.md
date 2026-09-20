@@ -141,18 +141,47 @@ and it is where the label state machine already parks `needs-closing`.
 **Completeness** must be proved, not assumed — not uniqueness. Multiple verdicts for one head are
 normal and are resolved by the head-scoped selection rule below, which takes the last one; what the
 gate cannot tolerate is choosing from a *partial* view. Selecting "the last verdict" from a listing
-that stopped early is not the last verdict at all, and GitHub's issue-comment API returns at most
-100 comments per page, so a later verdict — the one that would actually be authoritative — could sit
-on a page never read. Request `per_page=100` and **fail closed whenever the response indicates
-another page** — a `Link:` header with `rel="next"`, or a full page of
-results — reporting `UNVERIFIED` with an instruction to resolve the thread rather than silently
-checking a prefix. Paging the whole thread is deliberately not the answer: an unbounded comment
-walk breaks the bounded-lookup guarantee, and a tracking thread long enough to overflow one page is
-itself a signal that the approval record needs human attention.
+that stopped early is not the last verdict at all, and a page holds at most 100 comments, so a later
+verdict — the one that would actually be authoritative — could sit on a page never read.
+
+Because verdicts are fetched over GraphQL (step 5 below), completeness is decided by **GraphQL
+pagination semantics, not REST ones**. Request `comments(first: 100)` and select
+`pageInfo { hasNextPage endCursor }` alongside the nodes. Then:
+
+- `hasNextPage == true` → `UNVERIFIED`, with an instruction to resolve the thread rather than
+  silently checking a prefix.
+- `pageInfo` absent, or `hasNextPage` null or non-boolean → `UNVERIFIED` naming the missing
+  metadata. Absent pagination information is unproven completeness, not proven completeness.
+- `hasNextPage == false` → the listing is complete, **including when exactly 100 nodes are
+  returned**. Node count carries no information here. Treating a full page as incomplete is a REST
+  habit — there, a full page is the only hint another may follow — and porting it to GraphQL would
+  reject a thread the API has explicitly reported as whole.
+
+**A complete page is not the same as a readable one**, and `hasNextPage` only ever proves the first.
+GraphQL types the connection's `nodes` as `[IssueComment]` — a nullable list of *nullable* elements
+— and a GraphQL response may carry a top-level `errors` array beside a `data` block that still looks
+usable. A jq selector written with the usual optional operators would skip a null entry, drop the
+authoritative verdict with it, and then report a complete listing with `hasNextPage: false`. So
+before any verdict is parsed, require of the response:
+
+- **no GraphQL errors** — a present, non-empty top-level `errors` array is `UNVERIFIED` naming the
+  first error's message and path, even when `data` appears complete;
+- **`nodes` present and an array** — null or absent is `UNVERIFIED` naming the thread;
+- **every element a non-null object** — a single null entry is `UNVERIFIED` naming its index in the
+  listing, never filtered out, because a null entry is precisely one comment the gate could not
+  read.
+
+The index is the only handle a null entry has, which is why it is what gets named. These checks are
+about the nodes that *were* returned; node count still carries no completeness information.
+
+Paging the whole thread is deliberately not the answer: an unbounded comment walk breaks the
+bounded-lookup guarantee, and a tracking thread long enough to overflow one page is itself a signal
+that the approval record needs human attention.
 
 **The same one-page completeness rule governs every Strict per-step review lookup.** Each step
-thread is read with one `per_page=100` listing and fails closed to `UNVERIFIED` on any indication of
-a further page, naming the step. No thread in this gate is ever judged from a partial prefix.
+thread is read with one `comments(first: 100)` query and fails closed to `UNVERIFIED` when
+`hasNextPage` is true or its pagination metadata is missing, naming the step. No thread in this gate
+is ever judged from a partial prefix.
 
 **Verdict selection is head-scoped, on every thread.** A healthy review thread *normally* contains
 contradictory verdicts: `changes requested`, a fix, then `approved`, each written against a
@@ -163,12 +192,41 @@ workflow, so selection runs in this order:
 2. **Discard every verdict whose head is not the head under evaluation** — the step's
    implementation commit for a step thread, the PR head for the final approval. Those are
    superseded history, not conflicts, and their presence is never an error.
-3. Order the remaining verdicts by **comment id alone, ascending**, and take the highest as
-   authoritative. Comment ids are assigned monotonically at creation, so this is an exact total
+3. Order the remaining verdicts by **`fullDatabaseId`, ascending**, and take the highest as
+   authoritative. Database ids are assigned monotonically at creation, so this is an exact total
    order over *creation* with no ties and no dependence on timestamp resolution. Timestamps are
-   deliberately not used for ordering: GitHub's `created_at`/`updated_at` have second granularity,
+   deliberately not used for ordering: GitHub's `createdAt`/`updatedAt` have second granularity,
    so two comments in the same second tie, and mixing an edit time into the order would let a
    retroactive edit of an old comment outrank a newer comment — reordering history by touching it.
+
+   Two properties of that field decide the implementation, and both are easy to get wrong:
+
+   - **It is nullable, so it must be validated.** GraphQL types it as a nullable `BigInt`
+     (`databaseId` is likewise a nullable `Int`); only the opaque node `id` is non-null. That id is
+     an unordered identifier and cannot order anything — but select it anyway, because it is the
+     only identifier guaranteed to be there, and the null-ordering-key failure below is exactly the
+     case with no other name to print. A verdict whose `fullDatabaseId` is null or absent has no
+     position in the order, so the thread cannot be ordered soundly: report `UNVERIFIED` naming the
+     comment by its opaque `id`, never fall back to listing order or to timestamps.
+   - **It is returned as a JSON string and must stay one.** `fullDatabaseId` comes back as
+     `"5080540104"`, not `5080540104` — GitHub serializes `BigInt` as a string precisely because the
+     value outgrows the numeric types a client is likely to reach for. Both obvious readings of that
+     string are wrong. Comparing it lexicographically puts `"9"` above `"10"` and misorders a thread.
+     Converting it to a number is worse, because it is silent: `jq`'s `tonumber` — the obvious way
+     to do it here — yields an IEEE-754 double, and every integer above 2^53 collapses onto a
+     neighbour, so two adjacent ids compare *equal* and the tie falls to whichever the sort saw
+     first, which is listing order wearing a numeric disguise. Bash's `$(( ))` is exact to 2^63 but
+     wraps silently past it, so it only moves the cliff. Today's ids sit well below either ceiling,
+     which makes this a latent defect rather than a live one — and means a regression only sees it
+     if it reaches above 2^53 deliberately.
+     Instead compare the **decimal strings exactly**: validate each as a non-negative integer
+     literal, strip leading zeros, then order by digit count first and lexicographically within
+     equal length. That is an exact total order at any width and never materializes the value as a
+     number.
+
+   Prefer `fullDatabaseId` over `databaseId` deliberately: live comment ids already exceed the
+   signed 32-bit range `Int` nominally covers — the value above is one — which is why the wider
+   field exists.
 4. **Editing an older comment never changes the outcome.** The authoritative record is the
    last verdict *posted* for this head, and the way to change a verdict is to post a new one. This
    is stated in the reviewer contract, not left as an implementation detail, so nobody expects an
@@ -178,9 +236,13 @@ workflow, so selection runs in this order:
    second granularity, so the heuristic has silent false negatives exactly where it matters. Use
    GraphQL `IssueComment.lastEditedAt`, which is null if and only if the comment has never been
    edited and carries no granularity dependence (`editor` and `userContentEdits` are available
-   alongside it for diagnostics). One GraphQL query returns `databaseId`, `body`, `author`,
-   `createdAt`, and `lastEditedAt` for the thread's comments, so this is still the single bounded
-   comment listing the bounds allow — not an extra call.
+   alongside it for diagnostics). One GraphQL query returns `pageInfo`, the non-null opaque `id`,
+   `fullDatabaseId`, `body`, `author`, `createdAt`, and `lastEditedAt` for the thread's comments —
+   `id` earns its place as the diagnostic name for a comment whose ordering key is null, while
+   `fullDatabaseId` remains the sole ordering key — so this is still the single
+   bounded comment listing the bounds allow — not an extra call. Note that `lastEditedAt` is
+   *legitimately* nullable, where null means never edited; that is the field's semantics, not
+   missing data, and must not be confused with the null-ordering-key failure above.
 6. **If the listing cannot supply an explicit edit indicator, fail closed** with `UNVERIFIED`,
    naming the missing field. Do not fall back to the timestamp heuristic: an unsound edit check
    reported as a clean result is worse than an honest refusal, and this is precisely the ambiguous
@@ -202,9 +264,10 @@ workflow, so selection runs in this order:
 
 Id ordering leaves no tie to break, so there is no ambiguous-conflict case left to define: two
 verdicts sharing one comment id cannot occur through the API and indicate malformed input —
-`BLOCKED`. Print the selected verdict's comment id, its `lastEditedAt` state, and its head, so a
-reader can see which record was used, which were discarded as superseded, and which were rejected
-as edited.
+`BLOCKED`. Print the selected verdict's opaque `id` and its `fullDatabaseId`, its `lastEditedAt`
+state, and its head, so a reader can see which record was used, which were discarded as superseded,
+and which were rejected as edited. Every comment named in output or in a failure is named by its
+opaque `id`, which is the one identifier that survives a null ordering key.
 `source=pr-head-approval`
 names what the approval must cover, not where it lives: an approval posted on the PR conversation,
 on a step issue, or anywhere else does not satisfy this gate. For Strict, verify every stamped
@@ -660,11 +723,13 @@ Bounds:
   recognizer caps command bytes and token count and blocks protected operations beyond the cap.
 - Evidence verification uses at most 100 step issues, one PR lookup, one final review-comment
   lookup — a single bounded comment listing on the `Tracking issue` thread capped at 100 comments,
-  carrying `databaseId`, `body`, `author`, `createdAt`, and `lastEditedAt`, never a
+  carrying `pageInfo`, the opaque `id`, `fullDatabaseId`, `body`, `author`, `createdAt`, and
+  `lastEditedAt`, never a
   repository-wide comment search and never a multi-page walk; a thread that does not fit one page
-  is `UNVERIFIED` rather than partially checked — and one Actions-run lookup per document, plus
-  bounded step-review lookups — one `per_page=100` listing per step thread, each subject to the same
-  fail-closed overflow rule. Every outbound
+  is `UNVERIFIED` rather than partially checked, as is one whose response carries GraphQL errors or
+  any null node — and one Actions-run lookup per document, plus
+  bounded step-review lookups — one `comments(first: 100)` query per step thread, each subject to
+  the same `hasNextPage` and node-readability fail-closed rules. Every outbound
   call has a 30-second deadline, with no implicit retries; timeout yields `UNVERIFIED`.
 - Context measurement walks only declared bundle files and uses fixed representative scenarios.
 
@@ -721,12 +786,17 @@ proposals, and measures the remaining cost before considering more orchestration
   protected-branch required checks remain the only merge-time gate. Durable mechanisms (PR review
   objects, required reviews, signed attestations) are out of scope for this pass and are recorded as
   accepted risks in F-3 rather than implied away.
-- Listing *completeness* — not approval uniqueness — is what one `per_page=100` comment listing must
-  prove, on the tracking thread and on every Strict step thread alike. Multiple verdicts per head are
+- Listing *completeness* — not approval uniqueness — is what one `comments(first: 100)` GraphQL
+  query must prove, via `pageInfo.hasNextPage`, on the tracking thread and on every Strict step
+  thread alike. A full page of 100 nodes with `hasNextPage == false` is complete; only a true
+  `hasNextPage` or missing pagination metadata fails closed. Multiple verdicts per head are
   expected and resolved by latest-wins selection; a partial listing is what makes that selection
   meaningless. A thread that overflows one page reports
   `UNVERIFIED` and asks for human resolution; the gate never walks unbounded pages and never accepts
-  an approval found on a partial prefix.
+  an approval found on a partial prefix. Completeness is necessary but not sufficient: the same
+  response must also carry no top-level GraphQL errors and no null node, since `nodes` is typed as a
+  nullable list of nullable elements and a skipped null is an unread comment on a listing that would
+  otherwise report itself whole.
 - The reviewer records `attempt=` in the approval alongside `run=`. Without an expected attempt
   there is nothing a later re-run can be compared against, so an approval lacking it is
   `UNVERIFIED` rather than accepted on the run ID alone.
@@ -740,9 +810,11 @@ proposals, and measures the remaining cost before considering more orchestration
   membership in F-7.
 - Review verdicts are selected head-scoped, and multiple verdicts per head are expected rather than
   rejected: verdicts for superseded commits are ordinary review history and are discarded, and among
-  the verdicts for the evaluated head the highest comment id — exact creation order, with no
-  dependence on second-granularity timestamps — is
-  authoritative. A `changes requested` → fix → `approved` cycle therefore passes, while a later
+  the verdicts for the evaluated head the highest `fullDatabaseId` — exact creation order, with no
+  dependence on second-granularity timestamps, validated as a non-null integer-valued string and
+  compared as an exact decimal string by digit count then lexicographic value, never converted to a
+  float that would collapse adjacent ids above 2^53 — is authoritative. A `changes requested` → fix → `approved` cycle
+  therefore passes, while a later
   `changes requested` supersedes an earlier approval. Edits are detected by GraphQL `lastEditedAt`,
   never by comparing second-granularity timestamps, which cannot see an edit made inside the creation
   second; a listing without an explicit edit indicator is `UNVERIFIED` rather than guessed at. An
@@ -951,8 +1023,10 @@ remote-origin handling, and CI templates.
    not `success` is `BLOCKED`.
 4. Obtain the run locator from the structured final approval comment on the `Tracking issue`
    thread, selected by `source=pr-head-approval` under Part A's head-scoped selection rule: discard
-   verdicts for superseded heads, take the highest-id remaining verdict for the PR head, and reject
-   it if `lastEditedAt` shows that authoritative record has been edited. Verify its run through the
+   verdicts for superseded heads, take the remaining verdict for the PR head with the highest
+   `fullDatabaseId` (validated non-null, compared as an exact decimal string), and reject it if
+   `lastEditedAt`
+   shows that authoritative record has been edited. Verify its run through the
    Actions-run endpoint. Reject a head with no surviving approval; print the selected comment id,
    the resolved run URL, and the full SHA.
 5. At this step the comment is an **untrusted locator only**: it names which run to fetch, and
@@ -978,10 +1052,22 @@ never smuggles in a second lookup.
 Add a correctly formed final approval posted
 on the PR conversation and another on a step issue instead of the `Tracking issue` thread: both
 must fail to satisfy the gate. Add pagination regressions: a thread returning exactly 100 comments,
-and one whose response carries a `Link:` header with `rel="next"` — both must report `UNVERIFIED`
-rather than accepting an approval found on the first page, including the case where that first page
-holds a valid-looking approval. Include one exact match and assert one bounded Actions-run lookup
-per selected run and exactly one `per_page=100` comment listing on the tracking thread.
+with `hasNextPage: true`, and one whose response omits `pageInfo` entirely — both must report
+`UNVERIFIED` rather than accepting an approval found on the first page, including the case where
+that first page holds a valid-looking approval. Add the **inverse** case, which the REST heuristic
+got wrong: exactly 100 nodes with `hasNextPage: false` must be treated as a *complete* listing and
+pass, since node count carries no completeness information in GraphQL. Add **node-readability**
+regressions, which `hasNextPage` alone does not cover: a response carrying a non-empty top-level
+`errors` array beside usable-looking `data`, one whose `nodes` is null, and one whose `nodes`
+contains a null entry beside an otherwise valid approval — all three `UNVERIFIED`, the last naming
+the null entry's index, and none of them accepted from a listing silently filtered down to its
+non-null members. Add ordering-key cases: a
+verdict with a null `fullDatabaseId` must be `UNVERIFIED` naming the comment by its opaque `id`; a
+thread whose ids order differently as raw strings than by digit count (`"9"` versus `"10"`) must
+select the larger; and a thread whose two ids are **adjacent above 2^53** — `"9007199254740993"`
+and `"9007199254740992"`, a pair no double can tell apart — presented newest-first, so listing
+order cannot stand in for the comparison, must still select the higher. Include one exact match and assert one bounded Actions-run lookup per selected run and
+exactly one `comments(first: 100)` query on the tracking thread.
 
 **Stop if:** The named endpoint no longer exposes repository, workflow path, conclusion, and head
 SHA. Return to planning rather than falling back to conclusion-only.
@@ -1051,7 +1137,8 @@ accepted-risk template/register, and step-issue stamps.
    the adopted review-identity configuration. Record the mutable-comment limitation from Part A in
    the same register, alongside the re-runnable/deletable-run limitation: the gate proves
    point-in-time external evidence on both sides, not durable provenance. Verification output must
-   carry the comment id, author login, resolved head, run ID, and attempt number, and no message may
+   carry the comment's opaque `id`, author login, resolved head, run ID, and attempt number, and no
+message may
    call either the review record or the run immutable, permanent, or a merge guard.
 
 **Failure-first test:** Unauthorized and ambiguous authors, claimed identity differing from API
@@ -1061,8 +1148,12 @@ correctly authored approval on the wrong thread still fails. Assert the exact pr
 case against Part A's rule — in particular that a later `changes requested` superseding an earlier
 `approved` on the same head prints `BLOCKED`, while an API that cannot return the author prints
 `UNVERIFIED`. Add per-step pagination
-regressions mirroring the tracker's: a step thread of exactly 100 comments and one signalling a
-further page, both `UNVERIFIED` naming the step, with no approval accepted from a partial prefix.
+regressions mirroring the tracker's: a step thread signalling `hasNextPage: true` and one missing
+`pageInfo`, both `UNVERIFIED` naming the step, with no approval accepted from a partial prefix; and
+a step thread of exactly 100 nodes with `hasNextPage: false`, which must pass as complete. Mirror
+F-2's node-readability cases per step as well: a step response carrying a top-level `errors` array,
+and one with a null node beside a valid approval, must each be `UNVERIFIED` naming the step rather
+than a verdict parsed from the readable remainder.
 Add head-scoping regressions on both thread kinds: a normal `changes requested` at an old head
 followed by `approved` at the current head must pass, proving ordinary review history is not read as
 conflict; `approved` at an old head with nothing at the current head must not pass; and `approved`
@@ -1070,16 +1161,21 @@ then a later `changes requested` at the same head must be `BLOCKED`, proving las
 ordering.
 Add **same-second** regressions, which are what the timestamp model got wrong: `approved` and
 `changes requested` sharing one `created_at` at the same head with the rejection carrying the higher
-comment id (must be `BLOCKED`, proving id ordering decides and timestamps are not consulted); and an
+`fullDatabaseId` (must be `BLOCKED`, proving id ordering decides and timestamps are not consulted);
+and an
 authoritative verdict edited *within its creation second*, so `created_at == updated_at` while
 `lastEditedAt` is non-null (must be `BLOCKED`, proving edits are detected by the explicit field and
 not by comparing timestamps — under the old heuristic this case passed silently).
 Add **edited-verdict** regressions: an older `approved` edited into `changes requested` for the
 current head after a newer `approved` must **pass** on the newer approval, proving a retroactive
 edit to a superseded comment cannot reorder history; and the authoritative verdict itself edited
-must be `BLOCKED` naming its comment id. Add a **missing-indicator** regression: a listing that
-cannot supply `lastEditedAt` must be `UNVERIFIED` naming the field, never silently falling back to a
-timestamp comparison. Add the two **recovery** regressions, which are what keep that block from
+must be `BLOCKED` naming its comment id. Add **missing-field** regressions: a listing that cannot
+supply `lastEditedAt` must be `UNVERIFIED` naming the field, never silently falling back to a
+timestamp comparison; and one whose authoritative verdict has a null `fullDatabaseId` must be
+`UNVERIFIED` naming the comment by its opaque `id`, never falling back to listing order. Mirror the
+**adjacent-ids-above-2^53** case on a step thread, reverse-ordered in the listing, to prove step
+selection compares decimal strings rather than floats there too. Add the two **recovery**
+regressions, which are what keep that block from
 being permanent: from the blocked state, (a) posting a fresh unedited verdict must resolve it —
 `approved` yields the passing state, `changes requested` yields `BLOCKED` on the verdict rather than
 on the edit — and (b) removing the structured marker from the edited comment must resolve it by
@@ -1090,8 +1186,12 @@ Model the close-out
 sequence and assert any repository edit after approval invalidates readiness.
 
 **DoD:** Review evidence is bound to the PR head and authenticated account; verdict order comes from
-comment ids and edit state from an explicit API field, never from second-granularity timestamps, with
-a missing indicator failing closed; an edited authoritative record blocks but is always recoverable
+a `fullDatabaseId` validated non-null and compared as an exact decimal string — never as a float —
+and edit state from `lastEditedAt`, never from
+second-granularity timestamps, with a null ordering key or missing edit indicator failing closed;
+thread completeness is decided by `pageInfo.hasNextPage` rather than node count, and a complete
+listing is still refused if it carries GraphQL errors or any null node; an edited
+authoritative record blocks but is always recoverable
 by a fresh verdict or by unmarking the edited comment; the tool states the single-operator limitation
 honestly; close-out has no self-invalidating document update.
 
