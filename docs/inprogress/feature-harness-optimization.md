@@ -1031,8 +1031,23 @@ remote-origin handling, and CI templates.
    the resolved run URL, and the full SHA.
 5. At this step the comment is an **untrusted locator only**: it names which run to fetch, and
    nothing it asserts is believed. Author identity, role attestation, and the identity-mode rules
-   arrive in F-3, so F-2 must not report a verdict as reviewed or independent, and its output must
-   say the approval is unauthenticated pending F-3. Every trusted value still comes from the API.
+   arrive in F-3, so F-2 must not report a verdict as reviewed or independent.
+
+   **A warning is not enough; the state itself must be capped.** Part A classifies review evidence
+   the checker cannot resolve as `UNVERIFIED`, and through the whole F-2 window there is no identity
+   configuration to resolve it against — F-2 deliberately accepts and ignores those policy keys so
+   F-3 can add them. So F-2's review-evidence component is **`UNVERIFIED` by construction**:
+   `READY` is unreachable, and `--check --verify-evidence` therefore exits nonzero under the
+   existing CLI contract, which already makes `UNVERIFIED` a nonzero exit. No new exit rule is
+   needed — what was missing was saying which state F-2 reports. A resolved CI mismatch still
+   reports `BLOCKED`, which outranks the cap; the cap only forbids passing.
+
+   This is not a limitation to work around. F-2's product is the CI binding — a run proved to match
+   repository, workflow, head, and attempt — with the approval reduced to an unauthenticated pointer
+   at that run. An F-2 that reported `READY` would mean any account able to comment on the tracker
+   could name a passing run and clear the gate, which is precisely the hole F-3 closes. The output
+   says the approval is unauthenticated pending F-3 *and* names that as the reason for the state.
+   Every trusted value still comes from the API.
 6. Classify unavailable API/tool/network data as UNVERIFIED and resolved mismatches as BLOCKED,
    per the exhaustive rule in Part A. Never accept workflow or repository identity supplied only by
    the Feature document.
@@ -1068,6 +1083,13 @@ select the larger; and a thread whose two ids are **adjacent above 2^53** — `"
 and `"9007199254740992"`, a pair no double can tell apart — presented newest-first, so listing
 order cannot stand in for the comparison, must still select the higher. Include one exact match and assert one bounded Actions-run lookup per selected run and
 exactly one `comments(first: 100)` query on the tracking thread.
+Add the **no-premature-READY** regression, which is what stops this step from shipping the hole it
+exists to narrow: a fully correct fixture — matching repository, workflow, and head, a `success`
+conclusion, an exactly equal live attempt, and a well-formed approval on the tracking thread — must
+still print `UNVERIFIED` and exit nonzero under `--check --verify-evidence`, naming the
+unauthenticated approval as the reason. Assert no F-2 fixture reaches `READY` at all, and that the
+same fixture with a resolved CI mismatch prints `BLOCKED` rather than `UNVERIFIED`, proving the cap
+forbids passing without masking a resolved failure.
 
 **Stop if:** The named endpoint no longer exposes repository, workflow path, conclusion, and head
 SHA. Return to planning rather than falling back to conclusion-only.
@@ -1075,8 +1097,9 @@ SHA. Return to planning rather than falling back to conclusion-only.
 **DoD:** Strict verification accepts CI only when project policy, PR head, and the Actions run agree
 and the live run attempt equals the recorded one exactly; the final approval is read from the
 `Tracking issue` thread alone and is refused
-when the thread cannot be listed completely within one page; and the step reports its approval as
-unauthenticated until F-3 lands.
+when the thread cannot be listed completely within one page; and review evidence stays `UNVERIFIED`
+until F-3 lands, so `READY` is unreachable and `--check --verify-evidence` exits nonzero even on a
+perfectly bound run, with the output naming the unauthenticated approval as the reason.
 
 **Commit:** `Bind CI evidence to the implementation head`
 
@@ -1100,8 +1123,9 @@ accepted-risk template/register, and step-issue stamps.
    `single-operator`, validate accountable role attestation, emit the persistent warning, and
    require the linked accepted-risk entry. Do not describe single-operator mode as independent.
 2. Validate the structured final approval — still read only from the `Tracking issue` thread — against
-   the live PR number and full head SHA, and retire F-2's "unauthenticated pending F-3" reporting now
-   that provenance is checked. For Strict, validate every bounded stamped step as closed with an
+   the live PR number and full head SHA, and lift F-2's `UNVERIFIED` cap — retiring both the
+   "unauthenticated pending F-3" reporting and the state it forced — now that provenance is
+   checked, so review evidence can reach a passing state for the first time. For Strict, validate every bounded stamped step as closed with an
    approving review on that step's own issue covering its implementation commit, reading each step
    thread with the same one-page completeness rule and the same head-scoped selection rule as the
    tracker — verdicts against superseded commits are normal history and must never be treated as
@@ -1144,7 +1168,9 @@ message may
 **Failure-first test:** Unauthorized and ambiguous authors, claimed identity differing from API
 author, missing accepted risk, open/unreviewed Strict step, stale review after a new PR commit, and
 both configured identity modes. Assert F-2's unauthenticated-approval reporting is gone and that a
-correctly authored approval on the wrong thread still fails. Assert the exact printed state for each
+correctly authored approval on the wrong thread still fails. Re-run F-2's no-premature-READY fixture
+with identity configured and an authorized author: it must now reach `READY` with a zero strict
+exit, proving F-3 lifts the `UNVERIFIED` cap rather than inheriting it. Assert the exact printed state for each
 case against Part A's rule — in particular that a later `changes requested` superseding an earlier
 `approved` on the same head prints `BLOCKED`, while an API that cannot return the author prints
 `UNVERIFIED`. Add per-step pagination
