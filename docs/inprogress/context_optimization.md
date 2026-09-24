@@ -693,7 +693,7 @@ existing functional gates remain green.
       stated rather than papered over — see Status / evidence.
 - [x] `make check`, `make test`, `make build`, and doctor pass.
 - [ ] Independent review verdict is approved.
-- [ ] Authoritative CI is green.
+- [x] Authoritative CI is green.
 
 # Status / evidence
 
@@ -718,7 +718,10 @@ existing functional gates remain green.
   2026-07-25; the acceptance criterion "every implementation step remains independently
   reviewed" is met at branch granularity only. Review findings were fixed in `9134c41`.
 - **Review verdict:** changes requested 2026-07-25 (8 findings, 4 requiring change);
-  fixes applied in `9134c41`; re-review pending.
+  fixes applied in `9134c41`; re-review pending. No re-review verdict exists on #46 or
+  #47–#51: all five step issues closed at the PR #52 merge instant (2026-07-25T19:25Z) through
+  `Fixes #N` trailers, not by a reviewer, and still carry `agent:codex` + `needs-execution`.
+- **Authoritative CI:** https://github.com/wabkebab/agentic-flow/actions/runs/30171509349 — `CI` on `pull_request`, head `76a25fd` (contains `9134c41`), conclusion success; merged to `main` as `32a8280` in PR #52 and shipped as v0.10.0.
 - **Measurement basis:** original audit at `d507bf4`, 2026-07-25. Re-run from clean `main`
   before implementation measured `make check` at 11.72s from an archived clean tree; archived
   `make test` / `test-one` could not complete because the export fixture expects Git metadata,
