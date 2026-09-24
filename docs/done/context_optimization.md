@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-07-25) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > Optimize the existing harness before adding assurance profiles: reduce repeated execution,
 > repeated context loading, and unnecessary role transitions without weakening any gate,
 > review requirement, or source-of-truth rule.
@@ -8,7 +8,7 @@
 
 ## Execution status
 
-Approved 2026-07-25; executed on `codex/context-optimization`; under review.
+Approved 2026-07-25; executed on `codex/context-optimization`; merged in PR #52 (v0.10.0); closed out 2026-09-24 with the re-review gap accepted (`docs/accepted_risks.md` F-5).
 
 This is Part 1 of the harness rescope:
 
@@ -24,11 +24,11 @@ Before execution:
 
 ## Tracker
 
-- [ ] O-1 Define minimal role contexts and single-source the hot-path guidance.
-- [ ] O-2 Make focused verification real and remove redundant CI work.
-- [ ] O-3 Remove contract drift without adding new manifest or severity concepts.
-- [ ] O-4 Reduce close-out and review-bounce context boots.
-- [ ] O-5 Add regression budgets, benchmark the result, and document the optimized workflow.
+- [x] O-1 Define minimal role contexts and single-source the hot-path guidance.
+- [x] O-2 Make focused verification real and remove redundant CI work.
+- [x] O-3 Remove contract drift without adding new manifest or severity concepts.
+- [x] O-4 Reduce close-out and review-bounce context boots.
+- [x] O-5 Add regression budgets, benchmark the result, and document the optimized workflow.
 
 ---
 
@@ -692,7 +692,7 @@ existing functional gates remain green.
 - [x] Before/after measurements use the same scenarios, with the gap on the "before" side
       stated rather than papered over — see Status / evidence.
 - [x] `make check`, `make test`, `make build`, and doctor pass.
-- [ ] Independent review verdict is approved.
+- [x] Independent review resolved: the first review requested changes, fixed in `9134c41`; the re-review was not performed; the gap was accepted by the human 2026-09-24 (`docs/accepted_risks.md` F-5).
 - [x] Authoritative CI is green.
 
 # Status / evidence
@@ -702,7 +702,8 @@ existing functional gates remain green.
   issue #46.
 - **Tracking issue:** [https://github.com/wabkebab/agentic-flow/issues/46](https://github.com/wabkebab/agentic-flow/issues/46).
 - **Branch:** `codex/context-optimization`.
-- **Verification evidence:** local verification passed 2026-07-25:
+- **Verification evidence:** https://github.com/wabkebab/agentic-flow/actions/runs/30171509349 — authoritative CI (`CI`, `pull_request`) green on PR #52 head `76a25fd`, which contains the review fixes `9134c41`; merged to `main` as `32a8280` and shipped as v0.10.0.
+- **Local verification:** passed 2026-07-25:
   - `make check`
   - `make test`
   - `make build`
@@ -717,11 +718,15 @@ existing functional gates remain green.
   review was therefore collapsed into one branch-level review. Accepted by the human
   2026-07-25; the acceptance criterion "every implementation step remains independently
   reviewed" is met at branch granularity only. Review findings were fixed in `9134c41`.
-- **Review verdict:** changes requested 2026-07-25 (8 findings, 4 requiring change);
-  fixes applied in `9134c41`; re-review pending. No re-review verdict exists on #46 or
-  #47–#51: all five step issues closed at the PR #52 merge instant (2026-07-25T19:25Z) through
-  `Fixes #N` trailers, not by a reviewer, and still carry `agent:codex` + `needs-execution`.
-- **Authoritative CI:** https://github.com/wabkebab/agentic-flow/actions/runs/30171509349 — `CI` on `pull_request`, head `76a25fd` (contains `9134c41`), conclusion success; merged to `main` as `32a8280` in PR #52 and shipped as v0.10.0.
+- **Review verdict:** accepted risk by wabkebab 2026-09-24 — not re-reviewed; see `docs/accepted_risks.md` F-5 and the note below.
+- **Memory:** docs/memory/merge-closes-unreviewed-steps.md
+
+The branch-level review of `e70fe64` requested changes on 2026-07-25 (8 findings, 4 requiring
+change), and Codex fixed them in `9134c41`. No re-review verdict was ever recorded on #46 or
+#47–#51. All five step issues closed at the PR #52 merge (2026-07-25T19:25Z) through their
+`Fixes #N` trailers, not by a reviewer. At close-out on 2026-09-24, the human accepted the
+missing re-review as a risk rather than re-reviewing code that had been on `main` for two
+months. The approved harness-optimization brief (#93) re-audits the same surface.
 - **Measurement basis:** original audit at `d507bf4`, 2026-07-25. Re-run from clean `main`
   before implementation measured `make check` at 11.72s from an archived clean tree; archived
   `make test` / `test-one` could not complete because the export fixture expects Git metadata,

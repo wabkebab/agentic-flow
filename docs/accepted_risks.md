@@ -9,6 +9,33 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+## F-5 — Context optimization shipped without re-review of its fixes
+
+**Status:** Accepted risk
+**Decision date:** 2026-09-24
+**Decided by:** wabkebab (human owner)
+**Tracking:** docs/done/context_optimization.md; tracker #46, steps #47–#51, PR #52
+
+### Finding / proposal
+The branch-level review of `e70fe64` came back as changes requested (8 findings, 4 requiring
+change). Codex fixed them in `9134c41`, and PR #52 merged on 2026-07-25 before anyone
+re-reviewed the fixes. The merge's `Fixes #N` trailers closed #47–#51, so the steps look
+reviewed but aren't. Authoritative CI on the PR head `76a25fd` was green.
+
+### Proposed mitigation / implementation
+Have OpenCode re-review `9134c41` against the eight original findings before closing #46.
+
+### Acceptance rationale
+The work has been on `main` since v0.10.0 (2026-07-25), and later passes built on it. A
+re-review now would read code that has changed since. The approved harness-optimization
+brief (#93) re-audits this same area: lifecycle evidence, review provenance, and the
+contract and ceiling guards. CI was green on the merged head, and `9134c41` hardened the
+guards the review had flagged as unable to fail.
+
+### Revisit if
+- A regression traces back to one of the four change-requiring findings in `9134c41`.
+- #93 is descoped or dropped before F-1–F-3 and F-8 land.
+
 ## F-4 — Template and instance copies can drift
 
 **Status:** Accepted risk

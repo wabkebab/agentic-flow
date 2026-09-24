@@ -12,3 +12,4 @@ Gotchas bullet or a `make check` assertion and delete the line.
 | `manifest-validation-duplicated` | trap | Legal `merge-policy` values are hard-coded in both `payload-apply.sh` and `doctor.sh`; nothing asserts they agree, and `make check` cannot catch a mismatch — only `make test`. |
 | `docs-index-stage-allowlist` | trap | Any `.md` under `docs/` outside the four lifecycle stages fails `make check`; a new subtree must join the skip list in the same commit. |
 | `cp-restores-interactively` | trap | `cp` prompts on overwrite and `-f` may not suppress it, so a `cp`-based fixture restore can silently fail; stage first and restore with `git checkout --`. |
+| `merge-closes-unreviewed-steps` | trap | A PR merged before review lets `Fixes #N` close step issues, making them look reviewed; at close-out, require a verdict comment per step, not just closed state. |
