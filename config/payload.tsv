@@ -4,6 +4,7 @@ ADOPTION.md	ADOPTION.md	core	preserve	export
 templates/harness/CLAUDE.md	CLAUDE.md	claude	preserve	export
 templates/harness/AGENTS.md	AGENTS.md	core	preserve	export
 templates/harness/Makefile	Makefile	core	preserve	export
+templates/harness/.agentic-flow-review-policy	.agentic-flow-review-policy	core	preserve	export
 templates/harness/README.md	templates/harness/README.md	source-only	none	source-only
 .claude/settings.json	.claude/settings.json	claude	preserve	export
 .claude/settings.local.json	.claude/settings.local.json	source-only	none	source-only

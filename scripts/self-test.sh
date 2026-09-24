@@ -373,6 +373,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/.codex/hooks.json"
   assert_file "$TARGET/.agents/skills/plan-to-issues/SKILL.md"
   assert_file "$TARGET/config/payload.tsv"
+  assert_file "$TARGET/.agentic-flow-review-policy"
+  cmp "$ROOT/templates/harness/.agentic-flow-review-policy" "$TARGET/.agentic-flow-review-policy" \
+    || fail 'export changed the default review policy'
   assert_file "$TARGET/scripts/plan-to-issues.sh"
   assert_file "$TARGET/scripts/doctor.sh"
   assert_file "$TARGET/scripts/lib/payload-apply.sh"
@@ -2248,9 +2251,182 @@ for phase_state in 'close-out OPEN' 'pre-merge CLOSED'; do
     "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
     --phase "$phase_name" --check --verify-evidence > "$TMP/lifecycle-phase.out" 2>&1 \
     && fail "$phase_name accepted unresolved review and CI"
-  grep -q '^UNVERIFIED.*final review and CI evidence unresolved' "$TMP/lifecycle-phase.out" \
+  grep -q '^UNVERIFIED.*review policy missing or invalid' "$TMP/lifecycle-phase.out" \
     || fail "$phase_name did not reach the shared external evidence check"
 done
+
+# F-2 reads policy from the adopted project, the PR head from GitHub, and one
+# complete comment page from the tracking issue. Each selected run gets exactly
+# one Actions lookup, including attempt mismatch and failure cases.
+printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' \
+  > "$V2FIX/.agentic-flow-review-policy"
+git -C "$V2FIX" init -q
+git -C "$V2FIX" remote add origin git@github.com:owner/repo.git
+LIFE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+LIFE_RUN_URL=https://github.com/owner/repo/actions/runs/100
+LIFE_MARKER="agentic-flow-review: status=approved; pr=2; head=$LIFE_HEAD; run=$LIFE_RUN_URL; attempt=1; role=reviewer"
+LIFE_API="$TMP/lifecycle-api"
+mkdir -p "$LIFE_API"
+cat > "$LIFE_API/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$LIFE_CALLS"
+case "$*" in
+  *'issue view'*) printf '%s\n' '{"state":"OPEN","labels":[{"name":"agent:claude"},{"name":"needs-closing"}]}' ;;
+  *'api repos/owner/repo/pulls/2'*) cat "$LIFE_PR_JSON" ;;
+  *'api graphql '*'number=1'*) cat "$LIFE_COMMENTS_JSON" ;;
+  *'api graphql '*'number=2'*) cat "$LIFE_PR_COMMENTS_JSON" ;;
+  *'api graphql '*'number=3'*) cat "$LIFE_STEP_COMMENTS_JSON" ;;
+  *'api repos/owner/repo/actions/runs/100'*)
+    [ "${LIFE_RUN_FAIL:-false}" = false ] || exit 1
+    cat "$LIFE_RUN_JSON" ;;
+  *) exit 2 ;;
+esac
+FAKE_GH
+chmod +x "$LIFE_API/gh"
+printf '{"head":{"sha":"%s"}}\n' "$LIFE_HEAD" > "$TMP/lifecycle-pr.json"
+printf '{"repository":{"full_name":"owner/repo"},"path":".github/workflows/ci.yml","head_sha":"%s","conclusion":"success","run_attempt":1}\n' \
+  "$LIFE_HEAD" > "$TMP/lifecycle-run.json"
+jq -n --arg body "$LIFE_MARKER" '{data:{repository:{issue:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[{id:"opaque-1",fullDatabaseId:"10",body:$body,lastEditedAt:null}]}}}}}' \
+  > "$TMP/lifecycle-comments.json"
+LIFE_PR_JSON="$TMP/lifecycle-pr.json"
+LIFE_RUN_JSON="$TMP/lifecycle-run.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_PR_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_CALLS="$TMP/lifecycle-calls"
+export LIFE_PR_JSON LIFE_RUN_JSON LIFE_COMMENTS_JSON LIFE_PR_COMMENTS_JSON \
+  LIFE_STEP_COMMENTS_JSON LIFE_CALLS
+bound_case() { # <name> <expected state> <diagnostic> <expected run calls>
+  : > "$LIFE_CALLS"
+  PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" LIFE_RUN_FAIL="${LIFE_RUN_FAIL:-false}" \
+    "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+    --check --verify-evidence > "$TMP/lifecycle-bound.out" 2>&1 \
+    && fail "strict verified lifecycle accepted $1"
+  grep -q "^$2.*$3" "$TMP/lifecycle-bound.out" \
+    || fail "$1 was not $2 with $3: $(cat "$TMP/lifecycle-bound.out")"
+  [ "$(grep -c 'api repos/owner/repo/actions/runs/100' "$LIFE_CALLS" || true)" -eq "$4" ] \
+    || fail "$1 made the wrong number of Actions lookups"
+  [ "$(grep -c 'api graphql .*number=1' "$LIFE_CALLS" || true)" -eq 1 ] \
+    || fail "$1 did not make exactly one tracking-thread query"
+  [ "$(grep -c 'api graphql ' "$LIFE_CALLS" || true)" -eq 1 ] \
+    || fail "$1 queried a non-tracking review thread"
+}
+bound_case 'correct binding before F-3' UNVERIFIED 'approval unauthenticated pending F-3' 1
+grep -q "$LIFE_HEAD.*comment opaque-1" "$TMP/lifecycle-bound.out" \
+  || fail 'bound CI output omitted the resolved head or selected comment'
+if grep -q '^READY' "$TMP/lifecycle-bound.out"; then fail 'F-2 reached READY'; fi
+jq '.path = ".github/workflows/ci.yml@main"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-ref.json"
+LIFE_RUN_JSON="$TMP/lifecycle-run-ref.json"; export LIFE_RUN_JSON
+bound_case 'workflow path with GitHub ref suffix' UNVERIFIED 'approval unauthenticated pending F-3' 1
+LIFE_RUN_JSON="$TMP/lifecycle-run.json"; export LIFE_RUN_JSON
+
+jq '.repository.full_name = "other/repo"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+LIFE_RUN_JSON="$TMP/lifecycle-run-case.json"; export LIFE_RUN_JSON
+bound_case 'wrong repository' BLOCKED 'differs from repository' 1
+jq '.path = ".github/workflows/other.yml"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'wrong workflow' BLOCKED 'differs from repository' 1
+jq '.head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'copied successful run' BLOCKED 'differs from repository' 1
+jq '.conclusion = "failure"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'failed run' BLOCKED 'concluded failure' 1
+jq '.run_attempt = 2 | .conclusion = "failure"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'rerun changed conclusion' BLOCKED 'attempt 2 differs' 1
+jq '.run_attempt = 2' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'live attempt advanced' BLOCKED 'attempt 2 differs' 1
+LIFE_RUN_JSON="$TMP/lifecycle-run.json"; export LIFE_RUN_JSON
+sed 's/attempt=1/attempt=2/' "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+bound_case 'recorded attempt greater' BLOCKED 'attempt 1 differs' 1
+sed 's/; attempt=1//' "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'missing attempt' UNVERIFIED 'missing attempt=' 0
+sed 's/; attempt=1/; attempt=1; attempt=1/' "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'duplicate attempt' BLOCKED 'malformed review record' 0
+sed 's|; run=https://github.com/owner/repo/actions/runs/100|; run=https://github.com/owner/repo/actions/runs/100; run=https://github.com/owner/repo/actions/runs/100|' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'duplicate run' BLOCKED 'malformed review record' 0
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
+LIFE_RUN_FAIL=true
+bound_case 'deleted run' UNVERIFIED 'Actions run 100 unavailable' 1
+LIFE_RUN_FAIL=false
+
+jq '.data.repository.issue.comments.pageInfo.hasNextPage = true | .data.repository.issue.comments.nodes = ([range(0;100) | {id:("opaque-"+tostring),fullDatabaseId:tostring,body:"prose",lastEditedAt:null}] | .[0].body = .[0].body)' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+# Keep a valid approval on the first page; pageInfo alone decides completeness.
+jq --arg body "$LIFE_MARKER" '.data.repository.issue.comments.nodes[0].body = $body' \
+  "$TMP/lifecycle-comments-case.json" > "$TMP/lifecycle-comments-page.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-page.json"; export LIFE_COMMENTS_JSON
+bound_case 'full incomplete page' UNVERIFIED 'exceed one page' 0
+jq 'del(.data.repository.issue.comments.pageInfo)' "$TMP/lifecycle-comments-page.json" \
+  > "$TMP/lifecycle-comments-case.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+bound_case 'missing pageInfo' UNVERIFIED 'pageInfo.hasNextPage missing' 0
+jq '.data.repository.issue.comments.pageInfo.hasNextPage = false' "$TMP/lifecycle-comments-page.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'complete 100-node page' UNVERIFIED 'approval unauthenticated pending F-3' 1
+jq '.errors = [{message:"partial read",path:["repository","issue"]}]' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'GraphQL partial error' UNVERIFIED 'GraphQL error' 0
+jq '.data.repository.issue.comments.nodes = null' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'null nodes' UNVERIFIED 'nodes missing' 0
+jq '.data.repository.issue.comments.nodes += [null]' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'null node' UNVERIFIED 'node 1 unreadable' 0
+jq '.data.repository.issue.comments.nodes[0].fullDatabaseId = null' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'null ordering key' UNVERIFIED 'comment opaque-1 missing valid fullDatabaseId' 0
+jq '.data.repository.issue.comments.nodes[0].fullDatabaseId = 10' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'numeric ordering key' UNVERIFIED 'comment opaque-1 missing valid fullDatabaseId' 0
+jq '.data.repository.issue.comments.nodes[0].lastEditedAt = "2026-09-24T12:00:00Z"' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'edited final approval' BLOCKED 'comment opaque-1 was edited' 0
+jq 'del(.data.repository.issue.comments.nodes[0].lastEditedAt)' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'missing edit indicator' UNVERIFIED 'comment opaque-1 missing lastEditedAt' 0
+jq '.data.repository.issue.comments.nodes = []' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'approval on PR or step issue only' UNVERIFIED 'no approval for PR head' 0
+jq --arg old "${LIFE_MARKER/$LIFE_HEAD/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}" \
+  '.data.repository.issue.comments.nodes[0].body = $old' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'superseded approval only' UNVERIFIED 'no approval for PR head' 0
+jq '.data.repository.issue.comments.nodes[0].body |= sub("status=approved";"status=changes-requested")' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'changes requested on current head' BLOCKED 'does not approve PR' 0
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
+
+# Later posting wins even when listing order, lexicographic order, and floating
+# point conversion each point at the wrong comment.
+for ids in '9 10' '9007199254740992 9007199254740993'; do
+  read -r low high <<< "$ids"
+  jq -n --arg old "${LIFE_MARKER/attempt=1/attempt=2}" --arg new "$LIFE_MARKER" \
+    --arg low "$low" --arg high "$high" \
+    '{data:{repository:{issue:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[{id:"new",fullDatabaseId:$high,body:$new,lastEditedAt:null},{id:"old",fullDatabaseId:$low,body:$old,lastEditedAt:null}]}}}}}' \
+    > "$TMP/lifecycle-comments-case.json"
+  LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+  bound_case "decimal order $ids" UNVERIFIED 'comment new.*approval unauthenticated' 1
+done
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
+
+# Project policy is validated independently of the document's own selectors.
+cp "$V2FIX/.agentic-flow-review-policy" "$TMP/lifecycle-policy-valid"
+for policy_case in 'version=2' 'version=1
+version=1' 'version=1
+workflow=../ci.yml' 'version=1
+workflow=.github/workflows/ci.yml
+unknown=value'; do
+  printf '%s\n' "$policy_case" > "$V2FIX/.agentic-flow-review-policy"
+  : > "$LIFE_CALLS"
+  PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+    "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+    --check --verify-evidence > "$TMP/lifecycle-policy.out" 2>&1 \
+    && fail 'invalid review policy passed'
+  grep -q '^UNVERIFIED.*review policy missing or invalid' "$TMP/lifecycle-policy.out" \
+    || fail 'invalid policy was not UNVERIFIED'
+  if grep -q '^api ' "$LIFE_CALLS"; then fail 'invalid policy made API calls'; fi
+done
+cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
 
 fi
 

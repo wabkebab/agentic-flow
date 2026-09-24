@@ -1,0 +1,2 @@
+version=1
+workflow=.github/workflows/ci.yml

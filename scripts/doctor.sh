@@ -149,6 +149,7 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_file AGENTS.md
   require_file Makefile
   require_file config/payload.tsv
+  require_file .agentic-flow-review-policy
   require_file .claude/settings.json
   require_file .codex/hooks.json
   require_file .agents/skills/plan-to-issues/SKILL.md
@@ -166,6 +167,18 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_file scripts/hooks/scan-secrets.sh
   require_file docs/README.md
   require_file docs/accepted_risks.md
+
+  # The workflow used for evidence verification is a project policy, not a
+  # selector supplied by a Feature document.
+  if [ -f "$ROOT/scripts/lib/review-policy.sh" ]; then
+    # shellcheck disable=SC1091 # The library is resolved from this adopted project root.
+    . "$ROOT/scripts/lib/review-policy.sh"
+    if read_review_policy "$ROOT" >/dev/null 2>&1; then
+      ok "review policy valid: $REVIEW_WORKFLOW"
+    else
+      fail "review policy valid"
+    fi
+  fi
 
   if [ -f "$ROOT/config/payload.tsv" ]; then
     manifest_failures=0
