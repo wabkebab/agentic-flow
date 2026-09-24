@@ -1874,6 +1874,9 @@ cat > "$GHFIX/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 set -euo pipefail
 state=${FAKE_GH_STATE:?}
+if [ -n "${FAKE_GH_CALLS:-}" ]; then
+  printf '%s\n' "$*" >> "$FAKE_GH_CALLS"
+fi
 mkdir -p "$state"
 [ -f "$state/next" ] || printf '%s\n' 1 > "$state/next"
 
@@ -1901,7 +1904,7 @@ case "${1:-} ${2:-}" in
         --arg title "$(cat "$dir/title")" \
         --arg body "$(cat "$dir/body")" \
         --arg issue_state "$(cat "$dir/state")" \
-        --arg url "https://github.test/owner/repo/issues/$num" \
+        --arg url "https://github.com/owner/repo/issues/$num" \
         '{number:$number,title:$title,body:$body,state:$issue_state,url:$url}' >> "$out"
     done
     jq -s . "$out"
@@ -1929,7 +1932,7 @@ case "${1:-} ${2:-}" in
     printf '%s\n' "$title" > "$dir/title"
     printf '%s\n' "$body" > "$dir/body"
     printf '%s\n' OPEN > "$dir/state"
-    printf 'https://github.test/owner/repo/issues/%s\n' "$num"
+    printf 'https://github.com/owner/repo/issues/%s\n' "$num"
     exit 0
     ;;
   "issue edit")
@@ -2005,11 +2008,14 @@ cat > "$APPROVAL_DOC" <<'MD'
 ## Tracker
 - [x] F-1 done
 ## Status / Implementation status
-- **Tracking issue:** pending.
-- **Approval:** pending.
-- **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** url=https://github.com/owner/repo/pull/2
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=pr-head-approval
+- **Memory:** status=n/a
 MD
 PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
   "$PLAN_DRIVER" --apply --approved-by "Test User" --doc "$APPROVAL_DOC" "$PLAN_SPEC" >/dev/null \
@@ -2019,10 +2025,43 @@ printf '%s\n' "$tracker_body" | grep -q 'approved-by:Test User approved-at:' \
   || fail "approval stamp did not land in the existing tracker marker"
 approved_at=$(printf '%s\n' "$tracker_body" | sed -n 's/.*approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
 [ -n "$approved_at" ] || fail "approval stamp did not include approved-at"
-grep -qF -- "- **Approval:** Test User approved on ${approved_at%%T*} via plan-to-issues --apply." "$APPROVAL_DOC" \
+grep -qF -- "- **Approval:** status=approved; by=Test User; at=${approved_at%%T*}" "$APPROVAL_DOC" \
   || fail "--doc did not write the canonical Approval status line"
+grep -qF -- '- **Tracking issue:** url=https://github.com/owner/repo/issues/1' "$APPROVAL_DOC" \
+  || fail "--doc did not write the v2 tracking URL"
 AGENTIC_PROJECT_ROOT="$APPROVAL_DOC_ROOT" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
   || fail "lifecycle-status did not recognize the machine-written Approval line"
+
+# Writer validation precedes authentication. Each rejected case must leave the
+# mock gh call log empty, rather than merely avoid an issue mutation.
+REJECT_DOC="$TMP/rejected-plan-doc.md"
+reject_before_gh() { # <case-name> <doc-path> <approved-by>
+  rm -f "$TMP/rejected-gh-calls"
+  PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" FAKE_GH_CALLS="$TMP/rejected-gh-calls" \
+    "$PLAN_DRIVER" --apply --doc "$2" --approved-by "$3" "$PLAN_SPEC" \
+    > "$TMP/rejected-plan.out" 2>&1 \
+    && fail "plan apply accepted $1"
+  [ ! -e "$TMP/rejected-gh-calls" ] \
+    || fail "plan apply called gh before rejecting $1"
+}
+sed 's/Evidence schema:\*\* v2/Evidence schema:** v3/' "$APPROVAL_DOC" > "$REJECT_DOC"
+reject_before_gh 'unknown schema' "$REJECT_DOC" 'Test User'
+sed '/^- \*\*Evidence schema:/d' "$APPROVAL_DOC" > "$REJECT_DOC"
+reject_before_gh 'legacy document' "$REJECT_DOC" 'Test User'
+sed 's/source=pr-head-approval/source=not-approved/' "$APPROVAL_DOC" > "$REJECT_DOC"
+reject_before_gh 'invalid v2 selector' "$REJECT_DOC" 'Test User'
+cp "$APPROVAL_DOC" "$REJECT_DOC"
+printf '%s\n' '- **Approval:** status=approved; by=Other; at=2026-01-01' >> "$REJECT_DOC"
+reject_before_gh 'duplicate v2 field' "$REJECT_DOC" 'Test User'
+reject_before_gh 'missing document' "$TMP/no-such-doc.md" 'Test User'
+cp "$APPROVAL_DOC" "$REJECT_DOC"
+chmod 444 "$REJECT_DOC"
+reject_before_gh 'unwritable document' "$REJECT_DOC" 'Test User'
+chmod 644 "$REJECT_DOC"
+reject_before_gh 'newline in approver' "$REJECT_DOC" "$(printf 'Test\nUser')"
+reject_before_gh 'semicolon in approver' "$REJECT_DOC" 'Test;User'
+reject_before_gh 'surrounding whitespace in approver' "$REJECT_DOC" ' Test User '
+
 plan_apply "$PLAN_SPEC" || fail "plan apply without --approved-by failed after approval"
 tracker_body_after=$(grep -Rl "agentic-flow:plan:self-test-plan tracker" "$GHSTATE"/issue-*/body | xargs cat)
 printf '%s\n' "$tracker_body_after" | grep -q "approved-at:$approved_at" \
@@ -2063,245 +2102,137 @@ fi
 
 # --- lifecycle qualification -------------------------------------------------------------
 if should_run lifecycle; then
-LIFEFIX="$TMP/lifecycle-fixture"
-mkdir -p "$LIFEFIX/docs/inprogress"
-cat > "$LIFEFIX/docs/inprogress/feature-active.md" <<'MD'
+V2FIX="$TMP/lifecycle-v2"
+mkdir -p "$V2FIX/docs/inprogress"
+cat > "$V2FIX/docs/inprogress/feature-v2.md" <<'MD'
+## Tracker
+- [x] F-1 done
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** url=https://github.com/owner/repo/issues/1
+- **Approval:** status=not approved; by=Tester; at=2026-01-01
+- **Implementation head:** source=pr-head
+- **Implementation PR:** url=https://github.com/owner/repo/pull/2
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=pr-head-approval
+- **Memory:** status=n/a
+MD
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" --check \
+  > "$TMP/lifecycle-v2-red.out" 2>&1 \
+  && fail "v2 lifecycle accepted a negated approval"
+grep -q 'BLOCKED.*approval' "$TMP/lifecycle-v2-red.out" \
+  || fail "v2 lifecycle did not classify a negated approval as BLOCKED"
+
+# Open work has precedence over any evidence schema, including legacy work.
+cat > "$V2FIX/docs/inprogress/feature-active.md" <<'MD'
 ## Tracker
 - [x] F-1 done
 - [ ] F-2 open
+## Status
+- **Approval:** not approved
 MD
-cat > "$LIFEFIX/docs/inprogress/feature-blocked.md" <<'MD'
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-active.md" --check --verify-evidence \
+  > "$TMP/lifecycle-active.out" \
+  || fail "open legacy document failed strict verification"
+grep -q '^ACTIVE.*feature-active.md' "$TMP/lifecycle-active.out" \
+  || fail "open legacy document was not ACTIVE"
+
+sed 's/status=not approved/status=approved/' "$V2FIX/docs/inprogress/feature-v2.md" \
+  > "$TMP/valid-v2.md"
+cp "$TMP/valid-v2.md" "$V2FIX/docs/inprogress/feature-v2.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-v2.md" --check > "$TMP/lifecycle-valid.out" \
+  || fail "valid local v2 Status failed report validation"
+grep -q '^READY.*feature-v2.md' "$TMP/lifecycle-valid.out" \
+  || fail "valid local v2 Status was not READY in offline report"
+
+v2_case() { # <sed expression> <expected state> <diagnostic>
+  sed "$1" "$TMP/valid-v2.md" > "$V2FIX/docs/inprogress/feature-v2.md"
+  if AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+      "$V2FIX/docs/inprogress/feature-v2.md" --check --verify-evidence \
+      > "$TMP/lifecycle-case.out" 2>&1; then
+    fail "strict verified lifecycle accepted $3"
+  fi
+  grep -q "^$2.*$3" "$TMP/lifecycle-case.out" \
+    || fail "lifecycle did not classify $3 as $2"
+}
+v2_case 's/status=approved/status=not approved/' BLOCKED approval
+v2_case 's/source=pr-head/source=not-pr-head/' BLOCKED implementation-head
+v2_case '/^- \*\*Approval:/d' UNVERIFIED approval
+v2_case 's/Evidence schema:\*\* v2/Evidence schema:** v3/' BLOCKED 'Evidence schema'
+v2_case 's/Review verdict:/Unknown key:/' BLOCKED 'unknown field'
+sed '/^- \*\*Approval:/a\
+  not approved' "$TMP/valid-v2.md" > "$V2FIX/docs/inprogress/feature-v2.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-v2.md" --check > "$TMP/lifecycle-wrapped.out" 2>&1 \
+  && fail "v2 lifecycle accepted continuation prose after approval"
+grep -q 'BLOCKED.*malformed continuation of Approval' "$TMP/lifecycle-wrapped.out" \
+  || fail "v2 lifecycle did not name the malformed Approval continuation"
+cat "$TMP/valid-v2.md" > "$V2FIX/docs/inprogress/feature-v2.md"
+printf '%s\n' '- **Approval:** status=approved; by=Other; at=2026-01-01' \
+  >> "$V2FIX/docs/inprogress/feature-v2.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-v2.md" --check > "$TMP/lifecycle-duplicate.out" 2>&1 \
+  && fail "duplicate v2 field passed"
+grep -q 'BLOCKED.*duplicate field Approval' "$TMP/lifecycle-duplicate.out" \
+  || fail "duplicate v2 field did not report its name"
+cp "$TMP/valid-v2.md" "$V2FIX/docs/inprogress/feature-v2.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-v2.md" --check --verify-evidence \
+  > "$TMP/lifecycle-unresolved.out" 2>&1 \
+  && fail "strict verification accepted unresolved v2 evidence"
+grep -q '^UNVERIFIED.*feature-v2.md' "$TMP/lifecycle-unresolved.out" \
+  || fail "unresolved v2 evidence was not UNVERIFIED"
+
+# A fully checked schema-less document is a migration report, never evidence-ready.
+cat > "$V2FIX/docs/inprogress/feature-legacy.md" <<'MD'
 ## Tracker
 - [x] F-1 done
 ## Status
-- **Approval:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** pending.
-- **Review verdict:** pending.
+- **Approval:** approved by Tester
 MD
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" \
-  > "$TMP/lifecycle.out"
-grep -q "ACTIVE.*feature-active.md" "$TMP/lifecycle.out" \
-  || fail "lifecycle report did not retain an open tracker as active"
-grep -q "BLOCKED.*feature-blocked.md.*verification-evidence.*review-verdict.*memory" \
-  "$TMP/lifecycle.out" \
-  || fail "lifecycle report did not name missing closure evidence"
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
-  && fail "strict lifecycle check accepted an all-checked tracker without evidence"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-legacy.md" --check --verify-evidence \
+  > "$TMP/lifecycle-legacy.out" 2>&1 \
+  && fail "strict verification accepted fully checked legacy document"
+grep -q '^LEGACY.*feature-legacy.md' "$TMP/lifecycle-legacy.out" \
+  || fail "fully checked schema-less document was not LEGACY"
 
-sed \
-  -e 's|^- \*\*Verification evidence:\*\* pending\.$|- **Verification evidence:** https://example.invalid/actions/1|' \
-  -e 's|^- \*\*Review verdict:\*\* pending\.$|- **Review verdict:** approved by OpenCode — https://example.invalid/reviews/1|' \
-  "$LIFEFIX/docs/inprogress/feature-blocked.md" > "$TMP/lifecycle-ready.md"
-mv "$TMP/lifecycle-ready.md" "$LIFEFIX/docs/inprogress/feature-blocked.md"
-# Closure now also requires a recorded memory decision; n/a is a real answer.
-printf -- '- **Memory:** n/a.\n' >> "$LIFEFIX/docs/inprogress/feature-blocked.md"
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
-  || fail "strict lifecycle check rejected a tracker with complete closure evidence"
-
-# Capture is the one obligation make check cannot enforce: check-memory-index.sh proves the
-# index is well-formed, never that a memory was written when one was learned. Close-out is the
-# only choke point every doc already passes. "n/a" satisfies it because most passes teach
-# nothing durable — but an empty or hand-waving answer does not, or the field would be a
-# formality that records nothing.
-MEMFIX="$TMP/lifecycle-memory"
-mkdir -p "$MEMFIX/docs/inprogress"
-memfix_doc() { # <memory-line>
-  {
-    printf '## Tracker\n- [x] F-1 done\n## Status\n'
-    printf -- '- **Approval:** user approved 2026-01-01.\n'
-    printf -- '- **Tracking issue:** https://example.invalid/issues/1\n'
-    printf -- '- **Verification evidence:** https://example.invalid/actions/1\n'
-    printf -- '- **Review verdict:** approved by OpenCode — https://example.invalid/reviews/1\n'
-    if [ -n "$1" ]; then printf -- '%s\n' "$1"; fi
-  } > "$MEMFIX/docs/inprogress/feature-mem.md"
-}
-memfix_check() { AGENTIC_PROJECT_ROOT="$MEMFIX" "$ROOT/scripts/lifecycle-status.sh" --check 2>&1 || true; }
-
-memfix_doc ""
-memfix_check | grep -q 'memory' \
-  || fail "close-out accepted a plan with no Memory field"
-memfix_doc '- **Memory:** we should probably write one.'
-memfix_check | grep -q 'memory' \
-  || fail "close-out accepted a Memory field that names neither an entry nor n/a"
-memfix_doc '- **Memory:** n/a.'
-memfix_check | grep -q 'memory' \
-  && fail "close-out rejected an explicit n/a memory decision"
-memfix_doc '- **Memory:** docs/memory/cp-restores-interactively.md'
-memfix_check | grep -q 'memory' \
-  && fail "close-out rejected a Memory field naming a real entry"
-
-# --- lifecycle: the review verdict must say who reviewed ---------------------------------
-# METHODOLOGY.md §1 makes review a separate role, but the verdict pattern accepted a bare
-# "approved." with no reviewer named — so a plan closed out with no independent review at all
-# passed this gate unchanged. Requiring an identity is the difference between a record and an
-# assertion; naming the planning role is warned about, not blocked, because standing in for an
-# unavailable reviewer is legitimate when it is declared.
-REVFIX="$TMP/reviewer-fixture"
-write_verdict_doc() { # <verdict-text> [claude-md-contents]
-  mkdir -p "$REVFIX/docs/inprogress"
-  printf '%s\n' "${2:-placeholder}" > "$REVFIX/CLAUDE.md"
-  cat > "$REVFIX/docs/inprogress/feature-review.md" <<MD
-## Tracker
-- [x] F-1 done
-## Status
-- **Approval:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** $1
-- **Memory:** n/a.
-MD
-}
-rev_status() { AGENTIC_PROJECT_ROOT="$REVFIX" "$ROOT/scripts/lifecycle-status.sh" 2>&1; }
-
-write_verdict_doc 'approved.'
-rev_status > "$TMP/review-anon.out"
-grep -q 'review-verdict-reviewer' "$TMP/review-anon.out" \
-  || fail "lifecycle accepted an approval that names no reviewer"
-AGENTIC_PROJECT_ROOT="$REVFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
-  && fail "strict lifecycle check accepted an approval that names no reviewer"
-
-write_verdict_doc 'approved by OpenCode on 2026-01-02.'
-rev_status > "$TMP/review-named.out"
-grep -q 'review-verdict-reviewer' "$TMP/review-named.out" \
-  && fail "lifecycle rejected a verdict that does name its reviewer"
-grep -q 'WARN' "$TMP/review-named.out" \
-  && fail "lifecycle warned about an independent reviewer"
-
-# The real historical shape: the planner standing in, undeclared. Warn, do not block.
-write_verdict_doc 'approved (Claude standing in for OpenCode, which was unavailable).'
-rev_status > "$TMP/review-self.out"
-grep -q 'review-independence' "$TMP/review-self.out" \
-  || fail "lifecycle did not warn when the planning role reviewed its own plan"
-grep -q 'READY' "$TMP/review-self.out" \
-  || fail "self-review warning blocked closure instead of warning"
-
-# Declared opt-out: the substitution is the documented arrangement, so stay quiet.
-write_verdict_doc 'approved by Claude (reviewer role).' \
-  'This project opts out of the default two-agent split.'
-rev_status > "$TMP/review-optout.out"
-grep -q 'review-independence' "$TMP/review-optout.out" \
-  && fail "lifecycle warned about self-review in a project that declared the opt-out"
-
-# --- lifecycle: CI run evidence verification (#25) --------------------------------------
-write_lifecycle_ready_doc() { # <root> <verification-evidence>
-  mkdir -p "$1/docs/inprogress"
-  cat > "$1/docs/inprogress/feature-ready.md" <<MD
-## Tracker
-- [x] F-1 done
-## Status
-- **Approval:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** $2
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
-MD
-}
-
-LIFEGHFIX="$TMP/lifecycle-gh-fixture"
-mkdir -p "$LIFEGHFIX"
-cat > "$LIFEGHFIX/gh" <<'FAKE_GH'
+# Phase mismatch is a resolved contradiction, even while later CI/review evidence
+# remains unavailable until F-2/F-3.
+GH_PHASE="$TMP/gh-phase"
+mkdir -p "$GH_PHASE"
+cat > "$GH_PHASE/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
-set -euo pipefail
-case "${1:-} ${2:-}" in
-  "run view")
-    printf '%s\n' "${FAKE_GH_RUN_CONCLUSION:-success}"
-    exit 0
-    ;;
+case "$*" in
+  *'issue view'*) printf '{"state":"%s","labels":[{"name":"agent:claude"},{"name":"needs-closing"}]}\n' "${FAKE_ISSUE_STATE:-OPEN}" ;;
+  *) exit 2 ;;
 esac
-echo "unsupported fake gh call: $*" >&2
-exit 2
 FAKE_GH
-chmod +x "$LIFEGHFIX/gh"
+chmod +x "$GH_PHASE/gh"
+PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE=OPEN AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+  --phase pre-merge --check --verify-evidence > "$TMP/lifecycle-wrong-pre.out" 2>&1 \
+  && fail "pre-merge accepted an open issue"
+grep -q 'BLOCKED.*phase pre-merge found OPEN' "$TMP/lifecycle-wrong-pre.out" \
+  || fail "pre-merge mismatch did not name the phase and state"
+PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE=CLOSED AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+  --phase close-out --check --verify-evidence > "$TMP/lifecycle-wrong-close.out" 2>&1 \
+  && fail "close-out accepted a closed issue"
+grep -q 'BLOCKED.*phase close-out found CLOSED' "$TMP/lifecycle-wrong-close.out" \
+  || fail "close-out mismatch did not name the phase and state"
+for phase_state in 'close-out OPEN' 'pre-merge CLOSED'; do
+  read -r phase_name state_name <<< "$phase_state"
+  PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE="$state_name" AGENTIC_PROJECT_ROOT="$V2FIX" \
+    "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+    --phase "$phase_name" --check --verify-evidence > "$TMP/lifecycle-phase.out" 2>&1 \
+    && fail "$phase_name accepted unresolved review and CI"
+  grep -q '^UNVERIFIED.*final review and CI evidence unresolved' "$TMP/lifecycle-phase.out" \
+    || fail "$phase_name did not reach the shared external evidence check"
+done
 
-LIFE25_NO_GH="$TMP/lifecycle25-no-gh"
-write_lifecycle_ready_doc "$LIFE25_NO_GH" "https://github.com/owner/repo/actions/runs/100"
-NO_GH_BIN=$(path_without_tools "$TMP/no-gh-bin" gh)
-AGENTIC_PROJECT_ROOT="$LIFE25_NO_GH" PATH="$NO_GH_BIN" \
-  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-no-gh.out" \
-  || fail "strict verified lifecycle check treated absent gh as fatal"
-grep -q 'UNVERIFIED.*feature-ready\.md.*gh is not available' "$TMP/lifecycle25-no-gh.out" \
-  || fail "verified lifecycle check did not report absent gh as UNVERIFIED"
-
-LIFE25_NON_RUN="$TMP/lifecycle25-non-run"
-write_lifecycle_ready_doc "$LIFE25_NON_RUN" "https://example.invalid/actions/1"
-AGENTIC_PROJECT_ROOT="$LIFE25_NON_RUN" PATH="$LIFEGHFIX:$PATH" \
-  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-non-run.out" \
-  || fail "strict verified lifecycle check treated non-run evidence as fatal"
-grep -q 'UNVERIFIED.*feature-ready\.md.*not a GitHub Actions run URL' \
-  "$TMP/lifecycle25-non-run.out" \
-  || fail "verified lifecycle check did not report non-run evidence as UNVERIFIED"
-
-LIFE25_FAILURE="$TMP/lifecycle25-failure"
-write_lifecycle_ready_doc "$LIFE25_FAILURE" "https://github.com/owner/repo/actions/runs/200"
-AGENTIC_PROJECT_ROOT="$LIFE25_FAILURE" PATH="$LIFEGHFIX:$PATH" \
-  FAKE_GH_RUN_CONCLUSION=failure \
-  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-failure.out" 2>&1 \
-  && fail "strict verified lifecycle check accepted a resolved failing CI run"
-grep -q 'BLOCKED.*feature-ready\.md.*concluded failure' "$TMP/lifecycle25-failure.out" \
-  || fail "verified lifecycle check did not block on a resolved failing CI run"
-
-LIFE25_SUCCESS="$TMP/lifecycle25-success"
-write_lifecycle_ready_doc "$LIFE25_SUCCESS" "https://github.com/owner/repo/actions/runs/100"
-AGENTIC_PROJECT_ROOT="$LIFE25_SUCCESS" PATH="$LIFEGHFIX:$PATH" \
-  FAKE_GH_RUN_CONCLUSION=success \
-  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-success.out" \
-  || fail "strict verified lifecycle check rejected a resolved successful CI run"
-grep -q 'READY.*feature-ready\.md.*concluded success' "$TMP/lifecycle25-success.out" \
-  || fail "verified lifecycle check did not mark a resolved successful CI run READY"
-
-# --- lifecycle: absent vs. misnamed vs. wrapped evidence (#19) ---------------------------
-# A checker that reports "missing" for both "never recorded" and "recorded under the wrong
-# label" trains people to stop trusting it — this bit the project itself: a pre-schema doc
-# recorded its approval as "Approved:" and the checker called it missing, indistinguishable
-# from a doc with no approval line at all.
-cat > "$LIFEFIX/docs/inprogress/lc19-misnamed.md" <<'MD'
-## Tracker
-- [x] F-1 done
-## Status
-- **Approved:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
-MD
-cat > "$LIFEFIX/docs/inprogress/lc19-absent.md" <<'MD'
-## Tracker
-- [x] F-1 done
-## Status
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
-MD
-cat > "$LIFEFIX/docs/inprogress/lc19-wrapped.md" <<'MD'
-## Tracker
-- [x] F-1 done
-## Status
-- **Approval:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** see the CI run recorded at
-  https://example.invalid/actions/1
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
-MD
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" > "$TMP/lifecycle19.out"
-
-grep -q 'BLOCKED.*lc19-misnamed\.md.*unrecognized: approval (found "Approved:")' \
-  "$TMP/lifecycle19.out" \
-  || fail "lifecycle did not flag a misnamed Approval field as unrecognized, not missing"
-grep -q 'BLOCKED.*lc19-absent\.md.*missing: approval' "$TMP/lifecycle19.out" \
-  || fail "lifecycle did not report a genuinely absent approval field as missing"
-if grep -q 'lc19-absent\.md.*unrecognized' "$TMP/lifecycle19.out"; then
-  fail "lifecycle invented an unrecognized-field match where no similar label exists"
-fi
-grep -q 'READY.*lc19-wrapped\.md' "$TMP/lifecycle19.out" \
-  || fail "lifecycle did not read a Verification evidence value wrapped onto a continuation line"
-
-# The schema stays single-valued: a misnamed field is reported clearly, but it must never
-# silently satisfy the check (that would let the vocabulary fork instead of surfacing it).
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
-  && fail "strict lifecycle check accepted a misnamed Approval field as though it were valid"
 fi
 
 # --- the run did what the mode promised --------------------------------------------------

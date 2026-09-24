@@ -46,10 +46,13 @@ die() { echo "error: $*" >&2; exit 1; }
 
 [ -n "$SPEC" ] || die "no spec file given. Usage: $0 [--apply|--diff] [--doc <path>] <spec.json>"
 [ -f "$SPEC" ] || die "spec file not found: $SPEC"
-case "$APPROVED_BY" in
-  *'
-'*|*"-->"*) die "--approved-by must be a single safe stamp value" ;;
-esac
+if [ -n "$APPROVED_BY" ]; then
+  [[ "$APPROVED_BY" =~ ^[A-Za-z0-9][A-Za-z0-9._\ -]*$ ]] \
+    || die "--approved-by must contain only letters, digits, spaces, dots, underscores, or hyphens"
+  case "$APPROVED_BY" in
+    *' ') die "--approved-by must not have surrounding whitespace" ;;
+  esac
+fi
 command -v jq >/dev/null || die "jq not found"
 command -v git >/dev/null || die "git not found"
 jq -e . "$SPEC" >/dev/null 2>&1 || die "spec is not valid JSON: $SPEC"
@@ -67,6 +70,16 @@ jq -e '
     == ([.steps[] | (.id // "")] | map(select(length > 0)) | length))
 ' "$SPEC" >/dev/null 2>&1 \
   || die "spec must contain a tracker and uniquely identified, valid steps"
+
+
+# Validate the local writer target before authentication or any issue mutation.
+# A schema-less document needs deliberate migration; applying a plan cannot do it.
+if [ "$MODE" = apply ] && [ -n "$DOC" ]; then
+  [ -f "$DOC" ] || die "--doc file not found: $DOC"
+  [ -w "$DOC" ] || die "--doc file is not writable: $DOC"
+  "$(dirname "$0")/lifecycle-status.sh" --doc "$DOC" --validate-doc-status >/dev/null \
+    || die "--doc Status is not valid v2; migrate using the v2 Feature/Security template"
+fi
 
 hash_stdin() {
   git hash-object --stdin 2>/dev/null || cksum | awk '{print $1}'
@@ -135,6 +148,13 @@ if [ -n "$existing_tracker" ]; then
     | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)
   APPROVAL_AT=$(printf '%s\n' "$existing_body" \
     | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
+  if [ -n "$APPROVAL_BY" ]; then
+    [[ "$APPROVAL_BY" =~ ^[A-Za-z0-9][A-Za-z0-9._\ -]*$ ]] \
+      || die "existing approval identity is not v2-safe"
+    case "$APPROVAL_BY" in *' ') die "existing approval identity has trailing whitespace" ;; esac
+    [[ "$APPROVAL_AT" =~ ^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$ ]] \
+      || die "existing approval timestamp is invalid"
+  fi
 fi
 if [ -n "$APPROVED_BY" ]; then
   if [ -n "$APPROVAL_BY" ] && [ "$APPROVAL_BY" != "$APPROVED_BY" ]; then
@@ -300,16 +320,15 @@ done < "$TMP/step-rows"
 echo "native sub-issue link attempts succeeded: $linked/$STEP_COUNT"
 
 if [ -n "$DOC" ]; then
-  [ -f "$DOC" ] || die "--doc file not found after reconciliation: $DOC"
   doc_tmp="$DOC.tmp.$$"
   approval_line=""
   if [ -n "$APPROVAL_BY" ]; then
     approval_day=${APPROVAL_AT%%T*}
-    approval_line="- **Approval:** ${APPROVAL_BY} approved on ${approval_day} via plan-to-issues --apply."
+    approval_line="- **Approval:** status=approved; by=${APPROVAL_BY}; at=${approval_day}"
   fi
   awk -v url="$track_url" -v approval_line="$approval_line" '
     /^- \*\*Tracking issue:\*\*/ && replaced != 1 {
-      print "- **Tracking issue:** [" url "](" url ")."
+      print "- **Tracking issue:** url=" url
       replaced=1
       next
     }

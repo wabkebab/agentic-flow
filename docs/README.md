@@ -54,6 +54,12 @@ plan in one pass only after all steps qualify, CI evidence is recorded, and
 issue. If the user accepts the risk / declines the feature, add an entry to
 `accepted_risks.md` and link it before moving the doc.
 
+New Feature and Security Status blocks use `Evidence schema: v2` and the exact
+field values in their templates. Resolve the pending fields before close-out.
+Check the open tracking issue with `--phase close-out`; after closing and pushing,
+use `--doc <exact-path> --phase pre-merge` on the moved document. Fully checked
+schema-less documents report `LEGACY` and need migration to the v2 template.
+
 ## memory/ — durable traps, indexed
 
 `docs/memory/` holds one fact per file; `docs/MEMORY.md` is a one-line-per-entry index. The
