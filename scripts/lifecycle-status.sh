@@ -2,6 +2,7 @@
 # lifecycle-status.sh — report or verify implementation-document close-out state.
 # Usage: scripts/lifecycle-status.sh [--check] [--verify-evidence]
 #        [--doc <exact-path>] [--phase close-out|pre-merge]
+#        [--doc <exact-path>] --validate-doc-status
 set -euo pipefail
 
 ROOT=${AGENTIC_PROJECT_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}

@@ -36,7 +36,7 @@ scripts/init.sh                   one-command scaffold adoption; wraps export + 
 scripts/plan-to-issues.sh         the deterministic gh/jq driver the skill calls
 scripts/docs-index.sh             regenerate docs/README.md's index from TRIAGE headers
 scripts/check-payload-manifest.sh  reject unclassified adapter/template/profile files
-scripts/lifecycle-status.sh       derive ACTIVE / READY / BLOCKED document state
+scripts/lifecycle-status.sh       derive ACTIVE / READY / BLOCKED / UNVERIFIED / LEGACY document state
 scripts/doctor.sh                 adoption checklist / scaffold health check
 scripts/agentic-flow              adopted-project status / diff / upgrade command
 scripts/self-test.sh              offline regression checks for this scaffold

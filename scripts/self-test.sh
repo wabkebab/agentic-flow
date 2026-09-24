@@ -2061,6 +2061,8 @@ chmod 644 "$REJECT_DOC"
 reject_before_gh 'newline in approver' "$REJECT_DOC" "$(printf 'Test\nUser')"
 reject_before_gh 'semicolon in approver' "$REJECT_DOC" 'Test;User'
 reject_before_gh 'surrounding whitespace in approver' "$REJECT_DOC" ' Test User '
+reject_before_gh 'trailing dot in approver' "$REJECT_DOC" 'John D.'
+reject_before_gh 'trailing hyphen in approver' "$REJECT_DOC" 'user-'
 
 plan_apply "$PLAN_SPEC" || fail "plan apply without --approved-by failed after approval"
 tracker_body_after=$(grep -Rl "agentic-flow:plan:self-test-plan tracker" "$GHSTATE"/issue-*/body | xargs cat)
@@ -2206,7 +2208,10 @@ mkdir -p "$GH_PHASE"
 cat > "$GH_PHASE/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 case "$*" in
-  *'issue view'*) printf '{"state":"%s","labels":[{"name":"agent:claude"},{"name":"needs-closing"}]}\n' "${FAKE_ISSUE_STATE:-OPEN}" ;;
+  *'issue view'*)
+    labels='[{"name":"agent:claude"},{"name":"needs-closing"}]'
+    [ -z "${FAKE_ISSUE_LABELS:-}" ] || labels=$FAKE_ISSUE_LABELS
+    printf '{"state":"%s","labels":%s}\n' "${FAKE_ISSUE_STATE:-OPEN}" "$labels" ;;
   *) exit 2 ;;
 esac
 FAKE_GH
@@ -2223,6 +2228,20 @@ PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE=CLOSED AGENTIC_PROJECT_ROOT="$V2FIX" \
   && fail "close-out accepted a closed issue"
 grep -q 'BLOCKED.*phase close-out found CLOSED' "$TMP/lifecycle-wrong-close.out" \
   || fail "close-out mismatch did not name the phase and state"
+for missing_label in needs-closing agent:claude; do
+  case "$missing_label" in
+    needs-closing) labels='[{"name":"agent:claude"}]' ;;
+    agent:claude) labels='[{"name":"needs-closing"}]' ;;
+  esac
+  PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE=OPEN FAKE_ISSUE_LABELS="$labels" \
+    AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" \
+    --doc "$V2FIX/docs/inprogress/feature-v2.md" --phase close-out \
+    --check --verify-evidence > "$TMP/lifecycle-missing-label.out" 2>&1 \
+    && fail "close-out accepted an open issue without $missing_label"
+  grep -q "BLOCKED.*phase close-out found OPEN without $missing_label" \
+    "$TMP/lifecycle-missing-label.out" \
+    || fail "close-out did not name missing $missing_label label"
+done
 for phase_state in 'close-out OPEN' 'pre-merge CLOSED'; do
   read -r phase_name state_name <<< "$phase_state"
   PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE="$state_name" AGENTIC_PROJECT_ROOT="$V2FIX" \
