@@ -10,7 +10,7 @@ help:           ## list available targets
 
 check:          ## fast sanity gate: harness checks + your type-check/lint. Run by the Stop hook.
 	@scripts/shell-inventory.sh --syntax
-	@scripts/docs-index.sh --check
+	@scope=$$(scripts/shell-inventory.sh --scope-state docs) || exit 1; if [ "$$scope" = active ]; then scripts/docs-index.sh --check; fi
 	@scripts/check-payload-manifest.sh
 	@scripts/check-harness-sync.sh
 	@scripts/check-memory-index.sh

@@ -3,13 +3,13 @@ id: manifest-validation-duplicated
 type: trap
 status: active
 ---
-The set of legal `merge-policy` values is hard-coded twice — `scripts/lib/payload-apply.sh:45`
-and `scripts/doctor.sh:191` — and nothing asserts the two agree.
+The five-column manifest retains `merge-policy` only for old upgrader compatibility.
+Export and upgrade validate `preserve|force|none`, but do not apply per-file policy;
+the chosen apply mode controls non-destructive and force behavior for every file.
 
-**Why:** export/upgrade validate through `payload-apply.sh`; `doctor.sh` validates
-independently when it diagnoses an adoption. A value one accepts and the other rejects makes
-`agentic-flow upgrade` succeed and `doctor.sh --check` fail on the same manifest.
+**Why:** old installed upgraders still parse five columns and reject unknown policies.
+Removing or repurposing the column would require a versioned migration for those parsers.
 
-**How to apply:** adding or renaming a policy means editing both. `make check` will not catch a
-mismatch: `doctor.sh` only sees the live manifest inside the `export` self-test group, and that
-group is excluded from `--fast` (`scripts/self-test.sh:220`). Only `make test` catches it.
+**How to apply:** keep the column and its legal values stable until a versioned old-upgrader
+migration exists. Do not describe its values as executable per-file policy. Doctor now
+validates through the shared payload library; the full export test exercises an adopter's doctor.

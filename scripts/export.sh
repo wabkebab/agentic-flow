@@ -7,7 +7,7 @@
 #   scripts/export.sh --force <target-dir>    overwrite existing files (destructive)
 #   scripts/export.sh --exclude-scope=codex <target-dir>
 #                                             skip every manifest row in that scope
-#                                             (repeatable: core|claude|codex|opencode|ci|docs)
+#                                             (repeatable: claude|codex|opencode|ci)
 #
 # Copies the entries declared in config/payload.tsv and leaves behind entries marked
 # source-only plus this repo's live docs and metadata.
@@ -43,6 +43,9 @@ die() { echo "error: $*" >&2; exit 1; }
 # The manifest is the one source of truth for payload membership. Export, doctor, and
 # self-test all consume or validate it so a new adapter cannot silently exist only here.
 MANIFEST="$SRC/config/payload.tsv"
+requested_scopes="$PAYLOAD_EXCLUDED_SCOPES"
+payload_load_manifest "$MANIFEST"
+payload_resolve_installation "$DST" "$MANIFEST" "$requested_scopes"
 payload_load_manifest "$MANIFEST"
 
 # Create / validate target.
@@ -56,6 +59,7 @@ fi
 DST=$(cd "$DST" 2>/dev/null && pwd -P || echo "$DST")
 [ "$DST" != "$SRC" ] || die "target is the agentic-flow repo itself"
 
+PAYLOAD_DST_ROOT="$DST"
 payload_expand_files "$SRC"
 
 echo "Exporting agentic-flow standard"
@@ -107,13 +111,6 @@ while [ "$i" -lt "${#FILES[@]}" ]; do
   esac
 done
 
-payload_stamp_version "$SRC" "$DST" "$merge"
-if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
-  echo "  installed   .agentic-flow-version ($version)"
-else
-  echo "  pending     .agentic-flow-candidate-version ($version)"
-fi
-
 if [ -n "$source_origin" ]; then
   if [ -f "$DST/.agentic-flow-source" ]; then
     recorded_origin=$(sed -n '1s/^origin[[:space:]]*//p' "$DST/.agentic-flow-source")
@@ -148,6 +145,15 @@ if [ "$DRY" = false ] && [ -x "$DST/scripts/docs-index.sh" ]; then
   else
     echo "Note: run scripts/docs-index.sh in the target once docs/README.md has the markers."
   fi
+fi
+if [ "$DRY" = false ] && { [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; }; then
+  payload_write_installation "$DST" "$MANIFEST"
+fi
+payload_stamp_version "$SRC" "$DST" "$merge"
+if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
+  echo "  installed   .agentic-flow-version ($version)"
+else
+  echo "  pending     .agentic-flow-candidate-version ($version)"
 fi
 
 if [ "$merge" -gt 0 ]; then

@@ -49,9 +49,14 @@ failures=0
 warnings=0
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
 PAYLOAD_LIB="$ROOT/scripts/lib/payload-apply.sh"
-if [ -f "$PAYLOAD_LIB" ]; then
-  # shellcheck disable=SC1090 # The library is resolved from this adopted project root.
-  . "$PAYLOAD_LIB"
+[ -f "$PAYLOAD_LIB" ] || { echo "error: payload library missing: $PAYLOAD_LIB" >&2; exit 1; }
+# shellcheck disable=SC1090 # The library is resolved from this adopted project root.
+. "$PAYLOAD_LIB"
+if [ -f "$ROOT/config/payload.tsv" ] && command -v payload_resolve_installation >/dev/null 2>&1; then
+  payload_resolve_installation "$ROOT" "$ROOT/config/payload.tsv"
+  payload_load_manifest "$ROOT/config/payload.tsv"
+else
+  PAYLOAD_ACTIVE_SCOPES="core claude codex opencode ci docs"
 fi
 
 ok() { printf 'ok      %s\n' "$*"; }
@@ -130,13 +135,13 @@ if [ "$SCOPE" = env ] || [ "$SCOPE" = all ]; then
   require_tool gh
   require_tool shellcheck
   require_tool gitleaks
-  if grep -q "This project opts out of the default two-agent split" "$ROOT/CLAUDE.md" 2>/dev/null; then
+  if ! payload_has_word codex "$PAYLOAD_ACTIVE_SCOPES"; then
     ok "execution mode: Claude-only"
-    require_tool git-claude
+    payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES" && require_tool git-claude
     optional_tool git-codex
   else
     ok "execution mode: Claude + Codex"
-    require_tool git-claude
+    payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES" && require_tool git-claude
     require_tool git-codex
   fi
 fi
@@ -145,14 +150,16 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   [ "$SCOPE" = repo ] || echo
   require_file METHODOLOGY.md
   require_file ADOPTION.md
-  require_file CLAUDE.md
+  if payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES"; then require_file CLAUDE.md; fi
   require_file AGENTS.md
   require_file Makefile
   require_file config/payload.tsv
   require_file .agentic-flow-review-policy
-  require_file .claude/settings.json
-  require_file .codex/hooks.json
-  require_file .agents/skills/plan-to-issues/SKILL.md
+  if payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES"; then require_file .claude/settings.json; fi
+  if payload_has_word codex "$PAYLOAD_ACTIVE_SCOPES"; then
+    require_file .codex/hooks.json
+    require_file .agents/skills/plan-to-issues/SKILL.md
+  fi
   require_file scripts/docs-index.sh
   require_file scripts/check-payload-manifest.sh
   require_file scripts/lifecycle-status.sh
@@ -161,13 +168,16 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_file scripts/plan-to-issues.sh
   require_file scripts/doctor.sh
   require_file scripts/self-test.sh
+  require_file scripts/lib/payload-apply.sh
   require_file scripts/hooks/check-gate.sh
   require_file scripts/hooks/block-git-add-all.sh
   require_file scripts/hooks/block-push.sh
   require_file scripts/hooks/scan-secrets.sh
   require_file scripts/lib/hook-command.sh
-  require_file docs/README.md
-  require_file docs/accepted_risks.md
+  if payload_has_word docs "$PAYLOAD_ACTIVE_SCOPES"; then
+    require_file docs/README.md
+    require_file docs/accepted_risks.md
+  fi
 
   # The workflow used for evidence verification is a project policy, not a
   # selector supplied by a Feature document.
@@ -183,34 +193,28 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
 
   if [ -f "$ROOT/config/payload.tsv" ]; then
     manifest_failures=0
-    while IFS="$(printf '\t')" read -r source destination scope merge_policy disposition; do
-      case "${source:-}" in ""|\#*) continue ;; esac
-      case "${disposition:-}" in
-        export)
-          if [ ! -e "$ROOT/$destination" ]; then
-            fail "manifest destination: $destination"
-            manifest_failures=$((manifest_failures + 1))
-          fi
-          ;;
-        source-only) ;;
-        *)
-          fail "manifest disposition for $source"
-          manifest_failures=$((manifest_failures + 1))
-          ;;
-      esac
-      [ -n "${scope:-}" ] || {
-        fail "manifest scope for $source"
+    while IFS= read -r destination; do
+      if [ ! -e "$ROOT/$destination" ]; then
+        fail "manifest destination: $destination"
         manifest_failures=$((manifest_failures + 1))
-      }
-      case "${merge_policy:-}" in preserve|force|none) ;; *)
-        fail "manifest merge policy for $source"
-        manifest_failures=$((manifest_failures + 1))
-        ;;
-      esac
-    done < "$ROOT/config/payload.tsv"
+      fi
+    done < <(payload_required_destinations "$ROOT/config/payload.tsv")
     if [ "$manifest_failures" -eq 0 ]; then
       ok "payload manifest destinations present"
     fi
+  fi
+  if [ "${PAYLOAD_STATE_PRESENT:-false}" = true ]; then
+    state_i=0
+    while [ "$state_i" -lt "${#PAYLOAD_STATE_FILES[@]}" ]; do
+      state_path=${PAYLOAD_STATE_FILES[$state_i]}
+      state_digest=${PAYLOAD_STATE_DIGESTS[$state_i]}
+      if [ ! -f "$ROOT/$state_path" ]; then
+        fail "installed file missing: $state_path"
+      elif [ "$(payload_sha256 "$ROOT/$state_path")" != "$state_digest" ]; then
+        fail "installed file digest changed: $state_path"
+      fi
+      state_i=$((state_i + 1))
+    done
   fi
 
   candidate_files=$(find "$ROOT" -type f -name '*.agentic-new*' -print 2>/dev/null | head -20)
@@ -221,7 +225,9 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     ok "no unresolved scaffold merge candidates"
   fi
 
-  if grep -Eq "$TOKEN_RE" "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" 2>/dev/null; then
+  token_inputs=( "$ROOT/AGENTS.md" )
+  if payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES"; then token_inputs+=( "$ROOT/CLAUDE.md" ); fi
+  if grep -Eq "$TOKEN_RE" "${token_inputs[@]}" 2>/dev/null; then
     fail "unfilled template tokens in CLAUDE.md or AGENTS.md"
   else
     ok "CLAUDE.md and AGENTS.md tokens filled"
@@ -297,6 +303,10 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   real_make_target run
 
   for adapter in .claude/settings.json .codex/hooks.json; do
+    case "$adapter" in
+      .claude/*) payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES" || continue ;;
+      .codex/*) payload_has_word codex "$PAYLOAD_ACTIVE_SCOPES" || continue ;;
+    esac
     if jq -e . "$ROOT/$adapter" >/dev/null 2>&1; then
       ok "$adapter valid JSON"
     else
@@ -318,7 +328,9 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     done
   done
 
-  if [ -f "$ROOT/.github/workflows/ci.yml" ]; then
+  if ! payload_has_word ci "$PAYLOAD_ACTIVE_SCOPES"; then
+    ok "CI adapter excluded"
+  elif [ -f "$ROOT/.github/workflows/ci.yml" ]; then
     ok "CI workflow active: .github/workflows/ci.yml"
   elif [ -f "$ROOT/templates/ci/ci.yml" ]; then
     warn "CI template is inert; activate it when project Make targets are ready"
@@ -331,7 +343,9 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   # against the same state — it cannot reach a different verdict, so it only costs time. The
   # flag existed to stop exactly this double-run for the rest of the gate; it just never
   # covered this one, which fires unconditionally.
-  if [ "$SKIP_MAKE_CHECK" = true ]; then
+  if ! payload_has_word docs "$PAYLOAD_ACTIVE_SCOPES"; then
+    ok "docs adapter excluded"
+  elif [ "$SKIP_MAKE_CHECK" = true ]; then
     ok "docs index up to date (checked by the caller's gate)"
   elif "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
     ok "docs index up to date"

@@ -8,6 +8,13 @@ manifest="$root/config/payload.tsv"
 
 shell_sources() {
   local source _destination scope _merge disposition file rel excluded
+  if [ -f "$root/.agentic-flow-installation" ]; then
+    # shellcheck disable=SC1091 # Installed library is resolved from the project root.
+    . "$root/scripts/lib/payload-apply.sh"
+    payload_resolve_installation "$root" "$manifest"
+    printf '%s\n' "${PAYLOAD_STATE_FILES[@]}"
+    return
+  fi
   while IFS="$(printf '\t')" read -r source _destination scope _merge disposition; do
     case "${source:-}" in ''|\#*) continue ;; esac
     excluded=false
@@ -36,7 +43,11 @@ shell_files() {
   local rel first sources
   sources=$(shell_sources | sort -u) || return 1
   while IFS= read -r rel; do
-    [ -f "$root/$rel" ] || continue
+    if [ ! -f "$root/$rel" ]; then
+      [ -f "$root/.agentic-flow-installation" ] \
+        && { echo "shell inventory: recorded file missing: $rel" >&2; return 1; }
+      continue
+    fi
     IFS= read -r first < "$root/$rel" || true
     case "$first" in '#!'*'/bash'|'#!'*'/sh'|'#!'*'env bash'|'#!'*'env sh')
       printf '%s\n' "$rel" ;;
@@ -45,6 +56,18 @@ shell_files() {
 }
 
 case "${1:---list}" in
+  --scope-state)
+    case "${2:-}" in core|claude|codex|opencode|ci|docs) ;; *)
+      echo 'shell inventory: unknown scope' >&2; exit 2 ;;
+    esac
+    # shellcheck disable=SC1091 # Installed library is resolved from the project root.
+    . "$root/scripts/lib/payload-apply.sh"
+    payload_resolve_installation "$root" "$manifest"
+    if payload_has_word "$2" "$PAYLOAD_ACTIVE_SCOPES"; then
+      echo active
+    else
+      echo inactive
+    fi ;;
   --list) shell_files ;;
   --syntax)
     inventory=$(shell_files) || exit 1
@@ -56,5 +79,5 @@ case "${1:---list}" in
     while IFS= read -r rel; do [ -n "$rel" ] && files+=("$root/$rel"); done <<< "$inventory"
     [ "${#files[@]}" -gt 0 ] || { echo 'shell inventory: no shell files' >&2; exit 1; }
     shellcheck "${files[@]}" ;;
-  *) echo 'usage: shell-inventory.sh --list|--syntax|--lint' >&2; exit 2 ;;
+  *) echo 'usage: shell-inventory.sh --list|--syntax|--lint|--scope-state SCOPE' >&2; exit 2 ;;
 esac

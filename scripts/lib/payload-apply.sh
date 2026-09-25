@@ -18,12 +18,237 @@ payload_die() {
 # consuming it here is what makes the flag mean what its name says.
 PAYLOAD_EXCLUDED_SCOPES="${PAYLOAD_EXCLUDED_SCOPES:-}"
 
+payload_valid_scope() {
+  case "$1" in core|claude|codex|opencode|ci|docs) return 0 ;; esac
+  return 1
+}
+
+payload_has_word() { # <word> <space-separated-list>
+  case " $2 " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+payload_safe_path() { # <root> <relative-path>; reject traversal and symlink components
+  local root="$1" rel="$2" part current="$1" rest
+  [ -n "$rel" ] || return 1
+  case "$rel" in /*|*\\*|*'//'*) return 1 ;; esac
+  LC_ALL=C printf '%s' "$rel" | grep -q '[[:cntrl:]]' && return 1
+  printf '%s' "$rel" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || return 1
+  rest="$rel"
+  while :; do
+    part=${rest%%/*}
+    case "$part" in ''|.|..) return 1 ;; esac
+    current="$current/$part"
+    [ ! -L "$current" ] || return 1
+    [ "$rest" = "$part" ] && break
+    rest=${rest#*/}
+  done
+}
+
+payload_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d ' ' -f 1
+  else
+    sha256sum "$1" | cut -d ' ' -f 1
+  fi
+}
+
+payload_scope_for_destination() { # <manifest> <destination> <active-scopes>
+  local manifest="$1" wanted="$2" active="$3" src dst scope merge disposition
+  local source_root=${1%/config/payload.tsv}
+  while IFS="$(printf '\t')" read -r src dst scope merge disposition; do
+    [ "$disposition" = export ] || continue
+    payload_has_word "$scope" "$active" || continue
+    if [ -d "$source_root/$src" ]; then
+      case "$wanted" in "$dst"/*) return 0 ;; esac
+    else
+      [ "$wanted" = "$dst" ] && return 0
+    fi
+  done < "$manifest"
+  return 1
+}
+
+# Read the old exclusion record first. A new record wins only when both agree. The
+# source manifest is passed explicitly so upgrades validate before copying any file.
+payload_resolve_installation() { # <target-root> <source-manifest> [requested-exclusions]
+  local LC_ALL=C
+  local root="$1" manifest="$2" requested="${3:-}" state="$1/.agentic-flow-installation"
+  local legacy="$1/.agentic-flow-scopes-excluded" line key value number=0 version_seen=false
+  local scopes="" files=0 path digest old_excluded="" scope all_scopes="" src dst merge disposition seen nul_line duplicate
+  PAYLOAD_STATE_FILES=()
+  PAYLOAD_STATE_DIGESTS=()
+  PAYLOAD_STATE_LINES=()
+  PAYLOAD_STATE_PRESENT=false
+  while IFS="$(printf '\t')" read -r src dst scope merge disposition; do
+    case "$src" in ''|\#*) continue ;; esac
+    payload_valid_scope "$scope" || [ "$scope" = source-only ] \
+      || payload_die "unknown manifest scope '$scope': $src"
+    [ "$disposition" = export ] || continue
+    payload_has_word "$scope" "$all_scopes" || all_scopes="${all_scopes}${all_scopes:+ }$scope"
+  done < "$manifest"
+  for scope in $requested; do
+    if ! payload_valid_scope "$scope" || ! payload_has_word "$scope" "$all_scopes"; then
+      payload_die "unknown requested exclusion scope: $scope"
+    fi
+  done
+  if [ -f "$legacy" ]; then
+    while IFS= read -r scope || [ -n "$scope" ]; do
+      if ! payload_valid_scope "$scope" || ! payload_has_word "$scope" "$all_scopes"; then
+        payload_die "invalid excluded scope in $legacy: $scope"
+      fi
+      payload_has_word "$scope" "$old_excluded" \
+        && payload_die "duplicate excluded scope in $legacy: $scope"
+      old_excluded="${old_excluded}${old_excluded:+ }$scope"
+    done < "$legacy"
+  fi
+  if [ -f "$state" ]; then
+    PAYLOAD_STATE_PRESENT=true
+    nul_line=$(LC_ALL=C od -An -v -tu1 "$state" | awk '
+      BEGIN { line=1 }
+      { for (i=1; i<=NF; i++) { if ($i == 0 && !found) found=line; if ($i == 10) line++ } }
+      END { if (found) print found }
+    ')
+    [ -z "$nul_line" ] || payload_die "$state line $nul_line: NUL byte"
+    while IFS= read -r line || [ -n "$line" ]; do
+      number=$((number + 1))
+      [ "${#line}" -le 4096 ] || payload_die "$state line $number exceeds 4096 bytes"
+      key=${line%%=*}; value=${line#*=}
+      case "$key" in
+        version)
+          [ "$version_seen" = false ] && [ "$value" = 1 ] \
+            || payload_die "$state line $number: invalid or duplicate version"
+          version_seen=true ;;
+        scope)
+          if ! payload_valid_scope "$value" || ! payload_has_word "$value" "$all_scopes"; then
+            payload_die "$state line $number: unknown scope '$value'"
+          fi
+          payload_has_word "$value" "$scopes" \
+            && payload_die "$state line $number: duplicate scope '$value'"
+          scopes="${scopes}${scopes:+ }$value" ;;
+        file)
+          files=$((files + 1))
+          [ "$files" -le 2000 ] || payload_die "$state line $number: more than 2000 files"
+          digest=${value%%  *}; path=${value#*'  '}
+          [ "${#digest}" -eq 64 ] && [[ "$digest" =~ ^[0-9a-f]+$ ]] \
+            && [ "$value" = "$digest  $path" ] \
+            || payload_die "$state line $number: malformed file digest or separator"
+          payload_safe_path "$root" "$path" \
+            || payload_die "$state line $number: unsafe file path '$path'"
+          PAYLOAD_STATE_FILES+=("$path"); PAYLOAD_STATE_DIGESTS+=("$digest")
+          PAYLOAD_STATE_LINES+=("$number") ;;
+        *) payload_die "$state line $number: unknown or malformed key '$key'" ;;
+      esac
+    done < "$state"
+    [ "$version_seen" = true ] || payload_die "$state: missing version"
+    duplicate=$(printf '%s\n' "${PAYLOAD_STATE_FILES[@]+"${PAYLOAD_STATE_FILES[@]}"}" \
+      | LC_ALL=C sort | uniq -d)
+    if [ -n "$duplicate" ]; then
+      duplicate=${duplicate%%$'\n'*}
+      seen=false
+      files=0
+      while [ "$files" -lt "${#PAYLOAD_STATE_FILES[@]}" ]; do
+        if [ "${PAYLOAD_STATE_FILES[$files]}" = "$duplicate" ]; then
+          if [ "$seen" = true ]; then
+            payload_die "$state line ${PAYLOAD_STATE_LINES[$files]}: duplicate file path '$duplicate'"
+          fi
+          seen=true
+        fi
+        files=$((files + 1))
+      done
+    fi
+    files=0
+    while [ "$files" -lt "${#PAYLOAD_STATE_FILES[@]}" ]; do
+      path=${PAYLOAD_STATE_FILES[$files]}
+      payload_scope_for_destination "$manifest" "$path" "$scopes" \
+        || payload_die "$state line ${PAYLOAD_STATE_LINES[$files]}: file outside recorded scopes: $path"
+      files=$((files + 1))
+    done
+    for scope in $all_scopes; do
+      if ! payload_has_word "$scope" "$scopes"; then
+        payload_has_word "$scope" "$old_excluded" || [ ! -f "$legacy" ] \
+          || payload_die "$state conflicts with $legacy: $scope"
+      else
+        ! payload_has_word "$scope" "$old_excluded" \
+          || payload_die "$state conflicts with $legacy: $scope"
+      fi
+    done
+  else
+    for scope in $all_scopes; do
+      payload_has_word "$scope" "$old_excluded" \
+        || scopes="${scopes}${scopes:+ }$scope"
+    done
+    if [ ! -f "$legacy" ] && [ -f "$root/.agentic-flow-version" ]; then
+      echo 'warning: installation scope state absent; using all manifest scopes' >&2
+    fi
+  fi
+  if [ -n "$requested" ]; then
+    for scope in $all_scopes; do
+      if payload_has_word "$scope" "$requested"; then
+        if [ "$PAYLOAD_STATE_PRESENT" = true ] || [ -f "$legacy" ]; then
+          payload_has_word "$scope" "$scopes" \
+            && payload_die "requested exclusions conflict with installed scopes: $scope"
+        fi
+      elif [ "$PAYLOAD_STATE_PRESENT" = true ] || [ -f "$legacy" ]; then
+        payload_has_word "$scope" "$scopes" \
+          || payload_die "requested scopes conflict with installed scopes: $scope"
+      fi
+    done
+    if [ "$PAYLOAD_STATE_PRESENT" = false ] && [ ! -f "$legacy" ]; then
+      scopes=""
+      for scope in $all_scopes; do
+        payload_has_word "$scope" "$requested" || scopes="${scopes}${scopes:+ }$scope"
+      done
+    fi
+  fi
+  for scope in core docs; do
+    if payload_has_word "$scope" "$all_scopes" && ! payload_has_word "$scope" "$scopes"; then
+      payload_die "required scope cannot be excluded: $scope"
+    fi
+  done
+  PAYLOAD_ACTIVE_SCOPES="$scopes"
+  PAYLOAD_EXCLUDED_SCOPES=""
+  for scope in $all_scopes; do
+    payload_has_word "$scope" "$scopes" \
+      || PAYLOAD_EXCLUDED_SCOPES="${PAYLOAD_EXCLUDED_SCOPES}${PAYLOAD_EXCLUDED_SCOPES:+ }$scope"
+  done
+}
+
+payload_write_installation() { # <target-root> <manifest>; after successful apply only
+  local root="$1" manifest="$2" tmp path digest i=0 scope
+  tmp=$(mktemp "$root/.agentic-flow-installation.XXXXXX")
+  printf 'version=1\n' > "$tmp"
+  for scope in core claude codex opencode ci docs; do
+    payload_has_word "$scope" "$PAYLOAD_ACTIVE_SCOPES" && printf 'scope=%s\n' "$scope" >> "$tmp"
+  done
+  while [ "$i" -lt "${#DESTS[@]}" ]; do
+    path=${DESTS[$i]}; i=$((i + 1))
+    payload_is_excluded "${FILES[$((i - 1))]}" && continue
+    payload_safe_path "$root" "$path" || payload_die "unsafe installed path: $path"
+    [ -f "$root/$path" ] || payload_die "installed file missing: $path"
+    digest=$(payload_sha256 "$root/$path")
+    printf 'file=%s  %s\n' "$digest" "$path"
+  done | LC_ALL=C sort -t ' ' -k3 >> "$tmp"
+  mv "$tmp" "$root/.agentic-flow-installation"
+  tmp=$(mktemp "$root/.agentic-flow-scopes-excluded.XXXXXX")
+  for scope in $PAYLOAD_EXCLUDED_SCOPES; do printf '%s\n' "$scope"; done > "$tmp"
+  mv "$tmp" "$root/.agentic-flow-scopes-excluded"
+}
+
 payload_scope_excluded() { # <scope>
   local s
   for s in $PAYLOAD_EXCLUDED_SCOPES; do
     [ "$s" = "$1" ] && return 0
   done
   return 1
+}
+
+payload_required_destinations() { # <manifest-path>; one path per active export row
+  local source destination scope merge disposition
+  while IFS="$(printf '\t')" read -r source destination scope merge disposition; do
+    case "${source:-}" in ''|\#*) continue ;; esac
+    [ "$disposition" = export ] || continue
+    payload_has_word "$scope" "$PAYLOAD_ACTIVE_SCOPES" && printf '%s\n' "$destination"
+  done < "$1" | LC_ALL=C sort -u
 }
 
 payload_reset_manifest() {
@@ -45,7 +270,8 @@ payload_load_manifest() { # <manifest-path>
     case "${merge_policy:-}" in preserve|force|none) ;; *)
       payload_die "manifest entry has invalid merge policy '$merge_policy': $src_item" ;;
     esac
-    [ -n "${scope:-}" ] || payload_die "manifest entry has no scope: $src_item"
+    payload_valid_scope "${scope:-}" || [ "$scope" = source-only ] \
+      || payload_die "manifest entry has unknown scope '$scope': $src_item"
     case "${disposition:-}" in
       export)
         # An excluded scope is treated as source-only: kept out of the copy list AND out of
@@ -81,33 +307,27 @@ payload_is_excluded() { # <relative-source-path>
 }
 
 payload_destination_files() { # <root>
-  local root="$1"
-  local manifest="$root/config/payload.tsv" source destination _scope _merge disposition file rel suffix
+  local root="$1" i source destination scope _merge disposition
+  local manifest="$root/config/payload.tsv"
   [ -f "$manifest" ] || return 0
-  while IFS="$(printf '\t')" read -r source destination _scope _merge disposition; do
-    case "${source:-}" in ""|\#*) continue ;; esac
-    [ "${disposition:-}" = export ] || continue
-    if [ -f "$root/$destination" ]; then
-      printf '%s\n' "$destination"
-    elif [ -d "$root/$destination" ]; then
-      while IFS= read -r file; do
-        rel="${file#"$root"/}"
-        printf '%s\n' "$rel"
-      done < <(find "$root/$destination" -type f | sort)
-    elif [ -d "$root/$source" ]; then
-      while IFS= read -r file; do
-        rel="${file#"$root/$source"/}"
-        if [ "$source" = "$destination" ]; then
-          printf '%s/%s\n' "$destination" "$rel"
-        else
-          suffix="${rel#"$source"/}"
-          printf '%s/%s\n' "$destination" "$suffix"
-        fi
-      done < <(find "$root/$source" -type f | sort)
-    else
-      printf '%s\n' "$destination"
-    fi
-  done < "$manifest" | sort -u
+  payload_resolve_installation "$root" "$manifest"
+  if [ "$PAYLOAD_STATE_PRESENT" = true ]; then
+    printf '%s\n' "${PAYLOAD_STATE_FILES[@]}"
+  elif [ -f "$root/scripts/export.sh" ]; then
+    payload_load_manifest "$manifest"
+    payload_expand_files "$root"
+    i=0
+    while [ "$i" -lt "${#DESTS[@]}" ]; do
+      payload_is_excluded "${FILES[$i]}" || printf '%s\n' "${DESTS[$i]}"
+      i=$((i + 1))
+    done
+  else
+    while IFS="$(printf '\t')" read -r source destination scope _merge disposition; do
+      [ "$disposition" = export ] && payload_has_word "$scope" "$PAYLOAD_ACTIVE_SCOPES" \
+        && [ -f "$root/$destination" ] && printf '%s\n' "$destination"
+    done < "$manifest"
+  fi
+  return 0
 }
 
 payload_ignored_paths() { # <root>
@@ -123,6 +343,7 @@ payload_ignored_paths() { # <root>
 
 payload_expand_files() { # <src-root>
   local src_root="$1" manifest_i src_item dst_item f rel suffix
+  PAYLOAD_SRC_ROOT="$src_root"
   FILES=()
   DESTS=()
   manifest_i=0
@@ -150,7 +371,12 @@ payload_expand_files() { # <src-root>
 }
 
 payload_queue_file() { # <source-rel> <dest-rel>
+  local LC_ALL=C
   local src_rel="$1" dst_rel="$2" i
+  payload_safe_path "$PAYLOAD_SRC_ROOT" "$src_rel" \
+    || payload_die "unsafe manifest source path: $src_rel"
+  payload_safe_path "${PAYLOAD_DST_ROOT:-$PAYLOAD_SRC_ROOT}" "$dst_rel" \
+    || payload_die "unsafe manifest destination path: $dst_rel"
   i=0
   while [ "$i" -lt "${#DESTS[@]}" ]; do
     [ "${DESTS[$i]}" = "$dst_rel" ] && return 0
@@ -158,6 +384,9 @@ payload_queue_file() { # <source-rel> <dest-rel>
   done
   FILES+=("$src_rel")
   DESTS+=("$dst_rel")
+  [ "${#DESTS[@]}" -le 2000 ] || payload_die "payload exceeds 2000 installed files"
+  [ "$(( ${#dst_rel} + 72 ))" -le 4096 ] \
+    || payload_die "installed path exceeds installation line bound: $dst_rel"
 }
 
 payload_apply_entry() { # <src> <dst> <mode>

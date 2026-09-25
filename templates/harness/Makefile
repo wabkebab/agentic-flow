@@ -16,8 +16,8 @@ help:           ## list available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-10s %s\n",$$1,$$2}'
 
 check:          ## fast sanity gate: harness checks + your type-check/lint. Run by the Stop hook.
-	@for f in scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh; do bash -n "$$f" || exit 1; done
-	@scripts/docs-index.sh --check
+	@scripts/shell-inventory.sh --syntax
+	@scope=$$(scripts/shell-inventory.sh --scope-state docs) || exit 1; if [ "$$scope" = active ]; then scripts/docs-index.sh --check; fi
 	@scripts/check-payload-manifest.sh
 	@scripts/check-action-pins.sh
 	@scripts/check-memory-index.sh
@@ -27,8 +27,7 @@ check:          ## fast sanity gate: harness checks + your type-check/lint. Run 
 test:           ## full test suite
 	@scripts/self-test.sh --full
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required for 'make test' — install it (brew install shellcheck / apt-get install shellcheck)." >&2; exit 1; }
-	@shellcheck scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh
-	# Installed-file inventory replaces these bounded globs in F-7.
+	@scripts/shell-inventory.sh --lint
 	@echo "TODO: add your stack's test suite to 'test' in the Makefile."
 # END SHARED SHELL GATE
 #	npm run test:run

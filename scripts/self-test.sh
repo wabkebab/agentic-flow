@@ -7,6 +7,18 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+# Exported checks use the same recorded adapter selection as doctor and the shell gate.
+# The scaffold has no installation record and checks every source adapter.
+# shellcheck disable=SC1091 # This library is part of the installed harness.
+if [ -f "$ROOT/scripts/lib/payload-apply.sh" ]; then
+  . "$ROOT/scripts/lib/payload-apply.sh"
+fi
+if [ -f "$ROOT/.agentic-flow-installation" ] && command -v payload_resolve_installation >/dev/null 2>&1; then
+  payload_resolve_installation "$ROOT" "$ROOT/config/payload.tsv"
+else
+  PAYLOAD_ACTIVE_SCOPES="core claude codex opencode ci docs"
+fi
+active_scope() { case " $PAYLOAD_ACTIVE_SCOPES " in *" $1 "*) return 0 ;; esac; return 1; }
 SELF_TEST_MODE=fast
 ONLY_GROUP=""
 while [ "$#" -gt 0 ]; do
@@ -295,6 +307,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   cp "$TMP/payload.tsv.orig" "$SOURCE_FIXTURE/config/payload.tsv"
   rm -rf "$SOURCE_FIXTURE/scripts/private_probe" "$SOURCE_ONLY_DIR_TARGET"
 
+  awk -F "$(printf '\t')" 'BEGIN { OFS="\t" } $3=="codex" && $5=="export" { $3="unknown-scope" } { print }' \
+    "$TMP/payload.tsv.orig" > "$SOURCE_FIXTURE/config/payload.tsv"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$TMP/unknown-scope-target" \
+    > "$TMP/unknown-scope.out" 2>&1 \
+    && fail "export accepted an unknown manifest scope"
+  assert_no_file "$TMP/unknown-scope-target"
+  cp "$TMP/payload.tsv.orig" "$SOURCE_FIXTURE/config/payload.tsv"
+
   cp "$SOURCE_FIXTURE/.codex/hooks.json" "$TMP/codex-hooks.orig"
   printf '%s\n' '{"hooks":{}}' > "$SOURCE_FIXTURE/.codex/hooks.json"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
@@ -319,6 +339,121 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$SCOPED_TARGET/METHODOLOGY.md"
   assert_file "$SCOPED_TARGET/.claude/settings.json"
   assert_file "$SCOPED_TARGET/.claude/skills/plan-to-issues/SKILL.md"
+  assert_file "$SCOPED_TARGET/.agentic-flow-installation"
+  grep -qx 'scope=claude' "$SCOPED_TARGET/.agentic-flow-installation" \
+    || fail "scoped export did not record its active Claude scope"
+  grep -q '^scope=codex$' "$SCOPED_TARGET/.agentic-flow-installation" \
+    && fail "scoped export recorded excluded Codex scope"
+  printf '#!/bin/bash\ninvalid syntax (\n' > "$SCOPED_TARGET/scripts/their-deploy.sh"
+  (cd "$SCOPED_TARGET" && scripts/shell-inventory.sh --syntax) >/dev/null 2>&1 \
+    || fail "installed shell inventory included adopter-owned script"
+  cp "$SCOPED_TARGET/.agentic-flow-installation" "$TMP/scoped-installation.orig"
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+    "$SCOPED_TARGET" >/dev/null
+  cmp -s "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation" \
+    || fail "repeated scoped export changed stable installation state"
+  scoped_version=$(cat "$SCOPED_TARGET/.agentic-flow-version")
+  grep -q 'scripts/their-deploy.sh' "$SCOPED_TARGET/.agentic-flow-installation" \
+    && fail "installation membership absorbed an adopter-owned script"
+
+  state_rejects() { # <bad-line> <reason>
+    cp "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation"
+    printf '%s\n' "$1" >> "$SCOPED_TARGET/.agentic-flow-installation"
+    ( . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
+      payload_resolve_installation "$SCOPED_TARGET" "$SOURCE_FIXTURE/config/payload.tsv" ) \
+      > "$TMP/state-reject.out" 2>&1 \
+      && fail "installation state accepted $2"
+    grep -q 'line ' "$TMP/state-reject.out" \
+      || fail "invalid $2 did not name its installation-state line"
+    grep -qx "$scoped_version" "$SCOPED_TARGET/.agentic-flow-version" \
+      || fail "invalid $2 advanced installed version"
+  }
+  state_digest=$(printf '%064d' 0)
+  state_rejects "file=bad  scripts/bad.sh" 'malformed digest'
+  before_bad_state=$(tree_digest "$SCOPED_TARGET")
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+    "$SCOPED_TARGET" > "$TMP/bad-state-export.out" 2>&1 \
+    && fail "export copied files despite malformed installation state"
+  [ "$before_bad_state" = "$(tree_digest "$SCOPED_TARGET")" ] \
+    || fail "malformed installation state allowed export mutation"
+  state_rejects "file=1234  scripts/bad.sh" 'short digest'
+  state_rejects "file=$state_digest  scripts/../bad.sh" 'parent segment'
+  state_rejects "file=$state_digest  /tmp/bad.sh" 'absolute path'
+  state_rejects "file=$state_digest  .codex/hooks.json" 'excluded scope'
+  state_rejects "$(sed -n '/^file=/{p;q;}' "$TMP/scoped-installation.orig")" 'duplicate path'
+  ln -s "$TMP" "$SCOPED_TARGET/scripts/linked"
+  state_rejects "file=$state_digest  scripts/linked/bad.sh" 'symlink component'
+  rm "$SCOPED_TARGET/scripts/linked"
+  cp "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation"
+  printf 'file=%s  scripts/bad\000path.sh\n' "$state_digest" \
+    >> "$SCOPED_TARGET/.agentic-flow-installation"
+  ( . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
+    payload_resolve_installation "$SCOPED_TARGET" "$SOURCE_FIXTURE/config/payload.tsv" ) \
+    > "$TMP/state-nul.out" 2>&1 \
+    && fail "installation state accepted a NUL path"
+  grep -q 'line .*NUL byte' "$TMP/state-nul.out" \
+    || fail "NUL path did not name its installation-state line"
+  {
+    printf 'version=1\nscope=core\n'
+    state_n=0
+    while [ "$state_n" -lt 2001 ]; do
+      printf 'file=%s  scripts/extra-%04d.sh\n' "$state_digest" "$state_n"
+      state_n=$((state_n + 1))
+    done
+  } > "$SCOPED_TARGET/.agentic-flow-installation"
+  ( . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
+    payload_resolve_installation "$SCOPED_TARGET" "$SOURCE_FIXTURE/config/payload.tsv" ) \
+    > "$TMP/state-bound.out" 2>&1 \
+    && fail "installation state accepted more than 2000 files"
+  grep -q 'line 2003: more than 2000 files' "$TMP/state-bound.out" \
+    || fail "over-bound installation state did not name its offending line"
+  cp "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation"
+  printf '%s\n' '# locally changed' >> "$SCOPED_TARGET/scripts/doctor.sh"
+  (cd "$SCOPED_TARGET" && AGENTIC_SELFTEST=1 scripts/doctor.sh --scope repo --skip-make-check) \
+    > "$TMP/scoped-doctor.out" 2>&1 || true
+  grep -q 'installed file digest changed: scripts/doctor.sh' "$TMP/scoped-doctor.out" \
+    || fail "doctor did not report recorded digest drift"
+  grep -q 'their-deploy.sh' "$TMP/scoped-doctor.out" \
+    && fail "doctor treated adopter-owned script as harness drift"
+  cp "$SCOPED_TARGET/.agentic-flow-scopes-excluded" "$TMP/scoped-legacy.orig"
+  : > "$SCOPED_TARGET/.agentic-flow-scopes-excluded"
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+    "$SCOPED_TARGET" > "$TMP/scope-conflict.out" 2>&1 \
+    && fail "export accepted conflicting old and new scope state"
+  grep -q 'conflicts' "$TMP/scope-conflict.out" \
+    || fail "scope conflict did not identify the old/new state mismatch"
+  cmp -s "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation" \
+    || fail "scope conflict advanced installation state"
+  cp "$TMP/scoped-legacy.orig" "$SCOPED_TARGET/.agentic-flow-scopes-excluded"
+
+  CODEX_ONLY_TARGET="$TMP/codex-only-export"
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=claude --exclude-scope=opencode \
+    "$CODEX_ONLY_TARGET" >/dev/null
+  assert_no_file "$CODEX_ONLY_TARGET/CLAUDE.md"
+  assert_no_file "$CODEX_ONLY_TARGET/.opencode/agent/code-reviewer.md"
+  (cd "$CODEX_ONLY_TARGET" && make check) > "$TMP/codex-only-check.out" 2>&1 \
+    || { cat "$TMP/codex-only-check.out" >&2; fail "Codex-only export failed its active checks"; }
+  rm "$CODEX_ONLY_TARGET/.codex/hooks.json"
+  (cd "$CODEX_ONLY_TARGET" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo --skip-make-check) \
+    > "$TMP/codex-only-missing.out" 2>&1 \
+    && fail "doctor accepted a missing active Codex adapter"
+  grep -q 'manifest destination: .codex/hooks.json' "$TMP/codex-only-missing.out" \
+    || fail "doctor did not identify the missing active adapter"
+
+  NO_CI_TARGET="$TMP/no-ci-export"
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+    --exclude-scope=ci "$NO_CI_TARGET" >/dev/null
+  assert_file "$NO_CI_TARGET/METHODOLOGY.md"
+  assert_file "$NO_CI_TARGET/docs/README.md"
+  assert_no_file "$NO_CI_TARGET/templates/ci/ci.yml"
+  (cd "$NO_CI_TARGET" && make check) > "$TMP/no-ci-check.out" 2>&1 \
+    || { cat "$TMP/no-ci-check.out" >&2; fail "no-CI export failed its active checks"; }
+  for required_scope in core docs; do
+    "$SOURCE_FIXTURE/scripts/export.sh" "--exclude-scope=$required_scope" \
+      "$TMP/rejected-$required_scope" > "$TMP/rejected-$required_scope.out" 2>&1 \
+      && fail "export excluded required $required_scope scope"
+    assert_no_file "$TMP/rejected-$required_scope"
+  done
 
   printf '%s\n' unresolved > "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
@@ -711,7 +846,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # script's own $ROOT for shellcheck (SC2030/SC2031) or for real.
   CEILING_SNIPPET_FILE="$TMP/ceiling-snippet.sh"
   # shellcheck disable=SC2016 # literal $ROOT/$CEILING_ROOT text being rewritten, not expanded.
-  sed -n '/^# Ceilings are set just above the MEASURED size of each bundle/,/reviewer static role bundle exceeds its ceiling/p' \
+  sed -n '/^# Ceilings are set just above the MEASURED size of each bundle/,/^# END ROLE-BUNDLE CEILINGS/p' \
     "$ROOT/scripts/self-test.sh" \
     | sed 's/\$ROOT\//\$CEILING_ROOT\//g' > "$CEILING_SNIPPET_FILE"
   [ -s "$CEILING_SNIPPET_FILE" ] \
@@ -807,17 +942,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail "manifest extensionless shell command missing from inventory"
   grep -q 'their-deploy' "$shell_fix/list" \
     && fail "adopter script was swept into source inventory"
-  # This is the tempting but wrong destination walk. It must see the adopter-owned file
-  # under the declared destination, so the exclusion assertion above can catch that bug.
+  # The destination query must not turn a shared directory into ownership of adopter files.
   (
     # shellcheck disable=SC1091 # Source the checked-in library in this isolated probe.
     . "$ROOT/scripts/lib/payload-apply.sh"
     payload_destination_files "$shell_fix/source"
   ) > "$shell_fix/destination-list"
   grep -qx 'scripts/their-deploy.sh' "$shell_fix/destination-list" \
-    || fail "adopter fixture would not expose a destination-directory walk"
-  grep -qx 'scripts/new-command' "$shell_fix/destination-list" \
-    || fail "destination fixture lacks the exported harness command"
+    && fail "destination query swept in an adopter-owned file"
   AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
     > "$shell_fix/syntax.out" 2>&1 \
     && fail "syntax gate missed a manifest extensionless command"
@@ -1016,12 +1148,16 @@ fi
 # two identical so that option stays real rather than quietly rotting.
 # review-execution needed no such pair for a different reason: OpenCode discovers
 # .agents/skills natively, so one copy already served both and the third was deleted.
-cmp -s "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
-       "$ROOT/.claude/skills/plan-to-issues/SKILL.md" \
-  || fail "plan-to-issues adapter copies diverged"
+if active_scope codex && active_scope claude; then
+  cmp -s "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
+         "$ROOT/.claude/skills/plan-to-issues/SKILL.md" \
+    || fail "plan-to-issues adapter copies diverged"
+fi
 # shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
-grep -q 'Stack profile.*`CLAUDE.md`' "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
-  || fail "plan-to-issues guidance does not name CLAUDE.md as Stack profile owner"
+if active_scope codex; then
+  grep -q 'Stack profile.*`CLAUDE.md`' "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
+    || fail "plan-to-issues guidance does not name CLAUDE.md as Stack profile owner"
+fi
 
 token_line=""
 token_seen=0
@@ -1065,13 +1201,20 @@ grep -q "only valid with --scope repo" "$TMP/doctor-skip-scope.err" \
 AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo --skip-make-check \
   > "$TMP/doctor-skip-docs.out" 2>&1 \
   || fail "doctor rejected repo-scope --skip-make-check"
-grep -q "docs index up to date (checked by the caller's gate)" "$TMP/doctor-skip-docs.out" \
-  || fail "doctor re-ran the docs index check the caller's gate already covered"
+if active_scope docs; then
+  grep -q "docs index up to date (checked by the caller's gate)" "$TMP/doctor-skip-docs.out" \
+    || fail "doctor re-ran the docs index check the caller's gate already covered"
+else
+  grep -q 'docs adapter excluded' "$TMP/doctor-skip-docs.out" \
+    || fail "doctor required an excluded docs adapter"
+fi
 # Without the flag it must still run the check itself.
 AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo \
   > "$TMP/doctor-docs.out" 2>&1 || true
-grep -q "docs index up to date$" "$TMP/doctor-docs.out" \
-  || fail "doctor stopped checking the docs index when no gate was declared"
+if active_scope docs; then
+  grep -q "docs index up to date$" "$TMP/doctor-docs.out" \
+    || fail "doctor stopped checking the docs index when no gate was declared"
+fi
 
 for role_file in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" \
                  "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
@@ -1124,9 +1267,12 @@ fi
 # review), and treat diff content as data rather than instruction. Both must be read on every
 # review, so neither can be routed to METHODOLOGY.md. Headroom stays deliberately narrow so
 # the assertion still bites on re-inlining a routed block.
-reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
-[ "$reviewer_words" -le 1000 ] \
-  || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 1000)"
+if active_scope codex; then
+  reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
+  [ "$reviewer_words" -le 1000 ] \
+    || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 1000)"
+fi
+# END ROLE-BUNDLE CEILINGS
 
 # One set of engineering standards across every surface that states them. METHODOLOGY.md §11
 # is canonical; AGENTS.md (both instances) compresses them into the executor's always-loaded
@@ -1141,7 +1287,8 @@ reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -
 # templates/harness/AGENTS.md only exists in the source repo — an adopted project receives it
 # as its own AGENTS.md — so it joins the list only when present, the same source-vs-adopted
 # distinction the export ceilings already make.
-standards_surfaces="$ROOT/METHODOLOGY.md $ROOT/AGENTS.md $ROOT/.opencode/agent/code-reviewer.md"
+standards_surfaces="$ROOT/METHODOLOGY.md $ROOT/AGENTS.md"
+active_scope opencode && standards_surfaces="$standards_surfaces $ROOT/.opencode/agent/code-reviewer.md"
 [ -f "$ROOT/templates/harness/AGENTS.md" ] \
   && standards_surfaces="$standards_surfaces $ROOT/templates/harness/AGENTS.md"
 for standards_surface in $standards_surfaces; do
@@ -1165,6 +1312,10 @@ done
 # normalization pass precisely because nothing asserted over it.
 for review_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
                       "$ROOT/.opencode/agent/code-reviewer.md"; do
+  case "$review_surface" in
+    */.agents/*) active_scope codex || continue ;;
+    */.opencode/*) active_scope opencode || continue ;;
+  esac
   [ -f "$review_surface" ] || fail "missing review surface: $review_surface"
   for level in High Medium Low Nit; do
     grep -q "\*\*$level\*\*" "$review_surface" \
@@ -1176,8 +1327,10 @@ for review_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
   grep -qE '\*\*(Blocker|Critical)\*\*|`block`|`fix`|LGTM' "$review_surface" \
     && fail "$review_surface still uses a retired severity or verdict vocabulary"
 done
-grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-execution/SKILL.md" \
-  || fail "review skill does not route engineering standards to AGENTS.md"
+if active_scope codex; then
+  grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-execution/SKILL.md" \
+    || fail "review skill does not route engineering standards to AGENTS.md"
+fi
 
 # §8 files worktrees under "Optional capabilities", which is true of fanning out and false of
 # isolating writers: nothing required isolation for parallel *editing* agents, so a fan-out of
@@ -1238,8 +1391,10 @@ fi
 # shipped script to appear there by filename.
 while IFS= read -r hook_script; do
   hook_base=$(basename "$hook_script")
-  grep -q "$hook_base" "$ROOT/CLAUDE.md" \
-    || fail "CLAUDE.md does not document the shipped hook $hook_base"
+  if active_scope claude; then
+    grep -q "$hook_base" "$ROOT/CLAUDE.md" \
+      || fail "CLAUDE.md does not document the shipped hook $hook_base"
+  fi
 done < <(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | sort)
 
 # §5 is the shared severity source every review surface cites, including the /review agent
@@ -1263,6 +1418,10 @@ done
 # Both reviewer surfaces carry both, so a reviewer reading either one is fully briefed.
 for reviewer_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
                         "$ROOT/.opencode/agent/code-reviewer.md"; do
+  case "$reviewer_surface" in
+    */.agents/*) active_scope codex || continue ;;
+    */.opencode/*) active_scope opencode || continue ;;
+  esac
   [ -f "$reviewer_surface" ] || fail "missing reviewer surface: $reviewer_surface"
   grep -qi 'fails without the fix' "$reviewer_surface" \
     || fail "${reviewer_surface#"$ROOT"/} does not require confirming a test fails without the fix"
@@ -1274,10 +1433,12 @@ done
 
 # The reviewer's focused-group list named five of the six groups, omitting `upgrade`, so a
 # reviewer following it would never run that group. Derive it rather than trust the prose.
-for reviewer_group in $SELF_TEST_GROUPS; do
-  grep -qF "\`$reviewer_group\`" "$ROOT/.opencode/agent/code-reviewer.md" \
-    || fail "code-reviewer.md does not name the $reviewer_group self-test group"
-done
+if active_scope opencode; then
+  for reviewer_group in $SELF_TEST_GROUPS; do
+    grep -qF "\`$reviewer_group\`" "$ROOT/.opencode/agent/code-reviewer.md" \
+      || fail "code-reviewer.md does not name the $reviewer_group self-test group"
+  done
+fi
 
 # The executor's handoff is where the red-first evidence is cheapest to produce, and the
 # dependency-version rule shipped to adopters while the root instance silently lacked it —
@@ -1289,10 +1450,12 @@ grep -qi 'Red first' "$ROOT/AGENTS.md" \
 # CLAUDE.md, and Codex and OpenCode both read AGENTS.md (OpenCode prefers AGENTS.md over
 # CLAUDE.md outright). Lose either pointer and the layer silently becomes single-harness,
 # which nothing else would catch. Both contract pairs must carry it.
-for memory_surface in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md"; do
-  grep -qF 'docs/MEMORY.md' "$memory_surface" \
-    || fail "${memory_surface#"$ROOT"/} does not point at the docs/MEMORY.md index"
-done
+grep -qF 'docs/MEMORY.md' "$ROOT/AGENTS.md" \
+  || fail "AGENTS.md does not point at the docs/MEMORY.md index"
+if active_scope claude; then
+  grep -qF 'docs/MEMORY.md' "$ROOT/CLAUDE.md" \
+    || fail "CLAUDE.md does not point at the docs/MEMORY.md index"
+fi
 if [ -d "$ROOT/templates/harness" ]; then
   for memory_template in "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
     grep -qF 'docs/MEMORY.md' "$memory_template" \
@@ -1304,12 +1467,14 @@ fi
 # anything outside its four stages. The memory tree is not a lifecycle stage, so it has to be
 # skipped explicitly — assert with a real file rather than by reading the case statement.
 MEMDOC_FIXTURE="$ROOT/docs/memory/self-test-stage-probe.md"
-printf '%s\n' '# probe' > "$MEMDOC_FIXTURE"
-if ! "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
+if active_scope docs; then
+  printf '%s\n' '# probe' > "$MEMDOC_FIXTURE"
+  if ! "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
+    rm -f "$MEMDOC_FIXTURE"
+    fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
+  fi
   rm -f "$MEMDOC_FIXTURE"
-  fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
 fi
-rm -f "$MEMDOC_FIXTURE"
 
 # The tree ships empty. docs/MEMORY.md must NOT be payload: it accumulates adopter-local
 # entries in place, and upgrade --force overwrites a manifest row unconditionally.
@@ -1409,13 +1574,16 @@ fi
 # Every §N route an agent is told to follow must resolve. Emit each section on a line
 # individually: a greedy `.*§([0-9]+)` keeps only the LAST one, so "§3, §5" silently
 # stopped checking §3. ADOPTION.md and the docs README carry routes too.
+route_inputs=()
+for route_path in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" "$ROOT/ADOPTION.md" \
+  "$ROOT/docs/README.md" "$ROOT/templates" "$ROOT/docs/templates" \
+  "$ROOT/.agents" "$ROOT/.opencode" "$ROOT/scripts" "$ROOT/Makefile"; do
+  [ -e "$route_path" ] && route_inputs+=( "$route_path" )
+done
 while IFS= read -r section; do
   grep -q "^## $section\\. " "$ROOT/METHODOLOGY.md" \
     || fail "METHODOLOGY.md §$section reference has no matching section"
-done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*' \
-  "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" "$ROOT/ADOPTION.md" "$ROOT/docs/README.md" \
-  "$ROOT/templates" "$ROOT/docs/templates" \
-  "$ROOT/.agents" "$ROOT/.opencode" "$ROOT/scripts" "$ROOT/Makefile" \
+done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*' "${route_inputs[@]}" \
   | grep -oE '§[0-9]+' | tr -d '§' | sort -u)
 
 # Failure-first coverage for the focused-group dispatcher itself. `make test-one F=…` is
@@ -1689,6 +1857,7 @@ printf '%s\n' '# occupied candidate' > "$UPGRADE_TARGET/CLAUDE.md.agentic-new"
 grep -qx 'old+1111111' "$UPGRADE_TARGET/.agentic-flow-version" \
   || fail "upgrade advanced installed version while candidates remained"
 assert_file "$UPGRADE_TARGET/.agentic-flow-candidate-version"
+assert_no_file "$UPGRADE_TARGET/.agentic-flow-installation"
 grep -q "pending     .agentic-flow-candidate-version" "$TMP/upgrade-pending.out" \
   || fail "upgrade did not report pending candidate version"
 assert_no_file "$UPGRADE_TARGET/docs-index-sentinel"
@@ -1730,8 +1899,73 @@ expected_upgrade_version=$(cd "$UPGRADE_SOURCE" && printf '10.0.0+%s\n' "$(git r
 grep -qx "$expected_upgrade_version" "$UPGRADE_CLEAN/.agentic-flow-version" \
   || fail "clean upgrade did not advance the installed version"
 assert_no_file "$UPGRADE_CLEAN/.agentic-flow-candidate-version"
+assert_file "$UPGRADE_CLEAN/.agentic-flow-installation"
 assert_file "$UPGRADE_CLEAN/.agentic-flow-source-applied"
 assert_no_file "$UPGRADE_CLEAN/docs-index-sentinel"
+
+# An installed pre-F-7 upgrader parses the fetched five-column manifest with its
+# installed library. Prove that path before the replacement CLI can read new state.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+LEGACY_SOURCE="$TMP/legacy-upgrade-source"
+mkdir -p "$LEGACY_SOURCE/config" "$LEGACY_SOURCE/scripts/lib" "$LEGACY_SOURCE/.codex"
+printf '11.0.0\n' > "$LEGACY_SOURCE/VERSION"
+printf 'scripts/agentic-flow\tscripts/agentic-flow\tcore\tpreserve\texport\nscripts/lib\tscripts/lib\tcore\tpreserve\texport\n.codex/hooks.json\t.codex/hooks.json\tcodex\tpreserve\texport\nconfig/payload.tsv\tconfig/payload.tsv\tcore\tpreserve\texport\n' \
+  > "$LEGACY_SOURCE/config/payload.tsv"
+cp "$ROOT/scripts/agentic-flow" "$LEGACY_SOURCE/scripts/agentic-flow"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$LEGACY_SOURCE/scripts/lib/payload-apply.sh"
+printf '{}\n' > "$LEGACY_SOURCE/.codex/hooks.json"
+(
+  cd "$LEGACY_SOURCE"
+  git init -q .
+  git config user.email selftest@example.invalid
+  git config user.name selftest
+  git config commit.gpgsign false
+  git add VERSION config/payload.tsv scripts/agentic-flow scripts/lib/payload-apply.sh .codex/hooks.json
+  git commit -q -m 'Seed new payload for old upgrader'
+  git branch -M main
+)
+for legacy_mode in default claude-only pending; do
+  LEGACY_TARGET="$TMP/legacy-upgrade-$legacy_mode"
+  mkdir -p "$LEGACY_TARGET/config" "$LEGACY_TARGET/scripts/lib"
+  git -C "$ROOT" show 9a82aff:scripts/agentic-flow > "$LEGACY_TARGET/scripts/agentic-flow"
+  git -C "$ROOT" show 9a82aff:scripts/lib/payload-apply.sh \
+    > "$LEGACY_TARGET/scripts/lib/payload-apply.sh"
+  chmod +x "$LEGACY_TARGET/scripts/agentic-flow"
+  cp "$LEGACY_SOURCE/config/payload.tsv" "$LEGACY_TARGET/config/payload.tsv"
+  printf 'old+0000000\n' > "$LEGACY_TARGET/.agentic-flow-version"
+  printf 'origin file://%s\nref main\n' "$LEGACY_SOURCE" \
+    > "$LEGACY_TARGET/.agentic-flow-source"
+  if [ "$legacy_mode" = claude-only ]; then
+    printf 'codex\n' > "$LEGACY_TARGET/.agentic-flow-scopes-excluded"
+  fi
+  if [ "$legacy_mode" = pending ]; then
+    (cd "$LEGACY_TARGET" && scripts/agentic-flow upgrade --yes) \
+      > "$TMP/legacy-pending.out" 2>&1 \
+      || fail "old upgrader rejected the new five-column manifest"
+    grep -qx 'old+0000000' "$LEGACY_TARGET/.agentic-flow-version" \
+      || fail "old upgrader advanced a pending installation"
+    assert_no_file "$LEGACY_TARGET/.agentic-flow-installation"
+  else
+    (cd "$LEGACY_TARGET" && scripts/agentic-flow upgrade --yes --force) \
+      > "$TMP/legacy-$legacy_mode.out" 2>&1 \
+      || fail "old $legacy_mode upgrader rejected the new manifest"
+    if [ "$legacy_mode" = claude-only ]; then
+      assert_no_file "$LEGACY_TARGET/.codex/hooks.json"
+    else
+      assert_file "$LEGACY_TARGET/.codex/hooks.json"
+    fi
+    assert_no_file "$LEGACY_TARGET/.agentic-flow-installation"
+    (cd "$LEGACY_TARGET" && scripts/agentic-flow upgrade --yes --force) \
+      > "$TMP/legacy-migrate-$legacy_mode.out" 2>&1 \
+      || fail "new upgrader did not migrate $legacy_mode installation"
+    assert_file "$LEGACY_TARGET/.agentic-flow-installation"
+    if [ "$legacy_mode" = claude-only ]; then
+      grep -q '^scope=codex$' "$LEGACY_TARGET/.agentic-flow-installation" \
+        && fail "migration reinstated excluded Codex scope"
+    fi
+  fi
+done
+fi
 fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------
