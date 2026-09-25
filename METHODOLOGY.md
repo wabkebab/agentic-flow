@@ -92,7 +92,8 @@ human without discarding the findings.
 **A closed step issue means "reviewed clean", not "shipped."** The reviewer closes it before
 the PR merges, so GitHub issue state is deliberately *not* the shipping signal. What shipped
 is recorded in the implementation doc's Status block and enforced by
-`scripts/lifecycle-status.sh --check --verify-evidence` against a CI run (§10). The tracking
+`scripts/lifecycle-status.sh --doc <moved-document> --phase close-out --check --verify-evidence`
+against a CI run (§10). The tracking
 issue is the one that stays open across the whole pass, which is why it — not the steps —
 carries `agent:claude` + `needs-closing` at the end.
 
@@ -101,6 +102,28 @@ verification it actually ran; OpenCode comments the verdict. Each role then star
 issue instead of re-deriving state from `git log` and guesswork, and close-out can read the
 whole pass off GitHub rather than asking a human what the reviewer decided. A label with no
 comment behind it is a handoff that costs the next role a full re-investigation.
+
+The final approval is a structured comment on the issue named by `Tracking issue`, after
+CI has run on the final PR head. Post a new verdict to change an earlier one; never edit
+a verdict comment. An edited authoritative verdict blocks close-out until a fresh verdict
+is posted or its structured marker is removed. Earlier verdicts for other heads are history.
+The gate authenticates the comment author, but in single-operator mode the reviewer role
+is only an attestation, not proof of independence. Comments and Actions runs remain mutable:
+verification is point-in-time, not a merge guard.
+
+Copy the step verdict into the comment on that step's own issue, using the executor's
+full implementation SHA. For rejection, use `status=changes-requested`:
+
+```text
+agentic-flow-review: status=approved; step=<step-id>; head=<40-hex-implementation-sha>; role=reviewer
+```
+
+After the final PR head is pushed and CI succeeds, copy this final approval into the
+`Tracking issue` thread, using that run's current attempt:
+
+```text
+agentic-flow-review: status=approved; pr=<PR-number>; head=<40-hex-PR-head>; run=https://github.com/<owner>/<repo>/actions/runs/<run-id>; attempt=<positive-integer>; role=reviewer
+```
 
 The loop is **one-directional** (doc → issues), never the reverse. The document stays the
 source of design intent; issues are the disposable execution units.

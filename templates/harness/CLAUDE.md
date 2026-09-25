@@ -124,10 +124,14 @@ full mechanism and rationale for each in `METHODOLOGY.md` §8:
   + DoD + verification commands from the Stack profile — **not code**).
 - Approved plan → run the **`plan-to-issues`** skill.
 - The reviewer closes each step issue on approval; `agent:claude + needs-closing` lands on
-  the **tracking** issue, not the steps. Close the plan in one pass only after every step
-  issue is closed, CI evidence is recorded, and
-  `scripts/lifecycle-status.sh --check --verify-evidence` passes — then close the tracking
-  issue too. A closed step issue means *reviewed clean*, not *shipped*; the doc's Status
-  block and CI evidence are the shipping record.
+  the **tracking** issue, not the steps. After every step is reviewed, prepare the final
+  Status/Tracker, set TRIAGE to Done, move the document to `docs/done/`, update the index,
+  and commit that as the last repository edit. The human pushes; CI and a reviewer approve
+  the exact PR head. Verify with `scripts/lifecycle-status.sh --doc docs/done/<doc>.md
+  --phase close-out --check --verify-evidence`, then close the tracker without another
+  repository edit. The human rechecks with `--phase pre-merge` immediately before merge
+  (or relies on protected-branch required checks). That phase expects the tracker closed.
+  Any edit after approval restarts the external round. Verification is point-in-time and
+  does not guard a later merge. A closed step is *reviewed clean*, not *shipped*.
 - On done (shipped & verified, or risk accepted) → move the doc to `docs/done/`
   (or `docs/done/security/`); record accepted risks in `docs/accepted_risks.md`.

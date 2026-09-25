@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Source this file, then call read_review_policy <project-root>.
-# Identity configuration is reserved for F-3; it is accepted but not trusted here.
 read_review_policy() {
   local root=$1 line key value seen_version=false seen_workflow=false \
-    seen_identity_mode=false seen_accepted_risk=false
-  REVIEW_WORKFLOW=""
+    seen_identity_mode=false seen_accepted_risk=false login role seen_login
+  REVIEW_WORKFLOW="" REVIEW_IDENTITY_MODE="" REVIEW_ACCEPTED_RISK=""
+  REVIEW_REVIEWERS=" " REVIEW_EXECUTORS=" " REVIEW_APPROVERS=" "
   [ -f "$root/.agentic-flow-review-policy" ] || {
     echo 'review policy missing' >&2; return 1;
   }
@@ -27,15 +27,38 @@ read_review_policy() {
         REVIEW_WORKFLOW=$value ;;
       identity-mode)
         [ "$seen_identity_mode" = false ] || { echo 'review policy duplicate identity-mode' >&2; return 1; }
-        seen_identity_mode=true ;;
+        seen_identity_mode=true
+        case "$value" in distinct-account|single-operator) ;; *) return 1 ;; esac
+        REVIEW_IDENTITY_MODE=$value ;;
       accepted-risk)
         [ "$seen_accepted_risk" = false ] || { echo 'review policy duplicate accepted-risk' >&2; return 1; }
-        seen_accepted_risk=true ;;
-      reviewer|executor|approver) : ;;
+        seen_accepted_risk=true
+        [[ "$value" =~ ^docs/accepted_risks\.md#[A-Za-z0-9_-]+$ ]] || return 1
+        REVIEW_ACCEPTED_RISK=$value ;;
+      reviewer|executor|approver)
+        [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] || return 1
+        case "$key" in
+          reviewer) role=REVIEW_REVIEWERS ;;
+          executor) role=REVIEW_EXECUTORS ;;
+          approver) role=REVIEW_APPROVERS ;;
+        esac
+        seen_login=${!role}
+        case "$seen_login" in *" $value "*) echo "review policy duplicate $key" >&2; return 1 ;; esac
+        printf -v "$role" '%s%s ' "$seen_login" "$value" ;;
       *) echo "review policy unknown key: $key" >&2; return 1 ;;
     esac
   done < "$root/.agentic-flow-review-policy"
-  [ "$seen_version" = true ] && [ "$seen_workflow" = true ] || {
-    echo 'review policy missing version or workflow' >&2; return 1;
-  }
+  [ "$seen_version" = true ] && [ "$seen_workflow" = true ] &&
+    [ "$seen_identity_mode" = true ] || { echo 'review policy missing required field' >&2; return 1; }
+  if [ "$REVIEW_IDENTITY_MODE" = distinct-account ]; then
+    [ "$seen_accepted_risk" = false ] && [ "$REVIEW_REVIEWERS" != ' ' ] &&
+      [ "$REVIEW_EXECUTORS" != ' ' ] && [ "$REVIEW_APPROVERS" != ' ' ] || return 1
+    for login in $REVIEW_REVIEWERS; do
+      case "$REVIEW_EXECUTORS$REVIEW_APPROVERS" in *" $login "*) return 1 ;; esac
+    done
+  else
+    [ "$seen_accepted_risk" = true ] || return 1
+    local anchor=${REVIEW_ACCEPTED_RISK#*#}
+    grep -Fq "id=\"$anchor\"" "$root/docs/accepted_risks.md" || return 1
+  fi
 }

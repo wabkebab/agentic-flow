@@ -134,7 +134,7 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 ---
 
 ## Status / Implementation status
-<!-- Kept current by the executor. -->
+<!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
 - **Tracking issue:** pending
 - **Approval:** pending
@@ -143,5 +143,8 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=pr-head-approval
 - **Memory:** pending
-- Steps not yet started. Executor closes each via a PR with `Fixes #N`, records the commit
-  SHA per step here, and ticks the matching F-N box in the Tracker above.
+- Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
+  the index in the last repository commit. After human push, obtain CI and a structured
+  reviewer approval on the `Tracking issue` for that exact PR head and run attempt.
+  Verify this moved file with `--phase close-out`, close the tracker without another
+  repository edit, then recheck with `--phase pre-merge` before human merge.

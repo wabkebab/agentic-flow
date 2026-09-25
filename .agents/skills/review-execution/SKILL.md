@@ -106,6 +106,9 @@ is no longer reviewing it.
 
 ## Record the verdict and move the issue
 
+Post step verdicts on step issues and final approval on `Tracking issue`, including
+`attempt=`. Copy `METHODOLOGY.md` §2 templates. Change verdicts with new comments.
+
 Moving the step issue is the one exception, authorized standingly by the state machine in
 `CLAUDE.md`. Post the verdict as an issue comment **first** — findings, or an explicit
 no-findings approval, with the range reviewed and verification run. A verdict living only in

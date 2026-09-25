@@ -89,6 +89,30 @@ End with a one-line verdict: `approved` / `changes requested` / `pending`.
 
 ## Moving the issue
 
+Post a structured step verdict on that step's own issue, using its step ID and the
+executor's full implementation SHA:
+
+```text
+agentic-flow-review: status=approved; step=<step-id>; head=<40-hex-implementation-sha>; role=reviewer
+```
+
+Use `status=changes-requested` for a rejection. Post a fresh comment to change a
+verdict; do not edit the old structured comment. The latest comment for the evaluated
+head wins by creation ID. An edited latest verdict blocks verification until a fresh
+verdict is posted or its marker is removed. The API author proves the account, while
+`role=reviewer` is an attestation and single-operator mode does not prove independence.
+
+After the final PR head and CI run exist, put the final approval on the document's
+`Tracking issue`, not on the PR or step thread:
+
+```text
+agentic-flow-review: status=approved; pr=<PR-number>; head=<40-hex-PR-head>; run=https://github.com/<owner>/<repo>/actions/runs/<run-id>; attempt=<positive-integer>; role=reviewer
+```
+
+Record the live run attempt. A new PR commit or run attempt needs a new approval.
+The closer verifies this evidence after the document-move commit is pushed; verification
+is point-in-time and does not guard merge.
+
 Do not edit files, do not stage, do not commit, do not push — the executor owns
 fixes. You do own the step issue's workflow state, standingly authorized by the
 label state machine in `CLAUDE.md`. When reviewing a step issue, post the verdict

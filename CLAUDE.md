@@ -56,11 +56,19 @@ again or silently stopping.
 only on the tracker. A closed step means *reviewed clean*, not *shipped*; the doc's Status
 block plus CI evidence is the shipping record (`METHODOLOGY.md` §2).
 
-Close-out is batched: closed steps accumulate while the tracker stays open. Then one pass
-ticks the Tracker, records review and CI evidence, runs
-`scripts/lifecycle-status.sh --check --verify-evidence`, moves the doc, and closes the
-tracker — only when every step qualifies. Confirm the steps are actually closed; the tracker
-label is a notification, not the authority.
+Close-out is batched: closed steps accumulate while the tracker stays open. Prepare the
+final Status and Tracker, change TRIAGE to Done, move the doc and update the index as the
+last repository change, then commit. The human pushes that candidate. CI and the reviewer
+must approve that exact PR head after the push. Run
+`scripts/lifecycle-status.sh --doc docs/done/<doc>.md --phase close-out --check --verify-evidence`,
+then close the tracker without another repository edit. The human checks the same document
+with `--phase pre-merge` immediately before merge (or relies on protected-branch required
+checks). That phase expects the tracker closed. Any repository edit after approval restarts
+the external CI/review round. Verification proves the current external evidence; comments
+and runs can change later, and this script is not a merge guard. Confirm steps are closed;
+the tracker label is a notification, not the authority. This repository uses the
+single-operator review mode: its role claim is accountable but does not prove independent
+review (see `docs/accepted_risks.md#single-operator-review`).
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and

@@ -9,6 +9,46 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="single-operator-review"></a>
+## F-3 — One GitHub account can attest to multiple agent roles
+
+**Status:** Accepted risk
+**Decision date:** 2026-09-25
+**Decided by:** Human approval of the harness optimization brief, tracker #93
+**Tracking:** issue #96
+
+### Finding / proposal
+
+This installation uses one GitHub credential for its agent roles. GitHub authenticates
+the account that posts a verdict, but cannot prove that a different person reviewed it.
+
+### Acceptance rationale
+
+The lifecycle gate requires a structured reviewer role claim and records the API author.
+The result is accountable single-operator attestation, with a persistent warning; it is
+not independent review. Revisit when separate reviewer credentials are available.
+
+<a id="mutable-external-evidence"></a>
+## F-3 — Review comments and Actions runs can change after verification
+
+**Status:** Accepted risk
+**Decision date:** 2026-09-25
+**Decided by:** Human approval of the harness optimization brief, tracker #93
+**Tracking:** issue #96
+
+### Finding / proposal
+
+An issue-comment verdict can be edited or deleted, and an Actions run can be re-run or
+deleted without a repository edit. The gate checks the current comment, run attempt,
+head, repository, workflow, and conclusion when invoked. It cannot preserve those
+external records or guard a later merge.
+
+### Acceptance rationale
+
+The closer checks immediately before closing the tracker; the human checks again
+immediately before merge or uses protected-branch required checks. Durable evidence
+would require stronger GitHub review or attestation mechanisms beyond this pass.
+
 ## F-4 — Template and instance copies can drift
 
 **Status:** Accepted risk

@@ -1,2 +1,4 @@
 version=1
 workflow=.github/workflows/ci.yml
+identity-mode=single-operator
+accepted-risk=docs/accepted_risks.md#single-operator-review

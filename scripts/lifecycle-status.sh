@@ -107,13 +107,12 @@ origin_repository() {
   printf '%s' "$origin"
 }
 
-# Parse one single-line review marker. Its values are only locators until F-3
-# authenticates the author and role. Duplicate fields cannot be made harmless by
+# Parse one single-line review marker. Duplicate fields cannot be made harmless by
 # choosing the first or last value.
 parse_review_marker() { # <line>
   local raw=$1 part key value
   REVIEW_STATUS="" REVIEW_PR="" REVIEW_HEAD="" REVIEW_RUN="" REVIEW_ATTEMPT=""
-  REVIEW_ROLE=""
+  REVIEW_ROLE="" REVIEW_STEP=""
   raw=${raw#agentic-flow-review: }
   local -a parts
   IFS=';' read -r -a parts <<< "$raw"
@@ -131,12 +130,26 @@ parse_review_marker() { # <line>
       run) [ -z "$REVIEW_RUN" ] || return 1; REVIEW_RUN=$value ;;
       attempt) [ -z "$REVIEW_ATTEMPT" ] || return 1; REVIEW_ATTEMPT=$value ;;
       role) [ -z "$REVIEW_ROLE" ] || return 1; REVIEW_ROLE=$value ;;
+      step) [ -z "$REVIEW_STEP" ] || return 1; REVIEW_STEP=$value ;;
       *) return 1 ;;
     esac
   done
   [[ "$REVIEW_HEAD" =~ ^[[:xdigit:]]{40}$ ]] || return 1
-  [[ "$REVIEW_PR" =~ ^[1-9][0-9]*$ ]] || return 1
   [[ "$REVIEW_STATUS" =~ ^(approved|changes-requested)$ ]] || return 1
+}
+
+authenticate_verdict() { # <comment-id> <API-author> <claimed-role>
+  local comment_id=$1 author=$2 role=$3
+  [ -n "$author" ] || { unverified_evidence "comment $comment_id author unavailable"; return 1; }
+  [ "$role" = reviewer ] || {
+    blocked_evidence "comment $comment_id role claim differs from reviewer"; return 1;
+  }
+  if [ "$REVIEW_IDENTITY_MODE" = distinct-account ]; then
+    case "$REVIEW_REVIEWERS" in *" $author "*) ;; *)
+      blocked_evidence "comment $comment_id author $author is not an authorized reviewer"; return 1 ;; esac
+    case "$REVIEW_EXECUTORS$REVIEW_APPROVERS" in *" $author "*)
+      blocked_evidence "comment $comment_id author $author overlaps executor or approver"; return 1 ;; esac
+  fi
 }
 
 decimal_greater() { # <candidate> <current> — compare unbounded decimal strings exactly
@@ -150,17 +163,163 @@ decimal_greater() { # <candidate> <current> — compare unbounded decimal string
   [[ "$a" > "$b" ]]
 }
 
-verify_evidence() { # <tracking-url> <pr-url>
-  local tracking=$1 pr_url=$2 repo workflow pr_number issue_number owner name \
+normalize_decimal() { # <validated decimal string>
+  local value=$1
+  value=${value#"${value%%[!0]*}"}
+  printf '%s' "${value:-0}"
+}
+
+# Check one Strict step against the implementation SHA recorded on its own thread.
+# The same bounded GraphQL page carries both implementation handoff and verdict.
+verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir>
+  local repo=$1 number=$2 step=$3 tmp=$4 owner=${1%%/*} name=${1#*/} \
+    query response node body id dbid edited handoff_author step_head="" selected_id="" \
+    selected_dbid="" selected_marker="" selected_author="" selected_edited="" \
+    null_index candidate normalized
+  # shellcheck disable=SC2016
+  query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login} createdAt lastEditedAt}}}}}'
+  if ! bounded_gh "$tmp/step-$number" api graphql -f "query=$query" -f "owner=$owner" -f "name=$name" -F "number=$number"; then
+    unverified_evidence "step $step comments unavailable"; return 1
+  fi
+  response=$(cat "$tmp/step-$number")
+  if printf '%s' "$response" | jq -e '(.errors | type == "array" and length > 0)' >/dev/null 2>&1; then
+    unverified_evidence "step $step GraphQL error: $(printf '%s' "$response" | jq -r '.errors[0].message')"; return 1
+  fi
+  if ! printf '%s' "$response" | jq -e '.data.repository.issue.comments.nodes | type == "array"' >/dev/null 2>&1; then
+    unverified_evidence "step $step comments nodes missing"; return 1
+  fi
+  if ! printf '%s' "$response" | jq -e '.data.repository.issue.comments.pageInfo.hasNextPage | type == "boolean"' >/dev/null 2>&1; then
+    unverified_evidence "step $step pageInfo.hasNextPage missing"; return 1
+  fi
+  if [ "$(printf '%s' "$response" | jq -r '.data.repository.issue.comments.pageInfo.hasNextPage')" = true ]; then
+    unverified_evidence "step $step comments exceed one page"; return 1
+  fi
+  null_index=$(printf '%s' "$response" | jq -r '.data.repository.issue.comments.nodes | to_entries[] | select(.value | type != "object") | .key' | head -1)
+  if [ -n "$null_index" ]; then
+    unverified_evidence "step $step comment node $null_index unreadable"; return 1
+  fi
+  printf '%s' "$response" | jq -c '.data.repository.issue.comments.nodes[]' > "$tmp/step-nodes-$number"
+  # The latest executor handoff on this thread identifies the implementation
+  # commit. A full SHA is required so a truncated hash cannot masquerade as head.
+  while IFS= read -r node; do
+    body=$(printf '%s' "$node" | jq -r '.body // empty')
+    candidate=$(printf '%s\n' "$body" | sed -nE 's/.*Implemented in ([[:xdigit:]]{40})([^[:xdigit:]]|$).*/\1/p' | head -1)
+    if [ -n "$candidate" ]; then
+      if [ "$REVIEW_IDENTITY_MODE" = distinct-account ]; then
+        handoff_author=$(printf '%s' "$node" | jq -r '.author.login // empty')
+        [ -n "$handoff_author" ] || {
+          unverified_evidence "step $step implementation handoff author unavailable"; return 1;
+        }
+        case "$REVIEW_EXECUTORS" in *" $handoff_author "*) ;; *)
+          blocked_evidence "step $step implementation handoff author $handoff_author is not an executor"; return 1 ;; esac
+      fi
+      step_head=$candidate
+    fi
+  done < "$tmp/step-nodes-$number"
+  if [ -z "$step_head" ]; then
+    unverified_evidence "step $step has no full implementation SHA handoff"; return 1
+  fi
+  while IFS= read -r node; do
+    body=$(printf '%s' "$node" | jq -r '.body // empty')
+    candidate=$(printf '%s\n' "$body" | sed -n '/^[[:space:]]*agentic-flow-review:/p')
+    [ -n "$candidate" ] || continue
+    id=$(printf '%s' "$node" | jq -r '.id // empty')
+    [ -n "$id" ] || { unverified_evidence "step $step verdict has no opaque id"; return 1; }
+    if [ "$(printf '%s\n' "$candidate" | wc -l | tr -d ' ')" -ne 1 ]; then
+      blocked_evidence "step $step comment $id has multiple review markers"; return 1
+    fi
+    candidate=${candidate#"${candidate%%[![:space:]]*}"}
+    if ! parse_review_marker "$candidate"; then
+      blocked_evidence "step $step comment $id has malformed review record"; return 1
+    fi
+    if [ "$REVIEW_HEAD" != "$step_head" ]; then
+      printf 'EVIDENCE step %s  superseded comment %s head=%s\n' "$step" "$id" "$REVIEW_HEAD"
+      continue
+    fi
+    dbid=$(printf '%s' "$node" | jq -r '.fullDatabaseId // empty')
+    if ! printf '%s' "$node" | jq -e '.fullDatabaseId | type == "string"' >/dev/null 2>&1 \
+       || ! [[ "$dbid" =~ ^[0-9]+$ ]]; then
+      unverified_evidence "step $step comment $id missing valid fullDatabaseId"; return 1
+    fi
+    normalized=$(normalize_decimal "$dbid")
+    if grep -Fxq -- "$normalized" "$tmp/step-dbids-$number" 2>/dev/null; then
+      blocked_evidence "step $step duplicate fullDatabaseId $dbid"; return 1
+    fi
+    printf '%s\n' "$normalized" >> "$tmp/step-dbids-$number"
+    if ! printf '%s' "$node" | jq -e 'has("lastEditedAt")' >/dev/null; then
+      unverified_evidence "step $step comment $id missing lastEditedAt"; return 1
+    fi
+    edited=$(printf '%s' "$node" | jq -r '.lastEditedAt // empty')
+    if [ -z "$selected_id" ] || decimal_greater "$dbid" "$selected_dbid"; then
+      if [ -n "$selected_id" ]; then
+        printf 'EVIDENCE step %s  superseded comment %s head=%s\n' "$step" "$selected_id" "$step_head"
+      fi
+      selected_id=$id selected_dbid=$dbid selected_marker=$candidate selected_edited=$edited
+      selected_author=$(printf '%s' "$node" | jq -r '.author.login // empty')
+    elif [ "$dbid" = "$selected_dbid" ]; then
+      blocked_evidence "step $step comments $selected_id and $id share fullDatabaseId"; return 1
+    else
+      printf 'EVIDENCE step %s  superseded comment %s head=%s\n' "$step" "$id" "$step_head"
+    fi
+  done < "$tmp/step-nodes-$number"
+  if [ -z "$selected_id" ]; then
+    unverified_evidence "step $step has no review for implementation head $step_head"; return 1
+  fi
+  printf 'EVIDENCE step %s  comment %s fullDatabaseId=%s lastEditedAt=%s head=%s author=%s\n' \
+    "$step" "$selected_id" "$selected_dbid" "${selected_edited:-null}" "$step_head" "${selected_author:-unavailable}"
+  if [ -n "$selected_edited" ]; then
+    blocked_evidence "step $step comment $selected_id was edited at $selected_edited"; return 1
+  fi
+  parse_review_marker "$selected_marker"
+  authenticate_verdict "$selected_id" "$selected_author" "$REVIEW_ROLE" || return 1
+  if [ "$REVIEW_STATUS" != approved ] || [ "$REVIEW_STEP" != "$step" ]; then
+    blocked_evidence "step $step comment $selected_id does not approve implementation head $step_head"; return 1
+  fi
+}
+
+verify_strict_steps() { # <repo> <tracking-body> <tmp-dir>
+  local repo=$1 tracking_body=$2 tmp=$3 plan number step state count=0
+  plan=$(printf '%s\n' "$tracking_body" | sed -nE 's/.*agentic-flow:plan:([A-Za-z0-9_-]+) tracker spec:[[:xdigit:]]{40}.*/\1/p' | head -1)
+  if [ -z "$plan" ]; then
+    unverified_evidence 'Tracking issue identity stamp unavailable'; return 1
+  fi
+  if ! bounded_gh "$tmp/issues" issue list --repo "$repo" --state all \
+    --search "\"agentic-flow:plan:$plan\" in:body" --limit 100 --json number,body,state; then
+    unverified_evidence 'step issue discovery unavailable'; return 1
+  fi
+  if ! jq -e 'type == "array" and length < 100' "$tmp/issues" >/dev/null 2>&1; then
+    unverified_evidence 'step issue listing incomplete within 100'; return 1
+  fi
+  jq -r --arg plan "$plan" '.[] | select((.body // "") | contains("agentic-flow:plan:" + $plan + " step:")) | [.number, (.body | capture("step:(?<id>[A-Za-z0-9_-]+) spec:").id), .state] | @tsv' \
+    "$tmp/issues" > "$tmp/steps" || { unverified_evidence 'step issue stamps malformed'; return 1; }
+  while IFS="$(printf '\t')" read -r number step state; do
+    [ -n "$number" ] || continue
+    count=$((count + 1))
+    if [ "$state" != CLOSED ]; then
+      blocked_evidence "step $step issue $number is $state"; return 1
+    fi
+    verify_step_review "$repo" "$number" "$step" "$tmp" || return 1
+  done < "$tmp/steps"
+  if [ "$count" -eq 0 ]; then
+    unverified_evidence "plan $plan has no stamped step issues"; return 1
+  fi
+}
+
+verify_evidence() { # <tracking-url> <pr-url> <tracking-body>
+  local tracking=$1 pr_url=$2 tracking_body=$3 repo workflow pr_number issue_number owner name \
     tmp pr_json comments_json run_json head query nodes id dbid body marker edited \
-    selected_id="" selected_dbid="" selected_marker="" selected_edited="" \
-    null_index run_id live_attempt conclusion run_repo run_path run_head
+    selected_id="" selected_dbid="" selected_marker="" selected_edited="" selected_author="" \
+    null_index run_id live_attempt conclusion run_repo run_path run_head normalized
   evidence_status=UNVERIFIED
   evidence_reason='external evidence unresolved'
   # shellcheck disable=SC1091 # The library is resolved from the installed script root.
   . "$SCRIPT_ROOT/scripts/lib/review-policy.sh"
   if ! read_review_policy "$ROOT" >/dev/null 2>&1; then
     unverified_evidence 'review policy missing or invalid'; return
+  fi
+  if [ "$REVIEW_IDENTITY_MODE" = single-operator ]; then
+    printf 'WARN    single-operator reviewer role is an account attestation, not independent review (%s)\n' \
+      "$REVIEW_ACCEPTED_RISK"
   fi
   workflow=$REVIEW_WORKFLOW
   repo=$(origin_repository) || { unverified_evidence 'configured GitHub origin unavailable'; return; }
@@ -222,32 +381,47 @@ verify_evidence() { # <tracking-url> <pr-url>
     if ! parse_review_marker "$marker"; then
       blocked_evidence "comment $id has malformed review record"; break
     fi
-    [ "$REVIEW_HEAD" = "$head" ] || continue
+    if [ "$REVIEW_HEAD" != "$head" ]; then
+      printf 'EVIDENCE %s  superseded comment %s head=%s\n' "$pr_url" "$id" "$REVIEW_HEAD"
+      continue
+    fi
     dbid=$(printf '%s' "$nodes" | jq -r '.fullDatabaseId // empty')
     if ! printf '%s' "$nodes" | jq -e '.fullDatabaseId | type == "string"' >/dev/null 2>&1 \
        || ! [[ "$dbid" =~ ^[0-9]+$ ]]; then
       unverified_evidence "comment $id missing valid fullDatabaseId"; break
     fi
+    normalized=$(normalize_decimal "$dbid")
+    if grep -Fxq -- "$normalized" "$tmp/seen-dbids" 2>/dev/null; then
+      blocked_evidence "duplicate fullDatabaseId $dbid"; break
+    fi
+    printf '%s\n' "$normalized" >> "$tmp/seen-dbids"
     if ! printf '%s' "$nodes" | jq -e 'has("lastEditedAt")' >/dev/null; then
       unverified_evidence "comment $id missing lastEditedAt"; break
     fi
     edited=$(printf '%s' "$nodes" | jq -r '.lastEditedAt // empty')
     if [ -z "$selected_id" ] || decimal_greater "$dbid" "$selected_dbid"; then
+      if [ -n "$selected_id" ]; then
+        printf 'EVIDENCE %s  superseded comment %s head=%s\n' "$pr_url" "$selected_id" "$head"
+      fi
       selected_id=$id selected_dbid=$dbid selected_marker=$marker selected_edited=$edited
+      selected_author=$(printf '%s' "$nodes" | jq -r '.author.login // empty')
     elif [ "$dbid" = "$selected_dbid" ]; then
       blocked_evidence "comments $selected_id and $id share fullDatabaseId"; break
+    else
+      printf 'EVIDENCE %s  superseded comment %s head=%s\n' "$pr_url" "$id" "$head"
     fi
   done < "$tmp/nodes"
   if [ "$evidence_reason" != 'external evidence unresolved' ]; then rm -rf "$tmp"; return; fi
   if [ -z "$selected_id" ]; then
     unverified_evidence "Tracking issue has no approval for PR head $head"; rm -rf "$tmp"; return
   fi
-  printf 'EVIDENCE %s  comment %s fullDatabaseId=%s lastEditedAt=%s head=%s\n' \
-    "$pr_url" "$selected_id" "$selected_dbid" "${selected_edited:-null}" "$head"
+  printf 'EVIDENCE %s  comment %s fullDatabaseId=%s lastEditedAt=%s head=%s author=%s\n' \
+    "$pr_url" "$selected_id" "$selected_dbid" "${selected_edited:-null}" "$head" "${selected_author:-unavailable}"
   if [ -n "$selected_edited" ]; then
     blocked_evidence "comment $selected_id was edited at $selected_edited"; rm -rf "$tmp"; return
   fi
   parse_review_marker "$selected_marker"
+  authenticate_verdict "$selected_id" "$selected_author" "$REVIEW_ROLE" || { rm -rf "$tmp"; return; }
   if [ "$REVIEW_STATUS" != approved ] || [ "$REVIEW_PR" != "$pr_number" ]; then
     blocked_evidence "comment $selected_id does not approve PR $pr_number head $head"; rm -rf "$tmp"; return
   fi
@@ -289,7 +463,10 @@ verify_evidence() { # <tracking-url> <pr-url>
   elif [ "$conclusion" != success ]; then
     blocked_evidence "Actions run $REVIEW_RUN concluded $conclusion"
   else
-    unverified_evidence "CI bound to $REVIEW_RUN at head $head via comment $selected_id (fullDatabaseId $selected_dbid, lastEditedAt=null); approval unauthenticated pending F-3"
+    if verify_strict_steps "$repo" "$tracking_body" "$tmp"; then
+      evidence_status=READY
+      evidence_reason="review by $selected_author at head $head via comment $selected_id (fullDatabaseId $selected_dbid, lastEditedAt=null); Actions run $run_id attempt $live_attempt succeeded"
+    fi
   fi
   rm -rf "$tmp"
 }
@@ -381,7 +558,7 @@ check_doc() { # <doc>
     printf 'UNVERIFIED %s  cannot prepare issue lookup\n' "$rel"
     unverified=$((unverified + 1)); return
   }
-  if bounded_gh "$state_file" issue view "$tracking" --json state,labels; then
+  if bounded_gh "$state_file" issue view "$tracking" --json state,labels,body; then
     state_json=$(cat "$state_file")
   else
     state_json=""
@@ -405,7 +582,7 @@ check_doc() { # <doc>
     *) printf 'BLOCKED %s  phase %s found %s tracking issue\n' "$rel" "$PHASE" "$issue_state"
        blocked=$((blocked + 1)); return ;;
   esac
-  verify_evidence "$tracking" "$pr_url"
+  verify_evidence "$tracking" "$pr_url" "$(printf '%s' "$state_json" | jq -r '.body // empty')"
   printf '%-10s %s  %s\n' "$evidence_status" "$rel" "$evidence_reason"
   case "$evidence_status" in
     BLOCKED) blocked=$((blocked + 1)) ;;

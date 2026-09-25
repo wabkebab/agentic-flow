@@ -28,4 +28,7 @@ not let `make test` skip on a missing `shellcheck` — report it as red.
 Report findings as `block` / `fix` / `nit` with `file:line` (diff-hunk line for
 added code), each as Problem → why it matters → suggested direction (not
 finished code). End with a one-line verdict: `BLOCK` / `fix N findings` /
-`LGTM`. Do not edit, stage, commit, or push.
+`LGTM`. Follow `.opencode/agent/code-reviewer.md` for the exact structured
+step verdict on the step issue and final PR-head approval on the document's
+`Tracking issue`, including the Actions run `attempt=`. Post a new comment to
+change a verdict, never edit an old one. Do not edit, stage, commit, or push.
