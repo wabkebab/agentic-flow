@@ -181,8 +181,9 @@ hook_payload() { # <command>
 }
 
 must_block() { # <hook> <command>
-  hook_payload "$2" | "$1" >/dev/null 2>&1 && fail "hook allowed: $2"
-  true
+  local status=0
+  hook_payload "$2" | "$1" >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "hook did not block with exit 2: $2 (status $status)"
 }
 
 must_allow() { # <hook> <command>
@@ -195,9 +196,10 @@ must_allow() { # <hook> <command>
 # be installed, exactly as already asserted for gitleaks below. NOJQ_PATH is set by the hooks
 # group before these run.
 must_block_nojq() { # <hook> <command>
+  local status=0
   hook_payload "$2" \
-    | PATH="$NOJQ_PATH" "$1" >/dev/null 2>&1 && fail "hook allowed without jq: $2"
-  true
+    | PATH="$NOJQ_PATH" "$1" >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "hook did not block without jq with exit 2: $2 (status $status)"
 }
 
 must_allow_nojq() { # <hook> <command>
@@ -1624,6 +1626,8 @@ must_block "$ADD_GUARD" 'git --no-pager add -A'
 must_block "$ADD_GUARD" 'git -p add .'
 must_block "$ADD_GUARD" 'git --git-dir=/tmp/x add --all'
 must_block "$ADD_GUARD" 'git --no-pager -C /some/path add -A'
+must_block "$ADD_GUARD" 'sudo git add -A'
+must_block "$ADD_GUARD" 'nohup git add .'
 must_allow "$ADD_GUARD" 'git --no-pager add README.md'
 # Verdicts must not change when jq is absent (previously: silent exit 0, guard disabled).
 must_block_nojq "$ADD_GUARD" 'git add -A'
@@ -1789,7 +1793,17 @@ if [ -x "$SECRET_GUARD" ]; then
   }
 
   stage "aws_key = \"$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')\""
+  status=0
+  (cd "$SECFIX" && hook_payload 'sudo git commit -m x' | "$SECRET_GUARD") \
+    >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "sudo Git commit bypassed the staged-secret hook"
+  status=0
+  (cd "$SECFIX" && hook_payload 'nohup git commit -m x' | "$SECRET_GUARD") \
+    >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "nohup Git commit bypassed the staged-secret hook"
   secret_hook 'git-claude commit -m x' && fail "secret scanner allowed a staged AWS-format key"
+  secret_hook 'git-codex commit -m x' && fail "secret scanner allowed a Codex wrapper commit"
+  secret_hook 'git-opencode commit -m x' && fail "secret scanner allowed an OpenCode wrapper commit"
   secret_hook_nogl 'git-claude commit -m x' \
     && fail "secret scanner allowed an AWS-format key with gitleaks unavailable"
   secret_hook_nojq 'git-claude commit -m x' \
@@ -1827,6 +1841,86 @@ if [ -x "$SECRET_GUARD" ]; then
 
   (cd "$SECFIX" && git reset -q)
   secret_hook 'git commit -m x' || fail "secret scanner blocked a commit with nothing staged"
+
+  # The default index is empty. Every redirected invocation below must inspect
+  # its own staged content, and a block must use the hook's documented exit 2.
+  alt_repo="$TMP/secret-other-repo"
+  mkdir -p "$alt_repo"
+  alt_repo=$(cd "$alt_repo" && pwd -P)
+  space_repo="$TMP/secret other repo"
+  ln -s "$alt_repo" "$space_repo"
+  (cd "$alt_repo" && git init -q .)
+  secret_value="$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')"
+  printf 'key = "%s"\n' "$secret_value" > "$alt_repo/staged.txt"
+  (cd "$alt_repo" && git add staged.txt)
+  alt_index="$TMP/secret-other.index"
+  printf 'key = "%s"\n' "$secret_value" > "$SECFIX/staged.txt"
+  (cd "$SECFIX" && GIT_INDEX_FILE="$alt_index" git add staged.txt)
+
+  # A fake first layer records the effective context, then the high-signal
+  # layer must independently reject the synthetic staged key.
+  gl_bin="$TMP/gitleaks-fixture"
+  mkdir -p "$gl_bin"
+  cat > "$gl_bin/gitleaks" <<'FAKE_GITLEAKS'
+#!/usr/bin/env bash
+case " $* " in *" --help "*) exit 0 ;; esac
+printf '%s|%s|%s|%s\n' "$PWD" "${GIT_DIR:-}" "${GIT_WORK_TREE:-}" "${GIT_INDEX_FILE:-}" >> "$FAKE_GITLEAKS_LOG"
+git diff --cached --name-only > "$FAKE_GITLEAKS_DIFF" || exit 1
+exit "${FAKE_GITLEAKS_EXIT:-0}"
+FAKE_GITLEAKS
+  chmod +x "$gl_bin/gitleaks"
+  gl_log="$TMP/gitleaks-context.log"
+  gl_diff="$TMP/gitleaks-diff.log"
+  assert_redirected_secret() { # <command> <expected-index-or-git-dir>
+    : > "$gl_log"
+    : > "$gl_diff"
+    status=0
+    (cd "$SECFIX" && hook_payload "$1" | PATH="$gl_bin:$PATH" \
+      FAKE_GITLEAKS_LOG="$gl_log" FAKE_GITLEAKS_DIFF="$gl_diff" \
+      "$SECRET_GUARD") > "$TMP/redirected-secret.out" 2>&1 || status=$?
+    [ "$status" -eq 2 ] || fail "redirected commit did not block with exit 2: $1 (status $status)"
+    grep -q 'Blocked:' "$TMP/redirected-secret.out" \
+      || fail "redirected commit lacked a block diagnostic: $1"
+    ! grep -qF "$secret_value" "$TMP/redirected-secret.out" \
+      || fail "redirected commit printed staged secret text"
+    grep -qF "$2" "$gl_log" || fail "gitleaks did not receive redirected context: $1"
+    grep -q 'staged.txt' "$gl_diff" || fail "gitleaks did not inspect redirected staged index: $1"
+  }
+  assert_redirected_secret "git -C '$space_repo' commit -m x" "$alt_repo"
+  assert_redirected_secret "git -C \"$space_repo\" commit -m x" "$alt_repo"
+  assert_redirected_secret "git -C ${space_repo// /\\ } commit -m x" "$alt_repo"
+  assert_redirected_secret 'git -C ../secret-other-repo commit -m x' "$alt_repo"
+  assert_redirected_secret "cd '$alt_repo' && git commit -m x" "$alt_repo"
+  assert_redirected_secret "GIT_DIR=$alt_repo/.git git commit -m x" "$alt_repo/.git"
+  assert_redirected_secret "git --git-dir=$alt_repo/.git --work-tree=$alt_repo commit -m x" "$alt_repo/.git"
+  assert_redirected_secret "GIT_INDEX_FILE=$alt_index git commit -m x" "$alt_index"
+  assert_redirected_secret "env GIT_INDEX_FILE=$alt_index git commit -m x" "$alt_index"
+  assert_redirected_secret "env -- GIT_INDEX_FILE=$alt_index git commit -m x" "$alt_index"
+  assert_redirected_secret "GIT_DIR=$alt_repo/.git GIT_INDEX_FILE=$alt_repo/.git/index git commit -m x" "$alt_repo/.git/index"
+  # GIT_WORK_TREE changes the worktree while retaining this repository's index.
+  # Stage a secret there to ensure the environment reaches both scanners.
+  (cd "$SECFIX" && GIT_WORK_TREE="$alt_repo" git add staged.txt)
+  assert_redirected_secret "GIT_WORK_TREE=$alt_repo git commit -m x" "$alt_repo"
+  secfix_physical=$(cd "$SECFIX" && pwd -P)
+  grep -qF "$secfix_physical/.git" "$gl_log" \
+    || fail 'gitleaks selected the redirected worktree as the Git directory'
+  status=0
+  (cd "$SECFIX" && hook_payload 'GIT_COMMON_DIR=/tmp/other git commit -m x' \
+    | "$SECRET_GUARD") > "$TMP/unknown-git-env.out" 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail 'unmodeled GIT_* environment variable was allowed'
+  grep -q 'GIT_COMMON_DIR' "$TMP/unknown-git-env.out" \
+    || fail 'unmodeled GIT_* diagnostic omitted variable name'
+  (cd "$SECFIX" && git reset -q)
+
+  # A first-layer failure must block even when the local patterns see ordinary code.
+  printf 'const value = 1\n' > "$SECFIX/staged.txt"
+  (cd "$SECFIX" && git add staged.txt)
+  status=0
+  (cd "$SECFIX" && hook_payload 'git commit -m x' | PATH="$gl_bin:$PATH" \
+    FAKE_GITLEAKS_LOG="$gl_log" FAKE_GITLEAKS_DIFF="$gl_diff" FAKE_GITLEAKS_EXIT=1 \
+    "$SECRET_GUARD") >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "gitleaks failure did not block with exit 2"
+  (cd "$SECFIX" && git reset -q)
 fi
 
 PUSH_GUARD="$ROOT/scripts/hooks/block-push.sh"
@@ -1837,12 +1931,42 @@ must_block "$PUSH_GUARD" 'git -C /some/path push'
 must_block "$PUSH_GUARD" 'git-claude push origin HEAD'
 must_block "$PUSH_GUARD" 'git status && git push'
 must_block "$PUSH_GUARD" 'gh pr merge 12'
+must_block "$PUSH_GUARD" 'gh -R owner/repo pr merge 12'
+must_block "$PUSH_GUARD" 'sudo git push'
+must_block "$PUSH_GUARD" 'sudo gh pr merge 12'
+must_block "$PUSH_GUARD" 'nohup git push'
+must_block "$PUSH_GUARD" 'nice git push'
+must_block "$PUSH_GUARD" 'timeout 10 git push'
+must_block "$PUSH_GUARD" 'time git push'
+must_block "$PUSH_GUARD" '! git push'
+must_block "$PUSH_GUARD" '>out git push'
+must_block "$PUSH_GUARD" '2>&1 git push'
+must_block "$PUSH_GUARD" 'if git push; then :; fi'
+must_block "$PUSH_GUARD" '{ git push; }'
+continued_push=$'git \\\npush'
+[[ "$continued_push" == *$'\n'* ]] || fail 'line-continuation fixture lacks a newline'
+must_block "$PUSH_GUARD" "$continued_push"
+must_allow "$PUSH_GUARD" 'echo use git to push'
+must_allow "$PUSH_GUARD" 'echo git push'
+must_allow "$PUSH_GUARD" 'sudo echo git push'
+must_allow "$PUSH_GUARD" 'man git'
 must_allow "$PUSH_GUARD" 'git pull --rebase'
 must_allow "$PUSH_GUARD" 'gh pr view 12'
 must_allow "$PUSH_GUARD" 'echo push'
 must_block "$PUSH_GUARD" 'git --no-pager push'
 must_block "$PUSH_GUARD" 'git -p push'
 must_block "$PUSH_GUARD" 'git --git-dir=/tmp/x push'
+must_block "$PUSH_GUARD" 'git push;'
+must_block "$PUSH_GUARD" 'git-opencode push origin HEAD'
+must_block "$PUSH_GUARD" 'git-codex push origin HEAD'
+must_block "$PUSH_GUARD" 'git status; git push'
+must_block "$PUSH_GUARD" 'git -C "a path" push'
+must_block "$PUSH_GUARD" 'git -C a\ path push'
+must_block "$PUSH_GUARD" 'git push "unterminated'
+must_block "$PUSH_GUARD" "echo \"\$(git push)\""
+must_block "$PUSH_GUARD" "git -C \"\$(pwd)\" push"
+must_block "$PUSH_GUARD" 'env GIT_INDEX_FILE=/tmp/other git push'
+must_allow "$PUSH_GUARD" 'rg "git push" METHODOLOGY.md; echo done'
 # Quoting a command in prose is not running it. `"` delimits the command inside the raw JSON
 # payload, so it counts as a boundary only in the no-jq path — conflating the two blocked
 # this.
@@ -1852,6 +1976,8 @@ must_allow "$PUSH_GUARD" 'git commit -m push'
 must_block_nojq "$PUSH_GUARD" 'git push'
 must_block_nojq "$PUSH_GUARD" 'git-claude push origin HEAD'
 must_block_nojq "$PUSH_GUARD" 'gh pr merge 12'
+must_block_nojq "$PUSH_GUARD" 'git -C "a path" push'
+must_allow_nojq "$PUSH_GUARD" 'rg "git push" METHODOLOGY.md'
 must_allow_nojq "$PUSH_GUARD" 'git pull --rebase'
 fi
 

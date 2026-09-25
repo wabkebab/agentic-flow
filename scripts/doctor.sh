@@ -165,6 +165,7 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_file scripts/hooks/block-git-add-all.sh
   require_file scripts/hooks/block-push.sh
   require_file scripts/hooks/scan-secrets.sh
+  require_file scripts/lib/hook-command.sh
   require_file docs/README.md
   require_file docs/accepted_risks.md
 

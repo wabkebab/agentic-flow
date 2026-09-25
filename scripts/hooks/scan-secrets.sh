@@ -11,45 +11,20 @@
 # documented sample credentials, so the local set is what keeps behaviour identical whether
 # or not the tool is present. Reads the tool-call JSON on stdin.
 # Exit 2 = block the call and show stderr to the agent; exit 0 = allow.
+# shellcheck disable=SC2329
 set -uo pipefail
+# shellcheck source=scripts/lib/hook-command.sh
+. "$(dirname "$0")/../lib/hook-command.sh"
 
-# jq is the documented requirement and the clean path. Without it the guard used to exit 0,
-# which is a silent allow (only exit 2 blocks). Degrade to scanning the raw payload instead.
-#
-# The two modes need different delimiters, and conflating them is a live false positive: in
-# the raw payload the command is JSON-quoted, so a double quote has to count as a boundary —
-# in the extracted command it does not, and treating it as one blocks a command that merely
-# mentions the string, e.g. rg for it in a doc. Keep the loose delimiters to the degraded path.
-raw=$(cat 2>/dev/null || true)
-if command -v jq >/dev/null 2>&1; then
-  cmd=$(printf '%s' "$raw" | jq -r '.tool_input.command // ""' 2>/dev/null) || cmd=""
-  LEAD='(^|[[:space:];&|(])'
-  TAIL='([[:space:]]|$)'
-else
-  cmd=$raw
-  LEAD='(^|[[:space:];&|("])'
-  TAIL='([[:space:]"]|$)'
-fi
-[ -n "$cmd" ] || exit 0
-
-# Only interested in commit commands (git, or the git-claude / git-codex wrappers,
-# with intervening -C/-c args).
-printf '%s' "$cmd" \
-  | grep -Eq "$LEAD"'(git|git-claude|git-codex)([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|--?[A-Za-z][-A-Za-z0-9]*(=[^[:space:]]*)?))*[[:space:]]+commit'"$TAIL" \
-  || exit 0
-
-# Deliberate escape hatch. False positives are inevitable in a pattern-based scanner, and a
-# gate with no override gets disabled wholesale — which is strictly worse than one that is
-# occasionally bypassed on purpose. Bypasses are visible in the transcript.
-if [ "${AGENTIC_ALLOW_SECRET:-0}" = "1" ]; then
+raw=$(head -c 65537)
+if ! hook_read_command "$raw"; then
+  if hook_maybe_protected "$raw"; then
+    echo 'Blocked: could not parse a protected command.' >&2
+    exit 2
+  fi
   exit 0
 fi
-
-command -v git >/dev/null 2>&1 || exit 0
-git rev-parse --git-dir >/dev/null 2>&1 || exit 0
-
-# Nothing staged: let git produce its own "nothing to commit" error.
-git diff --cached --quiet 2>/dev/null && exit 0
+[ -n "$HOOK_COMMAND" ] || exit 0
 
 block() {
   echo "Blocked: staged changes look like they contain a credential." >&2
@@ -66,19 +41,97 @@ block() {
   exit 2
 }
 
-# --- layer 1: gitleaks -------------------------------------------------------------------
-# ADDITIVE, not an alternative. An earlier version returned gitleaks' verdict and skipped
-# the patterns below, which made the hook *weaker* on a machine that had gitleaks: its
-# default config allowlists documented sample credentials, so a staged AWS example key came
-# back clean and nothing else ran. Behaviour must not depend on which tools are installed.
-if [ "${AGENTIC_SKIP_GITLEAKS:-0}" != "1" ] && command -v gitleaks >/dev/null 2>&1; then
-  # `gitleaks git --staged` is the modern spelling; `protect --staged` is the pre-8.19 one.
-  if gitleaks git --help >/dev/null 2>&1; then
-    gl_out=$(gitleaks git --staged --no-banner --redact 2>&1) || block "$gl_out"
-  else
-    gl_out=$(gitleaks protect --staged --no-banner --redact 2>&1) || block "$gl_out"
+scan_error() {
+  echo "Blocked: could not scan the invoked Git repository ($1)." >&2
+  exit 2
+}
+
+git_scan() {
+  (cd "$SCAN_CWD" && env "${SCAN_ENV[@]+"${SCAN_ENV[@]}"}" git "${HOOK_GIT_ARGS[@]+"${HOOK_GIT_ARGS[@]}"}" "$@")
+}
+
+prepare_scan() {
+  local entry name value arg i
+  [ -n "$HOOK_CWD" ] || scan_error 'working directory'
+  SCAN_CWD=$HOOK_CWD
+  EFFECTIVE_CWD=$HOOK_CWD
+  # Git applies -C before resolving relative paths supplied through GIT_*.
+  for ((i=0; i<${#HOOK_GIT_ARGS[@]}; i++)); do
+    arg=${HOOK_GIT_ARGS[i]}
+    case "$arg" in
+      -C) i=$((i+1)); value=${HOOK_GIT_ARGS[i]:-} ;;
+      -C?*) value=${arg#-C} ;;
+      *) continue ;;
+    esac
+    EFFECTIVE_CWD=$(cd "$EFFECTIVE_CWD" && cd "$value" && pwd -P) \
+      || scan_error 'working directory'
+  done
+  SCAN_ENV=()
+  for entry in "${HOOK_ENV[@]+"${HOOK_ENV[@]}"}"; do
+    case "$entry" in -i|--ignore-environment|-u|--unset)
+      scan_error 'unsupported env option' ;;
+    esac
+    name=${entry%%=*}; value=${entry#*=}
+    case "$name" in
+      GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE)
+        case "$value" in /*) ;; *) value="$EFFECTIVE_CWD/$value" ;; esac
+        SCAN_ENV+=("$name=$value") ;;
+      GIT_*) scan_error "unsupported $name" ;;
+      AGENTIC_ALLOW_SECRET)
+        [ "$value" = 1 ] && SCAN_ENV+=("$entry") ;;
+      *) SCAN_ENV+=("$entry") ;;
+    esac
+  done
+  [ -z "$HOOK_ERROR" ] || scan_error "$HOOK_ERROR"
+}
+
+scan_commit() {
+  local diff staged gl_failed=0 pattern_failed=0 hit pat repo git_dir index_path status
+  case "$HOOK_KIND:$HOOK_VERB" in
+    cd:)
+      if [ "${#HOOK_WORDS[@]}" -ne 2 ]; then
+        HOOK_CWD=''
+      else
+        HOOK_CWD=$(cd "$HOOK_CWD" && cd "${HOOK_WORDS[1]}" && pwd -P 2>/dev/null) \
+          || HOOK_CWD=''
+      fi
+      return 0 ;;
+    ambiguous_git:commit) scan_error 'unsupported command prefix' ;;
+    git:commit) ;;
+    *) return 0 ;;
+  esac
+  prepare_scan
+  # Deliberate false-positive override, visible in the invoking command or hook environment.
+  [ "${AGENTIC_ALLOW_SECRET:-0}" = 1 ] && return 0
+  for pat in "${SCAN_ENV[@]+"${SCAN_ENV[@]}"}"; do [ "$pat" = AGENTIC_ALLOW_SECRET=1 ] && return 0; done
+  command -v git >/dev/null 2>&1 || scan_error 'git unavailable'
+  repo=$(git_scan rev-parse --show-toplevel 2>/dev/null) || scan_error 'repository resolution'
+  [ -n "$repo" ] || scan_error 'repository resolution'
+  git_dir=$(git_scan rev-parse --absolute-git-dir 2>/dev/null) || scan_error 'Git directory resolution'
+  index_path=$(git_scan rev-parse --git-path index 2>/dev/null) || scan_error 'index resolution'
+  case "$index_path" in /*) ;; *) index_path="$EFFECTIVE_CWD/$index_path" ;; esac
+  # gitleaks invokes Git itself. Pin all three paths to the resolved invocation
+  # so changing its cwd to the worktree cannot switch it to a different index.
+  GL_ENV=("${SCAN_ENV[@]+"${SCAN_ENV[@]}"}" "GIT_DIR=$git_dir" "GIT_WORK_TREE=$repo" "GIT_INDEX_FILE=$index_path")
+  git_scan diff --cached --quiet 2>/dev/null
+  status=$?
+  case "$status" in 0) return 0 ;; 1) ;; *) scan_error 'staged index' ;; esac
+  diff=$(git_scan diff --cached --unified=0 2>/dev/null | head -c 4194305) \
+    || scan_error 'staged diff'
+  [ "${#diff}" -le 4194304 ] || scan_error 'staged diff exceeds scan bound'
+  staged=$(printf '%s\n' "$diff" | grep -E '^\+' | grep -Ev '^\+\+\+') || staged=''
+
+  # Both scanners inspect the same resolved repository and index. Their output
+  # is never included in the hook diagnostic because it may contain credentials.
+  if [ "${AGENTIC_SKIP_GITLEAKS:-0}" != 1 ] && command -v gitleaks >/dev/null 2>&1; then
+    if gitleaks git --help >/dev/null 2>&1; then
+      (cd "$repo" && env "${GL_ENV[@]}" gitleaks git --staged --no-banner --redact --timeout 12) \
+        >/dev/null 2>&1 || gl_failed=1
+    else
+      (cd "$repo" && env "${GL_ENV[@]}" gitleaks protect --staged --no-banner --redact --timeout 12) \
+        >/dev/null 2>&1 || gl_failed=1
+    fi
   fi
-fi
 
 # --- layer 2: high-signal patterns -------------------------------------------------------
 # Always runs, gitleaks present or not.
@@ -88,8 +141,10 @@ fi
 # Patterns are ASSEMBLED, never written literally, so that staging THIS file does not trip
 # the hook against its own source. Same reason scripts/self-test.sh builds its placeholder
 # pattern with printf — a self-matching guard is a guard that cries wolf forever.
-staged=$(git diff --cached --unified=0 2>/dev/null | grep -E '^\+' | grep -Ev '^\+\+\+') || staged=""
-[ -n "$staged" ] || exit 0
+[ -n "$staged" ] || {
+  [ "$gl_failed" -eq 0 ] || block '  gitleaks did not clear the staged index.'
+  return 0
+}
 
 AWS_KEY="$(printf 'AKIA%s' '[0-9A-Z]{16}')"
 PRIV_KEY="$(printf -- '-----BEGIN[A-Z ]*PRIVATE %s-----' 'KEY')"
@@ -105,8 +160,8 @@ for pat in "$AWS_KEY" "$PRIV_KEY" "$GH_TOKEN" "$SLACK" "$STRIPE" "$GOOGLE" "$ANT
   # parsed as grep options (silently matching nothing, i.e. a guard that never fires).
   if hit=$(printf '%s' "$staged" | grep -Eo -- "$pat" | head -1); then
     [ -n "$hit" ] || continue
-    # Show the shape, not the value — hook stderr goes into the transcript.
-    block "  staged line matches a known credential format: $(printf '%s' "$hit" | cut -c1-8)…"
+    pattern_failed=1
+    break
   fi
 done
 
@@ -117,9 +172,21 @@ PLACEHOLDER='(example|changeme|change-me|placeholder|redacted|dummy|sample|your[
 
 if hit=$(printf '%s' "$staged" | grep -Ei -- "$ASSIGN" | grep -Eiv -- "$PLACEHOLDER" | head -1); then
   if [ -n "$hit" ]; then
-    block "  staged line hardcodes a secret-looking value:
-    $(printf '%s' "$hit" | sed -E 's/([:=][[:space:]]*["'"'"']).{4,}/\1…/' | cut -c1-100)"
+    pattern_failed=1
   fi
 fi
 
-exit 0
+if [ "$pattern_failed" -eq 1 ]; then
+  block '  staged diff matches a known credential pattern.'
+fi
+[ "$gl_failed" -eq 0 ] || block '  gitleaks did not clear the staged index.'
+return 0
+}
+
+hook_walk "$HOOK_COMMAND" scan_commit
+status=$?
+if [ "$status" -eq 1 ] && hook_maybe_protected "$HOOK_COMMAND"; then
+  echo 'Blocked: could not parse a protected command.' >&2
+  exit 2
+fi
+exit "$status"

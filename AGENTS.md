@@ -19,6 +19,7 @@ order, edge cases — not finished code. Read the brief for the step before writ
 
 - Required for this harness: `bash`, `make`, `git`, `jq`, `gh`.
 - Required for Codex execution unless the project opts out: `git-codex`.
+- `scripts/lib/hook-command.sh` is the canonical Git wrapper list used by the hooks.
 - Run `scripts/doctor.sh --check` if the scaffold was just adopted or hook/build wiring looks
   suspicious.
 - **Codex hooks need explicit trust.** `.codex/hooks.json` is discovered but not executed until
