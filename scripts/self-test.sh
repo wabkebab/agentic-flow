@@ -760,10 +760,15 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # Recompute from manifest source paths independently of the gate helper. In particular,
   # a second call to its --list mode would only prove that the helper agrees with itself.
   expected_shell_inventory() { # <source-root>
-    local src_root="$1" source disposition rel first
-    while IFS="$(printf '\t')" read -r source _dst _scope _merge disposition; do
+    # shellcheck disable=SC2031 # Per-command fixture assignments supply this scoped value.
+    local src_root="$1" excluded_scopes="${PAYLOAD_EXCLUDED_SCOPES:-}"
+    local source scope disposition rel first
+    while IFS="$(printf '\t')" read -r source _dst scope _merge disposition; do
       case "${source:-}" in ''|\#*) continue ;; esac
       [ "$disposition" = export ] || [ "$disposition" = source-only ] || continue
+      if [ "$disposition" = export ]; then
+        case " $excluded_scopes " in *" $scope "*) continue ;; esac
+      fi
       if [ -f "$src_root/$source" ]; then
         printf '%s\n' "$source"
       elif [ -d "$src_root/$source" ]; then
@@ -783,43 +788,86 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail "scaffold shell inventory is incomplete against manifest source tree"
 
   shell_fix="$TMP/shell-inventory-fixture"
-  mkdir -p "$shell_fix/source/config" "$shell_fix/source/scripts" "$shell_fix/adopter/scripts"
+  mkdir -p "$shell_fix/source/config" "$shell_fix/source/scripts" \
+    "$shell_fix/source/harness-src" "$shell_fix/source/scoped-src"
   cp "$ROOT/scripts/shell-inventory.sh" "$shell_fix/source/scripts/"
-  printf 'scripts\tscripts\tcore\tpreserve\texport\n' > "$shell_fix/source/config/payload.tsv"
-  printf '#!/usr/bin/env bash\nif then\n' > "$shell_fix/source/scripts/new-command"
-  printf '#!/usr/bin/env bash\nif then\n' > "$shell_fix/adopter/scripts/their-deploy.sh"
-  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --list \
+  printf 'harness-src\tscripts\tcore\tpreserve\texport\n' > "$shell_fix/source/config/payload.tsv"
+  printf 'scoped-src\tscoped-dest\tcodex\tpreserve\texport\n' >> "$shell_fix/source/config/payload.tsv"
+  printf 'scripts/shell-inventory.sh\tscripts/shell-inventory.sh\tsource-only\tnone\tsource-only\n' \
+    >> "$shell_fix/source/config/payload.tsv"
+  printf '#!/usr/bin/env bash\nif then\n' > "$shell_fix/source/harness-src/new-command"
+  cp "$shell_fix/source/harness-src/new-command" "$shell_fix/source/scripts/new-command"
+  # shellcheck disable=SC2016 # Deliberate literal ShellCheck defect in the adopter file.
+  printf '#!/usr/bin/env bash\nif then\necho $bad\n' > "$shell_fix/source/scripts/their-deploy.sh"
+  printf '#!/usr/bin/env bash\necho scoped\n' > "$shell_fix/source/scoped-src/ignored-command"
+  PAYLOAD_EXCLUDED_SCOPES='' AGENTIC_PROJECT_ROOT="$shell_fix/source" \
+    "$ROOT/scripts/shell-inventory.sh" --list \
     > "$shell_fix/list"
-  grep -qx 'scripts/new-command' "$shell_fix/list" \
+  grep -qx 'harness-src/new-command' "$shell_fix/list" \
     || fail "manifest extensionless shell command missing from inventory"
   grep -q 'their-deploy' "$shell_fix/list" \
     && fail "adopter script was swept into source inventory"
+  # This is the tempting but wrong destination walk. It must see the adopter-owned file
+  # under the declared destination, so the exclusion assertion above can catch that bug.
+  (
+    # shellcheck disable=SC1091 # Source the checked-in library in this isolated probe.
+    . "$ROOT/scripts/lib/payload-apply.sh"
+    payload_destination_files "$shell_fix/source"
+  ) > "$shell_fix/destination-list"
+  grep -qx 'scripts/their-deploy.sh' "$shell_fix/destination-list" \
+    || fail "adopter fixture would not expose a destination-directory walk"
+  grep -qx 'scripts/new-command' "$shell_fix/destination-list" \
+    || fail "destination fixture lacks the exported harness command"
   AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
     > "$shell_fix/syntax.out" 2>&1 \
     && fail "syntax gate missed a manifest extensionless command"
   grep -q 'new-command' "$shell_fix/syntax.out" \
     || fail "syntax gate failed for the wrong reason"
+  grep -q 'their-deploy' "$shell_fix/syntax.out" \
+    && fail "syntax gate reported the adopter-owned script"
   if command -v shellcheck >/dev/null 2>&1; then
     AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
       > "$shell_fix/lint.out" 2>&1 \
       && fail "ShellCheck gate missed a manifest extensionless command"
     grep -q 'new-command' "$shell_fix/lint.out" \
       || fail "ShellCheck gate failed for the wrong reason"
+    grep -q 'their-deploy' "$shell_fix/lint.out" \
+      && fail "ShellCheck gate reported the adopter-owned script"
   fi
-  expected_shell_inventory "$shell_fix/source" > "$shell_fix/expected"
+  PAYLOAD_EXCLUDED_SCOPES='' expected_shell_inventory "$shell_fix/source" \
+    > "$shell_fix/expected"
   cmp -s "$shell_fix/expected" "$shell_fix/list" \
     || fail "fixture shell inventory missed a manifest source member"
-  rm "$shell_fix/source/scripts/new-command"
-  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/scripts/agentic-flow"
-  printf '\nif then\n' >> "$shell_fix/source/scripts/agentic-flow"
+  PAYLOAD_EXCLUDED_SCOPES=codex expected_shell_inventory "$shell_fix/source" \
+    > "$shell_fix/expected-excluded"
+  PAYLOAD_EXCLUDED_SCOPES=codex AGENTIC_PROJECT_ROOT="$shell_fix/source" \
+    "$ROOT/scripts/shell-inventory.sh" --list > "$shell_fix/list-excluded"
+  cmp -s "$shell_fix/expected-excluded" "$shell_fix/list-excluded" \
+    || fail "shell inventory disagrees with excluded manifest scope"
+  grep -q 'ignored-command' "$shell_fix/list-excluded" \
+    && fail "shell inventory included an excluded-scope command"
+  grep -qx 'scoped-src/ignored-command' "$shell_fix/list" \
+    || fail "scope fixture was missing before exclusion"
+
+  rm "$shell_fix/source/harness-src/new-command"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
+    > "$shell_fix/adopter-syntax.out" 2>&1 \
+    || fail "syntax gate swept in an adopter-owned script under the destination"
+  if command -v shellcheck >/dev/null 2>&1; then
+    AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
+      > "$shell_fix/adopter-lint.out" 2>&1 \
+      || fail "ShellCheck gate swept in an adopter-owned script under the destination"
+  fi
+  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/harness-src/agentic-flow"
+  printf '\nif then\n' >> "$shell_fix/source/harness-src/agentic-flow"
   AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
     > "$shell_fix/cli-syntax.out" 2>&1 \
     && fail "syntax gate missed a damaged scripts/agentic-flow"
   grep -q 'agentic-flow' "$shell_fix/cli-syntax.out" \
     || fail "CLI syntax gate failed for the wrong reason"
-  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/scripts/agentic-flow"
+  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/harness-src/agentic-flow"
   # shellcheck disable=SC2016 # This literal creates a ShellCheck fixture in the copied CLI.
-  printf '\nprintf %%s $unquoted\n' >> "$shell_fix/source/scripts/agentic-flow"
+  printf '\nprintf %%s $unquoted\n' >> "$shell_fix/source/harness-src/agentic-flow"
   if command -v shellcheck >/dev/null 2>&1; then
     AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
       > "$shell_fix/cli-lint.out" 2>&1 \
