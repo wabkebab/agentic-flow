@@ -181,9 +181,13 @@ hook_payload() { # <command>
 }
 
 must_block() { # <hook> <command>
-  local status=0
-  hook_payload "$2" | "$1" >/dev/null 2>&1 || status=$?
-  [ "$status" -eq 2 ] || fail "hook did not block with exit 2: $2 (status $status)"
+  local status=0 output
+  output=$(hook_payload "$2" | "$1" 2>&1) || status=$?
+  case "$status" in
+    2) return 0 ;;
+    0) fail "hook allowed: $2 (status 0)" ;;
+    *) fail "hook crashed/wrong contract: $2 (status $status): $output" ;;
+  esac
 }
 
 must_allow() { # <hook> <command>
@@ -196,10 +200,13 @@ must_allow() { # <hook> <command>
 # be installed, exactly as already asserted for gitleaks below. NOJQ_PATH is set by the hooks
 # group before these run.
 must_block_nojq() { # <hook> <command>
-  local status=0
-  hook_payload "$2" \
-    | PATH="$NOJQ_PATH" "$1" >/dev/null 2>&1 || status=$?
-  [ "$status" -eq 2 ] || fail "hook did not block without jq with exit 2: $2 (status $status)"
+  local status=0 output
+  output=$(hook_payload "$2" | PATH="$NOJQ_PATH" "$1" 2>&1) || status=$?
+  case "$status" in
+    2) return 0 ;;
+    0) fail "hook allowed without jq: $2 (status 0)" ;;
+    *) fail "hook crashed/wrong contract without jq: $2 (status $status): $output" ;;
+  esac
 }
 
 must_allow_nojq() { # <hook> <command>
@@ -747,6 +754,90 @@ fi
 
 # --- shellcheck is required, not optional ------------------------------------------------
 if should_run contracts; then
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  [ -x "$ROOT/scripts/shell-inventory.sh" ] \
+    || fail "scaffold shell inventory is missing"
+  # Recompute from manifest source paths independently of the gate helper. In particular,
+  # a second call to its --list mode would only prove that the helper agrees with itself.
+  expected_shell_inventory() { # <source-root>
+    local src_root="$1" source disposition rel first
+    while IFS="$(printf '\t')" read -r source _dst _scope _merge disposition; do
+      case "${source:-}" in ''|\#*) continue ;; esac
+      [ "$disposition" = export ] || [ "$disposition" = source-only ] || continue
+      if [ -f "$src_root/$source" ]; then
+        printf '%s\n' "$source"
+      elif [ -d "$src_root/$source" ]; then
+        find "$src_root/$source" -type f | sed "s|^$src_root/||"
+      fi
+    done < "$src_root/config/payload.tsv" | sort -u | while IFS= read -r rel; do
+      [ -f "$src_root/$rel" ] || continue
+      IFS= read -r first < "$src_root/$rel" || true
+      case "$first" in '#!'*'/bash'|'#!'*'/sh'|'#!'*'env bash'|'#!'*'env sh')
+        printf '%s\n' "$rel" ;;
+      esac
+    done
+  }
+  expected_shell_inventory "$ROOT" > "$TMP/shell-expected"
+  "$ROOT/scripts/shell-inventory.sh" --list > "$TMP/shell-actual"
+  cmp -s "$TMP/shell-expected" "$TMP/shell-actual" \
+    || fail "scaffold shell inventory is incomplete against manifest source tree"
+
+  shell_fix="$TMP/shell-inventory-fixture"
+  mkdir -p "$shell_fix/source/config" "$shell_fix/source/scripts" "$shell_fix/adopter/scripts"
+  cp "$ROOT/scripts/shell-inventory.sh" "$shell_fix/source/scripts/"
+  printf 'scripts\tscripts\tcore\tpreserve\texport\n' > "$shell_fix/source/config/payload.tsv"
+  printf '#!/usr/bin/env bash\nif then\n' > "$shell_fix/source/scripts/new-command"
+  printf '#!/usr/bin/env bash\nif then\n' > "$shell_fix/adopter/scripts/their-deploy.sh"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --list \
+    > "$shell_fix/list"
+  grep -qx 'scripts/new-command' "$shell_fix/list" \
+    || fail "manifest extensionless shell command missing from inventory"
+  grep -q 'their-deploy' "$shell_fix/list" \
+    && fail "adopter script was swept into source inventory"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
+    > "$shell_fix/syntax.out" 2>&1 \
+    && fail "syntax gate missed a manifest extensionless command"
+  grep -q 'new-command' "$shell_fix/syntax.out" \
+    || fail "syntax gate failed for the wrong reason"
+  if command -v shellcheck >/dev/null 2>&1; then
+    AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
+      > "$shell_fix/lint.out" 2>&1 \
+      && fail "ShellCheck gate missed a manifest extensionless command"
+    grep -q 'new-command' "$shell_fix/lint.out" \
+      || fail "ShellCheck gate failed for the wrong reason"
+  fi
+  expected_shell_inventory "$shell_fix/source" > "$shell_fix/expected"
+  cmp -s "$shell_fix/expected" "$shell_fix/list" \
+    || fail "fixture shell inventory missed a manifest source member"
+  rm "$shell_fix/source/scripts/new-command"
+  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/scripts/agentic-flow"
+  printf '\nif then\n' >> "$shell_fix/source/scripts/agentic-flow"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
+    > "$shell_fix/cli-syntax.out" 2>&1 \
+    && fail "syntax gate missed a damaged scripts/agentic-flow"
+  grep -q 'agentic-flow' "$shell_fix/cli-syntax.out" \
+    || fail "CLI syntax gate failed for the wrong reason"
+  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/scripts/agentic-flow"
+  # shellcheck disable=SC2016 # This literal creates a ShellCheck fixture in the copied CLI.
+  printf '\nprintf %%s $unquoted\n' >> "$shell_fix/source/scripts/agentic-flow"
+  if command -v shellcheck >/dev/null 2>&1; then
+    AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
+      > "$shell_fix/cli-lint.out" 2>&1 \
+      && fail "ShellCheck gate missed a damaged scripts/agentic-flow"
+    grep -q 'SC2086' "$shell_fix/cli-lint.out" \
+      || fail "CLI ShellCheck gate failed for the wrong reason"
+  fi
+
+  build_fix="$TMP/build-failure"
+  mkdir -p "$build_fix/scripts"
+  cp "$ROOT/Makefile" "$build_fix/Makefile"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$build_fix/scripts/export.sh"
+  chmod +x "$build_fix/scripts/export.sh"
+  (cd "$build_fix" && make build) > "$build_fix/out" 2>&1 \
+    && fail "make build masked export failure"
+  grep -q 'export dry-run ok' "$build_fix/out" \
+    && fail "make build printed success after export failed"
+fi
 # A lint that skips when its tool is missing reports green for the wrong reason — that is
 # exactly how `make test` sat red-but-passing until someone installed shellcheck.
 #
@@ -1601,6 +1692,22 @@ NOJQ_PATH=$(path_without_tools "$TMP/nojq-bin" jq)
 PATH="$NOJQ_PATH" command -v jq >/dev/null 2>&1 && fail "jq-less PATH still contains jq"
 PATH="$NOJQ_PATH" command -v git >/dev/null 2>&1 \
   || fail "jq-less PATH accidentally removed ordinary git"
+
+HOOK_CRASH="$TMP/crashing-hook"
+printf '#!/usr/bin/env bash\necho stub-crash >&2\nexit 1\n' > "$HOOK_CRASH"
+chmod +x "$HOOK_CRASH"
+( must_block "$HOOK_CRASH" 'git add -A' ) > "$TMP/hook-crash.out" 2>&1 \
+  && fail "must_block accepted a hook crash as a policy block"
+grep -q 'status 1' "$TMP/hook-crash.out" \
+  || fail "must_block crash diagnostic omitted the exit status"
+grep -q 'stub-crash' "$TMP/hook-crash.out" \
+  || fail "must_block discarded hook stderr"
+( must_block_nojq "$HOOK_CRASH" 'git add -A' ) > "$TMP/hook-crash-nojq.out" 2>&1 \
+  && fail "must_block_nojq accepted a hook crash as a policy block"
+grep -q 'status 1' "$TMP/hook-crash-nojq.out" \
+  || fail "must_block_nojq crash diagnostic omitted the exit status"
+grep -q 'stub-crash' "$TMP/hook-crash-nojq.out" \
+  || fail "must_block_nojq discarded hook stderr"
 
 ADD_GUARD="$ROOT/scripts/hooks/block-git-add-all.sh"
 

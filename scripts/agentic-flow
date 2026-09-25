@@ -32,6 +32,7 @@ load_excluded_scopes() { # <root>
   # or `upgrade` reinstalls every Codex and OpenCode adapter and silently undoes the flag.
   local root="$1" file="$1/.agentic-flow-scopes-excluded"
   [ -f "$file" ] || return 0
+  # shellcheck disable=SC2034 # Read by payload-apply.sh after it is sourced.
   PAYLOAD_EXCLUDED_SCOPES=$(tr '\n' ' ' < "$file")
 }
 
@@ -262,9 +263,13 @@ upgrade_cmd() {
   payload_load_manifest "$source/config/payload.tsv"
   payload_expand_files "$source"
   available=$(payload_compute_version "$source")
+  # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_VERSION="$available"
+  # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_DRY=false
+  # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_FORCE="$force"
+  # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_DST_ROOT="$root"
 
   echo "agentic-flow upgrade"

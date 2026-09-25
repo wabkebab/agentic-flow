@@ -9,6 +9,7 @@
 # The remaining recipes no-op with a reminder until filled in for your stack (TS/Node
 # examples shown commented), so a fresh scaffold doesn't block work.
 
+# BEGIN SHARED SHELL GATE (generated region in F-8)
 .PHONY: check test test-one build run help
 
 help:           ## list available targets
@@ -27,7 +28,9 @@ test:           ## full test suite
 	@scripts/self-test.sh --full
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required for 'make test' — install it (brew install shellcheck / apt-get install shellcheck)." >&2; exit 1; }
 	@shellcheck scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh
+	# Installed-file inventory replaces these bounded globs in F-7.
 	@echo "TODO: add your stack's test suite to 'test' in the Makefile."
+# END SHARED SHELL GATE
 #	npm run test:run
 
 test-one:       ## one targeted test:  make test-one F=path/to/file
