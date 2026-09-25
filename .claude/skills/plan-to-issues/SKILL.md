@@ -76,7 +76,8 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
 ## Notes
 - The script stamps trackers and steps with their stable IDs. Repeating `--apply` updates
   existing issues, resumes interrupted runs, creates added steps, and closes removed steps
-  with a history-preserving comment.
+  with a history-preserving comment. Spec labels apply only when an issue is created;
+  reapply preserves the live reviewer/executor label state.
 - Sub-issue linking is best-effort via the GitHub sub-issues API; if unavailable, the
   tracking issue still carries a `- [ ] #N` task list as the fallback checklist.
 - For a **Security** doc's findings, each 🔴🟠🟡🔵 finding becomes a step entry with the

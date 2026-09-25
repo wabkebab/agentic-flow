@@ -54,17 +54,17 @@ command -v jq >/dev/null || die "jq not found"
 command -v git >/dev/null || die "git not found"
 jq -e . "$SPEC" >/dev/null 2>&1 || die "spec is not valid JSON: $SPEC"
 jq -e '
-  (.id == null or (.id | type == "string" and test("^[a-z0-9][a-z0-9._-]*$"))) and
+  (.id == null or (.id | type == "string" and length <= 80 and test("^[a-z0-9][a-z0-9._-]*$"))) and
   (.tracking.title | type == "string" and length > 0) and
   ((.labels // []) | type == "array" and all(.[]; type == "string" and length > 0)) and
-  (.steps | type == "array" and length > 0) and
+  (.steps | type == "array" and length > 0 and length <= 100) and
   all(.steps[];
-    (.id == null or (.id | type == "string" and test("^[a-z0-9][a-z0-9._-]*$"))) and
+    (.id == null or (.id | type == "string" and length <= 80 and test("^[a-z0-9][a-z0-9._-]*$"))) and
     (.title | type == "string" and length > 0) and
     ((.labels // []) | type == "array" and all(.[]; type == "string" and length > 0))
   ) and
-  (([.steps[] | (.id // "")] | map(select(length > 0)) | unique | length)
-    == ([.steps[] | (.id // "")] | map(select(length > 0)) | length))
+  ([.steps | to_entries[] | (.value.id // ("step-" + ((.key + 1) | tostring)))] as $ids
+   | ($ids | unique | length) == ($ids | length))
 ' "$SPEC" >/dev/null 2>&1 \
   || die "spec must contain a tracker and uniquely identified, valid steps"
 
@@ -128,15 +128,53 @@ ISSUES_JSON=$(gh issue list --repo "$REPO" --state all --limit 100 \
   || die "failed to query existing plan issues"
 printf '%s\n' "$ISSUES_JSON" | jq -e 'type == "array"' >/dev/null \
   || die "GitHub returned malformed issue data"
+issue_count=$(printf '%s\n' "$ISSUES_JSON" | jq 'length')
+[ "$issue_count" -lt 100 ] || die "issue discovery reached 100 results; narrow or repair the stamped plan set before applying"
+printf '%s\n' "$ISSUES_JSON" | jq -e --arg repo "$REPO" '
+  all(.[]; (.number | type == "number" and . > 0 and . == floor) and
+    (.body | type == "string") and (.state == "OPEN" or .state == "CLOSED") and
+    (.url == ("https://github.com/" + $repo + "/issues/" + (.number | tostring))))' >/dev/null \
+  || die "GitHub returned incomplete issue identity data"
 
-issue_for_marker() {
-  local marker="$1"
-  printf '%s\n' "$ISSUES_JSON" \
-    | jq -c --arg marker "$marker" '[.[] | select(.body | contains($marker))][0] // empty'
+# Read whole stamp lines into a validated exact index before any GitHub mutation.
+# A malformed matching stamp or two issues with one identity is an ambiguity,
+# not permission to choose the first search result.
+INDEX="$TMP/issue-index"
+: > "$INDEX"
+TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( approved-by:.+ approved-at:[^ ]+)? -->$'
+STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10}) -->$'
+printf '%s\n' "$ISSUES_JSON" | jq -r --arg prefix "<!-- $PLAN_MARKER " '
+  .[] | .number as $number | .body | split("\n")[]
+  | select(contains($prefix)) | [$number, .] | @tsv
+' > "$TMP/stamp-lines" || die "could not parse issue stamps"
+while IFS="$(printf '\t')" read -r remote_number stamp; do
+  [ -n "$remote_number" ] || continue
+  if [[ "$stamp" =~ $TRACK_STAMP_RE ]]; then
+    [ "${BASH_REMATCH[1]}" = "$PLAN_KEY" ] || die "issue #$remote_number has a mismatched plan stamp"
+    identity=tracker
+  elif [[ "$stamp" =~ $STEP_STAMP_RE ]]; then
+    [ "${BASH_REMATCH[1]}" = "$PLAN_KEY" ] || die "issue #$remote_number has a mismatched plan stamp"
+    identity="step:${BASH_REMATCH[2]}"
+  else
+    die "malformed identity stamp on issue #$remote_number"
+  fi
+  previous_number=$(awk -F '\t' -v key="$identity" '$1 == key {print $2; exit}' "$INDEX")
+  [ -z "$previous_number" ] || die "duplicate $identity stamps on issues #$previous_number and #$remote_number"
+  previous_identity=$(awk -F '\t' -v number="$remote_number" '$2 == number {print $1; exit}' "$INDEX")
+  [ -z "$previous_identity" ] || die "issue #$remote_number has multiple identity stamps: $previous_identity and $identity"
+  printf '%s\t%s\n' "$identity" "$remote_number" >> "$INDEX"
+done < "$TMP/stamp-lines"
+
+issue_for_identity() { # <tracker | step:id>
+  local number
+  number=$(awk -F '\t' -v key="$1" '$1 == key {print $2; exit}' "$INDEX")
+  [ -n "$number" ] || return 0
+  printf '%s\n' "$ISSUES_JSON" | jq -c --arg number "$number" \
+    '.[] | select((.number | tostring) == $number)'
 }
 
 TRACK_ID_MARKER="$PLAN_MARKER tracker"
-existing_tracker=$(issue_for_marker "$TRACK_ID_MARKER")
+existing_tracker=$(issue_for_identity tracker)
 APPROVAL_BY=""
 APPROVAL_AT=""
 if [ -n "$existing_tracker" ]; then
@@ -188,8 +226,7 @@ if [ "$MODE" = diff ]; then
   i=0
   while [ "$i" -lt "$STEP_COUNT" ]; do
     step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
-    marker="$PLAN_MARKER step:$step_id"
-    existing=$(issue_for_marker "$marker")
+    existing=$(issue_for_identity "step:$step_id")
     if [ -n "$existing" ]; then
       echo "Step $step_id: exists"
     else
@@ -253,7 +290,7 @@ while [ "$i" -lt "$STEP_COUNT" ]; do
 
 ${stamp}"
   printf '%s\n' "$step_id" >> "$TMP/current-step-ids"
-  existing=$(issue_for_marker "$marker")
+  existing=$(issue_for_identity "step:$step_id")
 
   if [ -z "$existing" ]; then
     if [ -n "$labels" ]; then
@@ -268,7 +305,6 @@ ${stamp}"
     num=$(printf '%s\n' "$existing" | jq -r .number)
     url=$(printf '%s\n' "$existing" | jq -r .url)
     gh issue edit "$num" --repo "$REPO" --title "$title" --body "$desired_body" >/dev/null
-    [ -z "$labels" ] || gh issue edit "$num" --repo "$REPO" --add-label "$labels" >/dev/null
     echo "updated step  #$num  $title"
   fi
   printf '%s\t%s\t%s\n' "$num" "$step_id" "$title" >> "$TMP/step-rows"
@@ -276,19 +312,17 @@ ${stamp}"
 done
 
 # Close steps removed from the current spec. History is retained; nothing is deleted.
-printf '%s\n' "$ISSUES_JSON" | jq -r --arg plan "$PLAN_MARKER" '
-  .[]
-  | select(.body | contains($plan + " step:"))
-  | [.number, (.body | capture("step:(?<id>[a-zA-Z0-9._-]+)").id), .state]
-  | @tsv
-' | while IFS="$(printf '\t')" read -r old_num old_id old_state; do
+while IFS="$(printf '\t')" read -r old_identity old_num; do
+  case "$old_identity" in step:*) old_id=${old_identity#step:} ;; *) continue ;; esac
+  old_state=$(printf '%s\n' "$ISSUES_JSON" | jq -r --argjson number "$old_num" \
+    '.[] | select(.number == $number) | .state')
   grep -qxF "$old_id" "$TMP/current-step-ids" && continue
   [ "$old_state" = CLOSED ] && continue
   gh issue close "$old_num" --repo "$REPO" \
     --comment "Closed by plan reconciliation: step '$old_id' is no longer in spec revision $SPEC_HASH." \
     >/dev/null
   echo "closed removed step #$old_num [$old_id]"
-done
+done < "$INDEX"
 
 tasklist='
 

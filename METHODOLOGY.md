@@ -253,6 +253,10 @@ holds the step, one `needs-*` naming what it needs:
 | `agent:claude` | orange `#FFA500` | `needs-closing` | purple `#5319E7` | **on the tracking issue only** — every step is reviewed and closed; waits for plan-level close-out |
 
 The `create-tags` skill (`scripts/create-tags.sh`) creates all six with these colors.
+Plan identity stamps are matched exactly after implicit step IDs become `step-N`;
+duplicate or incomplete discovery stops reconciliation before any issue is changed.
+The spec's labels are creation defaults, so reapplying a plan does not move a live step
+backward in this state machine.
 `scripts/init.sh` runs it once at adoption; `plan-to-issues.sh` checks whether any of the six
 already exist and only invokes it when none do, so a label a spec never mentions —
 `agent:opencode` + `needs-review`, added later by the reviewer, not by the spec — still

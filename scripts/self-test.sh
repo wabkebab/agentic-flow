@@ -1898,6 +1898,10 @@ case "${1:-} ${2:-}" in
     ;;
   "label create") exit 0 ;;
   "issue list")
+    if [ -n "${FAKE_GH_LIST_OVERRIDE:-}" ]; then
+      cat "$FAKE_GH_LIST_OVERRIDE"
+      exit 0
+    fi
     out="$state/issues.jsonl"
     : > "$out"
     for dir in "$state"/issue-*; do
@@ -2000,9 +2004,92 @@ PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
   || fail "plan diff failed against fake GitHub"
 grep -q "Tracker: current" "$TMP/plan-diff.out" \
   || fail "plan diff did not recognize the applied revision"
+for issue_number in 1 2 3; do
+  cp "$GHSTATE/issue-$issue_number/body" "$TMP/plan-before-$issue_number.body"
+  cp "$GHSTATE/issue-$issue_number/title" "$TMP/plan-before-$issue_number.title"
+done
 plan_apply "$PLAN_SPEC" || fail "repeated identical plan apply failed"
 issue_count=$(find "$GHSTATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
 [ "$issue_count" -eq 3 ] || fail "repeated plan apply duplicated issues"
+for issue_number in 1 2 3; do
+  cmp -s "$GHSTATE/issue-$issue_number/body" "$TMP/plan-before-$issue_number.body" \
+    || fail "identical reapply changed issue #$issue_number body"
+  cmp -s "$GHSTATE/issue-$issue_number/title" "$TMP/plan-before-$issue_number.title" \
+    || fail "identical reapply changed issue #$issue_number title"
+done
+
+# Identity validation and discovery ambiguity must stop before mutation.
+plan_reject_without_mutation() { # <name> <spec> [issue-list-override]
+  : > "$TMP/plan-reject-calls"
+  if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+    FAKE_GH_CALLS="$TMP/plan-reject-calls" FAKE_GH_LIST_OVERRIDE="${3:-}" \
+    "$PLAN_DRIVER" --apply "$2" > "$TMP/plan-reject.out" 2>&1; then
+    fail "plan apply accepted $1"
+  fi
+  if grep -Eq '(^| )(issue create|issue edit|issue close|label create|--method POST)( |$)' \
+      "$TMP/plan-reject-calls"; then
+    fail "plan apply mutated GitHub before rejecting $1"
+  fi
+}
+jq '.steps = [{title:"Implicit"},{id:"step-1",title:"Explicit"}]' \
+  "$PLAN_SPEC" > "$TMP/plan-collision.json"
+plan_reject_without_mutation 'implicit/explicit step-1 collision' "$TMP/plan-collision.json"
+grep -q 'uniquely identified' "$TMP/plan-reject.out" \
+  || fail 'normalized ID collision lacked a useful error'
+jq '.steps[0].id = "bad:id"' "$PLAN_SPEC" > "$TMP/plan-reserved-id.json"
+plan_reject_without_mutation 'reserved marker character in step ID' "$TMP/plan-reserved-id.json"
+grep -q 'uniquely identified' "$TMP/plan-reject.out" \
+  || fail 'reserved marker character lacked a validation error'
+
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" gh issue list > "$TMP/plan-existing.json"
+jq '.[1] as $step | . + [$step | .number = 99 | .url = "https://github.com/owner/repo/issues/99"]' \
+  "$TMP/plan-existing.json" > "$TMP/plan-duplicate-step.json"
+plan_reject_without_mutation 'duplicate remote step stamps' "$PLAN_SPEC" "$TMP/plan-duplicate-step.json"
+grep -qE '2.*99|99.*2' "$TMP/plan-reject.out" \
+  || fail 'duplicate step diagnostic did not name both issue numbers'
+jq '.[0] as $tracker | . + [$tracker | .number = 98 | .url = "https://github.com/owner/repo/issues/98"]' \
+  "$TMP/plan-existing.json" > "$TMP/plan-duplicate-tracker.json"
+plan_reject_without_mutation 'duplicate remote tracker stamps' "$PLAN_SPEC" "$TMP/plan-duplicate-tracker.json"
+grep -qE '1.*98|98.*1' "$TMP/plan-reject.out" \
+  || fail 'duplicate tracker diagnostic did not name both issue numbers'
+jq '.[0].body |= sub("spec:[0-9a-f]+";"spec:zz")' \
+  "$TMP/plan-existing.json" > "$TMP/plan-malformed-stamp.json"
+plan_reject_without_mutation 'malformed remote stamp' "$PLAN_SPEC" "$TMP/plan-malformed-stamp.json"
+grep -q 'malformed identity stamp on issue #1' "$TMP/plan-reject.out" \
+  || fail 'malformed stamp diagnostic did not name the issue'
+jq -n '[range(1;101) | {number:.,title:"Other",body:"unrelated",state:"OPEN",url:("https://github.com/owner/repo/issues/" + tostring)}]' \
+  > "$TMP/plan-full-page.json"
+plan_reject_without_mutation '100-result discovery page' "$PLAN_SPEC" "$TMP/plan-full-page.json"
+grep -q '100' "$TMP/plan-reject.out" || fail 'full discovery page lacked bound diagnostic'
+
+# step-1 must never select the earlier step-10 issue. Create step-10 first so
+# the old substring lookup picks the wrong row on the second apply.
+jq '.id = "prefix-plan" | .steps = [{id:"step-10",title:"Ten",body:"ten"},{id:"step-1",title:"One",body:"one"}]' \
+  "$PLAN_SPEC" > "$TMP/plan-prefix.json"
+PREFIX_STATE="$TMP/gh-prefix-state"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PREFIX_STATE" \
+  "$PLAN_DRIVER" --apply "$TMP/plan-prefix.json" >/dev/null \
+  || fail 'prefix fixture first apply failed'
+jq '.steps[1].body = "one updated"' "$TMP/plan-prefix.json" > "$TMP/plan-prefix-updated.json"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PREFIX_STATE" \
+  "$PLAN_DRIVER" --apply "$TMP/plan-prefix-updated.json" >/dev/null \
+  || fail 'prefix fixture reapply failed'
+grep -q 'one updated' "$PREFIX_STATE/issue-3/body" \
+  || fail 'step-1 did not update its exact issue'
+grep -q 'ten' "$PREFIX_STATE/issue-2/body" \
+  || fail 'step-1 update rewrote step-10'
+
+# A reviewed step's live labels must survive a spec reapply unchanged.
+printf '%s\n' 'agent:opencode,needs-review' > "$GHSTATE/issue-3/labels"
+: > "$TMP/plan-reapply-calls"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" FAKE_GH_CALLS="$TMP/plan-reapply-calls" \
+  "$PLAN_DRIVER" --apply "$PLAN_SPEC" >/dev/null \
+  || fail 'reviewer-state reapply failed'
+if grep -Eq 'issue edit 3 .*--add-label' "$TMP/plan-reapply-calls"; then
+  fail 'reapply reintroduced spec labels on a reviewed step'
+fi
+[ "$(cat "$GHSTATE/issue-3/labels")" = 'agent:opencode,needs-review' ] \
+  || fail 'reapply changed live reviewer labels'
 
 APPROVAL_DOC_ROOT="$TMP/approval-doc-root"
 mkdir -p "$APPROVAL_DOC_ROOT/docs/inprogress"
