@@ -109,9 +109,10 @@ chat is lost to close-out. Then:
 - **`changes requested`** — leave open and return it:
   `gh issue edit <N> --add-label "agent:codex,needs-execution" --remove-label "agent:opencode,needs-review"`.
   Capped at two returns; a third escalates to the human.
-- **`approved`** — `gh issue close <N>`. The merge will not close it for you; a closed step
-  records *reviewed clean*, not *shipped*.
-- **last open step of a plan** — also
+- **`approved`** — under Strict, `gh issue close <N>`; a closed sub-issue records
+  *reviewed clean*, not *shipped*. Under Standard, post the approving verdict, then
+  relabel the sole work issue `agent:claude,needs-closing` and leave it open.
+- **last open Strict step of a plan** — also
   `gh issue edit <TRACKER> --add-label "agent:claude,needs-closing"`, leaving the tracker open.
 - **`pending`** — change nothing; name the missing input.
 

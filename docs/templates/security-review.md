@@ -1,5 +1,6 @@
 <!-- TRIAGE (first pass · YYYY-MM-DD) -->
 > **Type:** Security · **Status:** 🟦 Proposal | 🚧 In progress | ✅ Done
+> **Assurance:** Standard | Strict (choose at least the project baseline; sensitive changes require Strict)
 > One or two lines: scope of this review, what's current vs historical, what to do next.
 
 <!--
@@ -16,7 +17,8 @@
 # Security Review — <topic>
 
 ## Tracker
-<!-- The burndown. Tick boxes and add the SHA + issue # as fixes land. -->
+<!-- Standard: exactly one step and one work issue. Strict: parent tracker and
+     one sub-issue per step. Tick boxes and add the SHA + issue # as fixes land. -->
 - [ ] SEC-1 <one-line finding> — open
 - [ ] SEC-2 <one-line finding> — open
 
@@ -84,6 +86,9 @@ severity says how bad it is, this section says what was decided about it.
 
 ## Branch
 Base: `<base branch>`. One branch and one PR for the whole brief:
+<!-- The issue spec packet takes brief path/heading, Definition of Done,
+     verification commands, and risks/edge cases from this approved brief.
+     Keep the resulting packet at or below 800 words. -->
 `security-<topic>` (confirm the base with the human). Each finding lands as its own commit
 on that branch, closing its issue via `Fixes #N`.
 

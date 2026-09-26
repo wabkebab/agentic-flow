@@ -25,9 +25,9 @@
 
 | Role | Who (default) | Output |
 |------|---------------|--------|
-| **Plan / Close-out** | Claude | Analysis & review documents (`docs/`), the inlined implementation brief, GitHub issues; then close-out — Tracker/Status updates, the doc move, and closing the tracking issue once every step is reviewed and closed. Commits with `git-claude`. |
+| **Plan / Close-out** | Claude | Analysis and implementation briefs, GitHub issues, then Tracker/Status updates, document move, and closing the tracking or Standard work issue after review. Commits with `git-claude`. |
 | **Execute** | Codex | Code that satisfies the issues generated from a plan, one logical commit per step, each recorded as a comment on its step issue. Commits with `git-codex`. |
-| **Review** | OpenCode | The **independent** review of each completed step: reads the commit the executor recorded against the brief, then either records findings and returns the step to the executor, or records an approving verdict and closes the step issue. Commits any review-note changes with `git-opencode`. |
+| **Review** | OpenCode | Reviews each completed step against the brief, returns findings or records approval; closes Strict sub-issues and relabels Standard work issues for close-out. Commits any review-note changes with `git-opencode`. |
 | **Own / merge / deploy** | Human | Approves plans, merges PRs, controls all pushes and releases. |
 
 **Review is a separate role on purpose.** The value is independence: the agent that wrote the
@@ -60,7 +60,8 @@ opt-out reassigns the review, it never leaves it to both.
         │
         │  human approves
         ▼
-  plan-to-issues  ───────────────▶  GitHub tracking issue + one sub-issue per step
+  plan-to-issues  ───────────────▶  Standard: one work issue
+                                   Strict: tracker + sub-issues
         │
         ▼
   Execute (Codex)                   one branch + PR per pass; one commit + "Fixes #N"
@@ -70,15 +71,13 @@ opt-out reassigns the review, it never leaves it to both.
         ▼
   Review (OpenCode)                 reads the commented commit against the brief
         │                           ├─ findings ─▶ back to agent:codex (2 returns, then human)
-        │                           └─ approved ─▶ comments the verdict and CLOSES the step
-        ▼                                          issue; the tracking issue stays open
-  Close-out (Claude)                once every step issue is closed: tick the Tracker,
-        │                           update Status, verify evidence, move the doc, then
-        │                           close the tracking issue
+        │                           └─ approved ─▶ Strict: closes the sub-issue;
+        ▼                                          Standard: sends work issue to needs-closing
+  Close-out (Claude)                tick the Tracker, update Status, verify evidence,
+        │                           move the doc, then close the named issue
         ▼
-  Merge (human)  ────────────────▶  the PR. Step issues are already closed, so their
-        │                           "Fixes #N" trailers are a no-op by then — the
-        │                           trailers stay for traceability, not for closing.
+  Merge (human)  ────────────────▶  the PR. Reviewed issues are already closed;
+        │                           "Fixes #N" stays for traceability.
         ▼
   doc done  ─────────────────────▶  move to docs/done/ (or docs/done/security/),
                                     update the Status section; accepted-but-not-built
@@ -89,13 +88,12 @@ The label pair is what moves a step between roles; the project's `CLAUDE.md` hol
 state machine. Automatic findings returns are capped at two; a third return escalates to the
 human without discarding the findings.
 
-**A closed step issue means "reviewed clean", not "shipped."** The reviewer closes it before
+**A closed Strict sub-issue means "reviewed clean", not "shipped."** The reviewer closes it before
 the PR merges, so GitHub issue state is deliberately *not* the shipping signal. What shipped
 is recorded in the implementation doc's Status block and enforced by
 `scripts/lifecycle-status.sh --doc <moved-document> --phase close-out --check --verify-evidence`
-against a CI run (§10). The tracking
-issue is the one that stays open across the whole pass, which is why it — not the steps —
-carries `agent:claude` + `needs-closing` at the end.
+against a CI run (§10). The Strict tracker or Standard work issue stays open through
+close-out and carries `agent:claude` + `needs-closing`.
 
 **Why the handoffs carry data, not just labels.** Codex comments the commit sha and the
 verification it actually ran; OpenCode comments the verdict. Each role then starts from the
@@ -153,10 +151,10 @@ merge. Every profile keeps the same engineering standards, secret and push hooks
 authority, and human ownership of pushing and merging. Review identity guarantees still
 depend on the configured review identity mode, not the profile.
 
-**Transition through F-9:** issue generation and close-out still use the existing
-tracker-plus-steps topology. A profile-less existing spec retains that topology. F-10
-activates the Standard one-work-issue path and Quick promotion behavior together; until
-then, the CLI records policy without changing issue shape.
+Profiled specs activate the matching issue topology. A profile-less existing spec retains
+the legacy tracker-plus-steps topology. The driver rejects topology-changing reapply
+before mutation. Quick remains local; promoting it into the normal merge workflow requires
+a Standard or Strict brief and its review and evidence.
 
 Decision remains a Product Analysis document type; approved implementation work then takes
 the applicable assurance profile. Emergency restoration may proceed as a hotfix, followed
@@ -263,8 +261,9 @@ A markdown tracker is versioned and offline; GitHub issues give a live progress 
 issues = execution units**.
 
 Use the `plan-to-issues` skill (`.claude/skills/plan-to-issues/`) once a plan is
-**approved**. It creates one **tracking issue** plus one **sub-issue per
-independently-shippable step**, from the implementation brief.
+**approved**. Standard creates one work issue from its one-step brief. Strict creates
+one tracker plus one sub-issue per independently shippable step. Existing specs without
+a profile keep the legacy tracker and steps.
 
 **Label convention (encodes the loop).** Labels move in **pairs** — one `agent:*` naming who
 holds the step, one `needs-*` naming what it needs:
@@ -273,7 +272,7 @@ holds the step, one `needs-*` naming what it needs:
 |--------|-------|-------|-------|---------|
 | `agent:codex` | blue `#0052CC` | `needs-execution` | yellow `#FBCA04` | the executor implements it (the `plan-to-issues` default) |
 | `agent:opencode` | black `#000000` | `needs-review` | orange `#FFA500` | the reviewer has it; returns it to `agent:codex` with findings, or approves and closes it |
-| `agent:claude` | orange `#FFA500` | `needs-closing` | purple `#5319E7` | **on the tracking issue only** — every step is reviewed and closed; waits for plan-level close-out |
+| `agent:claude` | orange `#FFA500` | `needs-closing` | purple `#5319E7` | Strict parent tracker or Standard sole work issue awaiting close-out |
 
 The `create-tags` skill (`scripts/create-tags.sh`) creates all six with these colors.
 Plan identity stamps are matched exactly after implicit step IDs become `step-N`;
@@ -287,8 +286,9 @@ exists by the time `gh issue edit --add-label` needs it, without recreating labe
 apply. Anything else (`plan` on the tracker, `sev:high|med|low|nit` on findings, §5) gets a
 neutral gray (`#CCCCCC`) from `plan-to-issues.sh`'s own per-spec label loop.
 
-Note the asymmetry: step issues never reach `needs-closing`. The reviewer closes them
-outright, and the label pair that survives to close-out sits on the tracker.
+Strict sub-issues close on review; the parent tracker then receives `needs-closing`.
+Standard's sole work issue receives `needs-closing` after an approving reviewer comment,
+remains open for close-out, and closes only after final-head evidence is verified.
 
 Rules:
 - One issue per independently-shippable step — not one giant issue, not one per commit.
@@ -302,6 +302,10 @@ Rules:
   verification actually run before flipping to `needs-review`; OpenCode comments findings or
   the approving verdict before relabelling or closing. The label says who holds it; the
   comment says what they are holding.
+- Profiled specs supply `packet.brief`, `packet.definition_of_done`,
+  `packet.verification`, and `packet.risks` for each step. These come from the approved
+  brief and render into the issue's executor packet. The driver rejects packets over
+  800 words; it never truncates acceptance criteria.
 - Issue body = the step link, concise Definition of Done, and current labels. The approved
   brief owns intent; the `Makefile` owns executable command behavior, so do not copy Make
   recipes into issue bodies.

@@ -109,8 +109,9 @@ as a comment first, then:
   returns; a third escalates to the human. Post the findings as a comment *before* this
   label edit, not after — some stacks wire a hook that blocks the edit otherwise.
 - `approved` → post a comment whose verdict line literally says `approved` (not just
-  implied by tone), then `gh issue close <N>`. The merge will not close it for you.
-- last step of a plan closed → also
+  implied by tone). Under Strict, close the sub-issue. Under Standard, relabel the sole
+  work issue `agent:claude,needs-closing` and leave it open for the closer.
+- last Strict step of a plan closed → also
   `gh issue edit <TRACKER> --add-label "agent:claude,needs-closing"`, tracker stays
   open for Claude's close-out.
 - `pending` → change nothing; name the missing input in the comment.

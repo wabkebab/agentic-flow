@@ -169,19 +169,23 @@ normalize_decimal() { # <validated decimal string>
   printf '%s' "${value:-0}"
 }
 
-# Check one Strict step against the implementation SHA recorded on its own thread.
+# Check one step against the implementation SHA recorded on its own thread.
 # The same bounded GraphQL page carries both implementation handoff and verdict.
-verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir>
+verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> [reuse-tracking-page]
   local repo=$1 number=$2 step=$3 tmp=$4 owner=${1%%/*} name=${1#*/} \
     query response node body id dbid edited handoff_author step_head="" selected_id="" \
     selected_dbid="" selected_marker="" selected_author="" selected_edited="" \
     null_index candidate normalized
-  # shellcheck disable=SC2016
-  query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login} createdAt lastEditedAt}}}}}'
-  if ! bounded_gh "$tmp/step-$number" api graphql -f "query=$query" -f "owner=$owner" -f "name=$name" -F "number=$number"; then
-    unverified_evidence "step $step comments unavailable"; return 1
+  if [ "${5:-}" = reuse-tracking-page ]; then
+    response=$(cat "$tmp/comments")
+  else
+    # shellcheck disable=SC2016
+    query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login} createdAt lastEditedAt}}}}}'
+    if ! bounded_gh "$tmp/step-$number" api graphql -f "query=$query" -f "owner=$owner" -f "name=$name" -F "number=$number"; then
+      unverified_evidence "step $step comments unavailable"; return 1
+    fi
+    response=$(cat "$tmp/step-$number")
   fi
-  response=$(cat "$tmp/step-$number")
   if printf '%s' "$response" | jq -e '(.errors | type == "array" and length > 0)' >/dev/null 2>&1; then
     unverified_evidence "step $step GraphQL error: $(printf '%s' "$response" | jq -r '.errors[0].message')"; return 1
   fi
@@ -236,6 +240,9 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir>
       printf 'EVIDENCE step %s  superseded comment %s head=%s\n' "$step" "$id" "$REVIEW_HEAD"
       continue
     fi
+    # Standard's final PR approval shares this thread. It is a different
+    # verdict kind and must not displace the step review for the same head.
+    [ -n "$REVIEW_STEP" ] || continue
     dbid=$(printf '%s' "$node" | jq -r '.fullDatabaseId // empty')
     if ! printf '%s' "$node" | jq -e '.fullDatabaseId | type == "string"' >/dev/null 2>&1 \
        || ! [[ "$dbid" =~ ^[0-9]+$ ]]; then
@@ -279,7 +286,7 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir>
 
 verify_strict_steps() { # <repo> <tracking-body> <tmp-dir>
   local repo=$1 tracking_body=$2 tmp=$3 plan number step state count=0
-  plan=$(printf '%s\n' "$tracking_body" | sed -nE 's/.*agentic-flow:plan:([A-Za-z0-9_-]+) tracker spec:[[:xdigit:]]{40}.*/\1/p' | head -1)
+  plan=$(printf '%s\n' "$tracking_body" | sed -nE 's/^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:[[:xdigit:]]{40}.* -->$/\1/p' | head -1)
   if [ -z "$plan" ]; then
     unverified_evidence 'Tracking issue identity stamp unavailable'; return 1
   fi
@@ -290,7 +297,7 @@ verify_strict_steps() { # <repo> <tracking-body> <tmp-dir>
   if ! jq -e 'type == "array" and length < 100' "$tmp/issues" >/dev/null 2>&1; then
     unverified_evidence 'step issue listing incomplete within 100'; return 1
   fi
-  jq -r --arg plan "$plan" '.[] | select((.body // "") | contains("agentic-flow:plan:" + $plan + " step:")) | [.number, (.body | capture("step:(?<id>[A-Za-z0-9_-]+) spec:").id), .state] | @tsv' \
+  jq -r --arg plan "$plan" '.[] | select((.body // "") | split("\n") | any(.[]; startswith("<!-- agentic-flow:plan:" + $plan + " step:") and endswith(" -->"))) | [.number, (.body | capture("step:(?<id>[a-z0-9][a-z0-9._-]*) spec:").id), .state] | @tsv' \
     "$tmp/issues" > "$tmp/steps" || { unverified_evidence 'step issue stamps malformed'; return 1; }
   while IFS="$(printf '\t')" read -r number step state; do
     [ -n "$number" ] || continue
@@ -305,11 +312,11 @@ verify_strict_steps() { # <repo> <tracking-body> <tmp-dir>
   fi
 }
 
-verify_evidence() { # <tracking-url> <pr-url> <tracking-body>
-  local tracking=$1 pr_url=$2 tracking_body=$3 repo workflow pr_number issue_number owner name \
+verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
+  local tracking=$1 pr_url=$2 tracking_body=$3 topology=$4 repo workflow pr_number issue_number owner name \
     tmp pr_json comments_json run_json head query nodes id dbid body marker edited \
     selected_id="" selected_dbid="" selected_marker="" selected_edited="" selected_author="" \
-    null_index run_id live_attempt conclusion run_repo run_path run_head normalized
+    null_index run_id live_attempt conclusion run_repo run_path run_head normalized step_id
   evidence_status=UNVERIFIED
   evidence_reason='external evidence unresolved'
   # shellcheck disable=SC1091 # The library is resolved from the installed script root.
@@ -463,7 +470,17 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body>
   elif [ "$conclusion" != success ]; then
     blocked_evidence "Actions run $REVIEW_RUN concluded $conclusion"
   else
-    if verify_strict_steps "$repo" "$tracking_body" "$tmp"; then
+    if [ "$topology" = standard ]; then
+      step_id=$(printf '%s\n' "$tracking_body" | sed -nE 's/^<!-- agentic-flow:plan:[a-z0-9][a-z0-9._-]* step:([a-z0-9][a-z0-9._-]*) spec:[a-f0-9]{40}.* -->$/\1/p' | head -1)
+      if [ -z "$step_id" ]; then
+        unverified_evidence 'Standard work issue identity stamp unavailable'
+      else
+        verify_step_review "$repo" "$issue_number" "$step_id" "$tmp" reuse-tracking-page || true
+      fi
+    else
+      verify_strict_steps "$repo" "$tracking_body" "$tmp" || true
+    fi
+    if [ "$evidence_reason" = 'external evidence unresolved' ]; then
       evidence_status=READY
       evidence_reason="review by $selected_author at head $head via comment $selected_id (fullDatabaseId $selected_dbid, lastEditedAt=null); Actions run $run_id attempt $live_attempt succeeded"
     fi
@@ -496,7 +513,7 @@ legacy=0
 found=0
 check_doc() { # <doc>
   local doc=$1 rel tracker_lines open checked parsed key value field_id schema="" tracking="" pr_url="" missing="" invalid="" \
-    parser_error="" state_json issue_state labels state_file
+    parser_error="" state_json issue_state labels state_file issue_body topology approval approval_by approval_at stamp_by stamp_at
   tracker_lines=$(grep -Ec '^- \[[ xX]\] ' "$doc" || true)
   [ "$tracker_lines" -gt 0 ] || return 0
   found=$((found + 1))
@@ -514,6 +531,7 @@ check_doc() { # <doc>
     case "$key" in
       'Evidence schema') schema=$value ;;
       'Tracking issue') tracking=${value#url=} ;;
+      Approval) approval=$value ;;
       'Implementation PR') pr_url=${value#url=} ;;
     esac
   done <<< "$parsed"
@@ -582,7 +600,24 @@ check_doc() { # <doc>
     *) printf 'BLOCKED %s  phase %s found %s tracking issue\n' "$rel" "$PHASE" "$issue_state"
        blocked=$((blocked + 1)); return ;;
   esac
-  verify_evidence "$tracking" "$pr_url" "$(printf '%s' "$state_json" | jq -r '.body // empty')"
+  issue_body=$(printf '%s' "$state_json" | jq -r '.body // empty')
+  topology=legacy
+  if printf '%s\n' "$issue_body" | grep -Fxq '<!-- agentic-flow:topology:standard -->'; then
+    topology=standard
+  elif printf '%s\n' "$issue_body" | grep -Fxq '<!-- agentic-flow:topology:strict -->'; then
+    topology=strict
+  fi
+  if [ "$topology" = standard ]; then
+    approval_by=$(printf '%s' "$approval" | sed -nE 's/^status=approved; by=(.*); at=[0-9]{4}-[0-9]{2}-[0-9]{2}$/\1/p')
+    approval_at=${approval##*at=}
+    stamp_by=$(printf '%s\n' "$issue_body" | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)
+    stamp_at=$(printf '%s\n' "$issue_body" | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
+    if [ -z "$stamp_by" ] || [ "$stamp_by" != "$approval_by" ] || [ "${stamp_at%%T*}" != "$approval_at" ]; then
+      printf 'BLOCKED %s  Standard work issue approval stamp differs from document\n' "$rel"
+      blocked=$((blocked + 1)); return
+    fi
+  fi
+  verify_evidence "$tracking" "$pr_url" "$issue_body" "$topology"
   printf '%-10s %s  %s\n' "$evidence_status" "$rel" "$evidence_reason"
   case "$evidence_status" in
     BLOCKED) blocked=$((blocked + 1)) ;;

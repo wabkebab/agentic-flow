@@ -1,5 +1,6 @@
 <!-- TRIAGE (first pass · YYYY-MM-DD) -->
 > **Type:** Feature · **Status:** 🟦 Proposal | 🚧 In progress | ✅ Done
+> **Assurance:** Standard | Strict (choose at least the project baseline)
 > One or two lines: what this feature is, what's current vs historical, what to do next.
 
 <!--
@@ -14,7 +15,8 @@
 # Feature — <topic>
 
 ## Tracker
-<!-- The burndown. Tick boxes and add the SHA + issue # as steps land. -->
+<!-- Standard: exactly one step and one work issue. Strict: parent tracker and
+     one sub-issue per step. Tick boxes and add the SHA + issue # as steps land. -->
 - [ ] F-1 <one-line step> — open
 - [ ] F-2 <one-line step> — open
 
@@ -88,6 +90,9 @@ Bounds: <every query's limit, every loop's cap, every request's timeout — §11
 
 ## Branch
 Base: `<base branch>`. One branch and one PR for the whole brief:
+<!-- The issue spec packet takes brief path/heading, Definition of Done,
+     verification commands, and risks/edge cases from this approved brief.
+     Keep the resulting packet at or below 800 words. -->
 `feature-<topic>` (confirm the base with the human). Each step lands as its own commit on
 that branch, closing its issue via `Fixes #N`.
 

@@ -1,12 +1,13 @@
 ---
 name: plan-to-issues
-description: Turn an approved implementation brief (the Part B of a Security or Feature doc in docs/) into a GitHub tracking issue with one sub-issue per step. Use when a plan is approved and ready to hand to the executor. Implements METHODOLOGY.md §6.
+description: Turn an approved Feature or Security brief into Standard's work issue or Strict's tracker and step issues. Implements METHODOLOGY.md §6.
 ---
 
 # plan-to-issues
 
-Convert an **approved** implementation brief into GitHub issues: one parent **tracking
-issue** plus one **sub-issue per independently-shippable step**. The doc stays the source of
+Convert an **approved** implementation brief into GitHub issues. Standard creates one work
+issue; Strict creates a parent tracker and one issue per step. A profile-less legacy spec
+keeps its tracker and steps. The doc stays the source of
 design intent; the issues are the execution burndown (progress bar + `Fixes #N` auto-close).
 
 This skill does the reading/extraction; the deterministic GitHub calls live in
@@ -30,17 +31,19 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
 2. **Build a JSON spec** (write to a temp file, e.g. the session scratchpad):
    ```json
    {
+     "profile": "standard",
      "id": "<stable-kebab-id>",
-     "tracking": {
-       "title": "Plan: <topic>",
-       "body": "<1–2 line summary, link to the doc path, and the branch>"
-     },
-     "labels": ["plan"],
      "steps": [
        {
          "id": "<stable-step-id>",
          "title": "Step 1 — <summary>",
          "body": "<brief-step link + concise DoD + current label state. Keep the *why* and Make recipes in the doc/Makefile.>",
+         "packet": {
+           "brief": "<approved brief path and step heading>",
+           "definition_of_done": "<the approved step's acceptance criteria>",
+           "verification": "<focused and broader Make targets from the brief>",
+           "risks": "<failure path and edge cases from the brief>"
+         },
          "labels": ["needs-execution", "agent:codex"]
        }
      ]
@@ -48,14 +51,21 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
    ```
    - Give the plan and every step a stable `id`. These identities survive title/body edits
      and let the driver reconcile without duplicating issues.
-   - One step issue per brief step. Don't merge steps or split per-commit.
+   - Standard has exactly one step and no `tracking` object. Strict requires a `tracking`
+     object with a title and may have multiple steps. Omit `profile` only when reapplying
+     a legacy plan. The project assurance baseline is a floor.
+   - Every profiled step requires all four packet strings above, taken from the approved
+     brief. The driver rejects a packet over 800 words; revise the source fields instead
+     of truncating a requirement.
+   - One issue per brief step. Don't merge steps or split per-commit.
    - Step body = brief-step link + concise Definition of Done + current label state. Design
      rationale stays in the doc; Make recipes stay in the Makefile.
-   - Labels follow METHODOLOGY.md §6: `plan` on the tracker; `needs-execution` + `agent:codex`
-     on steps. For a **Security** doc add the matching `sev:high|med|low|nit` per step.
-   - Do **not** pre-apply `needs-closing` to steps. The reviewer closes step issues outright,
-     so `agent:claude` + `needs-closing` only ever lands on the tracking issue, and only when
-     the last step is closed. The tracker is created with `plan` alone.
+   - Labels follow METHODOLOGY.md §6: `plan` on a Strict tracker;
+     `needs-execution` + `agent:codex` on work and step issues. For a **Security** doc
+     add the matching `sev:high|med|low|nit` per issue.
+   - Strict's sub-issues close on approval; its parent then receives `needs-closing`.
+     Standard's sole work issue receives `needs-closing` after an approving comment and
+     stays open for close-out. Never pre-apply that label.
 3. **Dry run** — show the user exactly what the spec describes. This is fully offline:
    ```
    scripts/plan-to-issues.sh <spec.json>
@@ -67,17 +77,22 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
 5. **Get explicit approval.** Creating or reconciling issues writes public artifacts —
    never run `--apply`
    without the user's go-ahead in this turn.
-6. **Apply and write the tracker link back:**
+6. **Apply and write the issue link back:**
    ```
-   scripts/plan-to-issues.sh --apply --doc docs/inprogress/<doc>.md <spec.json>
+   scripts/plan-to-issues.sh --apply --approved-by '<human identity>' \
+     --doc docs/inprogress/<doc>.md <spec.json>
    ```
-7. **Close the loop:** tick nothing yet and tell the user the tracking issue URL.
+   Standard requires `--approved-by` on first apply; its work issue stores the identity
+   and timestamp. Reapply preserves them. Strict also records them when supplied.
+7. **Close the loop:** tick nothing yet and tell the user the work or tracking issue URL.
 
 ## Notes
-- The script stamps trackers and steps with their stable IDs. Repeating `--apply` updates
+- The script stamps work issues, trackers, and steps with their stable IDs. Repeating `--apply` updates
   existing issues, resumes interrupted runs, creates added steps, and closes removed steps
   with a history-preserving comment. Spec labels apply only when an issue is created;
   reapply preserves the live reviewer/executor label state.
+- A plan's topology is immutable. Changing Standard, Strict, or legacy shape requires an
+  explicit migration; the driver rejects the reapply before any GitHub mutation.
 - Sub-issue linking is best-effort via the GitHub sub-issues API; if unavailable, the
   tracking issue still carries a `- [ ] #N` task list as the fallback checklist.
 - For a **Security** doc's findings, each 🔴🟠🟡🔵 finding becomes a step entry with the

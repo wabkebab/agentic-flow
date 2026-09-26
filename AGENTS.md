@@ -34,7 +34,7 @@ order, edge cases — not finished code. Read the brief for the step before writ
    It gives the problem, the approach, the regression test to add, and the Definition of Done.
 2. **Branch** as the brief specifies; work one step at a time, in the brief's order. The
    whole brief ships as **one branch and one PR** — each step is one issue and one commit
-   on that branch, closed by the reviewer once that step passes review. If the brief instead calls for
+   on that branch. Strict sub-issues close on review; Standard work issues close at close-out. If the brief instead calls for
    a separate branch/PR per step (unusual — only for a pass too large to hold on one
    branch), follow that explicitly; don't split by default.
 3. **Implement** the step. Add the regression test the brief asks for — it must fail against
@@ -63,7 +63,7 @@ order, edge cases — not finished code. Read the brief for the step before writ
    reviewer re-runs it either way, and should not have to take your word for it. A
    `require-step-comment.sh` hook blocks the label edit above if the comment doesn't already
    name a sha, so a skipped comment now fails loudly instead of silently. The **reviewer**
-   closes the issue on approval — do not close it yourself, and do not expect the merge to.
+   closes Strict sub-issues on approval; the closer closes Standard work issues. Do not close it yourself.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 
@@ -101,8 +101,8 @@ If the brief conflicts with any of these, stop and flag it — do not silently p
 - **Verbose, *why*-first commit body** — name the problem, the approach, the blast radius.
   A reviewer should understand the change from the message alone. This is the rule most
   often missed; an example follows.
-- **`Fixes #N`** links the commit to its step issue. The reviewer does the closing; keep the
-  trailer for traceability.
+- **`Fixes #N`** links the commit to its issue. Strict review closes sub-issues;
+  Standard review leaves its work issue open for close-out. Keep the trailer.
 - **Never push** — the human controls pushes and merges.
 
 Example:

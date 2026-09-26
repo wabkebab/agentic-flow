@@ -50,9 +50,36 @@ if printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+issue[[:space:]]+edit[[:space:]]
   fi
 fi
 
+# Standard review handoff: the sole work issue stays open until close-out.
+if printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+issue[[:space:]]+edit[[:space:]]+[0-9]+.*--add-label[[:space:]]+"?[^"]*needs-closing'; then
+  n=$(issue_number "$(printf '%s' "$cmd" | grep -Eo 'issue[[:space:]]+edit[[:space:]]+[0-9]+')")
+  body=$(gh issue view "$n" --json body --jq .body 2>/dev/null || printf '')
+  if printf '%s\n' "$body" | grep -Fxq '<!-- agentic-flow:topology:standard -->'; then
+    last=$(last_comment "$n")
+    if ! printf '%s\n' "$last" | grep -Eq '^[[:space:]]*agentic-flow-review: status=approved; step=[a-z0-9][a-z0-9._-]*; head=[0-9a-f]{40}; role=reviewer$'; then
+      echo "Blocked: post the approving structured step verdict on Standard work issue #$n before needs-closing." >&2
+      exit 2
+    fi
+  fi
+fi
+
 # Approval: reviewer closing a step issue. `gh issue close <N>`
 if printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+issue[[:space:]]+close[[:space:]]+[0-9]+'; then
   n=$(issue_number "$(printf '%s' "$cmd" | grep -Eo 'issue[[:space:]]+close[[:space:]]+[0-9]+')")
+  body=$(gh issue view "$n" --json body --jq .body 2>/dev/null || printf '')
+  if printf '%s\n' "$body" | grep -Fxq '<!-- agentic-flow:topology:standard -->'; then
+    labels=$(gh issue view "$n" --json labels --jq '.labels[].name' 2>/dev/null || printf '')
+    if ! printf '%s\n' "$labels" | grep -Fxq needs-closing; then
+      echo "Blocked: Standard work issue #$n must reach needs-closing before close-out." >&2
+      exit 2
+    fi
+    last=$(last_comment "$n")
+    if ! printf '%s\n' "$last" | grep -Eq '^[[:space:]]*agentic-flow-review: status=approved; pr=[1-9][0-9]*; head=[0-9a-f]{40}; run=https://github.com/[^/]+/[^/]+/actions/runs/[1-9][0-9]*; attempt=[1-9][0-9]*; role=reviewer$'; then
+      echo "Blocked: Standard work issue #$n needs final-head approval before close-out." >&2
+      exit 2
+    fi
+    exit 0
+  fi
   last=$(last_comment "$n")
   if ! printf '%s' "$last" | grep -Eiq 'approved'; then
     echo "Blocked: post the review verdict as a comment on issue #$n before closing it (code-reviewer.md)." >&2

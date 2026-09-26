@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# plan-to-issues.sh — reconcile a GitHub tracker and sub-issues from a JSON plan spec.
+# plan-to-issues.sh — reconcile Standard work issues or Strict tracker/sub-issues.
 #
 # Usage:
 #   scripts/plan-to-issues.sh <spec.json>                   # offline dry run
@@ -55,7 +55,10 @@ command -v git >/dev/null || die "git not found"
 jq -e . "$SPEC" >/dev/null 2>&1 || die "spec is not valid JSON: $SPEC"
 jq -e '
   (.id == null or (.id | type == "string" and length <= 80 and test("^[a-z0-9][a-z0-9._-]*$"))) and
-  (.tracking.title | type == "string" and length > 0) and
+  ((.profile == null) or (.profile == "standard") or (.profile == "strict")) and
+  (if .profile == "standard" then (.steps | length == 1) and
+     (.tracking == null or .tracking == {})
+   else (.tracking.title | type == "string" and length > 0) end) and
   ((.labels // []) | type == "array" and all(.[]; type == "string" and length > 0)) and
   (.steps | type == "array" and length > 0 and length <= 100) and
   all(.steps[];
@@ -63,10 +66,34 @@ jq -e '
     (.title | type == "string" and length > 0) and
     ((.labels // []) | type == "array" and all(.[]; type == "string" and length > 0))
   ) and
+  (if .profile == null then true else
+    all(.steps[]; (.packet | type == "object") and
+      ([.packet.brief, .packet.definition_of_done, .packet.verification, .packet.risks]
+       | all(.[]; type == "string" and length > 0 and length <= 4096)) and
+      ((.packet | keys) == ["brief", "definition_of_done", "risks", "verification"])) end) and
   ([.steps | to_entries[] | (.value.id // ("step-" + ((.key + 1) | tostring)))] as $ids
    | ($ids | unique | length) == ($ids | length))
 ' "$SPEC" >/dev/null 2>&1 \
-  || die "spec must contain a tracker and uniquely identified, valid steps"
+  || die "spec must contain valid profile, topology, packet, and uniquely identified steps"
+
+PROFILE=$(jq -r '.profile // "legacy"' "$SPEC")
+BASELINE=$("$(dirname "$0")/assurance.sh" status | awk '{print $1}') \
+  || die "project assurance baseline is invalid"
+case "$PROFILE:$BASELINE" in
+  standard:strict) die "standard profile would downgrade the strict project baseline" ;;
+esac
+if [ "$PROFILE" != legacy ]; then
+  i=0
+  while [ "$i" -lt "$(jq '.steps | length' "$SPEC")" ]; do
+    packet=$(jq -r --arg profile "$PROFILE" --argjson i "$i" '
+      .steps[$i].packet |
+      "Profile: \($profile)\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"
+    ' "$SPEC")
+    words=$(printf '## Executor packet\n%s\n' "$packet" | wc -w | tr -d ' ')
+    [ "$words" -le 800 ] || die "executor packet for step $((i + 1)) exceeds 800 words ($words)"
+    i=$((i + 1))
+  done
+fi
 
 
 # Validate the local writer target before authentication or any issue mutation.
@@ -82,7 +109,7 @@ hash_stdin() {
   git hash-object --stdin 2>/dev/null || cksum | awk '{print $1}'
 }
 
-TRACK_TITLE=$(jq -r '.tracking.title' "$SPEC")
+TRACK_TITLE=$(jq -r 'if .profile == "standard" then .steps[0].title else .tracking.title end' "$SPEC")
 TRACK_BODY=$(jq -r '.tracking.body // ""' "$SPEC")
 TRACK_LABELS=$(jq -r '(.labels // []) | join(",")' "$SPEC")
 STEP_COUNT=$(jq '.steps | length' "$SPEC")
@@ -92,6 +119,7 @@ SPEC_HASH=$(jq -cS . "$SPEC" | hash_stdin)
 PLAN_MARKER="agentic-flow:plan:$PLAN_KEY"
 
 echo "Mode:            $MODE"
+echo "Profile:         $PROFILE"
 echo "Plan identity:   $PLAN_KEY"
 echo "Spec revision:   $SPEC_HASH"
 echo "Tracking issue:  $TRACK_TITLE   [labels: $TRACK_LABELS]"
@@ -142,7 +170,7 @@ printf '%s\n' "$ISSUES_JSON" | jq -e --arg repo "$REPO" '
 INDEX="$TMP/issue-index"
 : > "$INDEX"
 TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( approved-by:.+ approved-at:[^ ]+)? -->$'
-STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10}) -->$'
+STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( approved-by:.+ approved-at:[^ ]+)? -->$'
 printf '%s\n' "$ISSUES_JSON" | jq -r --arg prefix "<!-- $PLAN_MARKER " '
   .[] | .number as $number | .body | split("\n")[]
   | select(contains($prefix)) | [$number, .] | @tsv
@@ -172,6 +200,111 @@ issue_for_identity() { # <tracker | step:id>
   printf '%s\n' "$ISSUES_JSON" | jq -c --arg number "$number" \
     '.[] | select((.number | tostring) == $number)'
 }
+
+# Topology is immutable for a plan identity. Check every discovered issue before
+# label creation, edits, or closes; a partial conversion would be unrecoverable.
+existing_topology=""
+while IFS="$(printf '\t')" read -r identity number; do
+  [ -n "$identity" ] || continue
+  body=$(printf '%s\n' "$ISSUES_JSON" | jq -r --argjson number "$number" '.[] | select(.number == $number) | .body')
+  if printf '%s\n' "$body" | grep -Fxq '<!-- agentic-flow:topology:standard -->'; then
+    found_topology=standard
+  elif printf '%s\n' "$body" | grep -Fxq '<!-- agentic-flow:topology:strict -->'; then
+    found_topology=strict
+  else
+    found_topology=legacy
+  fi
+  [ -z "$existing_topology" ] || [ "$existing_topology" = "$found_topology" ] \
+    || die "mixed issue topology for plan $PLAN_KEY; migration required"
+  existing_topology=$found_topology
+done < "$INDEX"
+[ -z "$existing_topology" ] || [ "$existing_topology" = "$PROFILE" ] \
+  || die "changing plan $PLAN_KEY topology from $existing_topology to $PROFILE requires migration"
+
+if [ "$PROFILE" = standard ]; then
+  [ ! -s "$INDEX" ] || [ "$(wc -l < "$INDEX" | tr -d ' ')" -eq 1 ] \
+    || die "standard plan has more than one existing issue; migration required"
+  [ -z "$(issue_for_identity tracker)" ] \
+    || die "standard plan cannot reuse a parent tracker; migration required"
+  step_id=$(jq -r '.steps[0].id // "step-1"' "$SPEC")
+  existing=$(issue_for_identity "step:$step_id")
+  [ ! -s "$INDEX" ] || [ -n "$existing" ] \
+    || die "changing a standard work issue identity requires migration"
+  approval_by="" approval_at=""
+  if [ -n "$existing" ]; then
+    existing_body=$(printf '%s\n' "$existing" | jq -r .body)
+    approval_by=$(printf '%s\n' "$existing_body" | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)
+    approval_at=$(printf '%s\n' "$existing_body" | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
+    if [ -n "$approval_by" ]; then
+      [[ "$approval_by" =~ ^[A-Za-z0-9]([A-Za-z0-9._\ -]*[A-Za-z0-9])?$ ]] \
+        && [[ "$approval_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+        || die "existing Standard approval metadata is invalid"
+    fi
+    [ -z "$APPROVED_BY" ] || [ -z "$approval_by" ] || [ "$APPROVED_BY" = "$approval_by" ] \
+      || die "plan already approved by '$approval_by'"
+  fi
+  if [ -n "$APPROVED_BY" ] && [ -z "$approval_by" ]; then
+    approval_by=$APPROVED_BY
+    approval_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  fi
+  if [ "$MODE" = apply ] && [ -z "$approval_by" ]; then
+    die "standard work issue requires --approved-by to record plan approval"
+  fi
+  stamp="<!-- $PLAN_MARKER step:$step_id spec:$SPEC_HASH"
+  [ -z "$approval_by" ] || stamp="$stamp approved-by:$approval_by approved-at:$approval_at"
+  stamp="$stamp -->"
+  packet=$(jq -r '.steps[0].packet | "Profile: Standard\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"' "$SPEC")
+  body=$(jq -r '.steps[0].body // ""' "$SPEC")
+  desired_body="${body}
+
+## Executor packet
+${packet}
+
+${stamp}
+<!-- agentic-flow:topology:standard -->"
+  if [ "$MODE" = diff ]; then
+    [ -n "$existing" ] && echo 'Work issue: exists' || echo 'Work issue: missing (would create)'
+    exit 0
+  fi
+  labels=$(jq -r '(.steps[0].labels // []) | join(",")' "$SPEC")
+  jq -r '[(.steps[0].labels // [])[]] | unique[]' "$SPEC" | while IFS= read -r label; do
+    [ -n "$label" ] || continue
+    gh label create "$label" --repo "$REPO" --color CCCCCC >/dev/null 2>&1 || true
+  done
+  workflow_label_hit=$(gh label list --repo "$REPO" --json name \
+    --jq '[.[] | select(.name == "agent:claude" or .name == "agent:codex" or .name == "agent:opencode" or .name == "needs-review" or .name == "needs-execution" or .name == "needs-closing")] | length' \
+    2>/dev/null || echo 0)
+  if [ "$workflow_label_hit" -eq 0 ]; then
+    "$(dirname "$0")/create-tags.sh" --repo "$REPO"
+  fi
+  if [ -z "$existing" ]; then
+    if [ -n "$labels" ]; then
+      url=$(gh issue create --repo "$REPO" --title "$TRACK_TITLE" --body "$desired_body" --label "$labels")
+    else
+      url=$(gh issue create --repo "$REPO" --title "$TRACK_TITLE" --body "$desired_body")
+    fi
+    echo "created work issue $url"
+  else
+    number=$(printf '%s\n' "$existing" | jq -r .number)
+    url=$(printf '%s\n' "$existing" | jq -r .url)
+    gh issue edit "$number" --repo "$REPO" --title "$TRACK_TITLE" --body "$desired_body" >/dev/null
+    echo "updated work issue $url"
+  fi
+  if [ -n "$DOC" ]; then
+    doc_tmp="$DOC.tmp.$$"
+    approval_line=""
+    [ -z "$approval_by" ] || approval_line="- **Approval:** status=approved; by=$approval_by; at=${approval_at%%T*}"
+    awk -v url="$url" -v approval_line="$approval_line" '
+      /^- \*\*Tracking issue:\*\*/ {print "- **Tracking issue:** url=" url; found=1; next}
+      approval_line != "" && /^- \*\*Approval:\*\*/ {print approval_line; approved=1; next}
+      {print}
+      END {if (!found || (approval_line != "" && !approved)) exit 1}
+    ' "$DOC" > "$doc_tmp" || { rm -f "$doc_tmp"; die "--doc lacks Tracking issue or Approval Status field"; }
+    mv "$doc_tmp" "$DOC"
+  fi
+  echo "Done. Tracking issue: $url"
+  exit 0
+fi
 
 TRACK_ID_MARKER="$PLAN_MARKER tracker"
 existing_tracker=$(issue_for_identity tracker)
@@ -204,6 +337,10 @@ if [ -n "$APPROVAL_BY" ]; then
   TRACK_STAMP="$TRACK_STAMP approved-by:$APPROVAL_BY approved-at:$APPROVAL_AT"
 fi
 TRACK_STAMP="$TRACK_STAMP -->"
+if [ "$PROFILE" = strict ]; then
+  TRACK_STAMP="$TRACK_STAMP
+<!-- agentic-flow:topology:strict -->"
+fi
 TRACK_DESIRED="${TRACK_BODY}
 
 ${TRACK_STAMP}"
@@ -286,6 +423,15 @@ while [ "$i" -lt "$STEP_COUNT" ]; do
   step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
   marker="$PLAN_MARKER step:$step_id"
   stamp="<!-- $marker spec:$SPEC_HASH -->"
+  if [ "$PROFILE" = strict ]; then
+    stamp="$stamp
+<!-- agentic-flow:topology:strict -->"
+    packet=$(jq -r --argjson i "$i" '.steps[$i].packet | "Profile: Strict\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"' "$SPEC")
+    body="$body
+
+## Executor packet
+$packet"
+  fi
   desired_body="${body}
 
 ${stamp}"

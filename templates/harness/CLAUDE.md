@@ -23,7 +23,7 @@
   its issue. Commits with `git-codex`. See `AGENTS.md`.
 - **Review — OpenCode.** The independent per-step review: reads the commit Codex recorded
   against the brief, then either returns findings to Codex or records an approving verdict
-  and closes the step issue. Commits review notes with `git-opencode`. See `METHODOLOGY.md`
+  and closes Strict sub-issues or relabels Standard work issues. Commits review notes with `git-opencode`. See `METHODOLOGY.md`
   §1 and the label pairs in §6.
 - **Own / merge / deploy — the human.** Approves plans, merges PRs, controls all pushes.
 
@@ -116,7 +116,7 @@ full mechanism and rationale for each in `METHODOLOGY.md` §8:
 
 - Commit with **`git-claude`**. **Stage files by name** — never `git add -A` / `git add .`.
 - **One logical commit per change.** Verbose, *why*-first body. `Fixes #N` to link a commit
-  to its step issue (the reviewer closes step issues; the trailer is for traceability).
+  to its issue (Strict review closes sub-issues; Standard close-out closes the work issue).
 - **Never push** — the human controls pushes and merges.
 
 ## Document workflow
@@ -125,14 +125,16 @@ full mechanism and rationale for each in `METHODOLOGY.md` §8:
 - Security/Feature docs carry an **inlined implementation brief** (approach + ordered steps
   + DoD + verification commands from the Stack profile — **not code**).
 - Approved plan → run the **`plan-to-issues`** skill.
-- The reviewer closes each step issue on approval; `agent:claude + needs-closing` lands on
-  the **tracking** issue, not the steps. After every step is reviewed, prepare the final
+- Under Strict, the reviewer closes each sub-issue on approval and sends the parent
+  tracker to `agent:claude + needs-closing`. Under Standard, the reviewer posts an approving
+  comment and sends the sole work issue to `needs-closing`, leaving it open for close-out.
+  After every step is reviewed, prepare the final
   Status/Tracker, set TRIAGE to Done, move the document to `docs/done/`, update the index,
   and commit that as the last repository edit. The human pushes; CI and a reviewer approve
   the exact PR head. Verify with `scripts/lifecycle-status.sh --doc docs/done/<doc>.md
-  --phase close-out --check --verify-evidence`, then close the tracker without another
+  --phase close-out --check --verify-evidence`, then close the tracker or Standard work issue without another
   repository edit. The human rechecks with `--phase pre-merge` immediately before merge
-  (or relies on protected-branch required checks). That phase expects the tracker closed.
+  (or relies on protected-branch required checks). That phase expects the named issue closed.
   Any edit after approval restarts the external round. Verification is point-in-time and
   does not guard a later merge. A closed step is *reviewed clean*, not *shipped*.
 - On done (shipped & verified, or risk accepted) → move the doc to `docs/done/`

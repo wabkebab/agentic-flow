@@ -2493,6 +2493,45 @@ must_block_nojq "$PUSH_GUARD" 'gh pr merge 12'
 must_block_nojq "$PUSH_GUARD" 'git -C "a path" push'
 must_allow_nojq "$PUSH_GUARD" 'rg "git push" METHODOLOGY.md'
 must_allow_nojq "$PUSH_GUARD" 'git pull --rebase'
+
+STEP_HOOK="$ROOT/scripts/hooks/require-step-comment.sh"
+STEP_HOOK_GH="$TMP/step-hook-gh"
+mkdir -p "$STEP_HOOK_GH"
+cat > "$STEP_HOOK_GH/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+case "$*" in
+  *'--jq .body'*) printf '%s\n' '<!-- agentic-flow:topology:standard -->' ;;
+  *'--jq .labels[].name'*) printf '%s\n' "${STEP_HOOK_LABELS:-needs-review}" ;;
+  *'--jq .comments[-1].body'*) printf '%s\n' "${STEP_HOOK_COMMENT:-}" ;;
+  *) exit 2 ;;
+esac
+FAKE_GH
+chmod +x "$STEP_HOOK_GH/gh"
+step_hook_status() { # <command> <comment> <labels> <expected status>
+  status=0
+  hook_payload "$1" | PATH="$STEP_HOOK_GH:$PATH" \
+    STEP_HOOK_COMMENT="$2" STEP_HOOK_LABELS="$3" "$STEP_HOOK" \
+    > "$TMP/step-hook.out" 2>&1 || status=$?
+  [ "$status" -eq "$4" ] \
+    || fail "step handoff hook returned $status, expected $4: $(cat "$TMP/step-hook.out")"
+}
+STEP_APPROVAL='agentic-flow-review: status=approved; step=alpha; head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; role=reviewer'
+STEP_FINAL='agentic-flow-review: status=approved; pr=2; head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; run=https://github.com/owner/repo/actions/runs/100; attempt=1; role=reviewer'
+step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
+  'changes requested' needs-review 2
+step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
+  "$STEP_APPROVAL" needs-review 0
+step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
+  "Review approved after checking the failure path.
+  $STEP_APPROVAL
+Verification passed." needs-review 0
+step_hook_status 'gh issue close 1' "$STEP_APPROVAL" needs-review 2
+step_hook_status 'gh issue close 1' "$STEP_APPROVAL" needs-closing 2
+step_hook_status 'gh issue close 1' "$STEP_FINAL" needs-closing 0
+step_hook_status 'gh issue close 1' \
+  "Final head and CI checked.
+  $STEP_FINAL
+Ready for close-out." needs-closing 0
 fi
 
 # --- plan-to-issues spec validation ------------------------------------------------------
@@ -2830,6 +2869,113 @@ PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PARTIAL_STATE" \
   || fail "plan apply did not resume after a partial failure"
 partial_count=$(find "$PARTIAL_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
 [ "$partial_count" -eq 3 ] || fail "partial resume duplicated or omitted plan issues"
+
+# Standard creates one work issue. Its packet and approval metadata stay on
+# that issue across reapply, and a topology change fails before mutation.
+STANDARD_SPEC="$TMP/standard-spec.json"
+jq '{profile:"standard",id:"standard-plan",steps:[.steps[0] | .packet = {
+  brief:"docs/inprogress/feature.md Step 1",
+  definition_of_done:"Failure path and success path pass",
+  verification:"make check and make test-one F=plan-to-issues",
+  risks:"Malformed input must fail before a GitHub write"
+}]}' "$PLAN_SPEC" > "$STANDARD_SPEC"
+STANDARD_STATE="$TMP/gh-standard-state"
+if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+  "$PLAN_DRIVER" --apply "$STANDARD_SPEC" > "$TMP/standard-unapproved.out" 2>&1; then
+  fail 'Standard created an issue without plan approval metadata'
+fi
+grep -q 'requires --approved-by' "$TMP/standard-unapproved.out" \
+  || fail 'Standard missing approval lacked diagnostic'
+[ ! -d "$STANDARD_STATE/issue-1" ] || fail 'Standard wrote an unapproved work issue'
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+  "$PLAN_DRIVER" --apply --approved-by "Test User" "$STANDARD_SPEC" >/dev/null \
+  || fail 'Standard apply failed'
+[ "$(find "$STANDARD_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')" -eq 1 ] \
+  || fail 'Standard created a parent or more than one work issue'
+grep -q 'agentic-flow:topology:standard' "$STANDARD_STATE/issue-1/body" \
+  || fail 'Standard work issue lacks topology stamp'
+grep -q 'approved-by:Test User' "$STANDARD_STATE/issue-1/body" \
+  || fail 'Standard approval metadata was not recorded on work issue'
+grep -q '## Executor packet' "$STANDARD_STATE/issue-1/body" \
+  || fail 'Standard work issue lacks executor packet'
+STANDARD_DOC="$TMP/standard-doc.md"
+cp "$APPROVAL_DOC" "$STANDARD_DOC"
+sed 's@url=https://github.com/owner/repo/issues/1@pending@; s/status=approved; by=Test User; at=[0-9-]*/pending/' \
+  "$STANDARD_DOC" > "$TMP/standard-doc-pending.md"
+mv "$TMP/standard-doc-pending.md" "$STANDARD_DOC"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+  "$PLAN_DRIVER" --apply --doc "$STANDARD_DOC" "$STANDARD_SPEC" >/dev/null \
+  || fail 'Standard apply could not write the work issue URL and approval to the document'
+grep -qF -- '- **Tracking issue:** url=https://github.com/owner/repo/issues/1' "$STANDARD_DOC" \
+  || fail 'Standard document did not receive the work issue URL'
+grep -qF -- '- **Approval:** status=approved; by=Test User;' "$STANDARD_DOC" \
+  || fail 'Standard document did not receive approval evidence'
+cp "$STANDARD_STATE/issue-1/body" "$TMP/standard-before.body"
+: > "$TMP/standard-reapply-calls"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" FAKE_GH_CALLS="$TMP/standard-reapply-calls" \
+  "$PLAN_DRIVER" --apply "$STANDARD_SPEC" >/dev/null \
+  || fail 'Standard reapply failed'
+cmp -s "$STANDARD_STATE/issue-1/body" "$TMP/standard-before.body" \
+  || fail 'Standard reapply changed work issue metadata'
+if grep -Eq 'issue edit 1 .*--add-label' "$TMP/standard-reapply-calls"; then
+  fail 'Standard reapply reset live work issue labels'
+fi
+
+standard_reject() { # <name> <spec>
+  : > "$TMP/standard-reject-calls"
+  if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+    FAKE_GH_CALLS="$TMP/standard-reject-calls" \
+    "$PLAN_DRIVER" --apply "$2" > "$TMP/standard-reject.out" 2>&1; then
+    fail "Standard accepted $1"
+  fi
+  if grep -Eq '(^| )(issue create|issue edit|issue close|label create)( |$)' \
+      "$TMP/standard-reject-calls"; then
+    fail "Standard mutated GitHub before rejecting $1"
+  fi
+}
+jq '.steps = []' "$STANDARD_SPEC" > "$TMP/standard-zero.json"
+standard_reject 'zero steps' "$TMP/standard-zero.json"
+jq '.steps += [.steps[0] | .id="second"]' "$STANDARD_SPEC" > "$TMP/standard-two.json"
+standard_reject 'two steps' "$TMP/standard-two.json"
+jq '.profile="strict"' "$STANDARD_SPEC" > "$TMP/strict-no-parent.json"
+standard_reject 'Strict without parent specification' "$TMP/strict-no-parent.json"
+jq '.profile="strict" | .tracking={title:"Plan: standard-plan"}' \
+  "$STANDARD_SPEC" > "$TMP/topology-change.json"
+standard_reject 'topology-changing reapply' "$TMP/topology-change.json"
+grep -q 'migration' "$TMP/standard-reject.out" \
+  || fail 'topology change lacked migration diagnostic'
+jq '.steps[0].packet.brief = ([range(0;801) | "word"] | join(" "))' \
+  "$STANDARD_SPEC" > "$TMP/packet-overflow.json"
+standard_reject 'packet overflow' "$TMP/packet-overflow.json"
+grep -q '800 words' "$TMP/standard-reject.out" \
+  || fail 'packet overflow lacked bound diagnostic'
+
+ASSURANCE_FIX="$TMP/assurance-fixture"
+mkdir -p "$ASSURANCE_FIX/scripts"
+cp "$ROOT/scripts/plan-to-issues.sh" "$ROOT/scripts/assurance.sh" "$ASSURANCE_FIX/scripts/"
+printf 'strict\n' > "$ASSURANCE_FIX/.agentic-flow-assurance"
+if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+  "$ASSURANCE_FIX/scripts/plan-to-issues.sh" --apply "$STANDARD_SPEC" \
+  > "$TMP/standard-downgrade.out" 2>&1; then
+  fail 'Standard accepted a downgrade below the project baseline'
+fi
+grep -q 'downgrade' "$TMP/standard-downgrade.out" \
+  || fail 'Standard downgrade lacked diagnostic'
+
+STRICT_SPEC="$TMP/strict-spec.json"
+jq '.profile="strict" | .id="strict-plan" |
+  .steps |= map(.packet={brief:"approved brief step",definition_of_done:"reviewed behavior",
+    verification:"make check",risks:"failure path"})' "$PLAN_SPEC" > "$STRICT_SPEC"
+STRICT_STATE="$TMP/gh-strict-state"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STRICT_STATE" \
+  "$PLAN_DRIVER" --apply "$STRICT_SPEC" >/dev/null \
+  || fail 'Strict apply failed'
+[ "$(find "$STRICT_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail 'Strict did not create one tracker and two sub-issues'
+grep -q 'agentic-flow:topology:strict' "$STRICT_STATE/issue-1/body" \
+  || fail 'Strict parent lacks topology stamp'
+grep -q '## Executor packet' "$STRICT_STATE/issue-2/body" \
+  || fail 'Strict step lacks executor packet'
 fi
 
 # --- lifecycle qualification -------------------------------------------------------------
@@ -3002,7 +3148,13 @@ cat > "$LIFE_API/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$LIFE_CALLS"
 case "$*" in
-  *'issue view'*) printf '{"state":"%s","labels":[{"name":"agent:claude"},{"name":"needs-closing"}],"body":"<!-- agentic-flow:plan:fixture tracker spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}\n' "${LIFE_ISSUE_STATE:-OPEN}" ;;
+  *'issue view'*)
+    if [ -n "${LIFE_ISSUE_BODY_FILE:-}" ]; then
+      jq -n --arg state "${LIFE_ISSUE_STATE:-OPEN}" --rawfile body "$LIFE_ISSUE_BODY_FILE" \
+        '{state:$state,labels:[{name:"agent:claude"},{name:"needs-closing"}],body:$body}'
+    else
+      printf '{"state":"%s","labels":[{"name":"agent:claude"},{"name":"needs-closing"}],"body":"<!-- agentic-flow:plan:fixture tracker spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}\n' "${LIFE_ISSUE_STATE:-OPEN}"
+    fi ;;
   *'issue list'*) printf '[{"number":3,"state":"%s","body":"<!-- agentic-flow:plan:fixture step:f-1 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}]\n' "${LIFE_STEP_STATE:-CLOSED}" ;;
   *'api repos/owner/repo/pulls/2'*) cat "$LIFE_PR_JSON" ;;
   *'api graphql '*'number=1'*) cat "$LIFE_COMMENTS_JSON" ;;
@@ -3055,6 +3207,69 @@ bound_case 'authenticated correct binding' READY 'review by reviewer' 1
 grep -q "$LIFE_HEAD.*comment opaque-1" "$TMP/lifecycle-bound.out" \
   || fail 'bound CI output omitted the resolved head or selected comment'
 grep -q 'attempt 1 succeeded' "$TMP/lifecycle-bound.out" || fail 'run attempt not printed'
+
+# Standard uses one open work issue for both the step and final review. The
+# same complete comment page must support close-out and the post-close recheck.
+STANDARD_LIFE_DOC="$V2FIX/docs/inprogress/feature-standard.md"
+cp "$TMP/valid-v2.md" "$STANDARD_LIFE_DOC"
+printf '%s\n' \
+  '<!-- agentic-flow:plan:standard-plan step:alpha spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa approved-by:Tester approved-at:2026-01-01T00:00:00Z -->' \
+  '<!-- agentic-flow:topology:standard -->' > "$TMP/standard-life-body"
+STEP_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+jq -n --arg head "$LIFE_HEAD" --arg step "$STEP_HEAD" --arg run "$LIFE_RUN_URL" \
+  '{data:{repository:{issue:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+    {id:"handoff",fullDatabaseId:"9",body:("Implemented in " + $step + " — implementation"),author:{login:"executor"},lastEditedAt:null},
+    {id:"step-review",fullDatabaseId:"10",body:("agentic-flow-review: status=approved; step=alpha; head=" + $step + "; role=reviewer"),author:{login:"reviewer"},lastEditedAt:null},
+    {id:"final-review",fullDatabaseId:"11",body:("agentic-flow-review: status=approved; pr=2; head=" + $head + "; run=" + $run + "; attempt=1; role=reviewer"),author:{login:"reviewer"},lastEditedAt:null}
+  ]}}}}}' > "$TMP/standard-life-comments.json"
+LIFE_ISSUE_BODY_FILE="$TMP/standard-life-body"
+LIFE_COMMENTS_JSON="$TMP/standard-life-comments.json"
+export LIFE_ISSUE_BODY_FILE LIFE_COMMENTS_JSON
+for phase_state in 'close-out OPEN' 'pre-merge CLOSED'; do
+  read -r phase_name state_name <<< "$phase_state"
+  : > "$LIFE_CALLS"
+  PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" LIFE_ISSUE_STATE="$state_name" \
+    "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" \
+    --phase "$phase_name" --check --verify-evidence > "$TMP/standard-life.out" 2>&1 \
+    || fail "Standard $phase_name failed: $(cat "$TMP/standard-life.out")"
+  grep -q '^READY' "$TMP/standard-life.out" || fail "Standard $phase_name was not READY"
+  [ "$(grep -c 'api graphql ' "$LIFE_CALLS" || true)" -eq 1 ] \
+    || fail 'Standard queried more than its one review thread'
+done
+sed 's/approved-by:Tester/approved-by:Other/' "$TMP/standard-life-body" \
+  > "$TMP/standard-life-bad-body"
+LIFE_ISSUE_BODY_FILE="$TMP/standard-life-bad-body" \
+  PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" \
+  --check --verify-evidence > "$TMP/standard-life-bad.out" 2>&1 \
+  && fail 'Standard accepted mismatched approval metadata'
+grep -q 'BLOCKED.*approval stamp differs' "$TMP/standard-life-bad.out" \
+  || fail 'Standard approval mismatch lacked diagnostic'
+LIFE_ISSUE_BODY_FILE="$TMP/standard-life-body"
+jq '.data.repository.issue.comments.nodes |= map(select(.id != "step-review"))' \
+  "$TMP/standard-life-comments.json" > "$TMP/standard-life-no-step.json"
+LIFE_COMMENTS_JSON="$TMP/standard-life-no-step.json"
+export LIFE_COMMENTS_JSON
+PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" \
+  --check --verify-evidence > "$TMP/standard-life-no-step.out" 2>&1 \
+  && fail 'Standard accepted missing step review'
+grep -q 'UNVERIFIED.*no review' "$TMP/standard-life-no-step.out" \
+  || fail 'Standard missing review lacked diagnostic'
+jq '.data.repository.issue.comments.nodes[-1].body |= sub("head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";"head=cccccccccccccccccccccccccccccccccccccccc")' \
+  "$TMP/standard-life-comments.json" > "$TMP/standard-life-stale.json"
+LIFE_COMMENTS_JSON="$TMP/standard-life-stale.json"
+export LIFE_COMMENTS_JSON
+PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" \
+  --check --verify-evidence > "$TMP/standard-life-stale.out" 2>&1 \
+  && fail 'Standard accepted stale final-head approval'
+grep -q 'UNVERIFIED.*no approval for PR head' "$TMP/standard-life-stale.out" \
+  || fail 'Standard stale final-head evidence lacked diagnostic'
+LIFE_COMMENTS_JSON="$TMP/standard-life-comments.json"
+unset LIFE_ISSUE_BODY_FILE
+export LIFE_COMMENTS_JSON
+
 jq '.path = ".github/workflows/ci.yml@main"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-ref.json"
 LIFE_RUN_JSON="$TMP/lifecycle-run-ref.json"; export LIFE_RUN_JSON
 bound_case 'workflow path with GitHub ref suffix' READY 'review by reviewer' 1
