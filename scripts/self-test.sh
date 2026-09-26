@@ -62,6 +62,34 @@ PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
 trap 'rm -rf "$TMP"' EXIT
 
+# Optional measurement events. Ordinary test runs leave this unset and keep the
+# same dispatch and copy commands. The report counts completed copy operations.
+measure_event() {
+  [ -n "${AGENTIC_MEASURE_EVENTS:-}" ] || return 0
+  printf '%s\n' "$1" >> "$AGENTIC_MEASURE_EVENTS"
+}
+
+cp() {
+  command cp "$@" || return $?
+  [ -n "${AGENTIC_MEASURE_EVENTS:-}" ] || return 0
+  local source="" recursive=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      -R|-r|-a) recursive=1 ;;
+      -*) ;;
+      *) [ -n "$source" ] || source="$arg" ;;
+    esac
+  done
+  if [ "$recursive" -eq 1 ] && [ -d "$source" ]; then
+    measure_event fixture_tree_copy
+    find "$source" -type f -print | while IFS= read -r arg; do
+      measure_event fixture_file_copy
+    done
+  else
+    measure_event fixture_file_copy
+  fi
+}
+
 fail() {
   echo "self-test failed: $*" >&2
   exit 1
@@ -166,6 +194,7 @@ path_without_tools() { # <output-dir> <tool>...
   IFS=:
   for path_dir in $PATH; do
     [ -d "$path_dir" ] || continue
+    measure_event path_directory_scan
     for candidate in "$path_dir"/*; do
       [ -f "$candidate" ] || continue
       [ -x "$candidate" ] || continue
@@ -242,6 +271,7 @@ should_run() { # <group>
     return 1
   fi
   GROUPS_RAN="$GROUPS_RAN $1 "
+  measure_event "group:$1"
   return 0
 }
 
@@ -254,6 +284,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # source checkout modified. Copy tracked and untracked working files instead.
   SOURCE_FIXTURE="$TMP/source"
   mkdir -p "$SOURCE_FIXTURE"
+  measure_event source_snapshot_copy
+  measure_event fixture_tree_copy
   while IFS= read -r -d '' tracked; do
     [ -e "$ROOT/$tracked" ] || continue
     mkdir -p "$SOURCE_FIXTURE/$(dirname "$tracked")"
@@ -842,6 +874,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
 
   NO_REMOTE_SOURCE="$TMP/no-remote-source"
   mkdir -p "$NO_REMOTE_SOURCE"
+  measure_event source_snapshot_copy
+  measure_event fixture_tree_copy
   while IFS= read -r -d '' tracked; do
     [ -e "$ROOT/$tracked" ] || continue
     mkdir -p "$NO_REMOTE_SOURCE/$(dirname "$tracked")"
@@ -1700,6 +1734,48 @@ AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check \
   && fail "docs-index accepted an undeclared docs stage"
 grep -q "undeclared docs stage" "$TMP/docs-stage.err" \
   || fail "docs-index undeclared-stage failure did not explain the problem"
+
+MEASURE_FIX="$TMP/measure"
+mkdir -p "$MEASURE_FIX/root/docs" "$MEASURE_FIX/root/.agents/skills/review-execution" \
+  "$MEASURE_FIX/events"
+printf 'shared words\n' > "$MEASURE_FIX/root/CLAUDE.md"
+printf 'executor words\n' > "$MEASURE_FIX/root/AGENTS.md"
+printf 'memory words\n' > "$MEASURE_FIX/root/docs/MEMORY.md"
+printf 'review words\n' > "$MEASURE_FIX/root/.agents/skills/review-execution/SKILL.md"
+printf 'group:contracts\ngroup:contracts\nfixture_tree_copy\nfixture_file_copy\n' \
+  > "$MEASURE_FIX/events/fast.events"
+printf 'group:contracts\npacket_words:12\n' > "$MEASURE_FIX/events/full.events"
+measure_cmd=( "$ROOT/scripts/measure-harness.sh" --root "$MEASURE_FIX/root" \
+  --events "$MEASURE_FIX/events" --format json )
+"${measure_cmd[@]}" > "$MEASURE_FIX/first.json" \
+  || fail 'measurement fixture failed'
+"${measure_cmd[@]}" > "$MEASURE_FIX/second.json"
+cmp -s "$MEASURE_FIX/first.json" "$MEASURE_FIX/second.json" \
+  || fail 'measurement output changed for unchanged inputs'
+jq -e '.roles.executor.static_words == 6 and .roles.executor.static_files == 3
+  and .roles.executor.ceiling == 100 and .roles.executor.generated_packet_words == 12
+  and .verification.fast.fast_group_count == 1
+  and .verification.fast.fixture_tree_copies == 1
+  and .verification.fast.fixture_copied_files == 1' "$MEASURE_FIX/first.json" >/dev/null \
+  || fail 'measurement duplicated shared words or miscounted work'
+printf 'fixture_tree_copy\nfixture_file_copy\n' >> "$MEASURE_FIX/events/fast.events"
+"${measure_cmd[@]}" > "$MEASURE_FIX/added.json"
+jq -e '.verification.fast.fixture_tree_copies == 2
+  and .verification.fast.fixture_copied_files == 2' "$MEASURE_FIX/added.json" >/dev/null \
+  || fail 'new fixture did not move both copy counters'
+"$ROOT/scripts/measure-harness.sh" --format yaml --root "$MEASURE_FIX/root" \
+  --events "$MEASURE_FIX/events" >/dev/null 2>&1 \
+  && fail 'measurement accepted an invalid format'
+mv "$MEASURE_FIX/root/AGENTS.md" "$MEASURE_FIX/missing-agents"
+"${measure_cmd[@]}" >/dev/null 2>&1 \
+  && fail 'measurement accepted a missing bundle input'
+mv "$MEASURE_FIX/missing-agents" "$MEASURE_FIX/root/AGENTS.md"
+jq '.roles.executor.ceiling = 0' "$MEASURE_FIX/first.json" > "$MEASURE_FIX/ceiling.json"
+"${measure_cmd[@]}" --baseline "$MEASURE_FIX/ceiling.json" >/dev/null 2>&1 \
+  && fail 'measurement accepted a bundle above its baseline ceiling'
+printf 'packet_words:801\n' > "$MEASURE_FIX/events/full.events"
+"${measure_cmd[@]}" >/dev/null 2>&1 \
+  && fail 'measurement accepted a packet above the absolute cap'
 fi
 
 # --- upgrade surface --------------------------------------------------------------------
@@ -2096,7 +2172,8 @@ fi
 # --- hook invariants (run everywhere) ----------------------------------------------------
 if should_run hooks; then
 NOJQ_PATH=$(path_without_tools "$TMP/nojq-bin" jq)
-PATH="$NOJQ_PATH" command -v jq >/dev/null 2>&1 && fail "jq-less PATH still contains jq"
+PATH="$NOJQ_PATH" bash -c 'command -v jq' >/dev/null 2>&1 \
+  && fail "jq-less PATH still contains jq"
 PATH="$NOJQ_PATH" command -v git >/dev/null 2>&1 \
   || fail "jq-less PATH accidentally removed ordinary git"
 
@@ -2879,6 +2956,12 @@ jq '{profile:"standard",id:"standard-plan",steps:[.steps[0] | .packet = {
   verification:"make check and make test-one F=plan-to-issues",
   risks:"Malformed input must fail before a GitHub write"
 }]}' "$PLAN_SPEC" > "$STANDARD_SPEC"
+if [ -n "${AGENTIC_MEASURE_EVENTS:-}" ]; then
+  packet_words=$(jq -r '.steps[0].packet |
+    "## Executor packet\nProfile: Standard\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"' \
+    "$STANDARD_SPEC" | wc -w | tr -d ' ')
+  measure_event "packet_words:$packet_words"
+fi
 STANDARD_STATE="$TMP/gh-standard-state"
 if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
   "$PLAN_DRIVER" --apply "$STANDARD_SPEC" > "$TMP/standard-unapproved.out" 2>&1; then
