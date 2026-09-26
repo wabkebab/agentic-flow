@@ -277,6 +277,10 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md"
 
   assert_active_ci_workflow "$SOURCE_FIXTURE/.github/workflows/ci.yml"
+  if grep -Eq 'agentic-flow-assurance|assurance\.sh' \
+      "$SOURCE_FIXTURE/.github/workflows/ci.yml" "$SOURCE_FIXTURE/templates/ci/ci.yml"; then
+    fail "CI workflow varies required checks with assurance state"
+  fi
 
   printf '%s\n' '{}' > "$SOURCE_FIXTURE/.codex/unclassified.json"
   AGENTIC_PROJECT_ROOT="$SOURCE_FIXTURE" \
@@ -350,6 +354,10 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$SCOPED_TARGET/.claude/settings.json"
   assert_file "$SCOPED_TARGET/.claude/skills/plan-to-issues/SKILL.md"
   assert_file "$SCOPED_TARGET/.agentic-flow-installation"
+  grep -qx standard "$SCOPED_TARGET/.agentic-flow-assurance" \
+    || fail "new export did not seed Standard assurance"
+  (cd "$SCOPED_TARGET" && scripts/assurance.sh set strict) >/dev/null \
+    || fail "exported assurance CLI could not raise baseline"
   grep -qx 'scope=claude' "$SCOPED_TARGET/.agentic-flow-installation" \
     || fail "scoped export did not record its active Claude scope"
   grep -q '^scope=codex$' "$SCOPED_TARGET/.agentic-flow-installation" \
@@ -360,6 +368,10 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   cp "$SCOPED_TARGET/.agentic-flow-installation" "$TMP/scoped-installation.orig"
   "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
     "$SCOPED_TARGET" >/dev/null
+  "$SOURCE_FIXTURE/scripts/export.sh" --force --exclude-scope=codex --exclude-scope=opencode \
+    "$SCOPED_TARGET" >/dev/null
+  grep -qx strict "$SCOPED_TARGET/.agentic-flow-assurance" \
+    || fail "forced export overwrote adopter assurance baseline"
   cmp -s "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation" \
     || fail "repeated scoped export changed stable installation state"
   scoped_version=$(cat "$SCOPED_TARGET/.agentic-flow-version")
@@ -1695,6 +1707,48 @@ if should_run upgrade; then
 AGENTIC_FLOW_CLI="$ROOT/scripts/agentic-flow"
 assert_file "$AGENTIC_FLOW_CLI"
 
+# Assurance state is project-owned. Failures must leave both tracked files untouched.
+ASSURANCE="$ROOT/scripts/assurance.sh"
+assert_file "$ASSURANCE"
+ASSURANCE_FIX="$TMP/assurance"
+mkdir -p "$ASSURANCE_FIX/scripts"
+cp "$ASSURANCE" "$ASSURANCE_FIX/scripts/assurance.sh"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh status) > "$TMP/assurance-default.out" \
+  || fail "missing assurance state did not default to Standard"
+grep -q 'standard.*legacy default' "$TMP/assurance-default.out" \
+  || fail "assurance status did not identify the legacy default"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set strict) \
+  || fail "assurance raise failed"
+grep -qx strict "$ASSURANCE_FIX/.agentic-flow-assurance" || fail "raise was not persisted"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set standard) > "$TMP/assurance-unaudited.out" 2>&1 \
+  && fail "unaudited downgrade succeeded"
+grep -qx strict "$ASSURANCE_FIX/.agentic-flow-assurance" || fail "failed downgrade changed state"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set standard --approved-by human@example.invalid --reason 'Risk review completed') \
+  || fail "attributed downgrade failed"
+grep -q 'human@example.invalid.*Risk review completed' "$ASSURANCE_FIX/.agentic-flow-assurance-audit" \
+  || fail "downgrade audit did not persist attribution and reason"
+printf 'malformed audit\n' > "$ASSURANCE_FIX/.agentic-flow-assurance-audit"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh --check) > /dev/null 2>&1 \
+  && fail "malformed assurance audit accepted"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set strict) > /dev/null 2>&1 \
+  && fail "state changed over malformed assurance audit"
+grep -qx standard "$ASSURANCE_FIX/.agentic-flow-assurance" \
+  || fail "malformed audit changed state"
+printf '2026-01-01T00:00:00Z\tstrict\tstandard\thuman@example.invalid\tRisk review completed\n' \
+  > "$ASSURANCE_FIX/.agentic-flow-assurance-audit"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set quick --approved-by 'bad identity' --reason ok) > /dev/null 2>&1 \
+  && fail "malformed audit identity accepted"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set quick --approved-by human@example.invalid --reason '') > /dev/null 2>&1 \
+  && fail "empty audit reason accepted"
+grep -qx standard "$ASSURANCE_FIX/.agentic-flow-assurance" || fail "malformed audit changed state"
+printf 'unknown\n' > "$ASSURANCE_FIX/.agentic-flow-assurance"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh --check) > /dev/null 2>&1 \
+  && fail "unknown assurance state accepted"
+printf 'standard\nstrict\n' > "$ASSURANCE_FIX/.agentic-flow-assurance"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh --check) > /dev/null 2>&1 \
+  && fail "multiline assurance state accepted"
+
+
 OUTSIDE="$TMP/outside-project"
 mkdir -p "$OUTSIDE"
 (cd "$OUTSIDE" && "$AGENTIC_FLOW_CLI" status) >"$TMP/status-outside.out" 2>"$TMP/status-outside.err" \
@@ -1913,6 +1967,7 @@ printf '%s\n' 'old+1111111' > "$UPGRADE_TARGET/.agentic-flow-version"
 printf 'origin %s\nref main\n' "$UPGRADE_SOURCE_URL" > "$UPGRADE_TARGET/.agentic-flow-source"
 cp "$UPGRADE_SOURCE/config/payload.tsv" "$UPGRADE_TARGET/config/payload.tsv"
 cp "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh" "$UPGRADE_TARGET/scripts/lib/payload-apply.sh"
+printf 'strict\n' > "$UPGRADE_TARGET/.agentic-flow-assurance"
 (cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade) > "$TMP/upgrade-no-yes.out" 2>"$TMP/upgrade-no-yes.err" \
   && fail "upgrade wrote without --yes in a non-interactive run"
 grep -q "pass --yes" "$TMP/upgrade-no-yes.err" \
@@ -1922,6 +1977,8 @@ printf '%s\n' '# local project edits' > "$UPGRADE_TARGET/CLAUDE.md"
 printf '%s\n' '# occupied candidate' > "$UPGRADE_TARGET/CLAUDE.md.agentic-new"
 (cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-pending.out" \
   || fail "upgrade with merge candidates failed"
+grep -qx strict "$UPGRADE_TARGET/.agentic-flow-assurance" \
+  || fail "upgrade overwrote customized assurance baseline"
 grep -qx 'old+1111111' "$UPGRADE_TARGET/.agentic-flow-version" \
   || fail "upgrade advanced installed version while candidates remained"
 assert_file "$UPGRADE_TARGET/.agentic-flow-candidate-version"

@@ -36,6 +36,15 @@ load_excluded_scopes() { # <root>
   PAYLOAD_EXCLUDED_SCOPES=$(tr '\n' ' ' < "$file")
 }
 
+check_project_owned_state() {
+  local dest
+  for dest in "${DESTS[@]}"; do
+    case "$dest" in .agentic-flow-assurance|.agentic-flow-assurance-audit)
+      die "assurance state is project-owned and cannot be a payload destination" ;;
+    esac
+  done
+}
+
 find_root() {
   # Unlike doctor.sh, this walks from PWD so the CLI works when symlinked onto PATH.
   # The nearest stamp owns the subtree, preserving monorepo harness boundaries.
@@ -178,6 +187,7 @@ diff_cmd() {
   payload_load_manifest "$source/config/payload.tsv"
   PAYLOAD_DST_ROOT="$root"
   payload_expand_files "$source"
+  check_project_owned_state
   available=$(payload_compute_version "$source")
   PAYLOAD_VERSION="$available"
   PAYLOAD_DRY=true
@@ -275,6 +285,7 @@ upgrade_cmd() {
   payload_load_manifest "$source/config/payload.tsv"
   PAYLOAD_DST_ROOT="$root"
   payload_expand_files "$source"
+  check_project_owned_state
   available=$(payload_compute_version "$source")
   # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_VERSION="$available"

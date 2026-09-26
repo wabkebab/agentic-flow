@@ -164,6 +164,7 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_file scripts/check-payload-manifest.sh
   require_file scripts/lifecycle-status.sh
   require_file scripts/agentic-flow
+  require_file scripts/assurance.sh
   require_file scripts/render-stack-profile.sh
   require_file scripts/plan-to-issues.sh
   require_file scripts/doctor.sh
@@ -281,11 +282,22 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     candidate_stack=$(sed -n '1p' "$ROOT/.agentic-flow-stack-candidate")
     warn "stack profile pending Makefile merge: $candidate_stack"
   fi
+  if [ -x "$ROOT/scripts/assurance.sh" ]; then
+    if "$ROOT/scripts/assurance.sh" --check >/dev/null 2>&1; then
+      assurance_status=$("$ROOT/scripts/assurance.sh" status)
+      ok "assurance baseline: $assurance_status"
+      [ -e "$ROOT/.agentic-flow-assurance" ] \
+        || warn "legacy assurance state absent; Standard is the default"
+    else
+      fail "invalid assurance state or audit record"
+    fi
+  fi
 
   require_executable scripts/docs-index.sh
   require_executable scripts/check-payload-manifest.sh
   require_executable scripts/lifecycle-status.sh
   require_executable scripts/agentic-flow
+  require_executable scripts/assurance.sh
   require_executable scripts/render-stack-profile.sh
   require_executable scripts/plan-to-issues.sh
   require_executable scripts/doctor.sh

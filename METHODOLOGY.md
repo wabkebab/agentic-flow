@@ -128,16 +128,39 @@ agentic-flow-review: status=approved; pr=<PR-number>; head=<40-hex-PR-head>; run
 The loop is **one-directional** (doc → issues), never the reverse. The document stays the
 source of design intent; issues are the disposable execution units.
 
-### Delivery lanes
+### Assurance profiles
 
-Use the smallest lane that preserves the risk and evidence needed:
+The tracked `.agentic-flow-assurance` file holds the project's minimum profile: `quick`,
+`standard`, or `strict`. A missing file in a legacy adoption means Standard. New adoptions
+start at Standard. Run `scripts/assurance.sh status` to see the value and its source, or
+`scripts/assurance.sh --check` to validate the state. `set <profile>` raises it. A downgrade
+requires `--approved-by <human-identity> --reason <text>` and appends a dated transition to
+`.agentic-flow-assurance-audit`. Commit both files. These arguments record claimed human
+approval in the diff; the CLI cannot authenticate the claimant. Review the claim before
+accepting a downgrade. A Feature/Security brief may raise the effective profile above this
+baseline, never lower it.
 
-| Lane | Use when | Required artifact |
-|------|----------|-------------------|
-| **Fast Fix** | A bounded bug or maintenance change with an obvious approach | Issue or short brief, regression test, one branch/PR |
-| **Planned Change** | Feature, security work, or multi-step behavior change | Feature/Security doc, approved brief, one branch/PR per pass (one issue + one commit per step) |
-| **Decision** | Product or architecture choice before implementation | Product Analysis; spin off a Planned Change if approved |
-| **Emergency** | Production restoration cannot wait for the normal planning cycle | Hotfix PR with evidence, followed by a retrospective Feature/Security doc |
+| Profile | Use and artifact | Review and evidence |
+|---------|------------------|---------------------|
+| **Quick** | Explicitly selected bounded local work, with no formal brief or issue. | Focused test, inexpensive checks, executor self-check, and a `Workflow: Quick / non-authoritative` report. It carries no independent review or CI approval claim and must promote to Standard before the normal merge workflow. |
+| **Standard** | One-step Feature brief and one work issue, with no parent tracker. | Separate-role review, regression test, `make check`, proportionate broader tests, and CI evidence. |
+| **Strict** | Full Feature/Security analysis, tracker, and one sub-issue per independently shippable step. | Separate-role review and failure-path test per step, full suite, bound CI and close-out evidence. |
+
+Strict is mandatory for authentication, secrets, destructive or data-loss behavior,
+migrations, public compatibility contracts, money or entitlements, release infrastructure,
+sensitive data, or an explicit human request. Quick is local and never authorizes a push or
+merge. Every profile keeps the same engineering standards, secret and push hooks, CI
+authority, and human ownership of pushing and merging. Review identity guarantees still
+depend on the configured review identity mode, not the profile.
+
+**Transition through F-9:** issue generation and close-out still use the existing
+tracker-plus-steps topology. A profile-less existing spec retains that topology. F-10
+activates the Standard one-work-issue path and Quick promotion behavior together; until
+then, the CLI records policy without changing issue shape.
+
+Decision remains a Product Analysis document type; approved implementation work then takes
+the applicable assurance profile. Emergency restoration may proceed as a hotfix, followed
+by a retrospective Feature/Security document and the applicable evidence and review.
 
 An independently-shippable step is the **tracking** unit — one issue, one logical commit,
 closed via `Fixes #N` when that commit lands. The **shipping** unit is coarser: a whole

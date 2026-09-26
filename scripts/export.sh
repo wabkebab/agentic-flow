@@ -67,6 +67,19 @@ DST=$(cd "$DST" 2>/dev/null && pwd -P || echo "$DST")
 
 PAYLOAD_DST_ROOT="$DST"
 payload_expand_files "$SRC"
+for protected_dest in "${DESTS[@]}"; do
+  case "$protected_dest" in .agentic-flow-assurance|.agentic-flow-assurance-audit)
+    die "assurance state is project-owned and cannot be a payload destination" ;;
+  esac
+done
+
+# Assurance is project-owned state, outside the upgrade payload. Seed only a new
+# installation and validate an existing choice before touching payload files.
+[ ! -L "$DST/.agentic-flow-assurance" ] || die "assurance state must be a regular file"
+"$SRC/scripts/assurance.sh" --check-for-root "$DST"
+if [ ! -e "$DST/.agentic-flow-assurance" ] && [ "$DRY" = false ]; then
+  printf 'standard\n' > "$DST/.agentic-flow-assurance"
+fi
 
 echo "Exporting agentic-flow standard"
 echo "  from: $SRC"

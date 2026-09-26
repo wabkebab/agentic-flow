@@ -1,6 +1,7 @@
 # source	destination	scope	merge-policy (deprecated; validated for old upgraders, not applied)	disposition
 METHODOLOGY.md	METHODOLOGY.md	core	preserve	export
 ADOPTION.md	ADOPTION.md	core	preserve	export
+.agentic-flow-assurance	.agentic-flow-assurance	source-only	none	source-only
 templates/harness/CLAUDE.md	CLAUDE.md	claude	preserve	export
 templates/harness/AGENTS.md	AGENTS.md	core	preserve	export
 templates/harness/Makefile	Makefile	core	preserve	export

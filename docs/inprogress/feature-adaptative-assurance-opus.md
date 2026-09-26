@@ -1,4 +1,6 @@
 <!-- TRIAGE (first pass · 2026-07-25) -->
+> **Superseded:** `feature-harness-optimization.md` Part A §7 and Step F-9 own assurance
+> policy and baseline implementation. This proposal remains for design history.
 > **Type:** Feature · **Status:** 🟦 Proposal
 > Adversarial context audit of the harness plus a counter-design: three assurance tiers held
 > as **project state** and **rendered** into the contract files, so raising assurance costs
