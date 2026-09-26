@@ -1648,10 +1648,12 @@ measurement does not change test dispatch or workflow behavior.
 
 ### F-11 measured baseline — approved 2026-09-26
 
-Recorded checkout: `987c58b01b3121f2e1c093392a628f9834d5a429` (completed F-10).
-Reproduce offline from the F-11 checkout with `scripts/measure-harness.sh --format json`;
-the command runs the fast and full self-test modes and reports completed work events. The
-word counts below use `wc -w` on each listed startup file once per role load. Generated packet
+Recorded source revision: `987c58b01b3121f2e1c093392a628f9834d5a429` (completed F-10),
+with the F-11 reporter and this document still untracked at measurement time. Re-run offline
+from the F-11 checkout with `scripts/measure-harness.sh --format json`; the command runs the
+fast and full self-test modes and reports completed work events. The reconciliation below
+explains the counters that change after the measurement checkout. Word counts use `wc -w`
+on each listed startup file once per role load. Generated packet
 words come from the Standard issue fixture produced in the plan-to-issues group. Modelled
 workflow counts are separate from measured words and executed work. No provider token counts,
 cache behavior, or timing is inferred.
@@ -1675,8 +1677,16 @@ Those workflow numbers describe a representative sequence; they are not observed
 The full and fast event totals include fixture work performed by nested self-test probes.
 `fixture_tree_copies` includes the two full source snapshots and recursive fixture copies;
 `fixture_copied_files` counts each completed file copy, including files copied in those trees.
+`path_directory_scans` depends on the number of existing directories in the invoking shell's
+`PATH`; 25/251 reflects the measurement shell, while the reviewer reproduced 24/241 with a
+different `PATH`. In the committed F-11 checkout this document is tracked and enters both full
+source snapshots (+2 copied files). Correcting multi-source `cp` accounting after review adds
+one fast and ten full copied files across nested test runs, so the corrected reporter yields
+68 fast and 607 full copied files on the measurement shell's `PATH`.
 The user approved this measured table and its formula-derived ceilings on 2026-09-26 in the
-F-11 execution conversation. F-12 may use them as gates under the brief's fixed formula.
+F-11 execution conversation. The approved table above, rather than a fresh report from a
+different checkout or `PATH`, is the authoritative F-12 threshold baseline. Since copy counters
+are integers, F-12's at-most-half limits are fast trees 0/files 33 and full trees 1/files 297.
 
 ---
 

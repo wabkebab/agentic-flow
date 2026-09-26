@@ -69,25 +69,41 @@ measure_event() {
   printf '%s\n' "$1" >> "$AGENTIC_MEASURE_EVENTS"
 }
 
+measure_copy() { # <cp arguments, after a successful cp>
+  local recursive=0 options=1 arg source i
+  local -a paths=()
+  for arg in "$@"; do
+    if [ "$options" -eq 1 ]; then
+      case "$arg" in
+        --) options=0; continue ;;
+        --recursive|--archive) recursive=1; continue ;;
+        --*) continue ;;
+        -*)
+          case "$arg" in *[Rra]*) recursive=1 ;; esac
+          continue ;;
+      esac
+    fi
+    paths+=( "$arg" )
+  done
+  # The final path is the destination. Count every source, including both
+  # operands of `cp a b dir/` and each source tree of a recursive copy.
+  for ((i=0; i<${#paths[@]}-1; i++)); do
+    source=${paths[$i]}
+    if [ "$recursive" -eq 1 ] && [ -d "$source" ]; then
+      measure_event fixture_tree_copy
+      find "$source" -type f -print | while IFS= read -r arg; do
+        measure_event fixture_file_copy
+      done
+    else
+      measure_event fixture_file_copy
+    fi
+  done
+}
+
 cp() {
   command cp "$@" || return $?
   [ -n "${AGENTIC_MEASURE_EVENTS:-}" ] || return 0
-  local source="" recursive=0 arg
-  for arg in "$@"; do
-    case "$arg" in
-      -R|-r|-a) recursive=1 ;;
-      -*) ;;
-      *) [ -n "$source" ] || source="$arg" ;;
-    esac
-  done
-  if [ "$recursive" -eq 1 ] && [ -d "$source" ]; then
-    measure_event fixture_tree_copy
-    find "$source" -type f -print | while IFS= read -r arg; do
-      measure_event fixture_file_copy
-    done
-  else
-    measure_event fixture_file_copy
-  fi
+  measure_copy "$@"
 }
 
 fail() {
@@ -1738,6 +1754,26 @@ grep -q "undeclared docs stage" "$TMP/docs-stage.err" \
 MEASURE_FIX="$TMP/measure"
 mkdir -p "$MEASURE_FIX/root/docs" "$MEASURE_FIX/root/.agents/skills/review-execution" \
   "$MEASURE_FIX/events"
+mkdir -p "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target"
+printf 'one\n' > "$MEASURE_FIX/copy-source/one"
+printf 'two\n' > "$MEASURE_FIX/copy-source/two"
+printf 'three\n' > "$MEASURE_FIX/copy-source/tree/three"
+printf 'four\n' > "$MEASURE_FIX/copy-source/tree/four"
+: > "$MEASURE_FIX/copy.events"
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" cp \
+  "$MEASURE_FIX/copy-source/one" "$MEASURE_FIX/copy-source/two" \
+  "$MEASURE_FIX/copy-target/"
+[ "$(grep -c '^fixture_file_copy$' "$MEASURE_FIX/copy.events")" -eq 2 ] \
+  || fail 'multi-source cp was not counted per file'
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" cp -Rp \
+  "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target/"
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" measure_copy --recursive \
+  "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target/"
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" measure_copy --archive \
+  "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target/"
+[ "$(grep -c '^fixture_tree_copy$' "$MEASURE_FIX/copy.events")" -eq 3 ] \
+  && [ "$(grep -c '^fixture_file_copy$' "$MEASURE_FIX/copy.events")" -eq 8 ] \
+  || fail 'recursive cp flags did not count trees and copied files'
 printf 'shared words\n' > "$MEASURE_FIX/root/CLAUDE.md"
 printf 'executor words\n' > "$MEASURE_FIX/root/AGENTS.md"
 printf 'memory words\n' > "$MEASURE_FIX/root/docs/MEMORY.md"
