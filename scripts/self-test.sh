@@ -55,6 +55,9 @@ case " $SELF_TEST_GROUPS " in
 esac
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
+LOCAL_EVENTS="$TMP/local-events"
+: > "$LOCAL_EVENTS"
+REPORT_EVENTS=${AGENTIC_MEASURE_EVENTS:-}
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 # Matches only real scaffold placeholders (double-brace UPPER_SNAKE), not the
 # dollar-brace expression syntax that shipped docs quote when documenting CI workflows.
@@ -62,11 +65,15 @@ PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
 trap 'rm -rf "$TMP"' EXIT
 
-# Optional measurement events. Ordinary test runs leave this unset and keep the
-# same dispatch and copy commands. The report counts completed copy operations.
+# Keep per-process cost evidence even when no external report was requested.
+# An external report also receives nested self-test events.
 measure_event() {
-  [ -n "${AGENTIC_MEASURE_EVENTS:-}" ] || return 0
-  printf '%s\n' "$1" >> "$AGENTIC_MEASURE_EVENTS"
+  if [ "${AGENTIC_MEASURE_EVENTS:-}" = "$REPORT_EVENTS" ]; then
+    printf '%s\n' "$1" >> "$LOCAL_EVENTS"
+  fi
+  if [ -n "${AGENTIC_MEASURE_EVENTS:-}" ]; then
+    printf '%s\n' "$1" >> "$AGENTIC_MEASURE_EVENTS"
+  fi
 }
 
 measure_copy() { # <cp arguments, after a successful cp>
@@ -102,13 +109,40 @@ measure_copy() { # <cp arguments, after a successful cp>
 
 cp() {
   command cp "$@" || return $?
-  [ -n "${AGENTIC_MEASURE_EVENTS:-}" ] || return 0
   measure_copy "$@"
+}
+
+link_snapshot_files() { # <destination>; directories are private, unchanged files share inodes
+  local destination="$1" source rel
+  mkdir -p "$destination"
+  while IFS= read -r -d '' source; do
+    rel=${source#"$SOURCE_SNAPSHOT/"}
+    mkdir -p "$destination/$(dirname "$rel")"
+    ln "$source" "$destination/$rel"
+  done < <(find "$SOURCE_SNAPSHOT" -type f -print0)
 }
 
 fail() {
   echo "self-test failed: $*" >&2
   exit 1
+}
+
+cost_count() { # <event-file> <event>
+  awk -v event="$2" '$0 == event { n++ } END { print n+0 }' "$1"
+}
+
+assert_cost_budget() { # <event-file> <fast|full>
+  local events="$1" mode="$2"
+  if [ "$mode" = fast ]; then
+    [ "$(cost_count "$events" source_snapshot_copy)" -eq 0 ] || fail 'fast mode built a source snapshot'
+    [ "$(cost_count "$events" fixture_tree_copy)" -eq 0 ] || fail 'fast mode copied a fixture tree'
+    [ "$(cost_count "$events" fixture_file_copy)" -le 33 ] || fail 'fast mode exceeded 33 fixture file copies'
+  else
+    [ "$(cost_count "$events" source_snapshot_copy)" -eq 1 ] || fail 'full mode did not reuse one source snapshot'
+    [ "$(cost_count "$events" fixture_tree_copy)" -le 1 ] || fail 'full mode exceeded one fixture tree copy'
+    [ "$(cost_count "$events" fixture_file_copy)" -le 297 ] || fail 'full mode exceeded 297 fixture file copies'
+  fi
+  [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
 
 assert_file() {
@@ -203,27 +237,32 @@ assert_ci_gate_needs_asserted() { # <workflow.yml>
 }
 
 path_without_tools() { # <output-dir> <tool>...
-  out_dir="$1"
+  local out_dir="$1" tool resolved blocked skip
   shift
-  mkdir -p "$out_dir"
-  old_ifs=$IFS
-  IFS=:
-  for path_dir in $PATH; do
-    [ -d "$path_dir" ] || continue
-    measure_event path_directory_scan
-    for candidate in "$path_dir"/*; do
-      [ -f "$candidate" ] || continue
-      [ -x "$candidate" ] || continue
-      name=${candidate##*/}
-      skip=false
-      for blocked in "$@"; do
-        [ "$name" = "$blocked" ] && skip=true
-      done
-      [ "$skip" = true ] && continue
-      [ -e "$out_dir/$name" ] || ln -s "$candidate" "$out_dir/$name"
+  for tool in awk bash cat cp find git grep iconv jq make mkdir rm sed sort tr uniq wc; do
+    skip=false
+    for blocked in "$@"; do
+      [ "$tool" = "$blocked" ] && skip=true
     done
+    [ "$skip" = true ] && continue
+    type -P "$tool" >/dev/null 2>&1 || fail "required fixture tool missing: $tool"
   done
-  IFS=$old_ifs
+  mkdir -p "$out_dir"
+  # The fixture needs only the tools used by the shipped shell checks and hooks.
+  # Resolve names directly; walking PATH copies unrelated executables and makes the
+  # cost depend on the caller's machine.
+  for tool in awk bash basename cat chmod cksum cmp cp cut date dirname env find git \
+    grep head iconv jq ln make mkdir mktemp mv od pwd readlink rm sed sh \
+    sha256sum shasum sort stat tail touch tr uname uniq wc xargs; do
+    skip=false
+    for blocked in "$@"; do
+      [ "$tool" = "$blocked" ] && skip=true
+    done
+    [ "$skip" = true ] && continue
+    resolved=$(type -P "$tool" 2>/dev/null || true)
+    [ -n "$resolved" ] || continue
+    case "$resolved" in /*) ln -s "$resolved" "$out_dir/$tool" ;; esac
+  done
   printf '%s\n' "$out_dir"
 }
 
@@ -283,30 +322,67 @@ should_run() { # <group>
   esac
   if [ -n "$ONLY_GROUP" ]; then
     [ "$ONLY_GROUP" = "$1" ] || return 1
-  elif [ "$SELF_TEST_MODE" != full ] && [ "$1" = export ]; then
+  elif [ "$SELF_TEST_MODE" != full ] && { [ "$1" = export ] || [ "$1" = upgrade ]; }; then
     return 1
   fi
   GROUPS_RAN="$GROUPS_RAN $1 "
   measure_event "group:$1"
+  if [ -z "$ONLY_GROUP" ] && [ "$SELF_TEST_MODE" = fast ]; then
+    fast_check_group "$1"
+    return 1
+  fi
   return 0
+}
+
+fast_check_group() { # <group>; fast mode only
+  case "$1" in
+    contracts)
+      [ -f "$ROOT/config/payload.tsv" ] || fail 'payload manifest is missing'
+      [ -f "$ROOT/templates/harness/Makefile" ] || [ ! -f "$ROOT/scripts/export.sh" ] \
+        || fail 'pristine Makefile is missing'
+      ;;
+    hooks)
+      for hook in block-git-add-all block-push scan-secrets check-gate require-step-comment; do
+        [ -x "$ROOT/scripts/hooks/$hook.sh" ] || fail "critical hook is missing: $hook"
+      done
+      must_block "$ROOT/scripts/hooks/block-git-add-all.sh" 'git add -A'
+      must_allow "$ROOT/scripts/hooks/block-git-add-all.sh" 'git add scripts/self-test.sh'
+      must_block "$ROOT/scripts/hooks/block-push.sh" 'git push origin main'
+      must_allow "$ROOT/scripts/hooks/block-push.sh" 'git status --short'
+      ;;
+    plan-to-issues)
+      [ -x "$ROOT/scripts/plan-to-issues.sh" ] || fail 'plan driver is missing'
+      bash -n "$ROOT/scripts/plan-to-issues.sh" || fail 'plan driver has invalid syntax'
+      ;;
+    lifecycle)
+      [ -x "$ROOT/scripts/lifecycle-status.sh" ] || fail 'lifecycle gate is missing'
+      bash -n "$ROOT/scripts/lifecycle-status.sh" || fail 'lifecycle gate has invalid syntax'
+      ;;
+  esac
 }
 
 # --- export invariants (scaffold repo only, full suite only) -----------------------------
 if should_run export; then
 if [ -f "$ROOT/scripts/export.sh" ]; then
-  # Exercise mutations against an isolated copy of the current checkout. The old test
-  # appended sentinels to the live CLAUDE.md and docs/inprogress, then restored them in a
-  # trap. Two concurrent checks could back up each other's temporary state and leave the
-  # source checkout modified. Copy tracked and untracked working files instead.
-  SOURCE_FIXTURE="$TMP/source"
-  mkdir -p "$SOURCE_FIXTURE"
+  # Snapshot once, then hard-link unchanged files into private directory trees.
+  # The five existing files mutated by export cases become private copies below.
+  SOURCE_SNAPSHOT="$TMP/source-snapshot"
+  mkdir -p "$SOURCE_SNAPSHOT"
   measure_event source_snapshot_copy
   measure_event fixture_tree_copy
   while IFS= read -r -d '' tracked; do
     [ -e "$ROOT/$tracked" ] || continue
-    mkdir -p "$SOURCE_FIXTURE/$(dirname "$tracked")"
-    cp -p "$ROOT/$tracked" "$SOURCE_FIXTURE/$tracked"
+    mkdir -p "$SOURCE_SNAPSHOT/$(dirname "$tracked")"
+    cp -p "$ROOT/$tracked" "$SOURCE_SNAPSHOT/$tracked"
   done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+  snapshot_digest=$(tree_digest "$SOURCE_SNAPSHOT")
+  SOURCE_FIXTURE="$TMP/source"
+  link_snapshot_files "$SOURCE_FIXTURE"
+  for mutable in .claude/skills/create-tags/SKILL.md config/payload.tsv \
+    .codex/hooks.json CLAUDE.md templates/harness/CLAUDE.md; do
+    rm "$SOURCE_FIXTURE/$mutable"
+    cp -p "$SOURCE_SNAPSHOT/$mutable" "$SOURCE_FIXTURE/$mutable"
+  done
 
   # Let the fixture resolve the real source HEAD for the version-stamp assertion without
   # copying or mutating the repository's git database.
@@ -317,6 +393,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
 
   # Export may not copy a stale generated adapter or create a partial target.
   printf '\nstale copy\n' >> "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md"
+  cmp -s "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md" \
+    "$SOURCE_SNAPSHOT/.claude/skills/create-tags/SKILL.md" \
+    && fail 'mutable fixture did not isolate the changed skill'
   DRIFT_TARGET="$TMP/drift-export"
   "$SOURCE_FIXTURE/scripts/export.sh" "$DRIFT_TARGET" >/dev/null 2>&1 \
     && fail "export accepted a stale generated skill"
@@ -429,7 +508,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   state_rejects() { # <bad-line> <reason>
     cp "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation"
     printf '%s\n' "$1" >> "$SCOPED_TARGET/.agentic-flow-installation"
-    ( . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
+    ( # shellcheck disable=SC1091 # fixture library is created at runtime.
+      . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
       payload_resolve_installation "$SCOPED_TARGET" "$SOURCE_FIXTURE/config/payload.tsv" ) \
       > "$TMP/state-reject.out" 2>&1 \
       && fail "installation state accepted $2"
@@ -457,7 +537,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   cp "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation"
   printf 'file=%s  scripts/bad\000path.sh\n' "$state_digest" \
     >> "$SCOPED_TARGET/.agentic-flow-installation"
-  ( . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
+  ( # shellcheck disable=SC1091 # fixture library is created at runtime.
+    . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
     payload_resolve_installation "$SCOPED_TARGET" "$SOURCE_FIXTURE/config/payload.tsv" ) \
     > "$TMP/state-nul.out" 2>&1 \
     && fail "installation state accepted a NUL path"
@@ -471,7 +552,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
       state_n=$((state_n + 1))
     done
   } > "$SCOPED_TARGET/.agentic-flow-installation"
-  ( . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
+  ( # shellcheck disable=SC1091 # fixture library is created at runtime.
+    . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
     payload_resolve_installation "$SCOPED_TARGET" "$SOURCE_FIXTURE/config/payload.tsv" ) \
     > "$TMP/state-bound.out" 2>&1 \
     && fail "installation state accepted more than 2000 files"
@@ -889,20 +971,20 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   fi
 
   NO_REMOTE_SOURCE="$TMP/no-remote-source"
-  mkdir -p "$NO_REMOTE_SOURCE"
-  measure_event source_snapshot_copy
-  measure_event fixture_tree_copy
-  while IFS= read -r -d '' tracked; do
-    [ -e "$ROOT/$tracked" ] || continue
-    mkdir -p "$NO_REMOTE_SOURCE/$(dirname "$tracked")"
-    cp -p "$ROOT/$tracked" "$NO_REMOTE_SOURCE/$tracked"
-  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+  [ "$snapshot_digest" = "$(tree_digest "$SOURCE_SNAPSHOT")" ] \
+    || fail 'export fixture mutated the shared source snapshot'
+  link_snapshot_files "$NO_REMOTE_SOURCE"
+  cmp -s "$NO_REMOTE_SOURCE/.claude/skills/create-tags/SKILL.md" \
+    "$SOURCE_SNAPSHOT/.claude/skills/create-tags/SKILL.md" \
+    || fail 'fixture mutation leaked into the no-remote source'
   NO_REMOTE_TARGET="$TMP/no-remote-target"
   "$NO_REMOTE_SOURCE/scripts/export.sh" "$NO_REMOTE_TARGET" > "$TMP/no-remote-export.out" \
     || fail "export failed from a source with no git remote"
   assert_no_file "$NO_REMOTE_TARGET/.agentic-flow-source"
   grep -q "source repo has no origin remote" "$TMP/no-remote-export.out" \
     || fail "export without remote did not explain why no source was recorded"
+  [ "$snapshot_digest" = "$(tree_digest "$SOURCE_SNAPSHOT")" ] \
+    || fail 'no-remote fixture mutated the shared source snapshot'
   (cd "$NO_REMOTE_TARGET" && scripts/doctor.sh --scope repo) > "$TMP/no-source-doctor.out" \
     || fail "doctor report failed for a stamped project with no source"
   grep -q "scaffold source not recorded" "$TMP/no-source-doctor.out" \
@@ -1218,7 +1300,16 @@ if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
   RENDER="$ROOT/scripts/render-shared.sh"
   RENDER_FIX="$TMP/shared-render-fixture"
   mkdir -p "$RENDER_FIX/templates"
-  cp -R "$ROOT/templates/shared" "$RENDER_FIX/templates/"
+  if [ -d "${SOURCE_SNAPSHOT:-}/templates/shared" ]; then
+    mkdir -p "$RENDER_FIX/templates/shared"
+    while IFS= read -r -d '' shared; do
+      shared_rel=${shared#"$SOURCE_SNAPSHOT/templates/shared/"}
+      mkdir -p "$RENDER_FIX/templates/shared/$(dirname "$shared_rel")"
+      ln "$shared" "$RENDER_FIX/templates/shared/$shared_rel"
+    done < <(find "$SOURCE_SNAPSHOT/templates/shared" -type f -print0)
+  else
+    cp -R "$ROOT/templates/shared" "$RENDER_FIX/templates/"
+  fi
   for rel in Makefile templates/harness/Makefile AGENTS.md templates/harness/AGENTS.md \
              CLAUDE.md templates/harness/CLAUDE.md \
              METHODOLOGY.md .agents/skills/plan-to-issues/SKILL.md \
@@ -1774,6 +1865,31 @@ AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" measure_copy --archive \
 [ "$(grep -c '^fixture_tree_copy$' "$MEASURE_FIX/copy.events")" -eq 3 ] \
   && [ "$(grep -c '^fixture_file_copy$' "$MEASURE_FIX/copy.events")" -eq 8 ] \
   || fail 'recursive cp flags did not count trees and copied files'
+# One snapshot can coexist with repeated whole-tree materializations. The
+# budget must reject that case even when its per-file count is small.
+printf 'source_snapshot_copy\nfixture_tree_copy\nfixture_tree_copy\n' \
+  > "$MEASURE_FIX/recopied.events"
+( assert_cost_budget "$MEASURE_FIX/recopied.events" full ) \
+  > "$MEASURE_FIX/recopied.out" 2>&1 \
+  && fail 'fixture budget accepted repeated tree copying with one snapshot'
+grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
+  || fail 'fixture budget did not identify repeated tree copying'
+( PATH='' path_without_tools "$MEASURE_FIX/missing-tools" jq ) \
+  > "$MEASURE_FIX/missing-tools.out" 2>&1 \
+  && fail 'fixture PATH accepted missing required tools'
+grep -q 'required fixture tool missing:' "$MEASURE_FIX/missing-tools.out" \
+  || { cat "$MEASURE_FIX/missing-tools.out" >&2; fail 'missing fixture tool was not identified'; }
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  : > "$MEASURE_FIX/dispatch.events"
+  AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/dispatch.events" \
+    "$ROOT/scripts/self-test.sh" --fast > "$MEASURE_FIX/dispatch.out" \
+    || fail 'nested fast dispatch failed'
+  actual_fast_groups=$(awk -F: '$1 == "group" { print $2 }' \
+    "$MEASURE_FIX/dispatch.events" | sort -u | tr '\n' ' ')
+  [ "$actual_fast_groups" = 'contracts hooks lifecycle plan-to-issues ' ] \
+    || fail "fast dispatch included an unexpected group: $actual_fast_groups"
+  assert_cost_budget "$MEASURE_FIX/dispatch.events" fast
+fi
 printf 'shared words\n' > "$MEASURE_FIX/root/CLAUDE.md"
 printf 'executor words\n' > "$MEASURE_FIX/root/AGENTS.md"
 printf 'memory words\n' > "$MEASURE_FIX/root/docs/MEMORY.md"
@@ -3641,7 +3757,7 @@ if [ -n "$ONLY_GROUP" ]; then
 elif [ "$SELF_TEST_MODE" = full ]; then
   EXPECTED_GROUPS="$SELF_TEST_GROUPS"
 else
-  EXPECTED_GROUPS=$(printf '%s\n' "$SELF_TEST_GROUPS" | sed 's/export //')
+  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle'
 fi
 for group in $EXPECTED_GROUPS; do
   case "$GROUPS_RAN" in
@@ -3656,5 +3772,11 @@ for group in $GROUPS_RAN; do
     *) fail "self-test ran unrelated group '$group'" ;;
   esac
 done
+
+# The F-11 table was approved before these limits were set. Keep the two copy
+# counters together: fewer snapshots cannot conceal whole-tree derived fixtures.
+if [ -z "$ONLY_GROUP" ]; then
+  assert_cost_budget "$LOCAL_EVENTS" "$SELF_TEST_MODE"
+fi
 
 echo "self-test passed."
