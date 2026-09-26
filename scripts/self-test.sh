@@ -137,7 +137,9 @@ assert_cost_budget() { # <event-file> <fast|full>
     [ "$(cost_count "$events" source_snapshot_copy)" -eq 0 ] || fail 'fast mode built a source snapshot'
     [ "$(cost_count "$events" fixture_tree_copy)" -eq 0 ] || fail 'fast mode copied a fixture tree'
     [ "$(cost_count "$events" fixture_file_copy)" -le 33 ] || fail 'fast mode exceeded 33 fixture file copies'
-  else
+  elif [ -f "$ROOT/scripts/export.sh" ]; then
+    # Exported projects omit the source-only exporter and never build this
+    # snapshot. The approved full-copy limits describe scaffold verification.
     [ "$(cost_count "$events" source_snapshot_copy)" -eq 1 ] || fail 'full mode did not reuse one source snapshot'
     [ "$(cost_count "$events" fixture_tree_copy)" -le 1 ] || fail 'full mode exceeded one fixture tree copy'
     [ "$(cost_count "$events" fixture_file_copy)" -le 297 ] || fail 'full mode exceeded 297 fixture file copies'
@@ -747,6 +749,11 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || { cat "$TMP/target-check.log" >&2; fail "make check failed in a fresh export"; }
   (cd "$TARGET" && PATH="$STRIPPED_PATH" make check) > "$TMP/target-check-stripped.log" 2>&1 \
     || { cat "$TMP/target-check-stripped.log" >&2; fail "make check failed in a fresh export on stripped PATH"; }
+  # Exported projects have no source-only export.sh and therefore build no source
+  # snapshot. Their full suite must still pass, as it does in the shipped CI job.
+  (cd "$TARGET" && AGENTIC_MEASURE_EVENTS='' scripts/self-test.sh --full) \
+    > "$TMP/target-full.log" 2>&1 \
+    || { cat "$TMP/target-full.log" >&2; fail "full self-test failed in a fresh export"; }
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
   printf 'origin https://example.invalid/fork.git\nref v1.2.3\n' > "$TARGET/.agentic-flow-source"
@@ -1865,15 +1872,17 @@ AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" measure_copy --archive \
 [ "$(grep -c '^fixture_tree_copy$' "$MEASURE_FIX/copy.events")" -eq 3 ] \
   && [ "$(grep -c '^fixture_file_copy$' "$MEASURE_FIX/copy.events")" -eq 8 ] \
   || fail 'recursive cp flags did not count trees and copied files'
-# One snapshot can coexist with repeated whole-tree materializations. The
-# budget must reject that case even when its per-file count is small.
-printf 'source_snapshot_copy\nfixture_tree_copy\nfixture_tree_copy\n' \
-  > "$MEASURE_FIX/recopied.events"
-( assert_cost_budget "$MEASURE_FIX/recopied.events" full ) \
-  > "$MEASURE_FIX/recopied.out" 2>&1 \
-  && fail 'fixture budget accepted repeated tree copying with one snapshot'
-grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
-  || fail 'fixture budget did not identify repeated tree copying'
+# One snapshot can coexist with repeated whole-tree materializations. This
+# approved budget applies only in the scaffold, which builds that snapshot.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  printf 'source_snapshot_copy\nfixture_tree_copy\nfixture_tree_copy\n' \
+    > "$MEASURE_FIX/recopied.events"
+  ( assert_cost_budget "$MEASURE_FIX/recopied.events" full ) \
+    > "$MEASURE_FIX/recopied.out" 2>&1 \
+    && fail 'fixture budget accepted repeated tree copying with one snapshot'
+  grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
+    || fail 'fixture budget did not identify repeated tree copying'
+fi
 ( PATH='' path_without_tools "$MEASURE_FIX/missing-tools" jq ) \
   > "$MEASURE_FIX/missing-tools.out" 2>&1 \
   && fail 'fixture PATH accepted missing required tools'
