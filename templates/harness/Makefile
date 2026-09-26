@@ -9,7 +9,7 @@
 # The remaining recipes no-op with a reminder until filled in for your stack (TS/Node
 # examples shown commented), so a fresh scaffold doesn't block work.
 
-# BEGIN SHARED SHELL GATE (generated region in F-8)
+# BEGIN SHARED SHELL GATE
 .PHONY: check test test-one build run help
 
 help:           ## list available targets
@@ -19,16 +19,15 @@ check:          ## fast sanity gate: harness checks + your type-check/lint. Run 
 	@scripts/shell-inventory.sh --syntax
 	@scope=$$(scripts/shell-inventory.sh --scope-state docs) || exit 1; if [ "$$scope" = active ]; then scripts/docs-index.sh --check; fi
 	@scripts/check-payload-manifest.sh
-	@scripts/check-action-pins.sh
+	@scripts/check-harness-sync.sh
 	@scripts/check-memory-index.sh
+	@scripts/check-action-pins.sh
 	@scripts/self-test.sh --fast
-#	npm run typecheck && npm run lint
 
 test:           ## full test suite
 	@scripts/self-test.sh --full
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required for 'make test' — install it (brew install shellcheck / apt-get install shellcheck)." >&2; exit 1; }
 	@scripts/shell-inventory.sh --lint
-	@echo "TODO: add your stack's test suite to 'test' in the Makefile."
 # END SHARED SHELL GATE
 #	npm run test:run
 

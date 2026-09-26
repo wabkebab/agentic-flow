@@ -48,6 +48,12 @@ payload_load_manifest "$MANIFEST"
 payload_resolve_installation "$DST" "$MANIFEST" "$requested_scopes"
 payload_load_manifest "$MANIFEST"
 
+# Generated adapter copies must agree with their canonical sources before any
+# destination write. The manifest still owns which scopes and files are exported.
+if [ -d "$SRC/templates/shared" ]; then
+  "$SRC/scripts/render-shared.sh" --check || die "render shared contracts before exporting"
+fi
+
 # Create / validate target.
 if [ ! -d "$DST" ]; then
   if $DRY; then

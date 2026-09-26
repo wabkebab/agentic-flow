@@ -74,6 +74,7 @@
 
 ## Required local tools
 
+<!-- BEGIN SHARED CLAUDE TOOLS -->
 - **Required for the scaffold:** `bash`, `make`, `git`, `jq`, `gh`.
 - **Required unless opted out:** `git-claude` for planner/reviewer commits and `git-codex`
   for executor commits.
@@ -83,6 +84,7 @@
   `scripts/doctor.sh --check` fails without it.
 - **Adoption check:** run `scripts/doctor.sh --check` after exporting the scaffold and before
   committing it in a target project.
+<!-- END SHARED CLAUDE TOOLS -->
 
 ### Hooks (enforced, not optional)
 This project ships `.claude/settings.json` with five hooks that mechanize the contract —

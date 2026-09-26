@@ -267,6 +267,15 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     printf 'gitdir: %s\n' "$source_git_dir" > "$SOURCE_FIXTURE/.git"
   fi
 
+  # Export may not copy a stale generated adapter or create a partial target.
+  printf '\nstale copy\n' >> "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md"
+  DRIFT_TARGET="$TMP/drift-export"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$DRIFT_TARGET" >/dev/null 2>&1 \
+    && fail "export accepted a stale generated skill"
+  assert_no_file "$DRIFT_TARGET"
+  cp "$ROOT/.claude/skills/create-tags/SKILL.md" \
+    "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md"
+
   assert_active_ci_workflow "$SOURCE_FIXTURE/.github/workflows/ci.yml"
 
   printf '%s\n' '{}' > "$SOURCE_FIXTURE/.codex/unclassified.json"
@@ -333,6 +342,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     "$SCOPED_TARGET" >/dev/null
   assert_no_file "$SCOPED_TARGET/.codex/hooks.json"
   assert_no_file "$SCOPED_TARGET/.agents/skills/plan-to-issues/SKILL.md"
+  assert_no_file "$SCOPED_TARGET/templates/shared"
   assert_no_file "$SCOPED_TARGET/.opencode/agent/code-reviewer.md"
   assert_file "$SCOPED_TARGET/AGENTS.md"
   assert_file "$SCOPED_TARGET/CLAUDE.md"
@@ -1140,6 +1150,61 @@ Hand the step to the reviewer.'
     || fail "harness sync failed in an adopted project with no templates/harness"
 fi
 
+# A generated consumer must match its complete canonical body. A malformed render
+# graph must leave every consumer untouched, including those before the bad one.
+if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
+  RENDER="$ROOT/scripts/render-shared.sh"
+  RENDER_FIX="$TMP/shared-render-fixture"
+  mkdir -p "$RENDER_FIX/templates"
+  cp -R "$ROOT/templates/shared" "$RENDER_FIX/templates/"
+  for rel in Makefile templates/harness/Makefile AGENTS.md templates/harness/AGENTS.md \
+             CLAUDE.md templates/harness/CLAUDE.md \
+             METHODOLOGY.md .agents/skills/plan-to-issues/SKILL.md \
+             .claude/skills/plan-to-issues/SKILL.md .agents/skills/create-tags/SKILL.md \
+             .claude/skills/create-tags/SKILL.md .agents/skills/review-execution/SKILL.md \
+             .opencode/agent/code-reviewer.md; do
+    mkdir -p "$RENDER_FIX/$(dirname "$rel")"
+    cp "$ROOT/$rel" "$RENDER_FIX/$rel"
+  done
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null \
+    || fail "pristine shared render fixture drifted"
+  printf '\nconsumer drift\n' >> "$RENDER_FIX/.claude/skills/create-tags/SKILL.md"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
+    && fail "shared render missed a whole skill drift"
+  cp "$ROOT/.claude/skills/create-tags/SKILL.md" "$RENDER_FIX/.claude/skills/create-tags/SKILL.md"
+  sed 's/No unbounded anything/Unlimited anything/' "$ROOT/AGENTS.md" > "$RENDER_FIX/AGENTS.md"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
+    && fail "shared render missed content drift under an unchanged heading"
+  cp "$ROOT/AGENTS.md" "$RENDER_FIX/AGENTS.md"
+  sed 's/\*\*Medium\*\*/**Other**/' "$ROOT/.opencode/agent/code-reviewer.md" \
+    > "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
+    && fail "shared render missed severity drift"
+  cp "$ROOT/.opencode/agent/code-reviewer.md" "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  sed '/<!-- BEGIN SHARED REVIEW CONTRACT -->/d' "$ROOT/.opencode/agent/code-reviewer.md" \
+    > "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  before=$(tree_digest "$RENDER_FIX")
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" >/dev/null 2>&1 \
+    && fail "shared render accepted a missing marker"
+  [ "$before" = "$(tree_digest "$RENDER_FIX")" ] \
+    || fail "failed shared render changed a consumer"
+  cp "$ROOT/.opencode/agent/code-reviewer.md" "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  printf '\n<!-- BEGIN SHARED REVIEW CONTRACT -->\n' \
+    >> "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  before=$(tree_digest "$RENDER_FIX")
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" >/dev/null 2>&1 \
+    && fail "shared render accepted a duplicate marker"
+  [ "$before" = "$(tree_digest "$RENDER_FIX")" ] \
+    || fail "duplicate-marker render changed a consumer"
+  for surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
+                 "$ROOT/.opencode/agent/code-reviewer.md"; do
+    grep -qi 'temporary detached checkout' "$surface" \
+      || fail "review guidance lacks isolated red-first verification"
+    grep -qi 'revert the change, run the test, restore' "$surface" \
+      && fail "review guidance mutates the live checkout for red-first verification"
+  done
+fi
+
 # Contract drift guard. The second plan-to-issues copy is kept for optionality, not need:
 # METHODOLOGY.md §6 points at `.claude/skills/plan-to-issues/`, CLAUDE.md lists the skill
 # under the Plan role, and AGENTS.md never mentions it — so nothing has Codex running it
@@ -1288,7 +1353,6 @@ fi
 # as its own AGENTS.md — so it joins the list only when present, the same source-vs-adopted
 # distinction the export ceilings already make.
 standards_surfaces="$ROOT/METHODOLOGY.md $ROOT/AGENTS.md"
-active_scope opencode && standards_surfaces="$standards_surfaces $ROOT/.opencode/agent/code-reviewer.md"
 [ -f "$ROOT/templates/harness/AGENTS.md" ] \
   && standards_surfaces="$standards_surfaces $ROOT/templates/harness/AGENTS.md"
 for standards_surface in $standards_surfaces; do
@@ -1306,6 +1370,10 @@ No unbounded
 failure path
 RULES
 done
+if active_scope opencode; then
+  grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.opencode/agent/code-reviewer.md" \
+    || fail "OpenCode review does not route engineering standards to AGENTS.md"
+fi
 
 # One severity vocabulary across every review surface — the SKILL.md pair AND the live
 # /review agent contract, which is where the old block/fix/nit scale survived an earlier

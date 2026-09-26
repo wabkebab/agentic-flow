@@ -2,7 +2,7 @@
 # Humans, agents, hooks, and CI all call these targets; never hard-code raw commands
 # elsewhere. See METHODOLOGY.md §1 and CLAUDE.md "Stack profile".
 
-# BEGIN SHARED SHELL GATE (generated region in F-8)
+# BEGIN SHARED SHELL GATE
 .PHONY: check test test-one build run help
 
 help:           ## list available targets

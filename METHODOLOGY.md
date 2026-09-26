@@ -216,18 +216,18 @@ executor ticks as commits land:
 
 ## 5. Severity legend
 
-One scale for every review surface — Security reviews, per-step execution review, and any
-other diff. Use these consistently; they map 1:1 onto GitHub labels and onto `plan-to-issues`.
+<!-- BEGIN SHARED REVIEW CONTRACT -->
+Use one finding scale for Security reviews, step reviews, and ordinary diffs:
 
-| Symbol | Severity | Blocks? | Label |
-|--------|----------|---------|-------|
-| 🔴 | High — common path is incorrect, or a serious regression has no safe workaround. In a Security review: exploitable, data-loss, or auth bypass. | **Blocks merge** | `sev:high` |
-| 🟠 | Medium — real defect under a bounded condition, or required failure-path coverage is missing in a way that can hide one. In a Security review: a meaningful weakness with bounded blast radius. | Needs a fix or an explicit acceptance | `sev:med` |
-| 🟡 | Low — concrete but limited correctness or operability risk, worth fixing before closure. In a Security review: hardening, defence-in-depth, hygiene. | Does not block | `sev:low` |
-| 🟦 | Nit — wording, clarity, or tiny hygiene issue. | Does not block | `sev:nit` |
+- **High** (`sev:high`) — common path is incorrect or a serious regression has no safe workaround. Blocks merge.
+- **Medium** (`sev:med`) — real defect under a bounded condition, or required failure-path coverage is missing. Requires a fix or explicit accepted-risk disposition.
+- **Low** (`sev:low`) — concrete, limited correctness or operability risk worth fixing before closure. Does not block.
+- **Nit** (`sev:nit`) — wording, clarity, or tiny hygiene issue. Does not block.
 
-Accepted/by-design is a disposition, not a severity. Move accepted material risk to
-`accepted_risks.md` or cite the explicit acceptance in the finding.
+Accepted/by-design is a disposition, not a severity. Record the acceptance against the finding and move material accepted risk to `docs/accepted_risks.md`.
+
+The only verdicts are `approved`, `changes requested`, and `pending`. Use `approved` when no required findings remain and evidence covers the brief; use `changes requested` when code or tests need a fix; use `pending` when missing scope or evidence prevents a decision. Structured review comments encode `changes requested` as `status=changes-requested`.
+<!-- END SHARED REVIEW CONTRACT -->
 
 Each finding states **location** (`file:line`), **what's wrong**, and a concrete **Fix:**.
 

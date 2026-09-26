@@ -75,6 +75,7 @@ before you add it — don't type the version you remember, it will be stale (`ME
 
 ## Engineering standards (METHODOLOGY.md §11)
 
+<!-- BEGIN SHARED ENGINEERING STANDARDS -->
 Non-negotiable while implementing a step. These are the rules a reviewer would otherwise
 have to catch by hand:
 
@@ -92,6 +93,7 @@ have to catch by hand:
   only cover success is not done.
 
 If the brief conflicts with any of these, stop and flag it — do not silently pick one.
+<!-- END SHARED ENGINEERING STANDARDS -->
 
 ## Commit contract (Codex)
 
