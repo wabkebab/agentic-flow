@@ -180,7 +180,7 @@ Four types live under `docs/`. Pick the template that matches the work.
 | **Security** | `templates/security-review.md` | A security review or hardening pass. Severity-graded findings with `file:line` and a concrete fix. | **Yes — inlined.** Closes to `docs/done/security/`. |
 | **Feature** | `templates/feature-analysis.md` | Designing a feature or change. Goal, current state, approach, what-not-to-build. | **Yes — inlined.** Closes to `docs/done/`. |
 | **Product Analysis** | `templates/product-analysis.md` | Exploratory architecture / product / monetization analysis. Options, trade-offs, a recommendation. A **decision record**. | **No.** If it greenlights work, spin off a Feature (or Security) doc for that. |
-| **Review** | `templates/review.md` | Post-execution architectural or hand-written review with findings, evidence, and a verdict. | **No.** Required fixes become Fast Fix issues or a new approved brief. |
+| **Review** | `templates/review.md` | Post-execution architectural or hand-written review with findings, evidence, and a verdict. | **No.** Required fixes follow the applicable assurance profile; a Quick local fix must promote to Standard before the normal merge workflow, or use a new approved brief when required. |
 
 **The implementation brief is inlined** in Security and Feature docs as a dedicated
 section — it is the brief an implementing agent reads to execute precisely. It contains

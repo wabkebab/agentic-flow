@@ -289,19 +289,22 @@ back into the document.</figcaption>
   syncing is how a codebase ends up with no record of why anything was built.</p>
 </div>
 
-<h3>Not everything deserves a full pass</h3>
-<p>Four delivery lanes. Use the smallest one that still preserves the risk and evidence you need.</p>
+<h3>Assurance follows the risk</h3>
+<p>Quick, Standard, and Strict are defined in <code>METHODOLOGY.md</code> §2. The project's
+tracked assurance baseline is the minimum for ordinary work; a brief may raise it.</p>
 <div class="tablewrap">
 <table>
-  <thead><tr><th>Lane</th><th>Use when</th><th>Required artifact</th></tr></thead>
+  <thead><tr><th>Profile</th><th>Work and artifact</th><th>Review and evidence</th></tr></thead>
   <tbody>
-    <tr><td><strong>Fast Fix</strong></td><td>A bounded bug with an obvious approach</td><td>Issue or short brief, a regression test, one branch/PR</td></tr>
-    <tr><td><strong>Planned Change</strong></td><td>A feature, security work, or multi-step behavior change</td><td>Feature/Security doc, approved brief, one branch/PR per pass</td></tr>
-    <tr><td><strong>Decision</strong></td><td>A product or architecture choice, before implementation</td><td>Product Analysis; spin off a Planned Change if greenlit</td></tr>
-    <tr><td><strong>Emergency</strong></td><td>Production restoration can't wait for planning</td><td>Hotfix PR with evidence, then a retrospective doc</td></tr>
+    <tr><td><strong>Quick</strong></td><td>Explicit bounded local work; no formal brief or issue</td><td>Focused checks and self-check; non-authoritative. Promote to Standard before the normal merge workflow.</td></tr>
+    <tr><td><strong>Standard</strong></td><td>One-step Feature brief and one work issue</td><td>Separate-role review, regression test, proportionate checks, and CI evidence</td></tr>
+    <tr><td><strong>Strict</strong></td><td>Full Feature/Security analysis, tracker, and step issues</td><td>Separate-role review and failure-path test per step, full suite, and bound CI evidence</td></tr>
   </tbody>
 </table>
 </div>
+<p>Decision is a Product Analysis document type. Emergency restoration still requires a
+retrospective Feature/Security document. Through F-9, issue generation keeps its existing
+tracker-plus-steps shape; F-10 activates the Standard work-issue path.</p>
 
 <h2><span class="num">03</span>Documents, and where they live</h2>
 <p>Four document types, each with a template in <code>docs/templates/</code>. Copy one out —
