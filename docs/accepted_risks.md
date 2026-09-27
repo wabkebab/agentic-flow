@@ -9,6 +9,59 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="f10-unreviewed-amendment"></a>
+## F-10 — Post-approval amendment `987c58b` was not re-reviewed
+
+**Status:** Accepted risk
+**Decision date:** 2026-09-27
+**Decided by:** wabkebab (human owner)
+**Tracking:** docs/inprogress/feature-harness-optimization.md; tracker #93, step #103
+
+### Finding / proposal
+OpenCode approved F-10 at `6b738c8` and closed #103. Codex then amended the commit to
+`987c58b` to address that review's Low finding and Nit. Nobody reviewed the amendment
+(12 lines across `scripts/hooks/require-step-comment.sh`, `scripts/self-test.sh`, and both
+`CLAUDE.md` copies). F-11 and F-12 were reviewed on top of it, but only their own ranges.
+
+### Proposed mitigation / implementation
+Have the reviewer re-review `6b738c8..987c58b` before close-out.
+
+### Acceptance rationale
+The delta only applies the reviewer's own requested fixes. The hook change widens a
+fail-closed match from the whole comment to one marker line, which is the lifecycle parser's
+rule, and it adds regressions for prose before and after the marker. Every later step's
+`make check`, focused hook groups, and full suite ran with it in place.
+
+### Revisit if
+- A Standard handoff is wrongly allowed or blocked by `require-step-comment.sh`.
+
+<a id="harness-optimization-branch-split"></a>
+## #93 — Harness optimization executed across per-step branches
+
+**Status:** Accepted risk
+**Decision date:** 2026-09-27
+**Decided by:** wabkebab (human owner)
+**Tracking:** docs/inprogress/feature-harness-optimization.md; tracker #93
+
+### Finding / proposal
+Part B names one branch, `codex/trustworthy-proportionate-harness`. That branch stopped at
+`0eb39f3` with an uncommitted draft in the F-2 worktree, so Codex continued on stacked
+branches `…-f3` through `…-f12`. The finished history is one linear chain,
+`87d6ae9..ba2cbd9`, on `codex/trustworthy-proportionate-harness-f12`.
+
+### Proposed mitigation / implementation
+Discard the stale draft and fast-forward the named branch to the chain head.
+
+### Acceptance rationale
+The chain is linear and each step is still one reviewed logical commit plus its review fixes.
+The PR is opened from `…-f12`. The draft left in the named branch's worktree has no content
+difference from `0eb39f3` (`git diff HEAD` is empty), so nothing is lost by leaving it.
+The human can clean up the named branch and its worktree.
+
+### Revisit if
+- Another Strict brief is executed across stacked branches; the single-branch rule then
+  needs enforcement rather than a per-plan exception.
+
 <a id="single-operator-review"></a>
 ## F-3 — One GitHub account can attest to multiple agent roles
 

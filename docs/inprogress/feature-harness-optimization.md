@@ -8,18 +8,18 @@
 
 ## Tracker
 
-- [ ] F-1 Parse lifecycle evidence into an exact v2 model — open.
-- [ ] F-2 Bind Actions evidence to repository, workflow, and PR head — open.
-- [ ] F-3 Verify review provenance and define close-out sequencing — open.
-- [ ] F-4 Make plan identities exact and preserve live workflow labels — open.
-- [ ] F-5 Parse protected Git commands and scan the repository being committed — open.
-- [ ] F-6 Remove false-green build, hook-test, and static-analysis paths — open.
-- [ ] F-7 Make exported validation consume the selected adapter scope — open.
-- [ ] F-8 Generate shared contracts and converge review terminology — open.
-- [ ] F-9 Define assurance policy and persist the project baseline — open.
-- [ ] F-10 Implement Standard issue topology and complete close-out — open.
-- [ ] F-11 Measure role context and workflow costs — measured at `987c58b`; the user approved the table below on 2026-09-26, clearing the F-12 threshold checkpoint.
-- [ ] F-12 Reduce fast-check and fixture setup costs — open.
+- [x] F-1 Parse lifecycle evidence into an exact v2 model — `7cff1f9` + `1f3706a`; #94 reviewed clean.
+- [x] F-2 Bind Actions evidence to repository, workflow, and PR head — `0eb39f3`; #95 reviewed clean.
+- [x] F-3 Verify review provenance and define close-out sequencing — `5b9fa4c`; #96 reviewed clean.
+- [x] F-4 Make plan identities exact and preserve live workflow labels — `c6c58fe`; #97 reviewed clean.
+- [x] F-5 Parse protected Git commands and scan the repository being committed — `3763101`; #98 reviewed clean.
+- [x] F-6 Remove false-green build, hook-test, and static-analysis paths — `8cde022` + `9a82aff`; #99 reviewed clean.
+- [x] F-7 Make exported validation consume the selected adapter scope — `5a2bf4d`; #100 reviewed clean.
+- [x] F-8 Generate shared contracts and converge review terminology — `67b6dac`; #101 reviewed clean.
+- [x] F-9 Define assurance policy and persist the project baseline — `f2b0650` + `07bdb3d`; #102 reviewed clean.
+- [x] F-10 Implement Standard issue topology and complete close-out — `987c58b`; #103 reviewed clean at `6b738c8`; the post-approval amendment is an accepted risk (`docs/accepted_risks.md#f10-unreviewed-amendment`).
+- [x] F-11 Measure role context and workflow costs — `931925b` + `36f838b`; #104 reviewed clean. Measured at `987c58b`; the user approved the table below on 2026-09-26, clearing the F-12 threshold checkpoint.
+- [x] F-12 Reduce fast-check and fixture setup costs — `15483f5` + `ba2cbd9`; #105 reviewed clean.
 
 ---
 
@@ -1740,13 +1740,14 @@ and all whole-brief verification commands pass.
 - **Evidence schema:** v2
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/93
 - **Approval:** status=approved; by=wabkebab; at=2026-09-20
-- **Implementation head:** pending.
+- **Implementation head:** source=pr-head
 - **Implementation PR:** pending.
-- **Verification evidence:** pending.
-- **Review verdict:** status=pending.
-- **Memory:** status=n/a.
-- **Supersedes:** the implementation briefs in
-  `feature-progressive-assurance-profiles.md` and `feature-adaptative-assurance-opus.md` after
-  approval; until then, all three remain proposals and none should be executed.
-- Steps not started. The executor records each reviewed commit and issue in the Tracker; close-out
-  migrates this Status block to the exact v2 evidence values defined above.
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=pr-head-approval
+- **Memory:** status=n/a
+- This Feature supersedes the implementation briefs in
+  `feature-progressive-assurance-profiles.md` and `feature-adaptative-assurance-opus.md`.
+- All twelve steps are reviewed clean on `codex/trustworthy-proportionate-harness-f12`
+  (`87d6ae9..ba2cbd9`), not on the single branch named in Part B; see
+  `docs/accepted_risks.md#harness-optimization-branch-split`. Close-out still needs the PR, its
+  CI run, structured reviewer verdicts, and the v2 values defined above.
