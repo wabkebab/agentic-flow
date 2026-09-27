@@ -90,6 +90,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The Test suite's export fixture reads pre-F-7 artifacts from repository
+          # history; the default depth-1 clone cannot resolve them.
+          fetch-depth: 0
 
       # This repository is the harness itself: bash/make only, no language runtime
       # setup, lockfile install, or package audit is required here.
