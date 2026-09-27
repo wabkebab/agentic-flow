@@ -95,6 +95,21 @@ jobs:
           # history; the default depth-1 clone cannot resolve them.
           fetch-depth: 0
 
+      # `make test` lints the harness scripts with ShellCheck. Pin the version the suite is
+      # verified against: ubuntu-24.04 ships 0.9.0, which reports the hooks' indirectly
+      # invoked callbacks as unreachable (SC2317), and a runner image update can change it.
+      - name: Install pinned ShellCheck
+        env:
+          SHELLCHECK_VERSION: v0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          archive="shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/$archive"
+          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION" >> "$GITHUB_PATH"
+
       # This repository is the harness itself: bash/make only, no language runtime
       # setup, lockfile install, or package audit is required here.
       - name: Preflight runner tools
@@ -121,10 +136,6 @@ jobs:
         run: make check
       - name: Repo-scope scaffold doctor
         run: scripts/doctor.sh --check --scope repo --skip-make-check
-      # `make test` shellchecks the harness scripts and requires the tool. ubuntu-24.04
-      # ships shellcheck preinstalled, but an older release than you likely have locally —
-      # so CI is the more permissive of the two. Local green is the stricter claim; don't
-      # read a green CI as proof the newer linter is happy.
       - name: Test suite
         run: make test
       - name: Build
