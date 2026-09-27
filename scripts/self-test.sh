@@ -2293,6 +2293,10 @@ for legacy_mode in default claude-only pending; do
   git -C "$ROOT" show 9a82aff:scripts/lib/payload-apply.sh \
     > "$LEGACY_TARGET/scripts/lib/payload-apply.sh"
   chmod +x "$LEGACY_TARGET/scripts/agentic-flow"
+  # The pre-F-7 CLI reads past its dispatch after upgrade rewrites it. Bash 3.2 and 5.x
+  # disagree about the resulting syntax error's status, so run an unchanging copy.
+  LEGACY_CLI="$TMP/legacy-cli-$legacy_mode"
+  cp "$LEGACY_TARGET/scripts/agentic-flow" "$LEGACY_CLI"
   cp "$LEGACY_SOURCE/config/payload.tsv" "$LEGACY_TARGET/config/payload.tsv"
   printf 'old+0000000\n' > "$LEGACY_TARGET/.agentic-flow-version"
   printf 'origin file://%s\nref main\n' "$LEGACY_SOURCE" \
@@ -2301,14 +2305,14 @@ for legacy_mode in default claude-only pending; do
     printf 'codex\n' > "$LEGACY_TARGET/.agentic-flow-scopes-excluded"
   fi
   if [ "$legacy_mode" = pending ]; then
-    (cd "$LEGACY_TARGET" && scripts/agentic-flow upgrade --yes) \
+    (cd "$LEGACY_TARGET" && bash "$LEGACY_CLI" upgrade --yes) \
       > "$TMP/legacy-pending.out" 2>&1 \
       || fail "old upgrader rejected the new five-column manifest"
     grep -qx 'old+0000000' "$LEGACY_TARGET/.agentic-flow-version" \
       || fail "old upgrader advanced a pending installation"
     assert_no_file "$LEGACY_TARGET/.agentic-flow-installation"
   else
-    (cd "$LEGACY_TARGET" && scripts/agentic-flow upgrade --yes --force) \
+    (cd "$LEGACY_TARGET" && bash "$LEGACY_CLI" upgrade --yes --force) \
       > "$TMP/legacy-$legacy_mode.out" 2>&1 \
       || fail "old $legacy_mode upgrader rejected the new manifest"
     if [ "$legacy_mode" = claude-only ]; then
@@ -2327,6 +2331,25 @@ for legacy_mode in default claude-only pending; do
     fi
   fi
 done
+# The current CLI must not read its replacement after upgrade rewrites it. The release
+# appends one line at the running file's end-of-file offset, the next bytes bash would read.
+{
+  cat "$TMP/legacy-upgrade-default/scripts/agentic-flow"
+  printf "printf 'agentic-flow read its replacement\\\\n'\\n"
+} > "$LEGACY_SOURCE/scripts/agentic-flow"
+(
+  cd "$LEGACY_SOURCE"
+  printf '11.0.1\n' > VERSION
+  git add VERSION scripts/agentic-flow
+  git commit -q -m 'Append to the CLI for a self-replacing upgrade'
+)
+(cd "$TMP/legacy-upgrade-default" && scripts/agentic-flow upgrade --yes --force) \
+  > "$TMP/self-replace.out" 2>&1 \
+  || fail "current upgrader failed while replacing itself"
+grep -q 'read its replacement' "$TMP/self-replace.out" \
+  && fail "current upgrader executed its replacement after upgrading"
+cmp -s "$LEGACY_SOURCE/scripts/agentic-flow" "$TMP/legacy-upgrade-default/scripts/agentic-flow" \
+  || fail "self-replacing upgrade did not install the new CLI"
 fi
 fi
 

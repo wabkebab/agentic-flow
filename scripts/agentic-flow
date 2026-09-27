@@ -27,15 +27,6 @@ load_payload_lib() { # <root>
   . "$root/scripts/lib/payload-apply.sh"
 }
 
-load_excluded_scopes() { # <root>
-  # A project initialized with --claude-only recorded the scopes it left out. Replay them,
-  # or `upgrade` reinstalls every Codex and OpenCode adapter and silently undoes the flag.
-  local root="$1" file="$1/.agentic-flow-scopes-excluded"
-  [ -f "$file" ] || return 0
-  # shellcheck disable=SC2034 # Read by payload-apply.sh after it is sourced.
-  PAYLOAD_EXCLUDED_SCOPES=$(tr '\n' ' ' < "$file")
-}
-
 check_project_owned_state() {
   local dest
   for dest in "${DESTS[@]}"; do
@@ -448,11 +439,16 @@ version_cmd() {
 }
 
 subcommand="${1:-}"
-case "$subcommand" in
-  ""|-h|--help) usage; exit 0 ;;
-  --version) version_cmd ;;
-  status) shift; status_cmd "$@" ;;
-  diff) shift; diff_cmd "$@" ;;
-  upgrade) shift; upgrade_cmd "$@" ;;
-  *) usage; die "unknown subcommand: $subcommand" ;;
-esac
+# upgrade can overwrite this file while bash is still reading it. Bash parses the whole
+# group, exit included, before running it, so it never reads the replacement's bytes.
+{
+  case "$subcommand" in
+    ""|-h|--help) usage; exit 0 ;;
+    --version) version_cmd ;;
+    status) shift; status_cmd "$@" ;;
+    diff) shift; diff_cmd "$@" ;;
+    upgrade) shift; upgrade_cmd "$@" ;;
+    *) usage; die "unknown subcommand: $subcommand" ;;
+  esac
+  exit
+}
