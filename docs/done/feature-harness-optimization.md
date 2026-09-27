@@ -1741,7 +1741,7 @@ and all whole-brief verification commands pass.
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/93
 - **Approval:** status=approved; by=wabkebab; at=2026-09-20
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending.
+- **Implementation PR:** url=https://github.com/wabkebab/agentic-flow/pull/106
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=pr-head-approval
 - **Memory:** status=n/a
@@ -1749,6 +1749,6 @@ and all whole-brief verification commands pass.
   `feature-progressive-assurance-profiles.md` and `feature-adaptative-assurance-opus.md`.
 - All twelve steps are reviewed clean on `codex/trustworthy-proportionate-harness-f12`
   (`87d6ae9..ba2cbd9`), not on the single branch named in Part B; see
-  `docs/accepted_risks.md#harness-optimization-branch-split`. Close-out is ready once the PR
-  exists: CI on its head, a structured reviewer approval of that head on #93, then
-  `--phase close-out` and closing #93.
+  `docs/accepted_risks.md#harness-optimization-branch-split`. Close-out needs CI on the PR
+  head, a structured reviewer approval of that head on #93, then `--phase close-out` and
+  closing #93.
