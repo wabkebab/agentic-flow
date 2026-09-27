@@ -27,12 +27,13 @@ load_payload_lib() { # <root>
   . "$root/scripts/lib/payload-apply.sh"
 }
 
-load_excluded_scopes() { # <root>
-  # A project initialized with --claude-only recorded the scopes it left out. Replay them,
-  # or `upgrade` reinstalls every Codex and OpenCode adapter and silently undoes the flag.
-  local root="$1" file="$1/.agentic-flow-scopes-excluded"
-  [ -f "$file" ] || return 0
-  PAYLOAD_EXCLUDED_SCOPES=$(tr '\n' ' ' < "$file")
+check_project_owned_state() {
+  local dest
+  for dest in "${DESTS[@]}"; do
+    case "$dest" in .agentic-flow-assurance|.agentic-flow-assurance-audit)
+      die "assurance state is project-owned and cannot be a payload destination" ;;
+    esac
+  done
 }
 
 find_root() {
@@ -72,6 +73,17 @@ record_applied_source() { # <root> <origin> <ref>
 
 adapter_status() { # <root>
   local root="$1" adapters="" adapter path
+  if [ -f "$root/.agentic-flow-installation" ]; then
+    payload_resolve_installation "$root" "$root/config/payload.tsv"
+    for adapter in claude codex opencode; do
+      if payload_has_word "$adapter" "$PAYLOAD_ACTIVE_SCOPES"; then
+        adapters="${adapters}${adapters:+,}$adapter"
+        [ "$adapter" = codex ] && adapters="$adapters,agents"
+      fi
+    done
+    printf '%s\n' "${adapters:-none}"
+    return
+  fi
   for adapter in claude:.claude codex:.codex agents:.agents opencode:.opencode; do
     path=${adapter#*:}
     if [ -e "$root/$path" ]; then
@@ -161,10 +173,12 @@ diff_cmd() {
   trap '[ -z "${FETCH_PARENT:-}" ] || rm -rf "$FETCH_PARENT"' EXIT
   fetch_standard "$origin" "$ref"
   source="$FETCHED_SOURCE"
-  load_payload_lib "$root"
-  load_excluded_scopes "$root"
+  load_payload_lib "$source"
+  payload_resolve_installation "$root" "$source/config/payload.tsv"
   payload_load_manifest "$source/config/payload.tsv"
+  PAYLOAD_DST_ROOT="$root"
   payload_expand_files "$source"
+  check_project_owned_state
   available=$(payload_compute_version "$source")
   PAYLOAD_VERSION="$available"
   PAYLOAD_DRY=true
@@ -257,14 +271,20 @@ upgrade_cmd() {
   trap '[ -z "${FETCH_PARENT:-}" ] || rm -rf "$FETCH_PARENT"' EXIT
   fetch_standard "$origin" "$ref"
   source="$FETCHED_SOURCE"
-  load_payload_lib "$root"
-  load_excluded_scopes "$root"
+  load_payload_lib "$source"
+  payload_resolve_installation "$root" "$source/config/payload.tsv"
   payload_load_manifest "$source/config/payload.tsv"
+  PAYLOAD_DST_ROOT="$root"
   payload_expand_files "$source"
+  check_project_owned_state
   available=$(payload_compute_version "$source")
+  # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_VERSION="$available"
+  # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_DRY=false
+  # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_FORCE="$force"
+  # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_DST_ROOT="$root"
 
   echo "agentic-flow upgrade"
@@ -308,8 +328,11 @@ upgrade_cmd() {
   if [ "$force" = false ] && find "$root" -type f -name '*.agentic-new*' -print -quit 2>/dev/null | grep -q .; then
     pending_count=1
   fi
+  if [ "$force" = true ] || [ "$pending_count" -eq 0 ]; then
+    payload_write_installation "$root" "$source/config/payload.tsv"
+    record_applied_source "$root" "$origin" "$ref"
+  fi
   payload_stamp_version "$source" "$root" "$pending_count"
-  record_applied_source "$root" "$origin" "$ref"
   if [ "$force" = true ] || [ "$pending_count" -eq 0 ]; then
     echo "  installed   .agentic-flow-version ($available)"
   else
@@ -347,9 +370,9 @@ status_cmd() {
   stack=$(sed -n '1p' "$root/.agentic-flow-stack" 2>/dev/null || true)
   origin=$(read_source_field "$root" 1 origin)
   ref=$(read_source_field "$root" 2 ref)
+  load_payload_lib "$root"
   adapters=$(adapter_status "$root")
   candidates=$(find "$root" -type f -name '*.agentic-new*' -print 2>/dev/null | sed "s|^$root/||" | sort)
-  load_payload_lib "$root"
   ignored=$(payload_ignored_paths "$root")
   [ -n "$candidate$candidates$ignored" ] && action_needed=true
 
@@ -416,11 +439,16 @@ version_cmd() {
 }
 
 subcommand="${1:-}"
-case "$subcommand" in
-  ""|-h|--help) usage; exit 0 ;;
-  --version) version_cmd ;;
-  status) shift; status_cmd "$@" ;;
-  diff) shift; diff_cmd "$@" ;;
-  upgrade) shift; upgrade_cmd "$@" ;;
-  *) usage; die "unknown subcommand: $subcommand" ;;
-esac
+# upgrade can overwrite this file while bash is still reading it. Bash parses the whole
+# group, exit included, before running it, so it never reads the replacement's bytes.
+{
+  case "$subcommand" in
+    ""|-h|--help) usage; exit 0 ;;
+    --version) version_cmd ;;
+    status) shift; status_cmd "$@" ;;
+    diff) shift; diff_cmd "$@" ;;
+    upgrade) shift; upgrade_cmd "$@" ;;
+    *) usage; die "unknown subcommand: $subcommand" ;;
+  esac
+  exit
+}

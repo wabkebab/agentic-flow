@@ -265,12 +265,6 @@ if [ "$CLAUDE_ONLY" = true ]; then
   apply_claude_only "$TARGET_ABS/AGENTS.md.agentic-new"
 fi
 
-# Record the exclusion so `agentic-flow upgrade` keeps honouring it. Without this the first
-# upgrade re-installs every excluded adapter and silently undoes --claude-only.
-if [ "${#EXCLUDE_SCOPE_ARGS[@]}" -gt 0 ]; then
-  printf '%s\n' codex opencode > "$TARGET_ABS/.agentic-flow-scopes-excluded"
-fi
-
 if [ "$preexisting_makefile" = false ]; then
   "$SRC/scripts/render-stack-profile.sh" "$STACK" "$TARGET_ABS/Makefile"
   printf '%s\n' "$STACK" > "$TARGET_ABS/.agentic-flow-stack"
@@ -296,6 +290,17 @@ $f"
   fi
 done
 [ -z "$token_files" ] || die "unfilled template tokens remain:$token_files"
+
+# Initialization deliberately fills project names and renders a stack profile after export.
+# Refresh the successful installation record to describe those installed bytes.
+if [ ! -f "$TARGET_ABS/.agentic-flow-candidate-version" ]; then
+  # shellcheck disable=SC1091 # The helper is sourced from this scaffold checkout.
+  . "$SRC/scripts/lib/payload-apply.sh"
+  payload_resolve_installation "$TARGET_ABS" "$SRC/config/payload.tsv"
+  payload_load_manifest "$SRC/config/payload.tsv"
+  payload_expand_files "$SRC"
+  payload_write_installation "$TARGET_ABS" "$SRC/config/payload.tsv"
+fi
 
 echo
 (cd "$TARGET_ABS" && scripts/doctor.sh)

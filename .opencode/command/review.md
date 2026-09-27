@@ -21,11 +21,4 @@ Resolve the argument as follows:
   changes to those files (`git diff -- <files>`); if unchanged, review the
   last commit touching them.
 
-Run the gates that apply without mutating the tree:
-`make check`, and `make test-one F=<relevant test>` if one is identifiable. Do
-not let `make test` skip on a missing `shellcheck` — report it as red.
-
-Report findings as `block` / `fix` / `nit` with `file:line` (diff-hunk line for
-added code), each as Problem → why it matters → suggested direction (not
-finished code). End with a one-line verdict: `BLOCK` / `fix N findings` /
-`LGTM`. Do not edit, stage, commit, or push.
+Invoke `.agents/skills/review-execution/SKILL.md` through the `code-reviewer` agent for the resolved scope. That skill owns verification, finding severity, verdict terms, and structured issue comments. Keep the review read-only on the work under review.

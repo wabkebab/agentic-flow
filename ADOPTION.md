@@ -51,6 +51,16 @@ you treat the adoption as complete.
 
 ## Verify
 
+New adoptions receive a tracked `.agentic-flow-assurance` baseline of `standard`.
+`scripts/assurance.sh status` reports the baseline and whether it came from the file or
+the legacy default; `scripts/assurance.sh --check` validates it. Raise with
+`scripts/assurance.sh set strict`. Lowering requires `--approved-by <human-identity>` and
+`--reason <text>`, recorded in `.agentic-flow-assurance-audit` for review in the tracked
+diff. The claimed approval is not authenticated by the CLI. Export and upgrade preserve
+an adopter's baseline, including under `--force`. The assurance policy lives in
+`METHODOLOGY.md` §2. Until F-10, issue creation retains the existing tracker-and-steps
+shape regardless of baseline. CI checks do not vary with assurance state.
+
 `scripts/doctor.sh` is the verifier. It reports required tools, agent adapters, stack
 profile, unresolved merge candidates, active/pending scaffold versions, Make targets,
 hook wiring, CI posture, and docs-index freshness.

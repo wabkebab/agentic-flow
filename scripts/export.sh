@@ -7,7 +7,7 @@
 #   scripts/export.sh --force <target-dir>    overwrite existing files (destructive)
 #   scripts/export.sh --exclude-scope=codex <target-dir>
 #                                             skip every manifest row in that scope
-#                                             (repeatable: core|claude|codex|opencode|ci|docs)
+#                                             (repeatable: claude|codex|opencode|ci)
 #
 # Copies the entries declared in config/payload.tsv and leaves behind entries marked
 # source-only plus this repo's live docs and metadata.
@@ -43,7 +43,16 @@ die() { echo "error: $*" >&2; exit 1; }
 # The manifest is the one source of truth for payload membership. Export, doctor, and
 # self-test all consume or validate it so a new adapter cannot silently exist only here.
 MANIFEST="$SRC/config/payload.tsv"
+requested_scopes="$PAYLOAD_EXCLUDED_SCOPES"
 payload_load_manifest "$MANIFEST"
+payload_resolve_installation "$DST" "$MANIFEST" "$requested_scopes"
+payload_load_manifest "$MANIFEST"
+
+# Generated adapter copies must agree with their canonical sources before any
+# destination write. The manifest still owns which scopes and files are exported.
+if [ -d "$SRC/templates/shared" ]; then
+  "$SRC/scripts/render-shared.sh" --check || die "render shared contracts before exporting"
+fi
 
 # Create / validate target.
 if [ ! -d "$DST" ]; then
@@ -56,7 +65,21 @@ fi
 DST=$(cd "$DST" 2>/dev/null && pwd -P || echo "$DST")
 [ "$DST" != "$SRC" ] || die "target is the agentic-flow repo itself"
 
+PAYLOAD_DST_ROOT="$DST"
 payload_expand_files "$SRC"
+for protected_dest in "${DESTS[@]}"; do
+  case "$protected_dest" in .agentic-flow-assurance|.agentic-flow-assurance-audit)
+    die "assurance state is project-owned and cannot be a payload destination" ;;
+  esac
+done
+
+# Assurance is project-owned state, outside the upgrade payload. Seed only a new
+# installation and validate an existing choice before touching payload files.
+[ ! -L "$DST/.agentic-flow-assurance" ] || die "assurance state must be a regular file"
+"$SRC/scripts/assurance.sh" --check-for-root "$DST"
+if [ ! -e "$DST/.agentic-flow-assurance" ] && [ "$DRY" = false ]; then
+  printf 'standard\n' > "$DST/.agentic-flow-assurance"
+fi
 
 echo "Exporting agentic-flow standard"
 echo "  from: $SRC"
@@ -107,13 +130,6 @@ while [ "$i" -lt "${#FILES[@]}" ]; do
   esac
 done
 
-payload_stamp_version "$SRC" "$DST" "$merge"
-if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
-  echo "  installed   .agentic-flow-version ($version)"
-else
-  echo "  pending     .agentic-flow-candidate-version ($version)"
-fi
-
 if [ -n "$source_origin" ]; then
   if [ -f "$DST/.agentic-flow-source" ]; then
     recorded_origin=$(sed -n '1s/^origin[[:space:]]*//p' "$DST/.agentic-flow-source")
@@ -148,6 +164,15 @@ if [ "$DRY" = false ] && [ -x "$DST/scripts/docs-index.sh" ]; then
   else
     echo "Note: run scripts/docs-index.sh in the target once docs/README.md has the markers."
   fi
+fi
+if [ "$DRY" = false ] && { [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; }; then
+  payload_write_installation "$DST" "$MANIFEST"
+fi
+payload_stamp_version "$SRC" "$DST" "$merge"
+if [ "$FORCE" = true ] || [ "$merge" -eq 0 ]; then
+  echo "  installed   .agentic-flow-version ($version)"
+else
+  echo "  pending     .agentic-flow-candidate-version ($version)"
 fi
 
 if [ "$merge" -gt 0 ]; then

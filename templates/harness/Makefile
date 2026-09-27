@@ -9,25 +9,26 @@
 # The remaining recipes no-op with a reminder until filled in for your stack (TS/Node
 # examples shown commented), so a fresh scaffold doesn't block work.
 
+# BEGIN SHARED SHELL GATE
 .PHONY: check test test-one build run help
 
 help:           ## list available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-10s %s\n",$$1,$$2}'
 
 check:          ## fast sanity gate: harness checks + your type-check/lint. Run by the Stop hook.
-	@for f in scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh; do bash -n "$$f" || exit 1; done
-	@scripts/docs-index.sh --check
+	@scripts/shell-inventory.sh --syntax
+	@scope=$$(scripts/shell-inventory.sh --scope-state docs) || exit 1; if [ "$$scope" = active ]; then scripts/docs-index.sh --check; fi
 	@scripts/check-payload-manifest.sh
-	@scripts/check-action-pins.sh
+	@scripts/check-harness-sync.sh
 	@scripts/check-memory-index.sh
+	@scripts/check-action-pins.sh
 	@scripts/self-test.sh --fast
-#	npm run typecheck && npm run lint
 
 test:           ## full test suite
 	@scripts/self-test.sh --full
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required for 'make test' — install it (brew install shellcheck / apt-get install shellcheck)." >&2; exit 1; }
-	@shellcheck scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh
-	@echo "TODO: add your stack's test suite to 'test' in the Makefile."
+	@scripts/shell-inventory.sh --lint
+# END SHARED SHELL GATE
 #	npm run test:run
 
 test-one:       ## one targeted test:  make test-one F=path/to/file

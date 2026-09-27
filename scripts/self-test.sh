@@ -7,6 +7,18 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+# Exported checks use the same recorded adapter selection as doctor and the shell gate.
+# The scaffold has no installation record and checks every source adapter.
+# shellcheck disable=SC1091 # This library is part of the installed harness.
+if [ -f "$ROOT/scripts/lib/payload-apply.sh" ]; then
+  . "$ROOT/scripts/lib/payload-apply.sh"
+fi
+if [ -f "$ROOT/.agentic-flow-installation" ] && command -v payload_resolve_installation >/dev/null 2>&1; then
+  payload_resolve_installation "$ROOT" "$ROOT/config/payload.tsv"
+else
+  PAYLOAD_ACTIVE_SCOPES="core claude codex opencode ci docs"
+fi
+active_scope() { case " $PAYLOAD_ACTIVE_SCOPES " in *" $1 "*) return 0 ;; esac; return 1; }
 SELF_TEST_MODE=fast
 ONLY_GROUP=""
 while [ "$#" -gt 0 ]; do
@@ -43,6 +55,9 @@ case " $SELF_TEST_GROUPS " in
 esac
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
+LOCAL_EVENTS="$TMP/local-events"
+: > "$LOCAL_EVENTS"
+REPORT_EVENTS=${AGENTIC_MEASURE_EVENTS:-}
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 # Matches only real scaffold placeholders (double-brace UPPER_SNAKE), not the
 # dollar-brace expression syntax that shipped docs quote when documenting CI workflows.
@@ -50,9 +65,86 @@ PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
 trap 'rm -rf "$TMP"' EXIT
 
+# Keep per-process cost evidence even when no external report was requested.
+# An external report also receives nested self-test events.
+measure_event() {
+  if [ "${AGENTIC_MEASURE_EVENTS:-}" = "$REPORT_EVENTS" ]; then
+    printf '%s\n' "$1" >> "$LOCAL_EVENTS"
+  fi
+  if [ -n "${AGENTIC_MEASURE_EVENTS:-}" ]; then
+    printf '%s\n' "$1" >> "$AGENTIC_MEASURE_EVENTS"
+  fi
+}
+
+measure_copy() { # <cp arguments, after a successful cp>
+  local recursive=0 options=1 arg source i
+  local -a paths=()
+  for arg in "$@"; do
+    if [ "$options" -eq 1 ]; then
+      case "$arg" in
+        --) options=0; continue ;;
+        --recursive|--archive) recursive=1; continue ;;
+        --*) continue ;;
+        -*)
+          case "$arg" in *[Rra]*) recursive=1 ;; esac
+          continue ;;
+      esac
+    fi
+    paths+=( "$arg" )
+  done
+  # The final path is the destination. Count every source, including both
+  # operands of `cp a b dir/` and each source tree of a recursive copy.
+  for ((i=0; i<${#paths[@]}-1; i++)); do
+    source=${paths[$i]}
+    if [ "$recursive" -eq 1 ] && [ -d "$source" ]; then
+      measure_event fixture_tree_copy
+      find "$source" -type f -print | while IFS= read -r arg; do
+        measure_event fixture_file_copy
+      done
+    else
+      measure_event fixture_file_copy
+    fi
+  done
+}
+
+cp() {
+  command cp "$@" || return $?
+  measure_copy "$@"
+}
+
+link_snapshot_files() { # <destination>; directories are private, unchanged files share inodes
+  local destination="$1" source rel
+  mkdir -p "$destination"
+  while IFS= read -r -d '' source; do
+    rel=${source#"$SOURCE_SNAPSHOT/"}
+    mkdir -p "$destination/$(dirname "$rel")"
+    ln "$source" "$destination/$rel"
+  done < <(find "$SOURCE_SNAPSHOT" -type f -print0)
+}
+
 fail() {
   echo "self-test failed: $*" >&2
   exit 1
+}
+
+cost_count() { # <event-file> <event>
+  awk -v event="$2" '$0 == event { n++ } END { print n+0 }' "$1"
+}
+
+assert_cost_budget() { # <event-file> <fast|full>
+  local events="$1" mode="$2"
+  if [ "$mode" = fast ]; then
+    [ "$(cost_count "$events" source_snapshot_copy)" -eq 0 ] || fail 'fast mode built a source snapshot'
+    [ "$(cost_count "$events" fixture_tree_copy)" -eq 0 ] || fail 'fast mode copied a fixture tree'
+    [ "$(cost_count "$events" fixture_file_copy)" -le 33 ] || fail 'fast mode exceeded 33 fixture file copies'
+  elif [ -f "$ROOT/scripts/export.sh" ]; then
+    # Exported projects omit the source-only exporter and never build this
+    # snapshot. The approved full-copy limits describe scaffold verification.
+    [ "$(cost_count "$events" source_snapshot_copy)" -eq 1 ] || fail 'full mode did not reuse one source snapshot'
+    [ "$(cost_count "$events" fixture_tree_copy)" -le 1 ] || fail 'full mode exceeded one fixture tree copy'
+    [ "$(cost_count "$events" fixture_file_copy)" -le 297 ] || fail 'full mode exceeded 297 fixture file copies'
+  fi
+  [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
 
 assert_file() {
@@ -147,26 +239,32 @@ assert_ci_gate_needs_asserted() { # <workflow.yml>
 }
 
 path_without_tools() { # <output-dir> <tool>...
-  out_dir="$1"
+  local out_dir="$1" tool resolved blocked skip
   shift
-  mkdir -p "$out_dir"
-  old_ifs=$IFS
-  IFS=:
-  for path_dir in $PATH; do
-    [ -d "$path_dir" ] || continue
-    for candidate in "$path_dir"/*; do
-      [ -f "$candidate" ] || continue
-      [ -x "$candidate" ] || continue
-      name=${candidate##*/}
-      skip=false
-      for blocked in "$@"; do
-        [ "$name" = "$blocked" ] && skip=true
-      done
-      [ "$skip" = true ] && continue
-      [ -e "$out_dir/$name" ] || ln -s "$candidate" "$out_dir/$name"
+  for tool in awk bash cat cp find git grep iconv jq make mkdir rm sed sort tr uniq wc; do
+    skip=false
+    for blocked in "$@"; do
+      [ "$tool" = "$blocked" ] && skip=true
     done
+    [ "$skip" = true ] && continue
+    type -P "$tool" >/dev/null 2>&1 || fail "required fixture tool missing: $tool"
   done
-  IFS=$old_ifs
+  mkdir -p "$out_dir"
+  # The fixture needs only the tools used by the shipped shell checks and hooks.
+  # Resolve names directly; walking PATH copies unrelated executables and makes the
+  # cost depend on the caller's machine.
+  for tool in awk bash basename cat chmod cksum cmp cp cut date dirname env find git \
+    grep head iconv jq ln make mkdir mktemp mv od pwd readlink rm sed sh \
+    sha256sum shasum sort stat tail touch tr uname uniq wc xargs; do
+    skip=false
+    for blocked in "$@"; do
+      [ "$tool" = "$blocked" ] && skip=true
+    done
+    [ "$skip" = true ] && continue
+    resolved=$(type -P "$tool" 2>/dev/null || true)
+    [ -n "$resolved" ] || continue
+    case "$resolved" in /*) ln -s "$resolved" "$out_dir/$tool" ;; esac
+  done
   printf '%s\n' "$out_dir"
 }
 
@@ -181,8 +279,13 @@ hook_payload() { # <command>
 }
 
 must_block() { # <hook> <command>
-  hook_payload "$2" | "$1" >/dev/null 2>&1 && fail "hook allowed: $2"
-  true
+  local status=0 output
+  output=$(hook_payload "$2" | "$1" 2>&1) || status=$?
+  case "$status" in
+    2) return 0 ;;
+    0) fail "hook allowed: $2 (status 0)" ;;
+    *) fail "hook crashed/wrong contract: $2 (status $status): $output" ;;
+  esac
 }
 
 must_allow() { # <hook> <command>
@@ -195,9 +298,13 @@ must_allow() { # <hook> <command>
 # be installed, exactly as already asserted for gitleaks below. NOJQ_PATH is set by the hooks
 # group before these run.
 must_block_nojq() { # <hook> <command>
-  hook_payload "$2" \
-    | PATH="$NOJQ_PATH" "$1" >/dev/null 2>&1 && fail "hook allowed without jq: $2"
-  true
+  local status=0 output
+  output=$(hook_payload "$2" | PATH="$NOJQ_PATH" "$1" 2>&1) || status=$?
+  case "$status" in
+    2) return 0 ;;
+    0) fail "hook allowed without jq: $2 (status 0)" ;;
+    *) fail "hook crashed/wrong contract without jq: $2 (status $status): $output" ;;
+  esac
 }
 
 must_allow_nojq() { # <hook> <command>
@@ -217,27 +324,67 @@ should_run() { # <group>
   esac
   if [ -n "$ONLY_GROUP" ]; then
     [ "$ONLY_GROUP" = "$1" ] || return 1
-  elif [ "$SELF_TEST_MODE" != full ] && [ "$1" = export ]; then
+  elif [ "$SELF_TEST_MODE" != full ] && { [ "$1" = export ] || [ "$1" = upgrade ]; }; then
     return 1
   fi
   GROUPS_RAN="$GROUPS_RAN $1 "
+  measure_event "group:$1"
+  if [ -z "$ONLY_GROUP" ] && [ "$SELF_TEST_MODE" = fast ]; then
+    fast_check_group "$1"
+    return 1
+  fi
   return 0
+}
+
+fast_check_group() { # <group>; fast mode only
+  case "$1" in
+    contracts)
+      [ -f "$ROOT/config/payload.tsv" ] || fail 'payload manifest is missing'
+      [ -f "$ROOT/templates/harness/Makefile" ] || [ ! -f "$ROOT/scripts/export.sh" ] \
+        || fail 'pristine Makefile is missing'
+      ;;
+    hooks)
+      for hook in block-git-add-all block-push scan-secrets check-gate require-step-comment; do
+        [ -x "$ROOT/scripts/hooks/$hook.sh" ] || fail "critical hook is missing: $hook"
+      done
+      must_block "$ROOT/scripts/hooks/block-git-add-all.sh" 'git add -A'
+      must_allow "$ROOT/scripts/hooks/block-git-add-all.sh" 'git add scripts/self-test.sh'
+      must_block "$ROOT/scripts/hooks/block-push.sh" 'git push origin main'
+      must_allow "$ROOT/scripts/hooks/block-push.sh" 'git status --short'
+      ;;
+    plan-to-issues)
+      [ -x "$ROOT/scripts/plan-to-issues.sh" ] || fail 'plan driver is missing'
+      bash -n "$ROOT/scripts/plan-to-issues.sh" || fail 'plan driver has invalid syntax'
+      ;;
+    lifecycle)
+      [ -x "$ROOT/scripts/lifecycle-status.sh" ] || fail 'lifecycle gate is missing'
+      bash -n "$ROOT/scripts/lifecycle-status.sh" || fail 'lifecycle gate has invalid syntax'
+      ;;
+  esac
 }
 
 # --- export invariants (scaffold repo only, full suite only) -----------------------------
 if should_run export; then
 if [ -f "$ROOT/scripts/export.sh" ]; then
-  # Exercise mutations against an isolated copy of the current checkout. The old test
-  # appended sentinels to the live CLAUDE.md and docs/inprogress, then restored them in a
-  # trap. Two concurrent checks could back up each other's temporary state and leave the
-  # source checkout modified. Copy tracked and untracked working files instead.
-  SOURCE_FIXTURE="$TMP/source"
-  mkdir -p "$SOURCE_FIXTURE"
+  # Snapshot once, then hard-link unchanged files into private directory trees.
+  # The five existing files mutated by export cases become private copies below.
+  SOURCE_SNAPSHOT="$TMP/source-snapshot"
+  mkdir -p "$SOURCE_SNAPSHOT"
+  measure_event source_snapshot_copy
+  measure_event fixture_tree_copy
   while IFS= read -r -d '' tracked; do
     [ -e "$ROOT/$tracked" ] || continue
-    mkdir -p "$SOURCE_FIXTURE/$(dirname "$tracked")"
-    cp -p "$ROOT/$tracked" "$SOURCE_FIXTURE/$tracked"
+    mkdir -p "$SOURCE_SNAPSHOT/$(dirname "$tracked")"
+    cp -p "$ROOT/$tracked" "$SOURCE_SNAPSHOT/$tracked"
   done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+  snapshot_digest=$(tree_digest "$SOURCE_SNAPSHOT")
+  SOURCE_FIXTURE="$TMP/source"
+  link_snapshot_files "$SOURCE_FIXTURE"
+  for mutable in .claude/skills/create-tags/SKILL.md config/payload.tsv \
+    .codex/hooks.json CLAUDE.md templates/harness/CLAUDE.md; do
+    rm "$SOURCE_FIXTURE/$mutable"
+    cp -p "$SOURCE_SNAPSHOT/$mutable" "$SOURCE_FIXTURE/$mutable"
+  done
 
   # Let the fixture resolve the real source HEAD for the version-stamp assertion without
   # copying or mutating the repository's git database.
@@ -246,7 +393,23 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     printf 'gitdir: %s\n' "$source_git_dir" > "$SOURCE_FIXTURE/.git"
   fi
 
+  # Export may not copy a stale generated adapter or create a partial target.
+  printf '\nstale copy\n' >> "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md"
+  cmp -s "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md" \
+    "$SOURCE_SNAPSHOT/.claude/skills/create-tags/SKILL.md" \
+    && fail 'mutable fixture did not isolate the changed skill'
+  DRIFT_TARGET="$TMP/drift-export"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$DRIFT_TARGET" >/dev/null 2>&1 \
+    && fail "export accepted a stale generated skill"
+  assert_no_file "$DRIFT_TARGET"
+  cp "$ROOT/.claude/skills/create-tags/SKILL.md" \
+    "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md"
+
   assert_active_ci_workflow "$SOURCE_FIXTURE/.github/workflows/ci.yml"
+  if grep -Eq 'agentic-flow-assurance|assurance\.sh' \
+      "$SOURCE_FIXTURE/.github/workflows/ci.yml" "$SOURCE_FIXTURE/templates/ci/ci.yml"; then
+    fail "CI workflow varies required checks with assurance state"
+  fi
 
   printf '%s\n' '{}' > "$SOURCE_FIXTURE/.codex/unclassified.json"
   AGENTIC_PROJECT_ROOT="$SOURCE_FIXTURE" \
@@ -286,6 +449,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   cp "$TMP/payload.tsv.orig" "$SOURCE_FIXTURE/config/payload.tsv"
   rm -rf "$SOURCE_FIXTURE/scripts/private_probe" "$SOURCE_ONLY_DIR_TARGET"
 
+  awk -F "$(printf '\t')" 'BEGIN { OFS="\t" } $3=="codex" && $5=="export" { $3="unknown-scope" } { print }' \
+    "$TMP/payload.tsv.orig" > "$SOURCE_FIXTURE/config/payload.tsv"
+  "$SOURCE_FIXTURE/scripts/export.sh" "$TMP/unknown-scope-target" \
+    > "$TMP/unknown-scope.out" 2>&1 \
+    && fail "export accepted an unknown manifest scope"
+  assert_no_file "$TMP/unknown-scope-target"
+  cp "$TMP/payload.tsv.orig" "$SOURCE_FIXTURE/config/payload.tsv"
+
   cp "$SOURCE_FIXTURE/.codex/hooks.json" "$TMP/codex-hooks.orig"
   printf '%s\n' '{"hooks":{}}' > "$SOURCE_FIXTURE/.codex/hooks.json"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
@@ -304,12 +475,139 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     "$SCOPED_TARGET" >/dev/null
   assert_no_file "$SCOPED_TARGET/.codex/hooks.json"
   assert_no_file "$SCOPED_TARGET/.agents/skills/plan-to-issues/SKILL.md"
+  assert_no_file "$SCOPED_TARGET/templates/shared"
   assert_no_file "$SCOPED_TARGET/.opencode/agent/code-reviewer.md"
   assert_file "$SCOPED_TARGET/AGENTS.md"
   assert_file "$SCOPED_TARGET/CLAUDE.md"
   assert_file "$SCOPED_TARGET/METHODOLOGY.md"
   assert_file "$SCOPED_TARGET/.claude/settings.json"
   assert_file "$SCOPED_TARGET/.claude/skills/plan-to-issues/SKILL.md"
+  assert_file "$SCOPED_TARGET/.agentic-flow-installation"
+  grep -qx standard "$SCOPED_TARGET/.agentic-flow-assurance" \
+    || fail "new export did not seed Standard assurance"
+  (cd "$SCOPED_TARGET" && scripts/assurance.sh set strict) >/dev/null \
+    || fail "exported assurance CLI could not raise baseline"
+  grep -qx 'scope=claude' "$SCOPED_TARGET/.agentic-flow-installation" \
+    || fail "scoped export did not record its active Claude scope"
+  grep -q '^scope=codex$' "$SCOPED_TARGET/.agentic-flow-installation" \
+    && fail "scoped export recorded excluded Codex scope"
+  printf '#!/bin/bash\ninvalid syntax (\n' > "$SCOPED_TARGET/scripts/their-deploy.sh"
+  (cd "$SCOPED_TARGET" && scripts/shell-inventory.sh --syntax) >/dev/null 2>&1 \
+    || fail "installed shell inventory included adopter-owned script"
+  cp "$SCOPED_TARGET/.agentic-flow-installation" "$TMP/scoped-installation.orig"
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+    "$SCOPED_TARGET" >/dev/null
+  "$SOURCE_FIXTURE/scripts/export.sh" --force --exclude-scope=codex --exclude-scope=opencode \
+    "$SCOPED_TARGET" >/dev/null
+  grep -qx strict "$SCOPED_TARGET/.agentic-flow-assurance" \
+    || fail "forced export overwrote adopter assurance baseline"
+  cmp -s "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation" \
+    || fail "repeated scoped export changed stable installation state"
+  scoped_version=$(cat "$SCOPED_TARGET/.agentic-flow-version")
+  grep -q 'scripts/their-deploy.sh' "$SCOPED_TARGET/.agentic-flow-installation" \
+    && fail "installation membership absorbed an adopter-owned script"
+
+  state_rejects() { # <bad-line> <reason>
+    cp "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation"
+    printf '%s\n' "$1" >> "$SCOPED_TARGET/.agentic-flow-installation"
+    ( # shellcheck disable=SC1091 # fixture library is created at runtime.
+      . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
+      payload_resolve_installation "$SCOPED_TARGET" "$SOURCE_FIXTURE/config/payload.tsv" ) \
+      > "$TMP/state-reject.out" 2>&1 \
+      && fail "installation state accepted $2"
+    grep -q 'line ' "$TMP/state-reject.out" \
+      || fail "invalid $2 did not name its installation-state line"
+    grep -qx "$scoped_version" "$SCOPED_TARGET/.agentic-flow-version" \
+      || fail "invalid $2 advanced installed version"
+  }
+  state_digest=$(printf '%064d' 0)
+  state_rejects "file=bad  scripts/bad.sh" 'malformed digest'
+  before_bad_state=$(tree_digest "$SCOPED_TARGET")
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+    "$SCOPED_TARGET" > "$TMP/bad-state-export.out" 2>&1 \
+    && fail "export copied files despite malformed installation state"
+  [ "$before_bad_state" = "$(tree_digest "$SCOPED_TARGET")" ] \
+    || fail "malformed installation state allowed export mutation"
+  state_rejects "file=1234  scripts/bad.sh" 'short digest'
+  state_rejects "file=$state_digest  scripts/../bad.sh" 'parent segment'
+  state_rejects "file=$state_digest  /tmp/bad.sh" 'absolute path'
+  state_rejects "file=$state_digest  .codex/hooks.json" 'excluded scope'
+  state_rejects "$(sed -n '/^file=/{p;q;}' "$TMP/scoped-installation.orig")" 'duplicate path'
+  ln -s "$TMP" "$SCOPED_TARGET/scripts/linked"
+  state_rejects "file=$state_digest  scripts/linked/bad.sh" 'symlink component'
+  rm "$SCOPED_TARGET/scripts/linked"
+  cp "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation"
+  printf 'file=%s  scripts/bad\000path.sh\n' "$state_digest" \
+    >> "$SCOPED_TARGET/.agentic-flow-installation"
+  ( # shellcheck disable=SC1091 # fixture library is created at runtime.
+    . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
+    payload_resolve_installation "$SCOPED_TARGET" "$SOURCE_FIXTURE/config/payload.tsv" ) \
+    > "$TMP/state-nul.out" 2>&1 \
+    && fail "installation state accepted a NUL path"
+  grep -q 'line .*NUL byte' "$TMP/state-nul.out" \
+    || fail "NUL path did not name its installation-state line"
+  {
+    printf 'version=1\nscope=core\n'
+    state_n=0
+    while [ "$state_n" -lt 2001 ]; do
+      printf 'file=%s  scripts/extra-%04d.sh\n' "$state_digest" "$state_n"
+      state_n=$((state_n + 1))
+    done
+  } > "$SCOPED_TARGET/.agentic-flow-installation"
+  ( # shellcheck disable=SC1091 # fixture library is created at runtime.
+    . "$SOURCE_FIXTURE/scripts/lib/payload-apply.sh";
+    payload_resolve_installation "$SCOPED_TARGET" "$SOURCE_FIXTURE/config/payload.tsv" ) \
+    > "$TMP/state-bound.out" 2>&1 \
+    && fail "installation state accepted more than 2000 files"
+  grep -q 'line 2003: more than 2000 files' "$TMP/state-bound.out" \
+    || fail "over-bound installation state did not name its offending line"
+  cp "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation"
+  printf '%s\n' '# locally changed' >> "$SCOPED_TARGET/scripts/doctor.sh"
+  (cd "$SCOPED_TARGET" && AGENTIC_SELFTEST=1 scripts/doctor.sh --scope repo --skip-make-check) \
+    > "$TMP/scoped-doctor.out" 2>&1 || true
+  grep -q 'installed file digest changed: scripts/doctor.sh' "$TMP/scoped-doctor.out" \
+    || fail "doctor did not report recorded digest drift"
+  grep -q 'their-deploy.sh' "$TMP/scoped-doctor.out" \
+    && fail "doctor treated adopter-owned script as harness drift"
+  cp "$SCOPED_TARGET/.agentic-flow-scopes-excluded" "$TMP/scoped-legacy.orig"
+  : > "$SCOPED_TARGET/.agentic-flow-scopes-excluded"
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+    "$SCOPED_TARGET" > "$TMP/scope-conflict.out" 2>&1 \
+    && fail "export accepted conflicting old and new scope state"
+  grep -q 'conflicts' "$TMP/scope-conflict.out" \
+    || fail "scope conflict did not identify the old/new state mismatch"
+  cmp -s "$TMP/scoped-installation.orig" "$SCOPED_TARGET/.agentic-flow-installation" \
+    || fail "scope conflict advanced installation state"
+  cp "$TMP/scoped-legacy.orig" "$SCOPED_TARGET/.agentic-flow-scopes-excluded"
+
+  CODEX_ONLY_TARGET="$TMP/codex-only-export"
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=claude --exclude-scope=opencode \
+    "$CODEX_ONLY_TARGET" >/dev/null
+  assert_no_file "$CODEX_ONLY_TARGET/CLAUDE.md"
+  assert_no_file "$CODEX_ONLY_TARGET/.opencode/agent/code-reviewer.md"
+  (cd "$CODEX_ONLY_TARGET" && make check) > "$TMP/codex-only-check.out" 2>&1 \
+    || { cat "$TMP/codex-only-check.out" >&2; fail "Codex-only export failed its active checks"; }
+  rm "$CODEX_ONLY_TARGET/.codex/hooks.json"
+  (cd "$CODEX_ONLY_TARGET" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo --skip-make-check) \
+    > "$TMP/codex-only-missing.out" 2>&1 \
+    && fail "doctor accepted a missing active Codex adapter"
+  grep -q 'manifest destination: .codex/hooks.json' "$TMP/codex-only-missing.out" \
+    || fail "doctor did not identify the missing active adapter"
+
+  NO_CI_TARGET="$TMP/no-ci-export"
+  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+    --exclude-scope=ci "$NO_CI_TARGET" >/dev/null
+  assert_file "$NO_CI_TARGET/METHODOLOGY.md"
+  assert_file "$NO_CI_TARGET/docs/README.md"
+  assert_no_file "$NO_CI_TARGET/templates/ci/ci.yml"
+  (cd "$NO_CI_TARGET" && make check) > "$TMP/no-ci-check.out" 2>&1 \
+    || { cat "$TMP/no-ci-check.out" >&2; fail "no-CI export failed its active checks"; }
+  for required_scope in core docs; do
+    "$SOURCE_FIXTURE/scripts/export.sh" "--exclude-scope=$required_scope" \
+      "$TMP/rejected-$required_scope" > "$TMP/rejected-$required_scope.out" 2>&1 \
+      && fail "export excluded required $required_scope scope"
+    assert_no_file "$TMP/rejected-$required_scope"
+  done
 
   printf '%s\n' unresolved > "$SOURCE_FIXTURE/CLAUDE.md.agentic-new"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check) >/dev/null 2>&1 \
@@ -373,6 +671,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/.codex/hooks.json"
   assert_file "$TARGET/.agents/skills/plan-to-issues/SKILL.md"
   assert_file "$TARGET/config/payload.tsv"
+  assert_file "$TARGET/.agentic-flow-review-policy"
+  cmp "$ROOT/templates/harness/.agentic-flow-review-policy" "$TARGET/.agentic-flow-review-policy" \
+    || fail 'export changed the default review policy'
   assert_file "$TARGET/scripts/plan-to-issues.sh"
   assert_file "$TARGET/scripts/doctor.sh"
   assert_file "$TARGET/scripts/lib/payload-apply.sh"
@@ -448,6 +749,11 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || { cat "$TMP/target-check.log" >&2; fail "make check failed in a fresh export"; }
   (cd "$TARGET" && PATH="$STRIPPED_PATH" make check) > "$TMP/target-check-stripped.log" 2>&1 \
     || { cat "$TMP/target-check-stripped.log" >&2; fail "make check failed in a fresh export on stripped PATH"; }
+  # Exported projects have no source-only export.sh and therefore build no source
+  # snapshot. Their full suite must still pass, as it does in the shipped CI job.
+  (cd "$TARGET" && AGENTIC_MEASURE_EVENTS='' scripts/self-test.sh --full) \
+    > "$TMP/target-full.log" 2>&1 \
+    || { cat "$TMP/target-full.log" >&2; fail "full self-test failed in a fresh export"; }
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
   printf 'origin https://example.invalid/fork.git\nref v1.2.3\n' > "$TARGET/.agentic-flow-source"
@@ -672,18 +978,20 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   fi
 
   NO_REMOTE_SOURCE="$TMP/no-remote-source"
-  mkdir -p "$NO_REMOTE_SOURCE"
-  while IFS= read -r -d '' tracked; do
-    [ -e "$ROOT/$tracked" ] || continue
-    mkdir -p "$NO_REMOTE_SOURCE/$(dirname "$tracked")"
-    cp -p "$ROOT/$tracked" "$NO_REMOTE_SOURCE/$tracked"
-  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+  [ "$snapshot_digest" = "$(tree_digest "$SOURCE_SNAPSHOT")" ] \
+    || fail 'export fixture mutated the shared source snapshot'
+  link_snapshot_files "$NO_REMOTE_SOURCE"
+  cmp -s "$NO_REMOTE_SOURCE/.claude/skills/create-tags/SKILL.md" \
+    "$SOURCE_SNAPSHOT/.claude/skills/create-tags/SKILL.md" \
+    || fail 'fixture mutation leaked into the no-remote source'
   NO_REMOTE_TARGET="$TMP/no-remote-target"
   "$NO_REMOTE_SOURCE/scripts/export.sh" "$NO_REMOTE_TARGET" > "$TMP/no-remote-export.out" \
     || fail "export failed from a source with no git remote"
   assert_no_file "$NO_REMOTE_TARGET/.agentic-flow-source"
   grep -q "source repo has no origin remote" "$TMP/no-remote-export.out" \
     || fail "export without remote did not explain why no source was recorded"
+  [ "$snapshot_digest" = "$(tree_digest "$SOURCE_SNAPSHOT")" ] \
+    || fail 'no-remote fixture mutated the shared source snapshot'
   (cd "$NO_REMOTE_TARGET" && scripts/doctor.sh --scope repo) > "$TMP/no-source-doctor.out" \
     || fail "doctor report failed for a stamped project with no source"
   grep -q "scaffold source not recorded" "$TMP/no-source-doctor.out" \
@@ -699,7 +1007,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # script's own $ROOT for shellcheck (SC2030/SC2031) or for real.
   CEILING_SNIPPET_FILE="$TMP/ceiling-snippet.sh"
   # shellcheck disable=SC2016 # literal $ROOT/$CEILING_ROOT text being rewritten, not expanded.
-  sed -n '/^# Ceilings are set just above the MEASURED size of each bundle/,/reviewer static role bundle exceeds its ceiling/p' \
+  sed -n '/^# Ceilings are set just above the MEASURED size of each bundle/,/^# END ROLE-BUNDLE CEILINGS/p' \
     "$ROOT/scripts/self-test.sh" \
     | sed 's/\$ROOT\//\$CEILING_ROOT\//g' > "$CEILING_SNIPPET_FILE"
   [ -s "$CEILING_SNIPPET_FILE" ] \
@@ -742,6 +1050,135 @@ fi
 
 # --- shellcheck is required, not optional ------------------------------------------------
 if should_run contracts; then
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  [ -x "$ROOT/scripts/shell-inventory.sh" ] \
+    || fail "scaffold shell inventory is missing"
+  # Recompute from manifest source paths independently of the gate helper. In particular,
+  # a second call to its --list mode would only prove that the helper agrees with itself.
+  expected_shell_inventory() { # <source-root>
+    # shellcheck disable=SC2031 # Per-command fixture assignments supply this scoped value.
+    local src_root="$1" excluded_scopes="${PAYLOAD_EXCLUDED_SCOPES:-}"
+    local source scope disposition rel first
+    while IFS="$(printf '\t')" read -r source _dst scope _merge disposition; do
+      case "${source:-}" in ''|\#*) continue ;; esac
+      [ "$disposition" = export ] || [ "$disposition" = source-only ] || continue
+      if [ "$disposition" = export ]; then
+        case " $excluded_scopes " in *" $scope "*) continue ;; esac
+      fi
+      if [ -f "$src_root/$source" ]; then
+        printf '%s\n' "$source"
+      elif [ -d "$src_root/$source" ]; then
+        find "$src_root/$source" -type f | sed "s|^$src_root/||"
+      fi
+    done < "$src_root/config/payload.tsv" | sort -u | while IFS= read -r rel; do
+      [ -f "$src_root/$rel" ] || continue
+      IFS= read -r first < "$src_root/$rel" || true
+      case "$first" in '#!'*'/bash'|'#!'*'/sh'|'#!'*'env bash'|'#!'*'env sh')
+        printf '%s\n' "$rel" ;;
+      esac
+    done
+  }
+  expected_shell_inventory "$ROOT" > "$TMP/shell-expected"
+  "$ROOT/scripts/shell-inventory.sh" --list > "$TMP/shell-actual"
+  cmp -s "$TMP/shell-expected" "$TMP/shell-actual" \
+    || fail "scaffold shell inventory is incomplete against manifest source tree"
+
+  shell_fix="$TMP/shell-inventory-fixture"
+  mkdir -p "$shell_fix/source/config" "$shell_fix/source/scripts" \
+    "$shell_fix/source/harness-src" "$shell_fix/source/scoped-src"
+  cp "$ROOT/scripts/shell-inventory.sh" "$shell_fix/source/scripts/"
+  printf 'harness-src\tscripts\tcore\tpreserve\texport\n' > "$shell_fix/source/config/payload.tsv"
+  printf 'scoped-src\tscoped-dest\tcodex\tpreserve\texport\n' >> "$shell_fix/source/config/payload.tsv"
+  printf 'scripts/shell-inventory.sh\tscripts/shell-inventory.sh\tsource-only\tnone\tsource-only\n' \
+    >> "$shell_fix/source/config/payload.tsv"
+  printf '#!/usr/bin/env bash\nif then\n' > "$shell_fix/source/harness-src/new-command"
+  cp "$shell_fix/source/harness-src/new-command" "$shell_fix/source/scripts/new-command"
+  # shellcheck disable=SC2016 # Deliberate literal ShellCheck defect in the adopter file.
+  printf '#!/usr/bin/env bash\nif then\necho $bad\n' > "$shell_fix/source/scripts/their-deploy.sh"
+  printf '#!/usr/bin/env bash\necho scoped\n' > "$shell_fix/source/scoped-src/ignored-command"
+  PAYLOAD_EXCLUDED_SCOPES='' AGENTIC_PROJECT_ROOT="$shell_fix/source" \
+    "$ROOT/scripts/shell-inventory.sh" --list \
+    > "$shell_fix/list"
+  grep -qx 'harness-src/new-command' "$shell_fix/list" \
+    || fail "manifest extensionless shell command missing from inventory"
+  grep -q 'their-deploy' "$shell_fix/list" \
+    && fail "adopter script was swept into source inventory"
+  # The destination query must not turn a shared directory into ownership of adopter files.
+  (
+    # shellcheck disable=SC1091 # Source the checked-in library in this isolated probe.
+    . "$ROOT/scripts/lib/payload-apply.sh"
+    payload_destination_files "$shell_fix/source"
+  ) > "$shell_fix/destination-list"
+  grep -qx 'scripts/their-deploy.sh' "$shell_fix/destination-list" \
+    && fail "destination query swept in an adopter-owned file"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
+    > "$shell_fix/syntax.out" 2>&1 \
+    && fail "syntax gate missed a manifest extensionless command"
+  grep -q 'new-command' "$shell_fix/syntax.out" \
+    || fail "syntax gate failed for the wrong reason"
+  grep -q 'their-deploy' "$shell_fix/syntax.out" \
+    && fail "syntax gate reported the adopter-owned script"
+  if command -v shellcheck >/dev/null 2>&1; then
+    AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
+      > "$shell_fix/lint.out" 2>&1 \
+      && fail "ShellCheck gate missed a manifest extensionless command"
+    grep -q 'new-command' "$shell_fix/lint.out" \
+      || fail "ShellCheck gate failed for the wrong reason"
+    grep -q 'their-deploy' "$shell_fix/lint.out" \
+      && fail "ShellCheck gate reported the adopter-owned script"
+  fi
+  PAYLOAD_EXCLUDED_SCOPES='' expected_shell_inventory "$shell_fix/source" \
+    > "$shell_fix/expected"
+  cmp -s "$shell_fix/expected" "$shell_fix/list" \
+    || fail "fixture shell inventory missed a manifest source member"
+  PAYLOAD_EXCLUDED_SCOPES=codex expected_shell_inventory "$shell_fix/source" \
+    > "$shell_fix/expected-excluded"
+  PAYLOAD_EXCLUDED_SCOPES=codex AGENTIC_PROJECT_ROOT="$shell_fix/source" \
+    "$ROOT/scripts/shell-inventory.sh" --list > "$shell_fix/list-excluded"
+  cmp -s "$shell_fix/expected-excluded" "$shell_fix/list-excluded" \
+    || fail "shell inventory disagrees with excluded manifest scope"
+  grep -q 'ignored-command' "$shell_fix/list-excluded" \
+    && fail "shell inventory included an excluded-scope command"
+  grep -qx 'scoped-src/ignored-command' "$shell_fix/list" \
+    || fail "scope fixture was missing before exclusion"
+
+  rm "$shell_fix/source/harness-src/new-command"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
+    > "$shell_fix/adopter-syntax.out" 2>&1 \
+    || fail "syntax gate swept in an adopter-owned script under the destination"
+  if command -v shellcheck >/dev/null 2>&1; then
+    AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
+      > "$shell_fix/adopter-lint.out" 2>&1 \
+      || fail "ShellCheck gate swept in an adopter-owned script under the destination"
+  fi
+  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/harness-src/agentic-flow"
+  printf '\nif then\n' >> "$shell_fix/source/harness-src/agentic-flow"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
+    > "$shell_fix/cli-syntax.out" 2>&1 \
+    && fail "syntax gate missed a damaged scripts/agentic-flow"
+  grep -q 'agentic-flow' "$shell_fix/cli-syntax.out" \
+    || fail "CLI syntax gate failed for the wrong reason"
+  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/harness-src/agentic-flow"
+  # shellcheck disable=SC2016 # This literal creates a ShellCheck fixture in the copied CLI.
+  printf '\nprintf %%s $unquoted\n' >> "$shell_fix/source/harness-src/agentic-flow"
+  if command -v shellcheck >/dev/null 2>&1; then
+    AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
+      > "$shell_fix/cli-lint.out" 2>&1 \
+      && fail "ShellCheck gate missed a damaged scripts/agentic-flow"
+    grep -q 'SC2086' "$shell_fix/cli-lint.out" \
+      || fail "CLI ShellCheck gate failed for the wrong reason"
+  fi
+
+  build_fix="$TMP/build-failure"
+  mkdir -p "$build_fix/scripts"
+  cp "$ROOT/Makefile" "$build_fix/Makefile"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$build_fix/scripts/export.sh"
+  chmod +x "$build_fix/scripts/export.sh"
+  (cd "$build_fix" && make build) > "$build_fix/out" 2>&1 \
+    && fail "make build masked export failure"
+  grep -q 'export dry-run ok' "$build_fix/out" \
+    && fail "make build printed success after export failed"
+fi
 # A lint that skips when its tool is missing reports green for the wrong reason — that is
 # exactly how `make test` sat red-but-passing until someone installed shellcheck.
 #
@@ -864,6 +1301,70 @@ Hand the step to the reviewer.'
     || fail "harness sync failed in an adopted project with no templates/harness"
 fi
 
+# A generated consumer must match its complete canonical body. A malformed render
+# graph must leave every consumer untouched, including those before the bad one.
+if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
+  RENDER="$ROOT/scripts/render-shared.sh"
+  RENDER_FIX="$TMP/shared-render-fixture"
+  mkdir -p "$RENDER_FIX/templates"
+  if [ -d "${SOURCE_SNAPSHOT:-}/templates/shared" ]; then
+    mkdir -p "$RENDER_FIX/templates/shared"
+    while IFS= read -r -d '' shared; do
+      shared_rel=${shared#"$SOURCE_SNAPSHOT/templates/shared/"}
+      mkdir -p "$RENDER_FIX/templates/shared/$(dirname "$shared_rel")"
+      ln "$shared" "$RENDER_FIX/templates/shared/$shared_rel"
+    done < <(find "$SOURCE_SNAPSHOT/templates/shared" -type f -print0)
+  else
+    cp -R "$ROOT/templates/shared" "$RENDER_FIX/templates/"
+  fi
+  for rel in Makefile templates/harness/Makefile AGENTS.md templates/harness/AGENTS.md \
+             CLAUDE.md templates/harness/CLAUDE.md \
+             METHODOLOGY.md .agents/skills/plan-to-issues/SKILL.md \
+             .claude/skills/plan-to-issues/SKILL.md .agents/skills/create-tags/SKILL.md \
+             .claude/skills/create-tags/SKILL.md .agents/skills/review-execution/SKILL.md \
+             .opencode/agent/code-reviewer.md; do
+    mkdir -p "$RENDER_FIX/$(dirname "$rel")"
+    cp "$ROOT/$rel" "$RENDER_FIX/$rel"
+  done
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null \
+    || fail "pristine shared render fixture drifted"
+  printf '\nconsumer drift\n' >> "$RENDER_FIX/.claude/skills/create-tags/SKILL.md"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
+    && fail "shared render missed a whole skill drift"
+  cp "$ROOT/.claude/skills/create-tags/SKILL.md" "$RENDER_FIX/.claude/skills/create-tags/SKILL.md"
+  sed 's/No unbounded anything/Unlimited anything/' "$ROOT/AGENTS.md" > "$RENDER_FIX/AGENTS.md"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
+    && fail "shared render missed content drift under an unchanged heading"
+  cp "$ROOT/AGENTS.md" "$RENDER_FIX/AGENTS.md"
+  sed 's/\*\*Medium\*\*/**Other**/' "$ROOT/.opencode/agent/code-reviewer.md" \
+    > "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
+    && fail "shared render missed severity drift"
+  cp "$ROOT/.opencode/agent/code-reviewer.md" "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  sed '/<!-- BEGIN SHARED REVIEW CONTRACT -->/d' "$ROOT/.opencode/agent/code-reviewer.md" \
+    > "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  before=$(tree_digest "$RENDER_FIX")
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" >/dev/null 2>&1 \
+    && fail "shared render accepted a missing marker"
+  [ "$before" = "$(tree_digest "$RENDER_FIX")" ] \
+    || fail "failed shared render changed a consumer"
+  cp "$ROOT/.opencode/agent/code-reviewer.md" "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  printf '\n<!-- BEGIN SHARED REVIEW CONTRACT -->\n' \
+    >> "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  before=$(tree_digest "$RENDER_FIX")
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" >/dev/null 2>&1 \
+    && fail "shared render accepted a duplicate marker"
+  [ "$before" = "$(tree_digest "$RENDER_FIX")" ] \
+    || fail "duplicate-marker render changed a consumer"
+  for surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
+                 "$ROOT/.opencode/agent/code-reviewer.md"; do
+    grep -qi 'temporary detached checkout' "$surface" \
+      || fail "review guidance lacks isolated red-first verification"
+    grep -qi 'revert the change, run the test, restore' "$surface" \
+      && fail "review guidance mutates the live checkout for red-first verification"
+  done
+fi
+
 # Contract drift guard. The second plan-to-issues copy is kept for optionality, not need:
 # METHODOLOGY.md §6 points at `.claude/skills/plan-to-issues/`, CLAUDE.md lists the skill
 # under the Plan role, and AGENTS.md never mentions it — so nothing has Codex running it
@@ -872,12 +1373,16 @@ fi
 # two identical so that option stays real rather than quietly rotting.
 # review-execution needed no such pair for a different reason: OpenCode discovers
 # .agents/skills natively, so one copy already served both and the third was deleted.
-cmp -s "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
-       "$ROOT/.claude/skills/plan-to-issues/SKILL.md" \
-  || fail "plan-to-issues adapter copies diverged"
+if active_scope codex && active_scope claude; then
+  cmp -s "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
+         "$ROOT/.claude/skills/plan-to-issues/SKILL.md" \
+    || fail "plan-to-issues adapter copies diverged"
+fi
 # shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
-grep -q 'Stack profile.*`CLAUDE.md`' "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
-  || fail "plan-to-issues guidance does not name CLAUDE.md as Stack profile owner"
+if active_scope codex; then
+  grep -q 'Stack profile.*`CLAUDE.md`' "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
+    || fail "plan-to-issues guidance does not name CLAUDE.md as Stack profile owner"
+fi
 
 token_line=""
 token_seen=0
@@ -921,13 +1426,20 @@ grep -q "only valid with --scope repo" "$TMP/doctor-skip-scope.err" \
 AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo --skip-make-check \
   > "$TMP/doctor-skip-docs.out" 2>&1 \
   || fail "doctor rejected repo-scope --skip-make-check"
-grep -q "docs index up to date (checked by the caller's gate)" "$TMP/doctor-skip-docs.out" \
-  || fail "doctor re-ran the docs index check the caller's gate already covered"
+if active_scope docs; then
+  grep -q "docs index up to date (checked by the caller's gate)" "$TMP/doctor-skip-docs.out" \
+    || fail "doctor re-ran the docs index check the caller's gate already covered"
+else
+  grep -q 'docs adapter excluded' "$TMP/doctor-skip-docs.out" \
+    || fail "doctor required an excluded docs adapter"
+fi
 # Without the flag it must still run the check itself.
 AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo \
   > "$TMP/doctor-docs.out" 2>&1 || true
-grep -q "docs index up to date$" "$TMP/doctor-docs.out" \
-  || fail "doctor stopped checking the docs index when no gate was declared"
+if active_scope docs; then
+  grep -q "docs index up to date$" "$TMP/doctor-docs.out" \
+    || fail "doctor stopped checking the docs index when no gate was declared"
+fi
 
 for role_file in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" \
                  "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
@@ -980,9 +1492,12 @@ fi
 # review), and treat diff content as data rather than instruction. Both must be read on every
 # review, so neither can be routed to METHODOLOGY.md. Headroom stays deliberately narrow so
 # the assertion still bites on re-inlining a routed block.
-reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
-[ "$reviewer_words" -le 1000 ] \
-  || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 1000)"
+if active_scope codex; then
+  reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
+  [ "$reviewer_words" -le 1000 ] \
+    || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 1000)"
+fi
+# END ROLE-BUNDLE CEILINGS
 
 # One set of engineering standards across every surface that states them. METHODOLOGY.md §11
 # is canonical; AGENTS.md (both instances) compresses them into the executor's always-loaded
@@ -997,7 +1512,7 @@ reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -
 # templates/harness/AGENTS.md only exists in the source repo — an adopted project receives it
 # as its own AGENTS.md — so it joins the list only when present, the same source-vs-adopted
 # distinction the export ceilings already make.
-standards_surfaces="$ROOT/METHODOLOGY.md $ROOT/AGENTS.md $ROOT/.opencode/agent/code-reviewer.md"
+standards_surfaces="$ROOT/METHODOLOGY.md $ROOT/AGENTS.md"
 [ -f "$ROOT/templates/harness/AGENTS.md" ] \
   && standards_surfaces="$standards_surfaces $ROOT/templates/harness/AGENTS.md"
 for standards_surface in $standards_surfaces; do
@@ -1015,12 +1530,20 @@ No unbounded
 failure path
 RULES
 done
+if active_scope opencode; then
+  grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.opencode/agent/code-reviewer.md" \
+    || fail "OpenCode review does not route engineering standards to AGENTS.md"
+fi
 
 # One severity vocabulary across every review surface — the SKILL.md pair AND the live
 # /review agent contract, which is where the old block/fix/nit scale survived an earlier
 # normalization pass precisely because nothing asserted over it.
 for review_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
                       "$ROOT/.opencode/agent/code-reviewer.md"; do
+  case "$review_surface" in
+    */.agents/*) active_scope codex || continue ;;
+    */.opencode/*) active_scope opencode || continue ;;
+  esac
   [ -f "$review_surface" ] || fail "missing review surface: $review_surface"
   for level in High Medium Low Nit; do
     grep -q "\*\*$level\*\*" "$review_surface" \
@@ -1032,8 +1555,10 @@ for review_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
   grep -qE '\*\*(Blocker|Critical)\*\*|`block`|`fix`|LGTM' "$review_surface" \
     && fail "$review_surface still uses a retired severity or verdict vocabulary"
 done
-grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-execution/SKILL.md" \
-  || fail "review skill does not route engineering standards to AGENTS.md"
+if active_scope codex; then
+  grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-execution/SKILL.md" \
+    || fail "review skill does not route engineering standards to AGENTS.md"
+fi
 
 # §8 files worktrees under "Optional capabilities", which is true of fanning out and false of
 # isolating writers: nothing required isolation for parallel *editing* agents, so a fan-out of
@@ -1094,8 +1619,10 @@ fi
 # shipped script to appear there by filename.
 while IFS= read -r hook_script; do
   hook_base=$(basename "$hook_script")
-  grep -q "$hook_base" "$ROOT/CLAUDE.md" \
-    || fail "CLAUDE.md does not document the shipped hook $hook_base"
+  if active_scope claude; then
+    grep -q "$hook_base" "$ROOT/CLAUDE.md" \
+      || fail "CLAUDE.md does not document the shipped hook $hook_base"
+  fi
 done < <(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | sort)
 
 # §5 is the shared severity source every review surface cites, including the /review agent
@@ -1119,6 +1646,10 @@ done
 # Both reviewer surfaces carry both, so a reviewer reading either one is fully briefed.
 for reviewer_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
                         "$ROOT/.opencode/agent/code-reviewer.md"; do
+  case "$reviewer_surface" in
+    */.agents/*) active_scope codex || continue ;;
+    */.opencode/*) active_scope opencode || continue ;;
+  esac
   [ -f "$reviewer_surface" ] || fail "missing reviewer surface: $reviewer_surface"
   grep -qi 'fails without the fix' "$reviewer_surface" \
     || fail "${reviewer_surface#"$ROOT"/} does not require confirming a test fails without the fix"
@@ -1130,10 +1661,12 @@ done
 
 # The reviewer's focused-group list named five of the six groups, omitting `upgrade`, so a
 # reviewer following it would never run that group. Derive it rather than trust the prose.
-for reviewer_group in $SELF_TEST_GROUPS; do
-  grep -qF "\`$reviewer_group\`" "$ROOT/.opencode/agent/code-reviewer.md" \
-    || fail "code-reviewer.md does not name the $reviewer_group self-test group"
-done
+if active_scope opencode; then
+  for reviewer_group in $SELF_TEST_GROUPS; do
+    grep -qF "\`$reviewer_group\`" "$ROOT/.opencode/agent/code-reviewer.md" \
+      || fail "code-reviewer.md does not name the $reviewer_group self-test group"
+  done
+fi
 
 # The executor's handoff is where the red-first evidence is cheapest to produce, and the
 # dependency-version rule shipped to adopters while the root instance silently lacked it —
@@ -1145,10 +1678,12 @@ grep -qi 'Red first' "$ROOT/AGENTS.md" \
 # CLAUDE.md, and Codex and OpenCode both read AGENTS.md (OpenCode prefers AGENTS.md over
 # CLAUDE.md outright). Lose either pointer and the layer silently becomes single-harness,
 # which nothing else would catch. Both contract pairs must carry it.
-for memory_surface in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md"; do
-  grep -qF 'docs/MEMORY.md' "$memory_surface" \
-    || fail "${memory_surface#"$ROOT"/} does not point at the docs/MEMORY.md index"
-done
+grep -qF 'docs/MEMORY.md' "$ROOT/AGENTS.md" \
+  || fail "AGENTS.md does not point at the docs/MEMORY.md index"
+if active_scope claude; then
+  grep -qF 'docs/MEMORY.md' "$ROOT/CLAUDE.md" \
+    || fail "CLAUDE.md does not point at the docs/MEMORY.md index"
+fi
 if [ -d "$ROOT/templates/harness" ]; then
   for memory_template in "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
     grep -qF 'docs/MEMORY.md' "$memory_template" \
@@ -1160,12 +1695,14 @@ fi
 # anything outside its four stages. The memory tree is not a lifecycle stage, so it has to be
 # skipped explicitly — assert with a real file rather than by reading the case statement.
 MEMDOC_FIXTURE="$ROOT/docs/memory/self-test-stage-probe.md"
-printf '%s\n' '# probe' > "$MEMDOC_FIXTURE"
-if ! "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
+if active_scope docs; then
+  printf '%s\n' '# probe' > "$MEMDOC_FIXTURE"
+  if ! "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
+    rm -f "$MEMDOC_FIXTURE"
+    fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
+  fi
   rm -f "$MEMDOC_FIXTURE"
-  fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
 fi
-rm -f "$MEMDOC_FIXTURE"
 
 # The tree ships empty. docs/MEMORY.md must NOT be payload: it accumulates adopter-local
 # entries in place, and upgrade --force overwrites a manifest row unconditionally.
@@ -1265,13 +1802,16 @@ fi
 # Every §N route an agent is told to follow must resolve. Emit each section on a line
 # individually: a greedy `.*§([0-9]+)` keeps only the LAST one, so "§3, §5" silently
 # stopped checking §3. ADOPTION.md and the docs README carry routes too.
+route_inputs=()
+for route_path in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" "$ROOT/ADOPTION.md" \
+  "$ROOT/docs/README.md" "$ROOT/templates" "$ROOT/docs/templates" \
+  "$ROOT/.agents" "$ROOT/.opencode" "$ROOT/scripts" "$ROOT/Makefile"; do
+  [ -e "$route_path" ] && route_inputs+=( "$route_path" )
+done
 while IFS= read -r section; do
   grep -q "^## $section\\. " "$ROOT/METHODOLOGY.md" \
     || fail "METHODOLOGY.md §$section reference has no matching section"
-done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*' \
-  "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" "$ROOT/ADOPTION.md" "$ROOT/docs/README.md" \
-  "$ROOT/templates" "$ROOT/docs/templates" \
-  "$ROOT/.agents" "$ROOT/.opencode" "$ROOT/scripts" "$ROOT/Makefile" \
+done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*' "${route_inputs[@]}" \
   | grep -oE '§[0-9]+' | tr -d '§' | sort -u)
 
 # Failure-first coverage for the focused-group dispatcher itself. `make test-one F=…` is
@@ -1308,12 +1848,143 @@ AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check \
   && fail "docs-index accepted an undeclared docs stage"
 grep -q "undeclared docs stage" "$TMP/docs-stage.err" \
   || fail "docs-index undeclared-stage failure did not explain the problem"
+
+MEASURE_FIX="$TMP/measure"
+mkdir -p "$MEASURE_FIX/root/docs" "$MEASURE_FIX/root/.agents/skills/review-execution" \
+  "$MEASURE_FIX/events"
+mkdir -p "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target"
+printf 'one\n' > "$MEASURE_FIX/copy-source/one"
+printf 'two\n' > "$MEASURE_FIX/copy-source/two"
+printf 'three\n' > "$MEASURE_FIX/copy-source/tree/three"
+printf 'four\n' > "$MEASURE_FIX/copy-source/tree/four"
+: > "$MEASURE_FIX/copy.events"
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" cp \
+  "$MEASURE_FIX/copy-source/one" "$MEASURE_FIX/copy-source/two" \
+  "$MEASURE_FIX/copy-target/"
+[ "$(grep -c '^fixture_file_copy$' "$MEASURE_FIX/copy.events")" -eq 2 ] \
+  || fail 'multi-source cp was not counted per file'
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" cp -Rp \
+  "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target/"
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" measure_copy --recursive \
+  "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target/"
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" measure_copy --archive \
+  "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target/"
+[ "$(grep -c '^fixture_tree_copy$' "$MEASURE_FIX/copy.events")" -eq 3 ] \
+  && [ "$(grep -c '^fixture_file_copy$' "$MEASURE_FIX/copy.events")" -eq 8 ] \
+  || fail 'recursive cp flags did not count trees and copied files'
+# One snapshot can coexist with repeated whole-tree materializations. This
+# approved budget applies only in the scaffold, which builds that snapshot.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  printf 'source_snapshot_copy\nfixture_tree_copy\nfixture_tree_copy\n' \
+    > "$MEASURE_FIX/recopied.events"
+  ( assert_cost_budget "$MEASURE_FIX/recopied.events" full ) \
+    > "$MEASURE_FIX/recopied.out" 2>&1 \
+    && fail 'fixture budget accepted repeated tree copying with one snapshot'
+  grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
+    || fail 'fixture budget did not identify repeated tree copying'
+fi
+( PATH='' path_without_tools "$MEASURE_FIX/missing-tools" jq ) \
+  > "$MEASURE_FIX/missing-tools.out" 2>&1 \
+  && fail 'fixture PATH accepted missing required tools'
+grep -q 'required fixture tool missing:' "$MEASURE_FIX/missing-tools.out" \
+  || { cat "$MEASURE_FIX/missing-tools.out" >&2; fail 'missing fixture tool was not identified'; }
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  : > "$MEASURE_FIX/dispatch.events"
+  AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/dispatch.events" \
+    "$ROOT/scripts/self-test.sh" --fast > "$MEASURE_FIX/dispatch.out" \
+    || fail 'nested fast dispatch failed'
+  actual_fast_groups=$(awk -F: '$1 == "group" { print $2 }' \
+    "$MEASURE_FIX/dispatch.events" | sort -u | tr '\n' ' ')
+  [ "$actual_fast_groups" = 'contracts hooks lifecycle plan-to-issues ' ] \
+    || fail "fast dispatch included an unexpected group: $actual_fast_groups"
+  assert_cost_budget "$MEASURE_FIX/dispatch.events" fast
+fi
+printf 'shared words\n' > "$MEASURE_FIX/root/CLAUDE.md"
+printf 'executor words\n' > "$MEASURE_FIX/root/AGENTS.md"
+printf 'memory words\n' > "$MEASURE_FIX/root/docs/MEMORY.md"
+printf 'review words\n' > "$MEASURE_FIX/root/.agents/skills/review-execution/SKILL.md"
+printf 'group:contracts\ngroup:contracts\nfixture_tree_copy\nfixture_file_copy\n' \
+  > "$MEASURE_FIX/events/fast.events"
+printf 'group:contracts\npacket_words:12\n' > "$MEASURE_FIX/events/full.events"
+measure_cmd=( "$ROOT/scripts/measure-harness.sh" --root "$MEASURE_FIX/root" \
+  --events "$MEASURE_FIX/events" --format json )
+"${measure_cmd[@]}" > "$MEASURE_FIX/first.json" \
+  || fail 'measurement fixture failed'
+"${measure_cmd[@]}" > "$MEASURE_FIX/second.json"
+cmp -s "$MEASURE_FIX/first.json" "$MEASURE_FIX/second.json" \
+  || fail 'measurement output changed for unchanged inputs'
+jq -e '.roles.executor.static_words == 6 and .roles.executor.static_files == 3
+  and .roles.executor.ceiling == 100 and .roles.executor.generated_packet_words == 12
+  and .verification.fast.fast_group_count == 1
+  and .verification.fast.fixture_tree_copies == 1
+  and .verification.fast.fixture_copied_files == 1' "$MEASURE_FIX/first.json" >/dev/null \
+  || fail 'measurement duplicated shared words or miscounted work'
+printf 'fixture_tree_copy\nfixture_file_copy\n' >> "$MEASURE_FIX/events/fast.events"
+"${measure_cmd[@]}" > "$MEASURE_FIX/added.json"
+jq -e '.verification.fast.fixture_tree_copies == 2
+  and .verification.fast.fixture_copied_files == 2' "$MEASURE_FIX/added.json" >/dev/null \
+  || fail 'new fixture did not move both copy counters'
+"$ROOT/scripts/measure-harness.sh" --format yaml --root "$MEASURE_FIX/root" \
+  --events "$MEASURE_FIX/events" >/dev/null 2>&1 \
+  && fail 'measurement accepted an invalid format'
+mv "$MEASURE_FIX/root/AGENTS.md" "$MEASURE_FIX/missing-agents"
+"${measure_cmd[@]}" >/dev/null 2>&1 \
+  && fail 'measurement accepted a missing bundle input'
+mv "$MEASURE_FIX/missing-agents" "$MEASURE_FIX/root/AGENTS.md"
+jq '.roles.executor.ceiling = 0' "$MEASURE_FIX/first.json" > "$MEASURE_FIX/ceiling.json"
+"${measure_cmd[@]}" --baseline "$MEASURE_FIX/ceiling.json" >/dev/null 2>&1 \
+  && fail 'measurement accepted a bundle above its baseline ceiling'
+printf 'packet_words:801\n' > "$MEASURE_FIX/events/full.events"
+"${measure_cmd[@]}" >/dev/null 2>&1 \
+  && fail 'measurement accepted a packet above the absolute cap'
 fi
 
 # --- upgrade surface --------------------------------------------------------------------
 if should_run upgrade; then
 AGENTIC_FLOW_CLI="$ROOT/scripts/agentic-flow"
 assert_file "$AGENTIC_FLOW_CLI"
+
+# Assurance state is project-owned. Failures must leave both tracked files untouched.
+ASSURANCE="$ROOT/scripts/assurance.sh"
+assert_file "$ASSURANCE"
+ASSURANCE_FIX="$TMP/assurance"
+mkdir -p "$ASSURANCE_FIX/scripts"
+cp "$ASSURANCE" "$ASSURANCE_FIX/scripts/assurance.sh"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh status) > "$TMP/assurance-default.out" \
+  || fail "missing assurance state did not default to Standard"
+grep -q 'standard.*legacy default' "$TMP/assurance-default.out" \
+  || fail "assurance status did not identify the legacy default"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set strict) \
+  || fail "assurance raise failed"
+grep -qx strict "$ASSURANCE_FIX/.agentic-flow-assurance" || fail "raise was not persisted"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set standard) > "$TMP/assurance-unaudited.out" 2>&1 \
+  && fail "unaudited downgrade succeeded"
+grep -qx strict "$ASSURANCE_FIX/.agentic-flow-assurance" || fail "failed downgrade changed state"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set standard --approved-by human@example.invalid --reason 'Risk review completed') \
+  || fail "attributed downgrade failed"
+grep -q 'human@example.invalid.*Risk review completed' "$ASSURANCE_FIX/.agentic-flow-assurance-audit" \
+  || fail "downgrade audit did not persist attribution and reason"
+printf 'malformed audit\n' > "$ASSURANCE_FIX/.agentic-flow-assurance-audit"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh --check) > /dev/null 2>&1 \
+  && fail "malformed assurance audit accepted"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set strict) > /dev/null 2>&1 \
+  && fail "state changed over malformed assurance audit"
+grep -qx standard "$ASSURANCE_FIX/.agentic-flow-assurance" \
+  || fail "malformed audit changed state"
+printf '2026-01-01T00:00:00Z\tstrict\tstandard\thuman@example.invalid\tRisk review completed\n' \
+  > "$ASSURANCE_FIX/.agentic-flow-assurance-audit"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set quick --approved-by 'bad identity' --reason ok) > /dev/null 2>&1 \
+  && fail "malformed audit identity accepted"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh set quick --approved-by human@example.invalid --reason '') > /dev/null 2>&1 \
+  && fail "empty audit reason accepted"
+grep -qx standard "$ASSURANCE_FIX/.agentic-flow-assurance" || fail "malformed audit changed state"
+printf 'unknown\n' > "$ASSURANCE_FIX/.agentic-flow-assurance"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh --check) > /dev/null 2>&1 \
+  && fail "unknown assurance state accepted"
+printf 'standard\nstrict\n' > "$ASSURANCE_FIX/.agentic-flow-assurance"
+(cd "$ASSURANCE_FIX" && scripts/assurance.sh --check) > /dev/null 2>&1 \
+  && fail "multiline assurance state accepted"
+
 
 OUTSIDE="$TMP/outside-project"
 mkdir -p "$OUTSIDE"
@@ -1533,6 +2204,7 @@ printf '%s\n' 'old+1111111' > "$UPGRADE_TARGET/.agentic-flow-version"
 printf 'origin %s\nref main\n' "$UPGRADE_SOURCE_URL" > "$UPGRADE_TARGET/.agentic-flow-source"
 cp "$UPGRADE_SOURCE/config/payload.tsv" "$UPGRADE_TARGET/config/payload.tsv"
 cp "$UPGRADE_SOURCE/scripts/lib/payload-apply.sh" "$UPGRADE_TARGET/scripts/lib/payload-apply.sh"
+printf 'strict\n' > "$UPGRADE_TARGET/.agentic-flow-assurance"
 (cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade) > "$TMP/upgrade-no-yes.out" 2>"$TMP/upgrade-no-yes.err" \
   && fail "upgrade wrote without --yes in a non-interactive run"
 grep -q "pass --yes" "$TMP/upgrade-no-yes.err" \
@@ -1542,9 +2214,12 @@ printf '%s\n' '# local project edits' > "$UPGRADE_TARGET/CLAUDE.md"
 printf '%s\n' '# occupied candidate' > "$UPGRADE_TARGET/CLAUDE.md.agentic-new"
 (cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-pending.out" \
   || fail "upgrade with merge candidates failed"
+grep -qx strict "$UPGRADE_TARGET/.agentic-flow-assurance" \
+  || fail "upgrade overwrote customized assurance baseline"
 grep -qx 'old+1111111' "$UPGRADE_TARGET/.agentic-flow-version" \
   || fail "upgrade advanced installed version while candidates remained"
 assert_file "$UPGRADE_TARGET/.agentic-flow-candidate-version"
+assert_no_file "$UPGRADE_TARGET/.agentic-flow-installation"
 grep -q "pending     .agentic-flow-candidate-version" "$TMP/upgrade-pending.out" \
   || fail "upgrade did not report pending candidate version"
 assert_no_file "$UPGRADE_TARGET/docs-index-sentinel"
@@ -1586,16 +2261,121 @@ expected_upgrade_version=$(cd "$UPGRADE_SOURCE" && printf '10.0.0+%s\n' "$(git r
 grep -qx "$expected_upgrade_version" "$UPGRADE_CLEAN/.agentic-flow-version" \
   || fail "clean upgrade did not advance the installed version"
 assert_no_file "$UPGRADE_CLEAN/.agentic-flow-candidate-version"
+assert_file "$UPGRADE_CLEAN/.agentic-flow-installation"
 assert_file "$UPGRADE_CLEAN/.agentic-flow-source-applied"
 assert_no_file "$UPGRADE_CLEAN/docs-index-sentinel"
+
+# An installed pre-F-7 upgrader parses the fetched five-column manifest with its
+# installed library. Prove that path before the replacement CLI can read new state.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+LEGACY_SOURCE="$TMP/legacy-upgrade-source"
+mkdir -p "$LEGACY_SOURCE/config" "$LEGACY_SOURCE/scripts/lib" "$LEGACY_SOURCE/.codex"
+printf '11.0.0\n' > "$LEGACY_SOURCE/VERSION"
+printf 'scripts/agentic-flow\tscripts/agentic-flow\tcore\tpreserve\texport\nscripts/lib\tscripts/lib\tcore\tpreserve\texport\n.codex/hooks.json\t.codex/hooks.json\tcodex\tpreserve\texport\nconfig/payload.tsv\tconfig/payload.tsv\tcore\tpreserve\texport\n' \
+  > "$LEGACY_SOURCE/config/payload.tsv"
+cp "$ROOT/scripts/agentic-flow" "$LEGACY_SOURCE/scripts/agentic-flow"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$LEGACY_SOURCE/scripts/lib/payload-apply.sh"
+printf '{}\n' > "$LEGACY_SOURCE/.codex/hooks.json"
+(
+  cd "$LEGACY_SOURCE"
+  git init -q .
+  git config user.email selftest@example.invalid
+  git config user.name selftest
+  git config commit.gpgsign false
+  git add VERSION config/payload.tsv scripts/agentic-flow scripts/lib/payload-apply.sh .codex/hooks.json
+  git commit -q -m 'Seed new payload for old upgrader'
+  git branch -M main
+)
+for legacy_mode in default claude-only pending; do
+  LEGACY_TARGET="$TMP/legacy-upgrade-$legacy_mode"
+  mkdir -p "$LEGACY_TARGET/config" "$LEGACY_TARGET/scripts/lib"
+  git -C "$ROOT" show 9a82aff:scripts/agentic-flow > "$LEGACY_TARGET/scripts/agentic-flow"
+  git -C "$ROOT" show 9a82aff:scripts/lib/payload-apply.sh \
+    > "$LEGACY_TARGET/scripts/lib/payload-apply.sh"
+  chmod +x "$LEGACY_TARGET/scripts/agentic-flow"
+  # The pre-F-7 CLI reads past its dispatch after upgrade rewrites it. Bash 3.2 and 5.x
+  # disagree about the resulting syntax error's status, so run an unchanging copy.
+  LEGACY_CLI="$TMP/legacy-cli-$legacy_mode"
+  cp "$LEGACY_TARGET/scripts/agentic-flow" "$LEGACY_CLI"
+  cp "$LEGACY_SOURCE/config/payload.tsv" "$LEGACY_TARGET/config/payload.tsv"
+  printf 'old+0000000\n' > "$LEGACY_TARGET/.agentic-flow-version"
+  printf 'origin file://%s\nref main\n' "$LEGACY_SOURCE" \
+    > "$LEGACY_TARGET/.agentic-flow-source"
+  if [ "$legacy_mode" = claude-only ]; then
+    printf 'codex\n' > "$LEGACY_TARGET/.agentic-flow-scopes-excluded"
+  fi
+  if [ "$legacy_mode" = pending ]; then
+    (cd "$LEGACY_TARGET" && bash "$LEGACY_CLI" upgrade --yes) \
+      > "$TMP/legacy-pending.out" 2>&1 \
+      || fail "old upgrader rejected the new five-column manifest"
+    grep -qx 'old+0000000' "$LEGACY_TARGET/.agentic-flow-version" \
+      || fail "old upgrader advanced a pending installation"
+    assert_no_file "$LEGACY_TARGET/.agentic-flow-installation"
+  else
+    (cd "$LEGACY_TARGET" && bash "$LEGACY_CLI" upgrade --yes --force) \
+      > "$TMP/legacy-$legacy_mode.out" 2>&1 \
+      || fail "old $legacy_mode upgrader rejected the new manifest"
+    if [ "$legacy_mode" = claude-only ]; then
+      assert_no_file "$LEGACY_TARGET/.codex/hooks.json"
+    else
+      assert_file "$LEGACY_TARGET/.codex/hooks.json"
+    fi
+    assert_no_file "$LEGACY_TARGET/.agentic-flow-installation"
+    (cd "$LEGACY_TARGET" && scripts/agentic-flow upgrade --yes --force) \
+      > "$TMP/legacy-migrate-$legacy_mode.out" 2>&1 \
+      || fail "new upgrader did not migrate $legacy_mode installation"
+    assert_file "$LEGACY_TARGET/.agentic-flow-installation"
+    if [ "$legacy_mode" = claude-only ]; then
+      grep -q '^scope=codex$' "$LEGACY_TARGET/.agentic-flow-installation" \
+        && fail "migration reinstated excluded Codex scope"
+    fi
+  fi
+done
+# The current CLI must not read its replacement after upgrade rewrites it. The release
+# appends one line at the running file's end-of-file offset, the next bytes bash would read.
+{
+  cat "$TMP/legacy-upgrade-default/scripts/agentic-flow"
+  printf "printf 'agentic-flow read its replacement\\\\n'\\n"
+} > "$LEGACY_SOURCE/scripts/agentic-flow"
+(
+  cd "$LEGACY_SOURCE"
+  printf '11.0.1\n' > VERSION
+  git add VERSION scripts/agentic-flow
+  git commit -q -m 'Append to the CLI for a self-replacing upgrade'
+)
+(cd "$TMP/legacy-upgrade-default" && scripts/agentic-flow upgrade --yes --force) \
+  > "$TMP/self-replace.out" 2>&1 \
+  || fail "current upgrader failed while replacing itself"
+grep -q 'read its replacement' "$TMP/self-replace.out" \
+  && fail "current upgrader executed its replacement after upgrading"
+cmp -s "$LEGACY_SOURCE/scripts/agentic-flow" "$TMP/legacy-upgrade-default/scripts/agentic-flow" \
+  || fail "self-replacing upgrade did not install the new CLI"
+fi
 fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------
 if should_run hooks; then
 NOJQ_PATH=$(path_without_tools "$TMP/nojq-bin" jq)
-PATH="$NOJQ_PATH" command -v jq >/dev/null 2>&1 && fail "jq-less PATH still contains jq"
+PATH="$NOJQ_PATH" bash -c 'command -v jq' >/dev/null 2>&1 \
+  && fail "jq-less PATH still contains jq"
 PATH="$NOJQ_PATH" command -v git >/dev/null 2>&1 \
   || fail "jq-less PATH accidentally removed ordinary git"
+
+HOOK_CRASH="$TMP/crashing-hook"
+printf '#!/usr/bin/env bash\necho stub-crash >&2\nexit 1\n' > "$HOOK_CRASH"
+chmod +x "$HOOK_CRASH"
+( must_block "$HOOK_CRASH" 'git add -A' ) > "$TMP/hook-crash.out" 2>&1 \
+  && fail "must_block accepted a hook crash as a policy block"
+grep -q 'status 1' "$TMP/hook-crash.out" \
+  || fail "must_block crash diagnostic omitted the exit status"
+grep -q 'stub-crash' "$TMP/hook-crash.out" \
+  || fail "must_block discarded hook stderr"
+( must_block_nojq "$HOOK_CRASH" 'git add -A' ) > "$TMP/hook-crash-nojq.out" 2>&1 \
+  && fail "must_block_nojq accepted a hook crash as a policy block"
+grep -q 'status 1' "$TMP/hook-crash-nojq.out" \
+  || fail "must_block_nojq crash diagnostic omitted the exit status"
+grep -q 'stub-crash' "$TMP/hook-crash-nojq.out" \
+  || fail "must_block_nojq discarded hook stderr"
 
 ADD_GUARD="$ROOT/scripts/hooks/block-git-add-all.sh"
 
@@ -1621,6 +2401,8 @@ must_block "$ADD_GUARD" 'git --no-pager add -A'
 must_block "$ADD_GUARD" 'git -p add .'
 must_block "$ADD_GUARD" 'git --git-dir=/tmp/x add --all'
 must_block "$ADD_GUARD" 'git --no-pager -C /some/path add -A'
+must_block "$ADD_GUARD" 'sudo git add -A'
+must_block "$ADD_GUARD" 'nohup git add .'
 must_allow "$ADD_GUARD" 'git --no-pager add README.md'
 # Verdicts must not change when jq is absent (previously: silent exit 0, guard disabled).
 must_block_nojq "$ADD_GUARD" 'git add -A'
@@ -1786,7 +2568,17 @@ if [ -x "$SECRET_GUARD" ]; then
   }
 
   stage "aws_key = \"$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')\""
+  status=0
+  (cd "$SECFIX" && hook_payload 'sudo git commit -m x' | "$SECRET_GUARD") \
+    >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "sudo Git commit bypassed the staged-secret hook"
+  status=0
+  (cd "$SECFIX" && hook_payload 'nohup git commit -m x' | "$SECRET_GUARD") \
+    >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "nohup Git commit bypassed the staged-secret hook"
   secret_hook 'git-claude commit -m x' && fail "secret scanner allowed a staged AWS-format key"
+  secret_hook 'git-codex commit -m x' && fail "secret scanner allowed a Codex wrapper commit"
+  secret_hook 'git-opencode commit -m x' && fail "secret scanner allowed an OpenCode wrapper commit"
   secret_hook_nogl 'git-claude commit -m x' \
     && fail "secret scanner allowed an AWS-format key with gitleaks unavailable"
   secret_hook_nojq 'git-claude commit -m x' \
@@ -1824,6 +2616,86 @@ if [ -x "$SECRET_GUARD" ]; then
 
   (cd "$SECFIX" && git reset -q)
   secret_hook 'git commit -m x' || fail "secret scanner blocked a commit with nothing staged"
+
+  # The default index is empty. Every redirected invocation below must inspect
+  # its own staged content, and a block must use the hook's documented exit 2.
+  alt_repo="$TMP/secret-other-repo"
+  mkdir -p "$alt_repo"
+  alt_repo=$(cd "$alt_repo" && pwd -P)
+  space_repo="$TMP/secret other repo"
+  ln -s "$alt_repo" "$space_repo"
+  (cd "$alt_repo" && git init -q .)
+  secret_value="$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')"
+  printf 'key = "%s"\n' "$secret_value" > "$alt_repo/staged.txt"
+  (cd "$alt_repo" && git add staged.txt)
+  alt_index="$TMP/secret-other.index"
+  printf 'key = "%s"\n' "$secret_value" > "$SECFIX/staged.txt"
+  (cd "$SECFIX" && GIT_INDEX_FILE="$alt_index" git add staged.txt)
+
+  # A fake first layer records the effective context, then the high-signal
+  # layer must independently reject the synthetic staged key.
+  gl_bin="$TMP/gitleaks-fixture"
+  mkdir -p "$gl_bin"
+  cat > "$gl_bin/gitleaks" <<'FAKE_GITLEAKS'
+#!/usr/bin/env bash
+case " $* " in *" --help "*) exit 0 ;; esac
+printf '%s|%s|%s|%s\n' "$PWD" "${GIT_DIR:-}" "${GIT_WORK_TREE:-}" "${GIT_INDEX_FILE:-}" >> "$FAKE_GITLEAKS_LOG"
+git diff --cached --name-only > "$FAKE_GITLEAKS_DIFF" || exit 1
+exit "${FAKE_GITLEAKS_EXIT:-0}"
+FAKE_GITLEAKS
+  chmod +x "$gl_bin/gitleaks"
+  gl_log="$TMP/gitleaks-context.log"
+  gl_diff="$TMP/gitleaks-diff.log"
+  assert_redirected_secret() { # <command> <expected-index-or-git-dir>
+    : > "$gl_log"
+    : > "$gl_diff"
+    status=0
+    (cd "$SECFIX" && hook_payload "$1" | PATH="$gl_bin:$PATH" \
+      FAKE_GITLEAKS_LOG="$gl_log" FAKE_GITLEAKS_DIFF="$gl_diff" \
+      "$SECRET_GUARD") > "$TMP/redirected-secret.out" 2>&1 || status=$?
+    [ "$status" -eq 2 ] || fail "redirected commit did not block with exit 2: $1 (status $status)"
+    grep -q 'Blocked:' "$TMP/redirected-secret.out" \
+      || fail "redirected commit lacked a block diagnostic: $1"
+    ! grep -qF "$secret_value" "$TMP/redirected-secret.out" \
+      || fail "redirected commit printed staged secret text"
+    grep -qF "$2" "$gl_log" || fail "gitleaks did not receive redirected context: $1"
+    grep -q 'staged.txt' "$gl_diff" || fail "gitleaks did not inspect redirected staged index: $1"
+  }
+  assert_redirected_secret "git -C '$space_repo' commit -m x" "$alt_repo"
+  assert_redirected_secret "git -C \"$space_repo\" commit -m x" "$alt_repo"
+  assert_redirected_secret "git -C ${space_repo// /\\ } commit -m x" "$alt_repo"
+  assert_redirected_secret 'git -C ../secret-other-repo commit -m x' "$alt_repo"
+  assert_redirected_secret "cd '$alt_repo' && git commit -m x" "$alt_repo"
+  assert_redirected_secret "GIT_DIR=$alt_repo/.git git commit -m x" "$alt_repo/.git"
+  assert_redirected_secret "git --git-dir=$alt_repo/.git --work-tree=$alt_repo commit -m x" "$alt_repo/.git"
+  assert_redirected_secret "GIT_INDEX_FILE=$alt_index git commit -m x" "$alt_index"
+  assert_redirected_secret "env GIT_INDEX_FILE=$alt_index git commit -m x" "$alt_index"
+  assert_redirected_secret "env -- GIT_INDEX_FILE=$alt_index git commit -m x" "$alt_index"
+  assert_redirected_secret "GIT_DIR=$alt_repo/.git GIT_INDEX_FILE=$alt_repo/.git/index git commit -m x" "$alt_repo/.git/index"
+  # GIT_WORK_TREE changes the worktree while retaining this repository's index.
+  # Stage a secret there to ensure the environment reaches both scanners.
+  (cd "$SECFIX" && GIT_WORK_TREE="$alt_repo" git add staged.txt)
+  assert_redirected_secret "GIT_WORK_TREE=$alt_repo git commit -m x" "$alt_repo"
+  secfix_physical=$(cd "$SECFIX" && pwd -P)
+  grep -qF "$secfix_physical/.git" "$gl_log" \
+    || fail 'gitleaks selected the redirected worktree as the Git directory'
+  status=0
+  (cd "$SECFIX" && hook_payload 'GIT_COMMON_DIR=/tmp/other git commit -m x' \
+    | "$SECRET_GUARD") > "$TMP/unknown-git-env.out" 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail 'unmodeled GIT_* environment variable was allowed'
+  grep -q 'GIT_COMMON_DIR' "$TMP/unknown-git-env.out" \
+    || fail 'unmodeled GIT_* diagnostic omitted variable name'
+  (cd "$SECFIX" && git reset -q)
+
+  # A first-layer failure must block even when the local patterns see ordinary code.
+  printf 'const value = 1\n' > "$SECFIX/staged.txt"
+  (cd "$SECFIX" && git add staged.txt)
+  status=0
+  (cd "$SECFIX" && hook_payload 'git commit -m x' | PATH="$gl_bin:$PATH" \
+    FAKE_GITLEAKS_LOG="$gl_log" FAKE_GITLEAKS_DIFF="$gl_diff" FAKE_GITLEAKS_EXIT=1 \
+    "$SECRET_GUARD") >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "gitleaks failure did not block with exit 2"
+  (cd "$SECFIX" && git reset -q)
 fi
 
 PUSH_GUARD="$ROOT/scripts/hooks/block-push.sh"
@@ -1834,12 +2706,42 @@ must_block "$PUSH_GUARD" 'git -C /some/path push'
 must_block "$PUSH_GUARD" 'git-claude push origin HEAD'
 must_block "$PUSH_GUARD" 'git status && git push'
 must_block "$PUSH_GUARD" 'gh pr merge 12'
+must_block "$PUSH_GUARD" 'gh -R owner/repo pr merge 12'
+must_block "$PUSH_GUARD" 'sudo git push'
+must_block "$PUSH_GUARD" 'sudo gh pr merge 12'
+must_block "$PUSH_GUARD" 'nohup git push'
+must_block "$PUSH_GUARD" 'nice git push'
+must_block "$PUSH_GUARD" 'timeout 10 git push'
+must_block "$PUSH_GUARD" 'time git push'
+must_block "$PUSH_GUARD" '! git push'
+must_block "$PUSH_GUARD" '>out git push'
+must_block "$PUSH_GUARD" '2>&1 git push'
+must_block "$PUSH_GUARD" 'if git push; then :; fi'
+must_block "$PUSH_GUARD" '{ git push; }'
+continued_push=$'git \\\npush'
+[[ "$continued_push" == *$'\n'* ]] || fail 'line-continuation fixture lacks a newline'
+must_block "$PUSH_GUARD" "$continued_push"
+must_allow "$PUSH_GUARD" 'echo use git to push'
+must_allow "$PUSH_GUARD" 'echo git push'
+must_allow "$PUSH_GUARD" 'sudo echo git push'
+must_allow "$PUSH_GUARD" 'man git'
 must_allow "$PUSH_GUARD" 'git pull --rebase'
 must_allow "$PUSH_GUARD" 'gh pr view 12'
 must_allow "$PUSH_GUARD" 'echo push'
 must_block "$PUSH_GUARD" 'git --no-pager push'
 must_block "$PUSH_GUARD" 'git -p push'
 must_block "$PUSH_GUARD" 'git --git-dir=/tmp/x push'
+must_block "$PUSH_GUARD" 'git push;'
+must_block "$PUSH_GUARD" 'git-opencode push origin HEAD'
+must_block "$PUSH_GUARD" 'git-codex push origin HEAD'
+must_block "$PUSH_GUARD" 'git status; git push'
+must_block "$PUSH_GUARD" 'git -C "a path" push'
+must_block "$PUSH_GUARD" 'git -C a\ path push'
+must_block "$PUSH_GUARD" 'git push "unterminated'
+must_block "$PUSH_GUARD" "echo \"\$(git push)\""
+must_block "$PUSH_GUARD" "git -C \"\$(pwd)\" push"
+must_block "$PUSH_GUARD" 'env GIT_INDEX_FILE=/tmp/other git push'
+must_allow "$PUSH_GUARD" 'rg "git push" METHODOLOGY.md; echo done'
 # Quoting a command in prose is not running it. `"` delimits the command inside the raw JSON
 # payload, so it counts as a boundary only in the no-jq path — conflating the two blocked
 # this.
@@ -1849,7 +2751,48 @@ must_allow "$PUSH_GUARD" 'git commit -m push'
 must_block_nojq "$PUSH_GUARD" 'git push'
 must_block_nojq "$PUSH_GUARD" 'git-claude push origin HEAD'
 must_block_nojq "$PUSH_GUARD" 'gh pr merge 12'
+must_block_nojq "$PUSH_GUARD" 'git -C "a path" push'
+must_allow_nojq "$PUSH_GUARD" 'rg "git push" METHODOLOGY.md'
 must_allow_nojq "$PUSH_GUARD" 'git pull --rebase'
+
+STEP_HOOK="$ROOT/scripts/hooks/require-step-comment.sh"
+STEP_HOOK_GH="$TMP/step-hook-gh"
+mkdir -p "$STEP_HOOK_GH"
+cat > "$STEP_HOOK_GH/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+case "$*" in
+  *'--jq .body'*) printf '%s\n' '<!-- agentic-flow:topology:standard -->' ;;
+  *'--jq .labels[].name'*) printf '%s\n' "${STEP_HOOK_LABELS:-needs-review}" ;;
+  *'--jq .comments[-1].body'*) printf '%s\n' "${STEP_HOOK_COMMENT:-}" ;;
+  *) exit 2 ;;
+esac
+FAKE_GH
+chmod +x "$STEP_HOOK_GH/gh"
+step_hook_status() { # <command> <comment> <labels> <expected status>
+  status=0
+  hook_payload "$1" | PATH="$STEP_HOOK_GH:$PATH" \
+    STEP_HOOK_COMMENT="$2" STEP_HOOK_LABELS="$3" "$STEP_HOOK" \
+    > "$TMP/step-hook.out" 2>&1 || status=$?
+  [ "$status" -eq "$4" ] \
+    || fail "step handoff hook returned $status, expected $4: $(cat "$TMP/step-hook.out")"
+}
+STEP_APPROVAL='agentic-flow-review: status=approved; step=alpha; head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; role=reviewer'
+STEP_FINAL='agentic-flow-review: status=approved; pr=2; head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; run=https://github.com/owner/repo/actions/runs/100; attempt=1; role=reviewer'
+step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
+  'changes requested' needs-review 2
+step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
+  "$STEP_APPROVAL" needs-review 0
+step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
+  "Review approved after checking the failure path.
+  $STEP_APPROVAL
+Verification passed." needs-review 0
+step_hook_status 'gh issue close 1' "$STEP_APPROVAL" needs-review 2
+step_hook_status 'gh issue close 1' "$STEP_APPROVAL" needs-closing 2
+step_hook_status 'gh issue close 1' "$STEP_FINAL" needs-closing 0
+step_hook_status 'gh issue close 1' \
+  "Final head and CI checked.
+  $STEP_FINAL
+Ready for close-out." needs-closing 0
 fi
 
 # --- plan-to-issues spec validation ------------------------------------------------------
@@ -1874,6 +2817,9 @@ cat > "$GHFIX/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 set -euo pipefail
 state=${FAKE_GH_STATE:?}
+if [ -n "${FAKE_GH_CALLS:-}" ]; then
+  printf '%s\n' "$*" >> "$FAKE_GH_CALLS"
+fi
 mkdir -p "$state"
 [ -f "$state/next" ] || printf '%s\n' 1 > "$state/next"
 
@@ -1892,6 +2838,10 @@ case "${1:-} ${2:-}" in
     ;;
   "label create") exit 0 ;;
   "issue list")
+    if [ -n "${FAKE_GH_LIST_OVERRIDE:-}" ]; then
+      cat "$FAKE_GH_LIST_OVERRIDE"
+      exit 0
+    fi
     out="$state/issues.jsonl"
     : > "$out"
     for dir in "$state"/issue-*; do
@@ -1901,7 +2851,7 @@ case "${1:-} ${2:-}" in
         --arg title "$(cat "$dir/title")" \
         --arg body "$(cat "$dir/body")" \
         --arg issue_state "$(cat "$dir/state")" \
-        --arg url "https://github.test/owner/repo/issues/$num" \
+        --arg url "https://github.com/owner/repo/issues/$num" \
         '{number:$number,title:$title,body:$body,state:$issue_state,url:$url}' >> "$out"
     done
     jq -s . "$out"
@@ -1929,7 +2879,7 @@ case "${1:-} ${2:-}" in
     printf '%s\n' "$title" > "$dir/title"
     printf '%s\n' "$body" > "$dir/body"
     printf '%s\n' OPEN > "$dir/state"
-    printf 'https://github.test/owner/repo/issues/%s\n' "$num"
+    printf 'https://github.com/owner/repo/issues/%s\n' "$num"
     exit 0
     ;;
   "issue edit")
@@ -1994,9 +2944,92 @@ PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
   || fail "plan diff failed against fake GitHub"
 grep -q "Tracker: current" "$TMP/plan-diff.out" \
   || fail "plan diff did not recognize the applied revision"
+for issue_number in 1 2 3; do
+  cp "$GHSTATE/issue-$issue_number/body" "$TMP/plan-before-$issue_number.body"
+  cp "$GHSTATE/issue-$issue_number/title" "$TMP/plan-before-$issue_number.title"
+done
 plan_apply "$PLAN_SPEC" || fail "repeated identical plan apply failed"
 issue_count=$(find "$GHSTATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
 [ "$issue_count" -eq 3 ] || fail "repeated plan apply duplicated issues"
+for issue_number in 1 2 3; do
+  cmp -s "$GHSTATE/issue-$issue_number/body" "$TMP/plan-before-$issue_number.body" \
+    || fail "identical reapply changed issue #$issue_number body"
+  cmp -s "$GHSTATE/issue-$issue_number/title" "$TMP/plan-before-$issue_number.title" \
+    || fail "identical reapply changed issue #$issue_number title"
+done
+
+# Identity validation and discovery ambiguity must stop before mutation.
+plan_reject_without_mutation() { # <name> <spec> [issue-list-override]
+  : > "$TMP/plan-reject-calls"
+  if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
+    FAKE_GH_CALLS="$TMP/plan-reject-calls" FAKE_GH_LIST_OVERRIDE="${3:-}" \
+    "$PLAN_DRIVER" --apply "$2" > "$TMP/plan-reject.out" 2>&1; then
+    fail "plan apply accepted $1"
+  fi
+  if grep -Eq '(^| )(issue create|issue edit|issue close|label create|--method POST)( |$)' \
+      "$TMP/plan-reject-calls"; then
+    fail "plan apply mutated GitHub before rejecting $1"
+  fi
+}
+jq '.steps = [{title:"Implicit"},{id:"step-1",title:"Explicit"}]' \
+  "$PLAN_SPEC" > "$TMP/plan-collision.json"
+plan_reject_without_mutation 'implicit/explicit step-1 collision' "$TMP/plan-collision.json"
+grep -q 'uniquely identified' "$TMP/plan-reject.out" \
+  || fail 'normalized ID collision lacked a useful error'
+jq '.steps[0].id = "bad:id"' "$PLAN_SPEC" > "$TMP/plan-reserved-id.json"
+plan_reject_without_mutation 'reserved marker character in step ID' "$TMP/plan-reserved-id.json"
+grep -q 'uniquely identified' "$TMP/plan-reject.out" \
+  || fail 'reserved marker character lacked a validation error'
+
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" gh issue list > "$TMP/plan-existing.json"
+jq '.[1] as $step | . + [$step | .number = 99 | .url = "https://github.com/owner/repo/issues/99"]' \
+  "$TMP/plan-existing.json" > "$TMP/plan-duplicate-step.json"
+plan_reject_without_mutation 'duplicate remote step stamps' "$PLAN_SPEC" "$TMP/plan-duplicate-step.json"
+grep -qE '2.*99|99.*2' "$TMP/plan-reject.out" \
+  || fail 'duplicate step diagnostic did not name both issue numbers'
+jq '.[0] as $tracker | . + [$tracker | .number = 98 | .url = "https://github.com/owner/repo/issues/98"]' \
+  "$TMP/plan-existing.json" > "$TMP/plan-duplicate-tracker.json"
+plan_reject_without_mutation 'duplicate remote tracker stamps' "$PLAN_SPEC" "$TMP/plan-duplicate-tracker.json"
+grep -qE '1.*98|98.*1' "$TMP/plan-reject.out" \
+  || fail 'duplicate tracker diagnostic did not name both issue numbers'
+jq '.[0].body |= sub("spec:[0-9a-f]+";"spec:zz")' \
+  "$TMP/plan-existing.json" > "$TMP/plan-malformed-stamp.json"
+plan_reject_without_mutation 'malformed remote stamp' "$PLAN_SPEC" "$TMP/plan-malformed-stamp.json"
+grep -q 'malformed identity stamp on issue #1' "$TMP/plan-reject.out" \
+  || fail 'malformed stamp diagnostic did not name the issue'
+jq -n '[range(1;101) | {number:.,title:"Other",body:"unrelated",state:"OPEN",url:("https://github.com/owner/repo/issues/" + tostring)}]' \
+  > "$TMP/plan-full-page.json"
+plan_reject_without_mutation '100-result discovery page' "$PLAN_SPEC" "$TMP/plan-full-page.json"
+grep -q '100' "$TMP/plan-reject.out" || fail 'full discovery page lacked bound diagnostic'
+
+# step-1 must never select the earlier step-10 issue. Create step-10 first so
+# the old substring lookup picks the wrong row on the second apply.
+jq '.id = "prefix-plan" | .steps = [{id:"step-10",title:"Ten",body:"ten"},{id:"step-1",title:"One",body:"one"}]' \
+  "$PLAN_SPEC" > "$TMP/plan-prefix.json"
+PREFIX_STATE="$TMP/gh-prefix-state"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PREFIX_STATE" \
+  "$PLAN_DRIVER" --apply "$TMP/plan-prefix.json" >/dev/null \
+  || fail 'prefix fixture first apply failed'
+jq '.steps[1].body = "one updated"' "$TMP/plan-prefix.json" > "$TMP/plan-prefix-updated.json"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PREFIX_STATE" \
+  "$PLAN_DRIVER" --apply "$TMP/plan-prefix-updated.json" >/dev/null \
+  || fail 'prefix fixture reapply failed'
+grep -q 'one updated' "$PREFIX_STATE/issue-3/body" \
+  || fail 'step-1 did not update its exact issue'
+grep -q 'ten' "$PREFIX_STATE/issue-2/body" \
+  || fail 'step-1 update rewrote step-10'
+
+# A reviewed step's live labels must survive a spec reapply unchanged.
+printf '%s\n' 'agent:opencode,needs-review' > "$GHSTATE/issue-3/labels"
+: > "$TMP/plan-reapply-calls"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" FAKE_GH_CALLS="$TMP/plan-reapply-calls" \
+  "$PLAN_DRIVER" --apply "$PLAN_SPEC" >/dev/null \
+  || fail 'reviewer-state reapply failed'
+if grep -Eq 'issue edit 3 .*--add-label' "$TMP/plan-reapply-calls"; then
+  fail 'reapply reintroduced spec labels on a reviewed step'
+fi
+[ "$(cat "$GHSTATE/issue-3/labels")" = 'agent:opencode,needs-review' ] \
+  || fail 'reapply changed live reviewer labels'
 
 APPROVAL_DOC_ROOT="$TMP/approval-doc-root"
 mkdir -p "$APPROVAL_DOC_ROOT/docs/inprogress"
@@ -2005,11 +3038,14 @@ cat > "$APPROVAL_DOC" <<'MD'
 ## Tracker
 - [x] F-1 done
 ## Status / Implementation status
-- **Tracking issue:** pending.
-- **Approval:** pending.
-- **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** url=https://github.com/owner/repo/pull/2
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=pr-head-approval
+- **Memory:** status=n/a
 MD
 PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" \
   "$PLAN_DRIVER" --apply --approved-by "Test User" --doc "$APPROVAL_DOC" "$PLAN_SPEC" >/dev/null \
@@ -2019,10 +3055,45 @@ printf '%s\n' "$tracker_body" | grep -q 'approved-by:Test User approved-at:' \
   || fail "approval stamp did not land in the existing tracker marker"
 approved_at=$(printf '%s\n' "$tracker_body" | sed -n 's/.*approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
 [ -n "$approved_at" ] || fail "approval stamp did not include approved-at"
-grep -qF -- "- **Approval:** Test User approved on ${approved_at%%T*} via plan-to-issues --apply." "$APPROVAL_DOC" \
+grep -qF -- "- **Approval:** status=approved; by=Test User; at=${approved_at%%T*}" "$APPROVAL_DOC" \
   || fail "--doc did not write the canonical Approval status line"
+grep -qF -- '- **Tracking issue:** url=https://github.com/owner/repo/issues/1' "$APPROVAL_DOC" \
+  || fail "--doc did not write the v2 tracking URL"
 AGENTIC_PROJECT_ROOT="$APPROVAL_DOC_ROOT" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
   || fail "lifecycle-status did not recognize the machine-written Approval line"
+
+# Writer validation precedes authentication. Each rejected case must leave the
+# mock gh call log empty, rather than merely avoid an issue mutation.
+REJECT_DOC="$TMP/rejected-plan-doc.md"
+reject_before_gh() { # <case-name> <doc-path> <approved-by>
+  rm -f "$TMP/rejected-gh-calls"
+  PATH="$GHFIX:$PATH" FAKE_GH_STATE="$GHSTATE" FAKE_GH_CALLS="$TMP/rejected-gh-calls" \
+    "$PLAN_DRIVER" --apply --doc "$2" --approved-by "$3" "$PLAN_SPEC" \
+    > "$TMP/rejected-plan.out" 2>&1 \
+    && fail "plan apply accepted $1"
+  [ ! -e "$TMP/rejected-gh-calls" ] \
+    || fail "plan apply called gh before rejecting $1"
+}
+sed 's/Evidence schema:\*\* v2/Evidence schema:** v3/' "$APPROVAL_DOC" > "$REJECT_DOC"
+reject_before_gh 'unknown schema' "$REJECT_DOC" 'Test User'
+sed '/^- \*\*Evidence schema:/d' "$APPROVAL_DOC" > "$REJECT_DOC"
+reject_before_gh 'legacy document' "$REJECT_DOC" 'Test User'
+sed 's/source=pr-head-approval/source=not-approved/' "$APPROVAL_DOC" > "$REJECT_DOC"
+reject_before_gh 'invalid v2 selector' "$REJECT_DOC" 'Test User'
+cp "$APPROVAL_DOC" "$REJECT_DOC"
+printf '%s\n' '- **Approval:** status=approved; by=Other; at=2026-01-01' >> "$REJECT_DOC"
+reject_before_gh 'duplicate v2 field' "$REJECT_DOC" 'Test User'
+reject_before_gh 'missing document' "$TMP/no-such-doc.md" 'Test User'
+cp "$APPROVAL_DOC" "$REJECT_DOC"
+chmod 444 "$REJECT_DOC"
+reject_before_gh 'unwritable document' "$REJECT_DOC" 'Test User'
+chmod 644 "$REJECT_DOC"
+reject_before_gh 'newline in approver' "$REJECT_DOC" "$(printf 'Test\nUser')"
+reject_before_gh 'semicolon in approver' "$REJECT_DOC" 'Test;User'
+reject_before_gh 'surrounding whitespace in approver' "$REJECT_DOC" ' Test User '
+reject_before_gh 'trailing dot in approver' "$REJECT_DOC" 'John D.'
+reject_before_gh 'trailing hyphen in approver' "$REJECT_DOC" 'user-'
+
 plan_apply "$PLAN_SPEC" || fail "plan apply without --approved-by failed after approval"
 tracker_body_after=$(grep -Rl "agentic-flow:plan:self-test-plan tracker" "$GHSTATE"/issue-*/body | xargs cat)
 printf '%s\n' "$tracker_body_after" | grep -q "approved-at:$approved_at" \
@@ -2059,249 +3130,655 @@ PATH="$GHFIX:$PATH" FAKE_GH_STATE="$PARTIAL_STATE" \
   || fail "plan apply did not resume after a partial failure"
 partial_count=$(find "$PARTIAL_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')
 [ "$partial_count" -eq 3 ] || fail "partial resume duplicated or omitted plan issues"
+
+# Standard creates one work issue. Its packet and approval metadata stay on
+# that issue across reapply, and a topology change fails before mutation.
+STANDARD_SPEC="$TMP/standard-spec.json"
+jq '{profile:"standard",id:"standard-plan",steps:[.steps[0] | .packet = {
+  brief:"docs/inprogress/feature.md Step 1",
+  definition_of_done:"Failure path and success path pass",
+  verification:"make check and make test-one F=plan-to-issues",
+  risks:"Malformed input must fail before a GitHub write"
+}]}' "$PLAN_SPEC" > "$STANDARD_SPEC"
+if [ -n "${AGENTIC_MEASURE_EVENTS:-}" ]; then
+  packet_words=$(jq -r '.steps[0].packet |
+    "## Executor packet\nProfile: Standard\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"' \
+    "$STANDARD_SPEC" | wc -w | tr -d ' ')
+  measure_event "packet_words:$packet_words"
+fi
+STANDARD_STATE="$TMP/gh-standard-state"
+if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+  "$PLAN_DRIVER" --apply "$STANDARD_SPEC" > "$TMP/standard-unapproved.out" 2>&1; then
+  fail 'Standard created an issue without plan approval metadata'
+fi
+grep -q 'requires --approved-by' "$TMP/standard-unapproved.out" \
+  || fail 'Standard missing approval lacked diagnostic'
+[ ! -d "$STANDARD_STATE/issue-1" ] || fail 'Standard wrote an unapproved work issue'
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+  "$PLAN_DRIVER" --apply --approved-by "Test User" "$STANDARD_SPEC" >/dev/null \
+  || fail 'Standard apply failed'
+[ "$(find "$STANDARD_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')" -eq 1 ] \
+  || fail 'Standard created a parent or more than one work issue'
+grep -q 'agentic-flow:topology:standard' "$STANDARD_STATE/issue-1/body" \
+  || fail 'Standard work issue lacks topology stamp'
+grep -q 'approved-by:Test User' "$STANDARD_STATE/issue-1/body" \
+  || fail 'Standard approval metadata was not recorded on work issue'
+grep -q '## Executor packet' "$STANDARD_STATE/issue-1/body" \
+  || fail 'Standard work issue lacks executor packet'
+STANDARD_DOC="$TMP/standard-doc.md"
+cp "$APPROVAL_DOC" "$STANDARD_DOC"
+sed 's@url=https://github.com/owner/repo/issues/1@pending@; s/status=approved; by=Test User; at=[0-9-]*/pending/' \
+  "$STANDARD_DOC" > "$TMP/standard-doc-pending.md"
+mv "$TMP/standard-doc-pending.md" "$STANDARD_DOC"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+  "$PLAN_DRIVER" --apply --doc "$STANDARD_DOC" "$STANDARD_SPEC" >/dev/null \
+  || fail 'Standard apply could not write the work issue URL and approval to the document'
+grep -qF -- '- **Tracking issue:** url=https://github.com/owner/repo/issues/1' "$STANDARD_DOC" \
+  || fail 'Standard document did not receive the work issue URL'
+grep -qF -- '- **Approval:** status=approved; by=Test User;' "$STANDARD_DOC" \
+  || fail 'Standard document did not receive approval evidence'
+cp "$STANDARD_STATE/issue-1/body" "$TMP/standard-before.body"
+: > "$TMP/standard-reapply-calls"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" FAKE_GH_CALLS="$TMP/standard-reapply-calls" \
+  "$PLAN_DRIVER" --apply "$STANDARD_SPEC" >/dev/null \
+  || fail 'Standard reapply failed'
+cmp -s "$STANDARD_STATE/issue-1/body" "$TMP/standard-before.body" \
+  || fail 'Standard reapply changed work issue metadata'
+if grep -Eq 'issue edit 1 .*--add-label' "$TMP/standard-reapply-calls"; then
+  fail 'Standard reapply reset live work issue labels'
+fi
+
+standard_reject() { # <name> <spec>
+  : > "$TMP/standard-reject-calls"
+  if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+    FAKE_GH_CALLS="$TMP/standard-reject-calls" \
+    "$PLAN_DRIVER" --apply "$2" > "$TMP/standard-reject.out" 2>&1; then
+    fail "Standard accepted $1"
+  fi
+  if grep -Eq '(^| )(issue create|issue edit|issue close|label create)( |$)' \
+      "$TMP/standard-reject-calls"; then
+    fail "Standard mutated GitHub before rejecting $1"
+  fi
+}
+jq '.steps = []' "$STANDARD_SPEC" > "$TMP/standard-zero.json"
+standard_reject 'zero steps' "$TMP/standard-zero.json"
+jq '.steps += [.steps[0] | .id="second"]' "$STANDARD_SPEC" > "$TMP/standard-two.json"
+standard_reject 'two steps' "$TMP/standard-two.json"
+jq '.profile="strict"' "$STANDARD_SPEC" > "$TMP/strict-no-parent.json"
+standard_reject 'Strict without parent specification' "$TMP/strict-no-parent.json"
+jq '.profile="strict" | .tracking={title:"Plan: standard-plan"}' \
+  "$STANDARD_SPEC" > "$TMP/topology-change.json"
+standard_reject 'topology-changing reapply' "$TMP/topology-change.json"
+grep -q 'migration' "$TMP/standard-reject.out" \
+  || fail 'topology change lacked migration diagnostic'
+jq '.steps[0].packet.brief = ([range(0;801) | "word"] | join(" "))' \
+  "$STANDARD_SPEC" > "$TMP/packet-overflow.json"
+standard_reject 'packet overflow' "$TMP/packet-overflow.json"
+grep -q '800 words' "$TMP/standard-reject.out" \
+  || fail 'packet overflow lacked bound diagnostic'
+
+ASSURANCE_FIX="$TMP/assurance-fixture"
+mkdir -p "$ASSURANCE_FIX/scripts"
+cp "$ROOT/scripts/plan-to-issues.sh" "$ROOT/scripts/assurance.sh" "$ASSURANCE_FIX/scripts/"
+printf 'strict\n' > "$ASSURANCE_FIX/.agentic-flow-assurance"
+if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
+  "$ASSURANCE_FIX/scripts/plan-to-issues.sh" --apply "$STANDARD_SPEC" \
+  > "$TMP/standard-downgrade.out" 2>&1; then
+  fail 'Standard accepted a downgrade below the project baseline'
+fi
+grep -q 'downgrade' "$TMP/standard-downgrade.out" \
+  || fail 'Standard downgrade lacked diagnostic'
+
+STRICT_SPEC="$TMP/strict-spec.json"
+jq '.profile="strict" | .id="strict-plan" |
+  .steps |= map(.packet={brief:"approved brief step",definition_of_done:"reviewed behavior",
+    verification:"make check",risks:"failure path"})' "$PLAN_SPEC" > "$STRICT_SPEC"
+STRICT_STATE="$TMP/gh-strict-state"
+PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STRICT_STATE" \
+  "$PLAN_DRIVER" --apply "$STRICT_SPEC" >/dev/null \
+  || fail 'Strict apply failed'
+[ "$(find "$STRICT_STATE" -type d -name 'issue-*' | wc -l | tr -d ' ')" -eq 3 ] \
+  || fail 'Strict did not create one tracker and two sub-issues'
+grep -q 'agentic-flow:topology:strict' "$STRICT_STATE/issue-1/body" \
+  || fail 'Strict parent lacks topology stamp'
+grep -q '## Executor packet' "$STRICT_STATE/issue-2/body" \
+  || fail 'Strict step lacks executor packet'
 fi
 
 # --- lifecycle qualification -------------------------------------------------------------
 if should_run lifecycle; then
-LIFEFIX="$TMP/lifecycle-fixture"
-mkdir -p "$LIFEFIX/docs/inprogress"
-cat > "$LIFEFIX/docs/inprogress/feature-active.md" <<'MD'
+V2FIX="$TMP/lifecycle-v2"
+mkdir -p "$V2FIX/docs/inprogress"
+cat > "$V2FIX/docs/inprogress/feature-v2.md" <<'MD'
+## Tracker
+- [x] F-1 done
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** url=https://github.com/owner/repo/issues/1
+- **Approval:** status=not approved; by=Tester; at=2026-01-01
+- **Implementation head:** source=pr-head
+- **Implementation PR:** url=https://github.com/owner/repo/pull/2
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=pr-head-approval
+- **Memory:** status=n/a
+MD
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" --check \
+  > "$TMP/lifecycle-v2-red.out" 2>&1 \
+  && fail "v2 lifecycle accepted a negated approval"
+grep -q 'BLOCKED.*approval' "$TMP/lifecycle-v2-red.out" \
+  || fail "v2 lifecycle did not classify a negated approval as BLOCKED"
+
+# Open work has precedence over any evidence schema, including legacy work.
+cat > "$V2FIX/docs/inprogress/feature-active.md" <<'MD'
 ## Tracker
 - [x] F-1 done
 - [ ] F-2 open
+## Status
+- **Approval:** not approved
 MD
-cat > "$LIFEFIX/docs/inprogress/feature-blocked.md" <<'MD'
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-active.md" --check --verify-evidence \
+  > "$TMP/lifecycle-active.out" \
+  || fail "open legacy document failed strict verification"
+grep -q '^ACTIVE.*feature-active.md' "$TMP/lifecycle-active.out" \
+  || fail "open legacy document was not ACTIVE"
+
+sed 's/status=not approved/status=approved/' "$V2FIX/docs/inprogress/feature-v2.md" \
+  > "$TMP/valid-v2.md"
+cp "$TMP/valid-v2.md" "$V2FIX/docs/inprogress/feature-v2.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-v2.md" --check > "$TMP/lifecycle-valid.out" \
+  || fail "valid local v2 Status failed report validation"
+grep -q '^READY.*feature-v2.md' "$TMP/lifecycle-valid.out" \
+  || fail "valid local v2 Status was not READY in offline report"
+
+v2_case() { # <sed expression> <expected state> <diagnostic>
+  sed "$1" "$TMP/valid-v2.md" > "$V2FIX/docs/inprogress/feature-v2.md"
+  if AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+      "$V2FIX/docs/inprogress/feature-v2.md" --check --verify-evidence \
+      > "$TMP/lifecycle-case.out" 2>&1; then
+    fail "strict verified lifecycle accepted $3"
+  fi
+  grep -q "^$2.*$3" "$TMP/lifecycle-case.out" \
+    || fail "lifecycle did not classify $3 as $2"
+}
+v2_case 's/status=approved/status=not approved/' BLOCKED approval
+v2_case 's/source=pr-head/source=not-pr-head/' BLOCKED implementation-head
+v2_case '/^- \*\*Approval:/d' UNVERIFIED approval
+v2_case 's/Evidence schema:\*\* v2/Evidence schema:** v3/' BLOCKED 'Evidence schema'
+v2_case 's/Review verdict:/Unknown key:/' BLOCKED 'unknown field'
+sed '/^- \*\*Approval:/a\
+  not approved' "$TMP/valid-v2.md" > "$V2FIX/docs/inprogress/feature-v2.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-v2.md" --check > "$TMP/lifecycle-wrapped.out" 2>&1 \
+  && fail "v2 lifecycle accepted continuation prose after approval"
+grep -q 'BLOCKED.*malformed continuation of Approval' "$TMP/lifecycle-wrapped.out" \
+  || fail "v2 lifecycle did not name the malformed Approval continuation"
+cat "$TMP/valid-v2.md" > "$V2FIX/docs/inprogress/feature-v2.md"
+printf '%s\n' '- **Approval:** status=approved; by=Other; at=2026-01-01' \
+  >> "$V2FIX/docs/inprogress/feature-v2.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-v2.md" --check > "$TMP/lifecycle-duplicate.out" 2>&1 \
+  && fail "duplicate v2 field passed"
+grep -q 'BLOCKED.*duplicate field Approval' "$TMP/lifecycle-duplicate.out" \
+  || fail "duplicate v2 field did not report its name"
+cp "$TMP/valid-v2.md" "$V2FIX/docs/inprogress/feature-v2.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-v2.md" --check --verify-evidence \
+  > "$TMP/lifecycle-unresolved.out" 2>&1 \
+  && fail "strict verification accepted unresolved v2 evidence"
+grep -q '^UNVERIFIED.*feature-v2.md' "$TMP/lifecycle-unresolved.out" \
+  || fail "unresolved v2 evidence was not UNVERIFIED"
+
+# A fully checked schema-less document is a migration report, never evidence-ready.
+cat > "$V2FIX/docs/inprogress/feature-legacy.md" <<'MD'
 ## Tracker
 - [x] F-1 done
 ## Status
-- **Approval:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** pending.
-- **Review verdict:** pending.
+- **Approval:** approved by Tester
 MD
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" \
-  > "$TMP/lifecycle.out"
-grep -q "ACTIVE.*feature-active.md" "$TMP/lifecycle.out" \
-  || fail "lifecycle report did not retain an open tracker as active"
-grep -q "BLOCKED.*feature-blocked.md.*verification-evidence.*review-verdict.*memory" \
-  "$TMP/lifecycle.out" \
-  || fail "lifecycle report did not name missing closure evidence"
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
-  && fail "strict lifecycle check accepted an all-checked tracker without evidence"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+  "$V2FIX/docs/inprogress/feature-legacy.md" --check --verify-evidence \
+  > "$TMP/lifecycle-legacy.out" 2>&1 \
+  && fail "strict verification accepted fully checked legacy document"
+grep -q '^LEGACY.*feature-legacy.md' "$TMP/lifecycle-legacy.out" \
+  || fail "fully checked schema-less document was not LEGACY"
 
-sed \
-  -e 's|^- \*\*Verification evidence:\*\* pending\.$|- **Verification evidence:** https://example.invalid/actions/1|' \
-  -e 's|^- \*\*Review verdict:\*\* pending\.$|- **Review verdict:** approved by OpenCode — https://example.invalid/reviews/1|' \
-  "$LIFEFIX/docs/inprogress/feature-blocked.md" > "$TMP/lifecycle-ready.md"
-mv "$TMP/lifecycle-ready.md" "$LIFEFIX/docs/inprogress/feature-blocked.md"
-# Closure now also requires a recorded memory decision; n/a is a real answer.
-printf -- '- **Memory:** n/a.\n' >> "$LIFEFIX/docs/inprogress/feature-blocked.md"
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null \
-  || fail "strict lifecycle check rejected a tracker with complete closure evidence"
-
-# Capture is the one obligation make check cannot enforce: check-memory-index.sh proves the
-# index is well-formed, never that a memory was written when one was learned. Close-out is the
-# only choke point every doc already passes. "n/a" satisfies it because most passes teach
-# nothing durable — but an empty or hand-waving answer does not, or the field would be a
-# formality that records nothing.
-MEMFIX="$TMP/lifecycle-memory"
-mkdir -p "$MEMFIX/docs/inprogress"
-memfix_doc() { # <memory-line>
-  {
-    printf '## Tracker\n- [x] F-1 done\n## Status\n'
-    printf -- '- **Approval:** user approved 2026-01-01.\n'
-    printf -- '- **Tracking issue:** https://example.invalid/issues/1\n'
-    printf -- '- **Verification evidence:** https://example.invalid/actions/1\n'
-    printf -- '- **Review verdict:** approved by OpenCode — https://example.invalid/reviews/1\n'
-    if [ -n "$1" ]; then printf -- '%s\n' "$1"; fi
-  } > "$MEMFIX/docs/inprogress/feature-mem.md"
-}
-memfix_check() { AGENTIC_PROJECT_ROOT="$MEMFIX" "$ROOT/scripts/lifecycle-status.sh" --check 2>&1 || true; }
-
-memfix_doc ""
-memfix_check | grep -q 'memory' \
-  || fail "close-out accepted a plan with no Memory field"
-memfix_doc '- **Memory:** we should probably write one.'
-memfix_check | grep -q 'memory' \
-  || fail "close-out accepted a Memory field that names neither an entry nor n/a"
-memfix_doc '- **Memory:** n/a.'
-memfix_check | grep -q 'memory' \
-  && fail "close-out rejected an explicit n/a memory decision"
-memfix_doc '- **Memory:** docs/memory/cp-restores-interactively.md'
-memfix_check | grep -q 'memory' \
-  && fail "close-out rejected a Memory field naming a real entry"
-
-# --- lifecycle: the review verdict must say who reviewed ---------------------------------
-# METHODOLOGY.md §1 makes review a separate role, but the verdict pattern accepted a bare
-# "approved." with no reviewer named — so a plan closed out with no independent review at all
-# passed this gate unchanged. Requiring an identity is the difference between a record and an
-# assertion; naming the planning role is warned about, not blocked, because standing in for an
-# unavailable reviewer is legitimate when it is declared.
-REVFIX="$TMP/reviewer-fixture"
-write_verdict_doc() { # <verdict-text> [claude-md-contents]
-  mkdir -p "$REVFIX/docs/inprogress"
-  printf '%s\n' "${2:-placeholder}" > "$REVFIX/CLAUDE.md"
-  cat > "$REVFIX/docs/inprogress/feature-review.md" <<MD
-## Tracker
-- [x] F-1 done
-## Status
-- **Approval:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** $1
-- **Memory:** n/a.
-MD
-}
-rev_status() { AGENTIC_PROJECT_ROOT="$REVFIX" "$ROOT/scripts/lifecycle-status.sh" 2>&1; }
-
-write_verdict_doc 'approved.'
-rev_status > "$TMP/review-anon.out"
-grep -q 'review-verdict-reviewer' "$TMP/review-anon.out" \
-  || fail "lifecycle accepted an approval that names no reviewer"
-AGENTIC_PROJECT_ROOT="$REVFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
-  && fail "strict lifecycle check accepted an approval that names no reviewer"
-
-write_verdict_doc 'approved by OpenCode on 2026-01-02.'
-rev_status > "$TMP/review-named.out"
-grep -q 'review-verdict-reviewer' "$TMP/review-named.out" \
-  && fail "lifecycle rejected a verdict that does name its reviewer"
-grep -q 'WARN' "$TMP/review-named.out" \
-  && fail "lifecycle warned about an independent reviewer"
-
-# The real historical shape: the planner standing in, undeclared. Warn, do not block.
-write_verdict_doc 'approved (Claude standing in for OpenCode, which was unavailable).'
-rev_status > "$TMP/review-self.out"
-grep -q 'review-independence' "$TMP/review-self.out" \
-  || fail "lifecycle did not warn when the planning role reviewed its own plan"
-grep -q 'READY' "$TMP/review-self.out" \
-  || fail "self-review warning blocked closure instead of warning"
-
-# Declared opt-out: the substitution is the documented arrangement, so stay quiet.
-write_verdict_doc 'approved by Claude (reviewer role).' \
-  'This project opts out of the default two-agent split.'
-rev_status > "$TMP/review-optout.out"
-grep -q 'review-independence' "$TMP/review-optout.out" \
-  && fail "lifecycle warned about self-review in a project that declared the opt-out"
-
-# --- lifecycle: CI run evidence verification (#25) --------------------------------------
-write_lifecycle_ready_doc() { # <root> <verification-evidence>
-  mkdir -p "$1/docs/inprogress"
-  cat > "$1/docs/inprogress/feature-ready.md" <<MD
-## Tracker
-- [x] F-1 done
-## Status
-- **Approval:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** $2
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
-MD
-}
-
-LIFEGHFIX="$TMP/lifecycle-gh-fixture"
-mkdir -p "$LIFEGHFIX"
-cat > "$LIFEGHFIX/gh" <<'FAKE_GH'
+# Phase mismatch is a resolved contradiction, even while later CI/review evidence
+# remains unavailable until F-2/F-3.
+GH_PHASE="$TMP/gh-phase"
+mkdir -p "$GH_PHASE"
+cat > "$GH_PHASE/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
-set -euo pipefail
-case "${1:-} ${2:-}" in
-  "run view")
-    printf '%s\n' "${FAKE_GH_RUN_CONCLUSION:-success}"
-    exit 0
-    ;;
+case "$*" in
+  *'issue view'*)
+    labels='[{"name":"agent:claude"},{"name":"needs-closing"}]'
+    [ -z "${FAKE_ISSUE_LABELS:-}" ] || labels=$FAKE_ISSUE_LABELS
+    printf '{"state":"%s","labels":%s}\n' "${FAKE_ISSUE_STATE:-OPEN}" "$labels" ;;
+  *) exit 2 ;;
 esac
-echo "unsupported fake gh call: $*" >&2
-exit 2
 FAKE_GH
-chmod +x "$LIFEGHFIX/gh"
+chmod +x "$GH_PHASE/gh"
+PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE=OPEN AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+  --phase pre-merge --check --verify-evidence > "$TMP/lifecycle-wrong-pre.out" 2>&1 \
+  && fail "pre-merge accepted an open issue"
+grep -q 'BLOCKED.*phase pre-merge found OPEN' "$TMP/lifecycle-wrong-pre.out" \
+  || fail "pre-merge mismatch did not name the phase and state"
+PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE=CLOSED AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+  --phase close-out --check --verify-evidence > "$TMP/lifecycle-wrong-close.out" 2>&1 \
+  && fail "close-out accepted a closed issue"
+grep -q 'BLOCKED.*phase close-out found CLOSED' "$TMP/lifecycle-wrong-close.out" \
+  || fail "close-out mismatch did not name the phase and state"
+for missing_label in needs-closing agent:claude; do
+  case "$missing_label" in
+    needs-closing) labels='[{"name":"agent:claude"}]' ;;
+    agent:claude) labels='[{"name":"needs-closing"}]' ;;
+  esac
+  PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE=OPEN FAKE_ISSUE_LABELS="$labels" \
+    AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" \
+    --doc "$V2FIX/docs/inprogress/feature-v2.md" --phase close-out \
+    --check --verify-evidence > "$TMP/lifecycle-missing-label.out" 2>&1 \
+    && fail "close-out accepted an open issue without $missing_label"
+  grep -q "BLOCKED.*phase close-out found OPEN without $missing_label" \
+    "$TMP/lifecycle-missing-label.out" \
+    || fail "close-out did not name missing $missing_label label"
+done
+for phase_state in 'close-out OPEN' 'pre-merge CLOSED'; do
+  read -r phase_name state_name <<< "$phase_state"
+  PATH="$GH_PHASE:$PATH" FAKE_ISSUE_STATE="$state_name" AGENTIC_PROJECT_ROOT="$V2FIX" \
+    "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+    --phase "$phase_name" --check --verify-evidence > "$TMP/lifecycle-phase.out" 2>&1 \
+    && fail "$phase_name accepted unresolved review and CI"
+  grep -q '^UNVERIFIED.*review policy missing or invalid' "$TMP/lifecycle-phase.out" \
+    || fail "$phase_name did not reach the shared external evidence check"
+done
 
-LIFE25_NO_GH="$TMP/lifecycle25-no-gh"
-write_lifecycle_ready_doc "$LIFE25_NO_GH" "https://github.com/owner/repo/actions/runs/100"
-NO_GH_BIN=$(path_without_tools "$TMP/no-gh-bin" gh)
-AGENTIC_PROJECT_ROOT="$LIFE25_NO_GH" PATH="$NO_GH_BIN" \
-  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-no-gh.out" \
-  || fail "strict verified lifecycle check treated absent gh as fatal"
-grep -q 'UNVERIFIED.*feature-ready\.md.*gh is not available' "$TMP/lifecycle25-no-gh.out" \
-  || fail "verified lifecycle check did not report absent gh as UNVERIFIED"
+# F-2 reads policy from the adopted project, the PR head from GitHub, and one
+# complete comment page from the tracking issue. Each selected run gets exactly
+# one Actions lookup, including attempt mismatch and failure cases.
+printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' \
+  'identity-mode=single-operator' \
+  'accepted-risk=docs/accepted_risks.md#single-operator-review' \
+  > "$V2FIX/.agentic-flow-review-policy"
+mkdir -p "$V2FIX/docs"
+printf '%s\n' '<a id="single-operator-review"></a>' > "$V2FIX/docs/accepted_risks.md"
+git -C "$V2FIX" init -q
+git -C "$V2FIX" remote add origin git@github.com:owner/repo.git
+LIFE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+LIFE_RUN_URL=https://github.com/owner/repo/actions/runs/100
+LIFE_MARKER="agentic-flow-review: status=approved; pr=2; head=$LIFE_HEAD; run=$LIFE_RUN_URL; attempt=1; role=reviewer"
+LIFE_API="$TMP/lifecycle-api"
+mkdir -p "$LIFE_API"
+cat > "$LIFE_API/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$LIFE_CALLS"
+case "$*" in
+  *'issue view'*)
+    if [ -n "${LIFE_ISSUE_BODY_FILE:-}" ]; then
+      jq -n --arg state "${LIFE_ISSUE_STATE:-OPEN}" --rawfile body "$LIFE_ISSUE_BODY_FILE" \
+        '{state:$state,labels:[{name:"agent:claude"},{name:"needs-closing"}],body:$body}'
+    else
+      printf '{"state":"%s","labels":[{"name":"agent:claude"},{"name":"needs-closing"}],"body":"<!-- agentic-flow:plan:fixture tracker spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}\n' "${LIFE_ISSUE_STATE:-OPEN}"
+    fi ;;
+  *'issue list'*) printf '[{"number":3,"state":"%s","body":"<!-- agentic-flow:plan:fixture step:f-1 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}]\n' "${LIFE_STEP_STATE:-CLOSED}" ;;
+  *'api repos/owner/repo/pulls/2'*) cat "$LIFE_PR_JSON" ;;
+  *'api graphql '*'number=1'*) cat "$LIFE_COMMENTS_JSON" ;;
+  *'api graphql '*'number=2'*) cat "$LIFE_PR_COMMENTS_JSON" ;;
+  *'api graphql '*'number=3'*) cat "$LIFE_STEP_COMMENTS_JSON" ;;
+  *'api repos/owner/repo/actions/runs/100'*)
+    [ "${LIFE_RUN_FAIL:-false}" = false ] || exit 1
+    cat "$LIFE_RUN_JSON" ;;
+  *) exit 2 ;;
+esac
+FAKE_GH
+chmod +x "$LIFE_API/gh"
+printf '{"head":{"sha":"%s"}}\n' "$LIFE_HEAD" > "$TMP/lifecycle-pr.json"
+printf '{"repository":{"full_name":"owner/repo"},"path":".github/workflows/ci.yml","head_sha":"%s","conclusion":"success","run_attempt":1}\n' \
+  "$LIFE_HEAD" > "$TMP/lifecycle-run.json"
+jq -n --arg body "$LIFE_MARKER" '{data:{repository:{issue:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[{id:"opaque-1",fullDatabaseId:"10",body:$body,author:{login:"reviewer"},lastEditedAt:null}]}}}}}' \
+  > "$TMP/lifecycle-comments.json"
+jq -n --arg head "$LIFE_HEAD" \
+  '{data:{repository:{issue:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[{id:"handoff",fullDatabaseId:"10",body:("Implemented in " + $head + " — implementation"),author:{login:"executor"},lastEditedAt:null},{id:"step-review",fullDatabaseId:"11",body:("agentic-flow-review: status=approved; step=f-1; head=" + $head + "; role=reviewer"),author:{login:"reviewer"},lastEditedAt:null}]}}}}}' \
+  > "$TMP/lifecycle-step-comments.json"
+LIFE_PR_JSON="$TMP/lifecycle-pr.json"
+LIFE_RUN_JSON="$TMP/lifecycle-run.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_PR_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
+LIFE_CALLS="$TMP/lifecycle-calls"
+export LIFE_PR_JSON LIFE_RUN_JSON LIFE_COMMENTS_JSON LIFE_PR_COMMENTS_JSON \
+  LIFE_STEP_COMMENTS_JSON LIFE_CALLS
+bound_case() { # <name> <expected state> <diagnostic> <expected run calls>
+  : > "$LIFE_CALLS"
+  PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" LIFE_RUN_FAIL="${LIFE_RUN_FAIL:-false}" \
+    "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+    --check --verify-evidence > "$TMP/lifecycle-bound.out" 2>&1 \
+    && [ "$2" != READY ] && fail "strict verified lifecycle accepted $1"
+  grep -q "^$2.*$3" "$TMP/lifecycle-bound.out" \
+    || fail "$1 was not $2 with $3: $(cat "$TMP/lifecycle-bound.out")"
+  [ "$(grep -c 'api repos/owner/repo/actions/runs/100' "$LIFE_CALLS" || true)" -eq "$4" ] \
+    || fail "$1 made the wrong number of Actions lookups"
+  [ "$(grep -c 'api graphql .*number=1' "$LIFE_CALLS" || true)" -eq 1 ] \
+    || fail "$1 did not make exactly one tracking-thread query"
+  if [ "$2" = READY ]; then
+    [ "$(grep -c 'api graphql ' "$LIFE_CALLS" || true)" -eq 2 ] \
+      || fail "$1 did not query exactly one Strict step thread"
+  else
+    [ "$(grep -c 'api graphql ' "$LIFE_CALLS" || true)" -eq 1 ] \
+      || fail "$1 queried another review thread before selecting evidence"
+  fi
+}
+bound_case 'authenticated correct binding' READY 'review by reviewer' 1
+grep -q "$LIFE_HEAD.*comment opaque-1" "$TMP/lifecycle-bound.out" \
+  || fail 'bound CI output omitted the resolved head or selected comment'
+grep -q 'attempt 1 succeeded' "$TMP/lifecycle-bound.out" || fail 'run attempt not printed'
 
-LIFE25_NON_RUN="$TMP/lifecycle25-non-run"
-write_lifecycle_ready_doc "$LIFE25_NON_RUN" "https://example.invalid/actions/1"
-AGENTIC_PROJECT_ROOT="$LIFE25_NON_RUN" PATH="$LIFEGHFIX:$PATH" \
-  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-non-run.out" \
-  || fail "strict verified lifecycle check treated non-run evidence as fatal"
-grep -q 'UNVERIFIED.*feature-ready\.md.*not a GitHub Actions run URL' \
-  "$TMP/lifecycle25-non-run.out" \
-  || fail "verified lifecycle check did not report non-run evidence as UNVERIFIED"
+# Standard uses one open work issue for both the step and final review. The
+# same complete comment page must support close-out and the post-close recheck.
+STANDARD_LIFE_DOC="$V2FIX/docs/inprogress/feature-standard.md"
+cp "$TMP/valid-v2.md" "$STANDARD_LIFE_DOC"
+printf '%s\n' \
+  '<!-- agentic-flow:plan:standard-plan step:alpha spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa approved-by:Tester approved-at:2026-01-01T00:00:00Z -->' \
+  '<!-- agentic-flow:topology:standard -->' > "$TMP/standard-life-body"
+STEP_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+jq -n --arg head "$LIFE_HEAD" --arg step "$STEP_HEAD" --arg run "$LIFE_RUN_URL" \
+  '{data:{repository:{issue:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+    {id:"handoff",fullDatabaseId:"9",body:("Implemented in " + $step + " — implementation"),author:{login:"executor"},lastEditedAt:null},
+    {id:"step-review",fullDatabaseId:"10",body:("agentic-flow-review: status=approved; step=alpha; head=" + $step + "; role=reviewer"),author:{login:"reviewer"},lastEditedAt:null},
+    {id:"final-review",fullDatabaseId:"11",body:("agentic-flow-review: status=approved; pr=2; head=" + $head + "; run=" + $run + "; attempt=1; role=reviewer"),author:{login:"reviewer"},lastEditedAt:null}
+  ]}}}}}' > "$TMP/standard-life-comments.json"
+LIFE_ISSUE_BODY_FILE="$TMP/standard-life-body"
+LIFE_COMMENTS_JSON="$TMP/standard-life-comments.json"
+export LIFE_ISSUE_BODY_FILE LIFE_COMMENTS_JSON
+for phase_state in 'close-out OPEN' 'pre-merge CLOSED'; do
+  read -r phase_name state_name <<< "$phase_state"
+  : > "$LIFE_CALLS"
+  PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" LIFE_ISSUE_STATE="$state_name" \
+    "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" \
+    --phase "$phase_name" --check --verify-evidence > "$TMP/standard-life.out" 2>&1 \
+    || fail "Standard $phase_name failed: $(cat "$TMP/standard-life.out")"
+  grep -q '^READY' "$TMP/standard-life.out" || fail "Standard $phase_name was not READY"
+  [ "$(grep -c 'api graphql ' "$LIFE_CALLS" || true)" -eq 1 ] \
+    || fail 'Standard queried more than its one review thread'
+done
+sed 's/approved-by:Tester/approved-by:Other/' "$TMP/standard-life-body" \
+  > "$TMP/standard-life-bad-body"
+LIFE_ISSUE_BODY_FILE="$TMP/standard-life-bad-body" \
+  PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" \
+  --check --verify-evidence > "$TMP/standard-life-bad.out" 2>&1 \
+  && fail 'Standard accepted mismatched approval metadata'
+grep -q 'BLOCKED.*approval stamp differs' "$TMP/standard-life-bad.out" \
+  || fail 'Standard approval mismatch lacked diagnostic'
+LIFE_ISSUE_BODY_FILE="$TMP/standard-life-body"
+jq '.data.repository.issue.comments.nodes |= map(select(.id != "step-review"))' \
+  "$TMP/standard-life-comments.json" > "$TMP/standard-life-no-step.json"
+LIFE_COMMENTS_JSON="$TMP/standard-life-no-step.json"
+export LIFE_COMMENTS_JSON
+PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" \
+  --check --verify-evidence > "$TMP/standard-life-no-step.out" 2>&1 \
+  && fail 'Standard accepted missing step review'
+grep -q 'UNVERIFIED.*no review' "$TMP/standard-life-no-step.out" \
+  || fail 'Standard missing review lacked diagnostic'
+jq '.data.repository.issue.comments.nodes[-1].body |= sub("head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";"head=cccccccccccccccccccccccccccccccccccccccc")' \
+  "$TMP/standard-life-comments.json" > "$TMP/standard-life-stale.json"
+LIFE_COMMENTS_JSON="$TMP/standard-life-stale.json"
+export LIFE_COMMENTS_JSON
+PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" \
+  --check --verify-evidence > "$TMP/standard-life-stale.out" 2>&1 \
+  && fail 'Standard accepted stale final-head approval'
+grep -q 'UNVERIFIED.*no approval for PR head' "$TMP/standard-life-stale.out" \
+  || fail 'Standard stale final-head evidence lacked diagnostic'
+LIFE_COMMENTS_JSON="$TMP/standard-life-comments.json"
+unset LIFE_ISSUE_BODY_FILE
+export LIFE_COMMENTS_JSON
 
-LIFE25_FAILURE="$TMP/lifecycle25-failure"
-write_lifecycle_ready_doc "$LIFE25_FAILURE" "https://github.com/owner/repo/actions/runs/200"
-AGENTIC_PROJECT_ROOT="$LIFE25_FAILURE" PATH="$LIFEGHFIX:$PATH" \
-  FAKE_GH_RUN_CONCLUSION=failure \
-  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-failure.out" 2>&1 \
-  && fail "strict verified lifecycle check accepted a resolved failing CI run"
-grep -q 'BLOCKED.*feature-ready\.md.*concluded failure' "$TMP/lifecycle25-failure.out" \
-  || fail "verified lifecycle check did not block on a resolved failing CI run"
+jq '.path = ".github/workflows/ci.yml@main"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-ref.json"
+LIFE_RUN_JSON="$TMP/lifecycle-run-ref.json"; export LIFE_RUN_JSON
+bound_case 'workflow path with GitHub ref suffix' READY 'review by reviewer' 1
+LIFE_RUN_JSON="$TMP/lifecycle-run.json"; export LIFE_RUN_JSON
 
-LIFE25_SUCCESS="$TMP/lifecycle25-success"
-write_lifecycle_ready_doc "$LIFE25_SUCCESS" "https://github.com/owner/repo/actions/runs/100"
-AGENTIC_PROJECT_ROOT="$LIFE25_SUCCESS" PATH="$LIFEGHFIX:$PATH" \
-  FAKE_GH_RUN_CONCLUSION=success \
-  "$ROOT/scripts/lifecycle-status.sh" --check --verify-evidence > "$TMP/lifecycle25-success.out" \
-  || fail "strict verified lifecycle check rejected a resolved successful CI run"
-grep -q 'READY.*feature-ready\.md.*concluded success' "$TMP/lifecycle25-success.out" \
-  || fail "verified lifecycle check did not mark a resolved successful CI run READY"
+jq '.repository.full_name = "other/repo"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+LIFE_RUN_JSON="$TMP/lifecycle-run-case.json"; export LIFE_RUN_JSON
+bound_case 'wrong repository' BLOCKED 'differs from repository' 1
+jq '.path = ".github/workflows/other.yml"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'wrong workflow' BLOCKED 'differs from repository' 1
+jq '.head_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'copied successful run' BLOCKED 'differs from repository' 1
+jq '.conclusion = "failure"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'failed run' BLOCKED 'concluded failure' 1
+jq '.run_attempt = 2 | .conclusion = "failure"' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'rerun changed conclusion' BLOCKED 'attempt 2 differs' 1
+jq '.run_attempt = 2' "$TMP/lifecycle-run.json" > "$TMP/lifecycle-run-case.json"
+bound_case 'live attempt advanced' BLOCKED 'attempt 2 differs' 1
+LIFE_RUN_JSON="$TMP/lifecycle-run.json"; export LIFE_RUN_JSON
+sed 's/attempt=1/attempt=2/' "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+bound_case 'recorded attempt greater' BLOCKED 'attempt 1 differs' 1
+sed 's/; attempt=1//' "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'missing attempt' UNVERIFIED 'missing attempt=' 0
+sed 's/; attempt=1/; attempt=1; attempt=1/' "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'duplicate attempt' BLOCKED 'malformed review record' 0
+sed 's|; run=https://github.com/owner/repo/actions/runs/100|; run=https://github.com/owner/repo/actions/runs/100; run=https://github.com/owner/repo/actions/runs/100|' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'duplicate run' BLOCKED 'malformed review record' 0
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
+LIFE_RUN_FAIL=true
+bound_case 'deleted run' UNVERIFIED 'Actions run 100 unavailable' 1
+LIFE_RUN_FAIL=false
 
-# --- lifecycle: absent vs. misnamed vs. wrapped evidence (#19) ---------------------------
-# A checker that reports "missing" for both "never recorded" and "recorded under the wrong
-# label" trains people to stop trusting it — this bit the project itself: a pre-schema doc
-# recorded its approval as "Approved:" and the checker called it missing, indistinguishable
-# from a doc with no approval line at all.
-cat > "$LIFEFIX/docs/inprogress/lc19-misnamed.md" <<'MD'
-## Tracker
-- [x] F-1 done
-## Status
-- **Approved:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
-MD
-cat > "$LIFEFIX/docs/inprogress/lc19-absent.md" <<'MD'
-## Tracker
-- [x] F-1 done
-## Status
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** https://example.invalid/actions/1
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
-MD
-cat > "$LIFEFIX/docs/inprogress/lc19-wrapped.md" <<'MD'
-## Tracker
-- [x] F-1 done
-## Status
-- **Approval:** user approved 2026-01-01.
-- **Tracking issue:** https://example.invalid/issues/1
-- **Verification evidence:** see the CI run recorded at
-  https://example.invalid/actions/1
-- **Review verdict:** approved by OpenCode.
-- **Memory:** n/a.
-MD
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" > "$TMP/lifecycle19.out"
+jq '.data.repository.issue.comments.pageInfo.hasNextPage = true | .data.repository.issue.comments.nodes = ([range(0;100) | {id:("opaque-"+tostring),fullDatabaseId:tostring,body:"prose",author:{login:"reviewer"},lastEditedAt:null}] | .[0].body = .[0].body)' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+# Keep a valid approval on the first page; pageInfo alone decides completeness.
+jq --arg body "$LIFE_MARKER" '.data.repository.issue.comments.nodes[0].body = $body' \
+  "$TMP/lifecycle-comments-case.json" > "$TMP/lifecycle-comments-page.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-page.json"; export LIFE_COMMENTS_JSON
+bound_case 'full incomplete page' UNVERIFIED 'exceed one page' 0
+jq 'del(.data.repository.issue.comments.pageInfo)' "$TMP/lifecycle-comments-page.json" \
+  > "$TMP/lifecycle-comments-case.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+bound_case 'missing pageInfo' UNVERIFIED 'pageInfo.hasNextPage missing' 0
+jq '.data.repository.issue.comments.pageInfo.hasNextPage = false' "$TMP/lifecycle-comments-page.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'complete 100-node page' READY 'review by reviewer' 1
+jq '.errors = [{message:"partial read",path:["repository","issue"]}]' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'GraphQL partial error' UNVERIFIED 'GraphQL error' 0
+jq '.data.repository.issue.comments.nodes = null' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'null nodes' UNVERIFIED 'nodes missing' 0
+jq '.data.repository.issue.comments.nodes += [null]' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'null node' UNVERIFIED 'node 1 unreadable' 0
+jq '.data.repository.issue.comments.nodes[0].fullDatabaseId = null' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'null ordering key' UNVERIFIED 'comment opaque-1 missing valid fullDatabaseId' 0
+jq '.data.repository.issue.comments.nodes[0].fullDatabaseId = 10' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'numeric ordering key' UNVERIFIED 'comment opaque-1 missing valid fullDatabaseId' 0
+jq '.data.repository.issue.comments.nodes[0].lastEditedAt = "2026-09-24T12:00:00Z"' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'edited final approval' BLOCKED 'comment opaque-1 was edited' 0
+jq 'del(.data.repository.issue.comments.nodes[0].lastEditedAt)' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'missing edit indicator' UNVERIFIED 'comment opaque-1 missing lastEditedAt' 0
+jq '.data.repository.issue.comments.nodes = []' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'approval on PR or step issue only' UNVERIFIED 'no approval for PR head' 0
+jq --arg old "${LIFE_MARKER/$LIFE_HEAD/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}" \
+  '.data.repository.issue.comments.nodes[0].body = $old' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+bound_case 'superseded approval only' UNVERIFIED 'no approval for PR head' 0
+jq '.data.repository.issue.comments.nodes[0].body |= sub("status=approved";"status=changes-requested")' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+bound_case 'changes requested on current head' BLOCKED 'does not approve PR' 0
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 
-grep -q 'BLOCKED.*lc19-misnamed\.md.*unrecognized: approval (found "Approved:")' \
-  "$TMP/lifecycle19.out" \
-  || fail "lifecycle did not flag a misnamed Approval field as unrecognized, not missing"
-grep -q 'BLOCKED.*lc19-absent\.md.*missing: approval' "$TMP/lifecycle19.out" \
-  || fail "lifecycle did not report a genuinely absent approval field as missing"
-if grep -q 'lc19-absent\.md.*unrecognized' "$TMP/lifecycle19.out"; then
-  fail "lifecycle invented an unrecognized-field match where no similar label exists"
-fi
-grep -q 'READY.*lc19-wrapped\.md' "$TMP/lifecycle19.out" \
-  || fail "lifecycle did not read a Verification evidence value wrapped onto a continuation line"
+# Later posting wins even when listing order, lexicographic order, and floating
+# point conversion each point at the wrong comment.
+for ids in '9 10' '9007199254740992 9007199254740993'; do
+  read -r low high <<< "$ids"
+  jq -n --arg old "${LIFE_MARKER/attempt=1/attempt=2}" --arg new "$LIFE_MARKER" \
+    --arg low "$low" --arg high "$high" \
+    '{data:{repository:{issue:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[{id:"new",fullDatabaseId:$high,body:$new,author:{login:"reviewer"},lastEditedAt:null},{id:"old",fullDatabaseId:$low,body:$old,author:{login:"reviewer"},lastEditedAt:null}]}}}}}' \
+    > "$TMP/lifecycle-comments-case.json"
+  LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+  bound_case "decimal order $ids" READY 'review by reviewer.*comment new' 1
+done
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 
-# The schema stays single-valued: a misnamed field is reported clearly, but it must never
-# silently satisfy the check (that would let the vocabulary fork instead of surfacing it).
-AGENTIC_PROJECT_ROOT="$LIFEFIX" "$ROOT/scripts/lifecycle-status.sh" --check >/dev/null 2>&1 \
-  && fail "strict lifecycle check accepted a misnamed Approval field as though it were valid"
+# Project policy is validated independently of the document's own selectors.
+cp "$V2FIX/.agentic-flow-review-policy" "$TMP/lifecycle-policy-valid"
+for policy_case in 'version=2' 'version=1
+version=1' 'version=1
+workflow=../ci.yml' 'version=1
+workflow=.github/workflows/ci.yml
+unknown=value'; do
+  printf '%s\n' "$policy_case" > "$V2FIX/.agentic-flow-review-policy"
+  : > "$LIFE_CALLS"
+  PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+    "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+    --check --verify-evidence > "$TMP/lifecycle-policy.out" 2>&1 \
+    && fail 'invalid review policy passed'
+  grep -q '^UNVERIFIED.*review policy missing or invalid' "$TMP/lifecycle-policy.out" \
+    || fail 'invalid policy was not UNVERIFIED'
+  if grep -q '^api ' "$LIFE_CALLS"; then fail 'invalid policy made API calls'; fi
+done
+cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
+
+# F-3: authenticated authors, strict step completeness, and verdict recovery.
+review_case() { # <name> <state> <diagnostic>
+  : > "$LIFE_CALLS"
+  if PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+    LIFE_STEP_STATE="${LIFE_STEP_STATE:-CLOSED}" \
+    "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" \
+    --check --verify-evidence > "$TMP/lifecycle-review.out" 2>&1; then
+    [ "$2" = READY ] || fail "$1 unexpectedly passed"
+  else
+    [ "$2" != READY ] || fail "$1 unexpectedly failed: $(cat "$TMP/lifecycle-review.out")"
+  fi
+  grep -q "^$2.*$3" "$TMP/lifecycle-review.out" \
+    || fail "$1 did not report $2 and $3: $(cat "$TMP/lifecycle-review.out")"
+}
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
+review_case 'authenticated final and step' READY 'review by reviewer'
+grep -q 'EVIDENCE step f-1.*author=reviewer' "$TMP/lifecycle-review.out" \
+  || fail 'step evidence did not print comment and author'
+grep -q 'WARN.*single-operator.*not independent review' "$TMP/lifecycle-review.out" \
+  || fail 'single-operator evidence lacked the independence warning'
+LIFE_STEP_STATE=OPEN
+review_case 'open Strict step' BLOCKED 'step f-1 issue 3 is OPEN'
+LIFE_STEP_STATE=CLOSED
+mkdir -p "$V2FIX/docs/done"
+cp "$V2FIX/docs/inprogress/feature-v2.md" "$V2FIX/docs/done/feature-v2.md"
+PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/done/feature-v2.md" \
+  --phase close-out --check --verify-evidence > "$TMP/lifecycle-closeout.out" 2>&1 \
+  || fail 'moved document did not verify before tracker close'
+PATH="$LIFE_API:$PATH" LIFE_ISSUE_STATE=CLOSED AGENTIC_PROJECT_ROOT="$V2FIX" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/done/feature-v2.md" \
+  --phase pre-merge --check --verify-evidence > "$TMP/lifecycle-premerge.out" 2>&1 \
+  || fail 'same moved document did not verify after tracker close'
+grep -q '^READY.*feature-v2.md' "$TMP/lifecycle-premerge.out" \
+  || fail 'pre-merge did not report READY after tracker close'
+jq 'del(.data.repository.issue.comments.nodes[0].author)' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+review_case 'missing final author' UNVERIFIED 'author unavailable'
+jq '.data.repository.issue.comments.nodes[0].author.login = "intruder"' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=distinct-account' \
+  'reviewer=reviewer' 'executor=executor' 'approver=approver' \
+  > "$V2FIX/.agentic-flow-review-policy"
+review_case 'unauthorized author' BLOCKED 'not an authorized reviewer'
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
+review_case 'distinct account reviewer' READY 'review by reviewer'
+jq '.data.repository.issue.comments.nodes[0].author.login = "intruder"' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-case.json"; export LIFE_STEP_COMMENTS_JSON
+review_case 'unauthorized step handoff' BLOCKED 'handoff author intruder is not an executor'
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
+printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=distinct-account' \
+  'reviewer=reviewer' 'executor=reviewer' 'approver=approver' \
+  > "$V2FIX/.agentic-flow-review-policy"
+review_case 'overlapping reviewer account' UNVERIFIED 'review policy missing or invalid'
+cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
+sed 's/; role=reviewer/; role=executor/' "$TMP/lifecycle-comments.json" \
+  > "$TMP/lifecycle-comments-case.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+review_case 'false role claim' BLOCKED 'role claim differs'
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
+
+jq '.data.repository.issue.comments.pageInfo.hasNextPage = true' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-case.json"; export LIFE_STEP_COMMENTS_JSON
+review_case 'partial step page' UNVERIFIED 'step f-1 comments exceed one page'
+jq 'del(.data.repository.issue.comments.pageInfo)' "$TMP/lifecycle-step-comments.json" \
+  > "$TMP/lifecycle-step-case.json"
+review_case 'step missing pageInfo' UNVERIFIED 'step f-1 pageInfo.hasNextPage missing'
+jq '.errors = [{message:"partial step read",path:["issue"]}]' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+review_case 'step GraphQL error' UNVERIFIED 'step f-1 GraphQL error'
+jq '.data.repository.issue.comments.nodes += [null]' "$TMP/lifecycle-step-comments.json" \
+  > "$TMP/lifecycle-step-case.json"
+review_case 'step null node' UNVERIFIED 'step f-1 comment node 2 unreadable'
+jq '.data.repository.issue.comments.nodes += ([range(2;100) | {id:("prose-"+tostring),fullDatabaseId:tostring,body:"prose",author:{login:"reviewer"},lastEditedAt:null}]) | .data.repository.issue.comments.pageInfo.hasNextPage = false' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+review_case 'complete 100-node step page' READY 'review by reviewer'
+jq 'del(.data.repository.issue.comments.nodes[1].lastEditedAt)' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+review_case 'step missing edit indicator' UNVERIFIED 'step f-1 comment step-review missing lastEditedAt'
+jq '.data.repository.issue.comments.nodes[1].fullDatabaseId = null' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+review_case 'step null ordering key' UNVERIFIED 'step f-1 comment step-review missing valid fullDatabaseId'
+jq '.data.repository.issue.comments.nodes[1].lastEditedAt = "2026-09-25T12:00:00Z"' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+review_case 'edited authoritative step verdict' BLOCKED 'step f-1 comment step-review was edited'
+jq --arg head "$LIFE_HEAD" '.data.repository.issue.comments.nodes += [{id:"fresh",fullDatabaseId:"12",body:("agentic-flow-review: status=approved; step=f-1; head=" + $head + "; role=reviewer"),author:{login:"reviewer"},lastEditedAt:null}]' \
+  "$TMP/lifecycle-step-case.json" > "$TMP/lifecycle-step-recovered.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-recovered.json"; export LIFE_STEP_COMMENTS_JSON
+review_case 'fresh verdict recovers edit' READY 'review by reviewer'
+jq --arg head "$LIFE_HEAD" '.data.repository.issue.comments.nodes[1].body = "review note" | .data.repository.issue.comments.nodes += [{id:"earlier-approval",fullDatabaseId:"9",body:("agentic-flow-review: status=approved; step=f-1; head=" + $head + "; role=reviewer"),author:{login:"reviewer"},lastEditedAt:null}]' \
+  "$TMP/lifecycle-step-case.json" > "$TMP/lifecycle-step-recovered.json"
+review_case 'removing marker recovers edit' READY 'review by reviewer'
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
+
+# Above 2^53, adjacent ids collapse if coerced through jq's floating-point number.
+# Reverse listing order and share a creation second to rule out both shortcuts.
+jq --arg head "$LIFE_HEAD" '.data.repository.issue.comments.nodes = [.data.repository.issue.comments.nodes[0],{id:"new-rejection",fullDatabaseId:"9007199254740993",body:("agentic-flow-review: status=changes-requested; step=f-1; head=" + $head + "; role=reviewer"),author:{login:"reviewer"},createdAt:"2026-09-25T12:00:00Z",lastEditedAt:null},{id:"old-approval",fullDatabaseId:"9007199254740992",body:("agentic-flow-review: status=approved; step=f-1; head=" + $head + "; role=reviewer"),author:{login:"reviewer"},createdAt:"2026-09-25T12:00:00Z",lastEditedAt:null}]' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-case.json"; export LIFE_STEP_COMMENTS_JSON
+review_case 'adjacent high step ids and same-second verdicts' BLOCKED 'comment new-rejection does not approve'
+jq '.data.repository.issue.comments.nodes[1].lastEditedAt = "2026-09-25T12:00:00Z" | .data.repository.issue.comments.nodes[1].body |= sub("status=changes-requested";"status=approved")' \
+  "$TMP/lifecycle-step-case.json" > "$TMP/lifecycle-step-edited.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-edited.json"; export LIFE_STEP_COMMENTS_JSON
+review_case 'same-second authoritative edit' BLOCKED 'comment new-rejection was edited'
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
+
+jq --arg head "$LIFE_HEAD" '.data.repository.issue.comments.nodes += [{id:"duplicate-db-id",fullDatabaseId:"010",body:("agentic-flow-review: status=approved; pr=2; head=" + $head + "; run=https://github.com/owner/repo/actions/runs/100; attempt=1; role=reviewer"),author:{login:"reviewer"},lastEditedAt:null}]' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+review_case 'normalized duplicate database id' BLOCKED 'duplicate fullDatabaseId'
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
+
+# The review thread is scoped to the current PR head. A new commit makes old
+# approval history irrelevant even if the Actions run once succeeded.
+jq '.head.sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$TMP/lifecycle-pr.json" \
+  > "$TMP/lifecycle-pr-new.json"
+LIFE_PR_JSON="$TMP/lifecycle-pr-new.json"; export LIFE_PR_JSON
+review_case 'stale approval after PR commit' UNVERIFIED 'no approval for PR head'
+LIFE_PR_JSON="$TMP/lifecycle-pr.json"; export LIFE_PR_JSON
+
+printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=single-operator' \
+  'accepted-risk=docs/accepted_risks.md#missing-entry' > "$V2FIX/.agentic-flow-review-policy"
+review_case 'unlinked accepted risk' UNVERIFIED 'review policy missing or invalid'
+cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
+
 fi
 
 # --- the run did what the mode promised --------------------------------------------------
@@ -2312,7 +3789,7 @@ if [ -n "$ONLY_GROUP" ]; then
 elif [ "$SELF_TEST_MODE" = full ]; then
   EXPECTED_GROUPS="$SELF_TEST_GROUPS"
 else
-  EXPECTED_GROUPS=$(printf '%s\n' "$SELF_TEST_GROUPS" | sed 's/export //')
+  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle'
 fi
 for group in $EXPECTED_GROUPS; do
   case "$GROUPS_RAN" in
@@ -2327,5 +3804,11 @@ for group in $GROUPS_RAN; do
     *) fail "self-test ran unrelated group '$group'" ;;
   esac
 done
+
+# The F-11 table was approved before these limits were set. Keep the two copy
+# counters together: fewer snapshots cannot conceal whole-tree derived fixtures.
+if [ -z "$ONLY_GROUP" ]; then
+  assert_cost_budget "$LOCAL_EVENTS" "$SELF_TEST_MODE"
+fi
 
 echo "self-test passed."

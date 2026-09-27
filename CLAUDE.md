@@ -18,7 +18,7 @@
   execution commits, fix or delegate fixes. For planning, load the chosen template, relevant
   live code/tests, and only the methodology section the task needs. For close-out, load the
   Tracker/Status, step issue states, the reviewer's verdict comments, CI evidence, and
-  lifecycle output — then close the tracking issue. Commit with `git-claude`.
+  lifecycle output — then close the named issue. Commit with `git-claude`.
 - **Execute — Codex.** Implements the issues. Commits with `git-codex`. See `AGENTS.md`.
 - **Review — OpenCode.** Human-operated today, or via `/review`
   (`.opencode/agent/code-reviewer.md`) / the `review-execution` skill when OpenCode is
@@ -52,15 +52,24 @@ agent:opencode + needs-review
 After two findings returns, a third escalates to the human instead of returning it to Codex
 again or silently stopping.
 
-**Step issues never reach `needs-closing`** — the reviewer closes them, so that pair lives
-only on the tracker. A closed step means *reviewed clean*, not *shipped*; the doc's Status
+Strict sub-issues close on review; the parent receives `needs-closing`.
+Standard's sole work issue receives `needs-closing` after approval and stays open until
+close-out. A closed Strict step means *reviewed clean*, not *shipped*; the Status
 block plus CI evidence is the shipping record (`METHODOLOGY.md` §2).
 
-Close-out is batched: closed steps accumulate while the tracker stays open. Then one pass
-ticks the Tracker, records review and CI evidence, runs
-`scripts/lifecycle-status.sh --check --verify-evidence`, moves the doc, and closes the
-tracker — only when every step qualifies. Confirm the steps are actually closed; the tracker
-label is a notification, not the authority.
+Close-out is batched: closed steps accumulate while the tracker stays open. Prepare the
+final Status and Tracker, change TRIAGE to Done, move the doc and update the index as the
+last repository change, then commit. The human pushes that candidate. CI and the reviewer
+must approve that exact PR head after the push. Run
+`scripts/lifecycle-status.sh --doc docs/done/<doc>.md --phase close-out --check --verify-evidence`,
+then close the named issue without another edit. The human checks the document
+with `--phase pre-merge` immediately before merge (or relies on protected-branch required
+checks). That phase expects the issue closed. Any repository edit after approval restarts
+the external CI/review round. Verification proves the current external evidence; comments
+and runs can change later, and this script is not a merge guard. Confirm steps are closed;
+the tracker label is a notification, not the authority. This repository uses the
+single-operator review mode: its role claim is accountable but does not prove independent
+review (see `docs/accepted_risks.md#single-operator-review`).
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and
@@ -92,6 +101,7 @@ label is a notification, not the authority.
 
 ## Required local tools
 
+<!-- BEGIN SHARED CLAUDE TOOLS -->
 - **Required for the scaffold:** `bash`, `make`, `git`, `jq`, `gh`.
 - **Required unless opted out:** `git-claude` for planner/reviewer commits and `git-codex`
   for executor commits.
@@ -101,6 +111,7 @@ label is a notification, not the authority.
   `scripts/doctor.sh --check` fails without it.
 - **Adoption check:** run `scripts/doctor.sh --check` after exporting the scaffold and before
   committing it in a target project.
+<!-- END SHARED CLAUDE TOOLS -->
 
 ### Hooks (enforced, not optional)
 This project ships `.claude/settings.json` with five hooks that mechanize the contract —
@@ -155,7 +166,7 @@ enforce the local stop gate, named staging, and no-push contract.
 
 - Commit with **`git-claude`**. **Stage files by name** — never `git add -A` / `git add .`.
 - **One logical commit per change.** Verbose, *why*-first body. `Fixes #N` links a commit to
-  its step issue — the reviewer does the closing.
+  its issue — Strict review or Standard close-out closes it.
 - **Never push** — the human controls pushes and merges.
 
 ## Document workflow

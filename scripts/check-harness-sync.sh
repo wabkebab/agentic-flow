@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# check-harness-sync.sh — assert the repo-root contract files and their templates/harness/
-# counterparts still have the same section structure.
+# check-harness-sync.sh — assert root/template section parity and generated content.
 #
 # CLAUDE.md and AGENTS.md exist twice on purpose: the root instance is this repo's own
 # contract, the templates/harness/ one is what an adopting project receives. They are
@@ -12,11 +11,11 @@
 # init.sh/self-test.sh scan exported files for unfilled tokens, so a literal one here would
 # report itself as an unfilled token.)
 #
-# What is compared is the `##` section list: the documents' contract structure. A section
+# Unmarked prose is intentionally project-specific. Compare its `##` section list: a section
 # that exists in one and not the other is either a section the other should have gained, or
 # a deliberate divergence that belongs in the exception list below. Both are decisions.
-# Neither should happen silently, which is what happens today: nothing in `make check`
-# looks at these files together, so a one-sided edit ships unnoticed.
+# Neither should happen silently. The generated regions and skill bodies are checked
+# byte-for-byte by render-shared.sh.
 #
 # Deeper headings (### and below) are elaboration and legitimately differ — the root file
 # documents a step-issue label state machine the template does not mandate — so they are
@@ -81,6 +80,12 @@ check_pair() { # <root-relative file> <template file>
 
 check_pair CLAUDE.md templates/harness/CLAUDE.md
 check_pair AGENTS.md templates/harness/AGENTS.md
+
+# The source checkout also has canonical shared regions and skill bodies. Compare
+# their complete bytes; heading parity alone cannot detect drift within a section.
+if [ -d "$ROOT/templates/shared" ]; then
+  "$ROOT/scripts/render-shared.sh" --check || failures=$((failures + 1))
+fi
 
 if [ "$failures" -gt 0 ]; then
   echo "harness sync check failed: $failures section(s) out of sync." >&2
