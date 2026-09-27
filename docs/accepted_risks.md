@@ -15,7 +15,7 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 **Status:** Accepted risk
 **Decision date:** 2026-09-27
 **Decided by:** wabkebab (human owner)
-**Tracking:** docs/inprogress/feature-harness-optimization.md; tracker #93, step #103
+**Tracking:** docs/done/feature-harness-optimization.md; tracker #93, step #103
 
 ### Finding / proposal
 OpenCode approved F-10 at `6b738c8` and closed #103. Codex then amended the commit to
@@ -41,7 +41,7 @@ rule, and it adds regressions for prose before and after the marker. Every later
 **Status:** Accepted risk
 **Decision date:** 2026-09-27
 **Decided by:** wabkebab (human owner)
-**Tracking:** docs/inprogress/feature-harness-optimization.md; tracker #93
+**Tracking:** docs/done/feature-harness-optimization.md; tracker #93
 
 ### Finding / proposal
 Part B names one branch, `codex/trustworthy-proportionate-harness`. That branch stopped at

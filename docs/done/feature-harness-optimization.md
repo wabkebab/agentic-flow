@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-09-11) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict. Make the harness's correctness gates prove the state they report, then
 > reduce duplicated contracts, routine validation cost, and low-risk workflow ceremony. Approved
 > 2026-09-20; execution is tracked on the `plan-to-issues` tracker.
@@ -1749,5 +1749,6 @@ and all whole-brief verification commands pass.
   `feature-progressive-assurance-profiles.md` and `feature-adaptative-assurance-opus.md`.
 - All twelve steps are reviewed clean on `codex/trustworthy-proportionate-harness-f12`
   (`87d6ae9..ba2cbd9`), not on the single branch named in Part B; see
-  `docs/accepted_risks.md#harness-optimization-branch-split`. Close-out still needs the PR, its
-  CI run, structured reviewer verdicts, and the v2 values defined above.
+  `docs/accepted_risks.md#harness-optimization-branch-split`. Close-out is ready once the PR
+  exists: CI on its head, a structured reviewer approval of that head on #93, then
+  `--phase close-out` and closing #93.
