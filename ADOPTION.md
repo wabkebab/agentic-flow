@@ -58,8 +58,9 @@ the legacy default; `scripts/assurance.sh --check` validates it. Raise with
 `--reason <text>`, recorded in `.agentic-flow-assurance-audit` for review in the tracked
 diff. The claimed approval is not authenticated by the CLI. Export and upgrade preserve
 an adopter's baseline, including under `--force`. The assurance policy lives in
-`METHODOLOGY.md` §2. Until F-10, issue creation retains the existing tracker-and-steps
-shape regardless of baseline. CI checks do not vary with assurance state.
+`METHODOLOGY.md` §2. Issue shape follows each spec's profile: Standard creates one work
+issue, Strict creates a tracker plus step issues, and a spec without a profile keeps the
+legacy tracker-and-steps shape. CI checks do not vary with assurance state.
 
 `scripts/doctor.sh` is the verifier. It reports required tools, agent adapters, stack
 profile, unresolved merge candidates, active/pending scaffold versions, Make targets,
