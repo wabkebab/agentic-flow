@@ -95,6 +95,18 @@ pretool_hook_wired() {
   ' "$file" >/dev/null 2>&1
 }
 
+# Codex does not export Claude's project-root variable, so every Codex hook command must
+# resolve the repository root itself (#92). An unresolved path fails before the guard runs.
+codex_hooks_portable() {
+  local file="$1"
+  jq -e '
+    [.hooks[]?[]?.hooks[]?.command? | strings] as $cmds
+    | ($cmds | length) > 0
+      and ($cmds | all(contains("git rev-parse --show-toplevel")))
+      and ($cmds | all(contains("CLAUDE_PROJECT_DIR") | not))
+  ' "$file" >/dev/null 2>&1
+}
+
 stop_hook_wired() {
   local file="$1" event="$2"
   jq -e --arg event "$event" '
@@ -338,6 +350,15 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
         fail "$adapter PreToolUse wired to scripts/hooks/$guard"
       fi
     done
+    case "$adapter" in
+      .codex/*)
+        if codex_hooks_portable "$ROOT/$adapter"; then
+          ok "$adapter hooks resolve the repo root portably"
+        else
+          fail "$adapter hooks must resolve the root with git rev-parse --show-toplevel, not CLAUDE_PROJECT_DIR"
+        fi
+        ;;
+    esac
   done
 
   if ! payload_has_word ci "$PAYLOAD_ACTIVE_SCOPES"; then
