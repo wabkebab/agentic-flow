@@ -464,6 +464,18 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >/dev/null 2>&1 \
     && fail "repo-scope doctor accepted a structurally unwired Codex hook configuration"
   cp "$TMP/codex-hooks.orig" "$SOURCE_FIXTURE/.codex/hooks.json"
+  # Codex has no Claude project-root variable; doctor must reject the Claude-only form (#92).
+  # shellcheck disable=SC2016 # literal hook command text being rewritten, not expanded.
+  sed 's|\$(git rev-parse --show-toplevel)|\$CLAUDE_PROJECT_DIR|' "$TMP/codex-hooks.orig" \
+    > "$SOURCE_FIXTURE/.codex/hooks.json"
+  grep -q 'CLAUDE_PROJECT_DIR' "$SOURCE_FIXTURE/.codex/hooks.json" \
+    || fail "Codex hook mutation did not apply"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) \
+    > "$TMP/codex-claude-root.out" 2>&1 \
+    && fail "doctor accepted Codex hooks that depend on the Claude project root"
+  grep -q 'resolve the root with git rev-parse' "$TMP/codex-claude-root.out" \
+    || fail "doctor did not name the non-portable Codex hook root"
+  cp "$TMP/codex-hooks.orig" "$SOURCE_FIXTURE/.codex/hooks.json"
 
   # --claude-only must actually scope the export. The scope column was validated and then
   # discarded, so the flag only rewrote opt-out prose and shipped every Codex and OpenCode
