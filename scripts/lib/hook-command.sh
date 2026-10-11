@@ -45,24 +45,71 @@ hook_read_command() {
   return 1
 }
 
+# Parse a literal heredoc delimiter using shell quote removal, without evaluation.
+# Bodies are consumed in declaration order at the next newline, not at the <<.
+hook_heredoc() {
+  local input="$1" i="$2" c quote='' delimiter='' quoted=0 tabs=0 slash=$'\\'
+  i=$((i+2))
+  if [ "${input:i:1}" = '-' ]; then tabs=1; i=$((i+1)); fi
+  while [[ "${input:i:1}" = ' ' || "${input:i:1}" = $'\t' ]]; do i=$((i+1)); done
+  while [ "$i" -lt "${#input}" ]; do
+    c=${input:i:1}
+    if [ "$quote" = "'" ]; then
+      if [ "$c" = "'" ]; then quote=''; else delimiter+="$c"; fi
+    elif [ "$c" = "$slash" ]; then
+      quoted=1; i=$((i+1))
+      [ "$i" -lt "${#input}" ] || return 1
+      c=${input:i:1}
+      if [ "$quote" = '"' ] && [[ "$c" != '$' && "$c" != '`' && "$c" != '"' && "$c" != "$slash" ]]; then
+        delimiter+="$slash"
+      fi
+      delimiter+="$c"
+    elif [ "$quote" = '"' ]; then
+      if [ "$c" = '"' ]; then quote=''; else delimiter+="$c"; fi
+    else
+      case "$c" in
+        "'"|'"') quote=$c; quoted=1 ;;
+        ' '|$'\t'|$'\r'|$'\n'|';'|'&'|'|'|'('|')'|'<'|'>') break ;;
+        *) delimiter+="$c" ;;
+      esac
+    fi
+    i=$((i+1))
+  done
+  [ -z "$quote" ] && [ "$quoted" -eq 1 ] || return 1
+  HOOK_HEREDOC_DELIMITERS+=("$delimiter")
+  HOOK_HEREDOC_TABS+=("$tabs")
+  HOOK_LEX_I=$((i-1))
+}
+
 hook_lex() {
-  local input="$1" i=0 c quote='' word='' active=0 count=0 slash=$'\\'
+  local input="$1" mode="${2:-strict}" i=0 c quote='' word='' active=0 count=0 slash=$'\\'
+  local h line start found
   HOOK_TOKENS=()
   HOOK_KINDS=()
+  HOOK_HEREDOC_DELIMITERS=()
+  HOOK_HEREDOC_TABS=()
   HOOK_ERROR=''
   [ "${#input}" -le 16384 ] || { HOOK_ERROR='command exceeds parser bound'; return 1; }
   while [ "$i" -lt "${#input}" ]; do
     c=${input:i:1}
     if [ "$quote" = "'" ]; then
-      if [ "$c" = "'" ]; then quote=''; else word+="$c"; fi
+      if [ "$c" = "'" ]; then
+        quote=''
+      elif [ "$mode" = fallback ] && [[ "$c" = '$' || "$c" = '`' ]]; then
+        # Literal substitution markers must not become executable-looking
+        # words in the fallback operation detector after quote removal.
+        word+='?'
+      else word+="$c"; fi
     elif [ "$quote" = '"' ]; then
       case "$c" in
         '"') quote='' ;;
         '$')
-          [ "${input:i+1:1}" != '(' ] \
+          [ "$mode" = fallback ] || [ "${input:i+1:1}" != '(' ] \
             || { HOOK_ERROR='command substitution is not supported'; return 1; }
           word+="$c" ;;
-        '`') HOOK_ERROR='command substitution is not supported'; return 1 ;;
+        '`')
+          [ "$mode" = fallback ] || { HOOK_ERROR='command substitution is not supported'; return 1; }
+          word+="$c" ;;
         "$slash")
           [ "$i" -lt "$((${#input}-1))" ] || { HOOK_ERROR='trailing escape'; return 1; }
           i=$((i+1))
@@ -73,10 +120,13 @@ hook_lex() {
       case "$c" in
         "'"|'"') quote=$c; active=1 ;;
         '$')
-          [ "${input:i+1:1}" != '(' ] \
+          [ "$mode" = fallback ] || [ "${input:i+1:1}" != '(' ] \
             || { HOOK_ERROR='command substitution is not supported'; return 1; }
           word+="$c"; active=1 ;;
-        '`') HOOK_ERROR='command substitution is not supported'; return 1 ;;
+        '`')
+          [ "$mode" = fallback ] || { HOOK_ERROR='command substitution is not supported'; return 1; }
+          if [ "$active" -eq 1 ]; then HOOK_TOKENS+=("$word"); HOOK_KINDS+=(word); word=''; active=0; fi
+          HOOK_TOKENS+=("$c"); HOOK_KINDS+=(separator) ;;
         "$slash")
           [ "$i" -lt "$((${#input}-1))" ] || { HOOK_ERROR='trailing escape'; return 1; }
           i=$((i+1))
@@ -85,13 +135,36 @@ hook_lex() {
           fi ;;
         ' '|$'\t'|$'\r')
           if [ "$active" -eq 1 ]; then HOOK_TOKENS+=("$word"); HOOK_KINDS+=(word); word=''; active=0; fi ;;
+        '<')
+          if [ "${input:i+1:1}" = '<' ]; then
+            if [ "$active" -eq 1 ]; then HOOK_TOKENS+=("$word"); HOOK_KINDS+=(word); word=''; active=0; fi
+            hook_heredoc "$input" "$i" || { HOOK_ERROR='unsupported heredoc delimiter'; return 1; }
+            i=$HOOK_LEX_I
+          else word+="$c"; active=1; fi ;;
         ';'|'&'|'|'|'('|')'|$'\n')
           if [ "$active" -eq 1 ]; then HOOK_TOKENS+=("$word"); HOOK_KINDS+=(word); word=''; active=0; fi
-          HOOK_TOKENS+=("$c"); HOOK_KINDS+=(separator) ;;
+          HOOK_TOKENS+=("$c"); HOOK_KINDS+=(separator)
+          if [ "$c" = $'\n' ]; then
+            for ((h=0; h<${#HOOK_HEREDOC_DELIMITERS[@]}; h++)); do
+              found=0
+              while [ "$i" -lt "$((${#input}-1))" ]; do
+                i=$((i+1)); start=$i
+                while [ "$i" -lt "${#input}" ] && [ "${input:i:1}" != $'\n' ]; do i=$((i+1)); done
+                line=${input:start:i-start}
+                if [ "${HOOK_HEREDOC_TABS[h]}" -eq 1 ]; then
+                  while [ "${line:0:1}" = $'\t' ]; do line=${line:1}; done
+                fi
+                if [ "$line" = "${HOOK_HEREDOC_DELIMITERS[h]}" ]; then found=1; break; fi
+              done
+              [ "$found" -eq 1 ] || { HOOK_ERROR='unterminated heredoc'; return 1; }
+            done
+            HOOK_HEREDOC_DELIMITERS=(); HOOK_HEREDOC_TABS=()
+          fi ;;
         '#')
           if [ "$active" -eq 0 ]; then
             while [ "$i" -lt "${#input}" ] && [ "${input:i:1}" != $'\n' ]; do i=$((i+1)); done
-            HOOK_TOKENS+=($'\n'); HOOK_KINDS+=(separator)
+            # Let the newline branch consume any pending heredoc bodies.
+            i=$((i-1))
           else word+="$c"; fi ;;
         *) word+="$c"; active=1 ;;
       esac
@@ -102,6 +175,7 @@ hook_lex() {
     [ "${#HOOK_TOKENS[@]}" -le 512 ] || { HOOK_ERROR='too many command words'; return 1; }
   done
   [ -z "$quote" ] || { HOOK_ERROR='unterminated quote'; return 1; }
+  [ "${#HOOK_HEREDOC_DELIMITERS[@]}" -eq 0 ] || { HOOK_ERROR='unterminated heredoc'; return 1; }
   if [ "$active" -eq 1 ]; then HOOK_TOKENS+=("$word"); HOOK_KINDS+=(word); fi
 }
 
@@ -217,9 +291,9 @@ hook_dispatch() {
   "$callback"
 }
 
-hook_walk() { # <command> <callback>
+hook_walk() { # <command> <callback> [lex mode]
   local input="$1" callback="$2" i
-  hook_lex "$input" || return 1
+  hook_lex "$input" "${3:-strict}" || return 1
   HOOK_WORDS=()
   HOOK_CWD=$PWD
   for ((i=0; i<${#HOOK_TOKENS[@]}; i++)); do
@@ -233,6 +307,39 @@ hook_walk() { # <command> <callback>
   hook_dispatch "$callback"
 }
 
-hook_maybe_protected() {
-  [[ "$1" =~ (^|[^[:alnum:]_-])(git|git-claude|git-codex|git-opencode|gh)([^[:alnum:]_-]|$) ]]
+hook_fallback_operation() {
+  local word
+  case "$HOOK_KIND:$HOOK_VERB" in
+    git:"$verb"|ambiguous_git:"$verb") return 2 ;;
+    gh:pr|ambiguous_gh:pr)
+      if [ "$verb" = push ] && [ "${HOOK_WORDS[HOOK_VERB_INDEX+1]:-}" = merge ]; then return 2; fi ;;
+  esac
+  for word in "${HOOK_WORDS[@]+"${HOOK_WORDS[@]}"}"; do
+    # Double-quoted substitutions execute; ordinary quoted prose is data.
+    # shellcheck disable=SC2016 # Match literal shell syntax without evaluation.
+    if [[ "$word" = *'$('* || "$word" = *'`'* ]]; then
+      [[ "$word" =~ $git_pattern || ( "$verb" = push && "$word" =~ $gh_pattern ) ]] && return 2
+    fi
+  done
+  return 0
+}
+
+hook_maybe_protected() { # <unparsed command> <protected Git verb> [raw JSON]
+  local input="$1" verb="$2" git_pattern gh_pattern status=0 boundary
+  # Require a tool and its operation in the same command segment. A quote
+  # before the tool is deliberately not a boundary: grep "git push" is data.
+  # Parentheses/backticks remain boundaries for real command substitutions.
+  boundary="(^|[[:space:];|&()\`])"
+  # If JSON decoding failed, its command-opening quote is a tool boundary.
+  [ "${3:-}" != raw ] || boundary="(^|[[:space:];|&()\`\"'])"
+  git_pattern="$boundary(git|git-[[:alnum:]_-]+)[[:space:]]+([^;|&"$'\n'"]*[[:space:]])?[\"']?($verb)([[:space:]\"'\`<>;|&()]|$)"
+  gh_pattern="${boundary}gh[[:space:]]+([^;|&"$'\n'"]*[[:space:]])?pr[[:space:]]+merge([[:space:]\"'\`<>;|&()]|$)"
+  # A permissive token pass is only an operation detector. It never authorizes
+  # a protected invocation or executes substitutions. Preserve the dispatcher's
+  # data-command exemptions when an earlier unrelated substitution broke parsing.
+  if [ "${3:-}" = raw ]; then status=1; else hook_walk "$input" hook_fallback_operation fallback || status=$?; fi
+  case "$status" in 2) return 0 ;; 0) return 1 ;; esac
+  # Malformed quotes, expanding heredocs, parser bounds, or unknown options
+  # cannot use token context. Keep the bounded operation-specific text check.
+  [[ "$input" =~ $git_pattern || ( "$verb" = push && "$input" =~ $gh_pattern ) ]]
 }

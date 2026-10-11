@@ -5,9 +5,15 @@ set -uo pipefail
 # shellcheck source=scripts/lib/hook-command.sh
 . "$(dirname "$0")/../lib/hook-command.sh"
 
+maybe_push() {
+  hook_maybe_protected "$1" push "${2:-}" || hook_maybe_protected "$1" commit "${2:-}"
+}
+# Preserve the fail-closed unparseable-commit control from issue #110. Literal
+# commit heredocs now parse normally; substitutions in commits still block.
+
 raw=$(head -c 65537)
 if ! hook_read_command "$raw"; then
-  if hook_maybe_protected "$raw"; then
+  if maybe_push "$raw" raw; then
     echo 'Blocked: could not parse a protected command.' >&2
     exit 2
   fi
@@ -35,8 +41,11 @@ check_push() {
 
 hook_walk "$HOOK_COMMAND" check_push
 status=$?
-if [ "$status" -eq 1 ] && hook_maybe_protected "$HOOK_COMMAND"; then
-  echo 'Blocked: could not parse a protected command.' >&2
-  exit 2
+if [ "$status" -eq 1 ]; then
+  if maybe_push "$HOOK_COMMAND"; then
+    echo 'Blocked: could not parse a protected command.' >&2
+    exit 2
+  fi
+  exit 0
 fi
 exit "$status"

@@ -2367,6 +2367,83 @@ fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------
 if should_run hooks; then
+# Review #110: closing substitutions and adjacent redirects are verb boundaries.
+# shellcheck disable=SC2016 # Command strings are hook input, never executed.
+for protected_command in 'git push' 'git-claude push' 'gh pr merge'; do
+  must_block "$ROOT/scripts/hooks/block-push.sh" 'echo "`'"$protected_command"'`"'
+  must_block "$ROOT/scripts/hooks/block-push.sh" 'echo "$('"$protected_command"'>out)"'
+  must_block "$ROOT/scripts/hooks/block-push.sh" 'echo "$('"$protected_command"'</dev/null)"'
+done
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/scan-secrets.sh" 'echo "`git commit`"'
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/scan-secrets.sh" 'echo "$(git commit>out)"'
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/scan-secrets.sh" 'echo "$(git commit</dev/null)"'
+# Single-quoted backticks remain data, including after a parser failure elsewhere.
+for guard in block-push block-git-add-all scan-secrets; do
+  must_allow "$ROOT/scripts/hooks/$guard.sh" "echo '\`git push\`'"
+  must_allow "$ROOT/scripts/hooks/$guard.sh" "echo \$(date); echo '\`git push\`'"
+done
+
+# Broken tool-call JSON must still fail closed on a protected operation.
+for guard_command in 'block-push:git push' 'block-git-add-all:git add -A' 'scan-secrets:git commit'; do
+  status=0
+  printf '{"tool_input":{"command":"%s' "${guard_command#*:}" \
+    | "$ROOT/scripts/hooks/${guard_command%%:*}.sh" >/dev/null 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "malformed protected payload allowed: $guard_command (status $status)"
+done
+# Issue #110: parse failures must distinguish operations from tool mentions.
+# shellcheck disable=SC2016 # These command strings are never executed.
+for guard in block-push block-git-add-all scan-secrets; do
+  guard_path="$ROOT/scripts/hooks/$guard.sh"
+  must_allow "$guard_path" 'v=$(jq -r .x package.json); echo "$v"'
+  must_allow "$guard_path" 'eval "$(scripts/build-image.sh --print-env)" && docker compose ps'
+  must_allow "$guard_path" 'gh issue create --title t --body-file body.md'
+done
+# shellcheck disable=SC2016
+for guard in block-push block-git-add-all; do
+  guard_path="$ROOT/scripts/hooks/$guard.sh"
+  must_allow "$guard_path" $'cat > body.md <<\'EOF\'\nUses `vite.config.ts`\nEOF\ngh issue create --body-file body.md'
+  must_allow "$guard_path" 'for p in a b; do v=$(jq -r .x package.json); done; git log -5; gh pr view 22'
+  must_allow "$guard_path" 'echo "$(date)"; grep -n "git push" README.md'
+  must_allow "$guard_path" 'echo $(date); grep -n "use git push here" README.md'
+  must_allow "$guard_path" 'echo $(date); echo '\''$(git push)'\'''
+done
+# shellcheck disable=SC2016
+must_allow "$ROOT/scripts/hooks/scan-secrets.sh" 'b=$(basename a); git merge-file -p a "$b" c'
+# shellcheck disable=SC2016
+must_allow "$ROOT/scripts/hooks/block-push.sh" 'echo $(date); git status'
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/block-push.sh" 'git commit -m "Run `make check` first."'
+must_allow "$ROOT/scripts/hooks/block-push.sh" $'git commit -F - <<\'EOF\'\nRun `make check` first.\nEOF'
+
+# Literal bodies must stay opaque, but commands following them remain guarded.
+for delimiter in "'EOF'" '"EOF"' '\EOF'; do
+  for redirect in '<<' '<<-'; do
+    literal_body="cat $redirect$delimiter"$'\n\tgit push; git add -A; git commit -m "$(date)"\n'
+    if [ "$redirect" = '<<-' ]; then literal_body+=$'\tEOF\n'; else literal_body+=$'EOF\n'; fi
+    for guard in block-push block-git-add-all scan-secrets; do
+      must_allow "$ROOT/scripts/hooks/$guard.sh" "$literal_body"
+    done
+    must_block "$ROOT/scripts/hooks/block-push.sh" "${literal_body}git push"
+    must_block "$ROOT/scripts/hooks/block-git-add-all.sh" "${literal_body}git add -A"
+  done
+done
+must_allow "$ROOT/scripts/hooks/block-push.sh" $'cat <<\'ONE\' <<"TWO" # literal inputs\n`git push`\nONE\n$(git push)\nTWO\ngit status'
+must_block "$ROOT/scripts/hooks/block-push.sh" $'git push <<\'EOF\'\nmissing delimiter'
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/block-push.sh" 'echo $(date); git-claude push'
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/block-push.sh" 'echo $(date); gh pr merge 12'
+# shellcheck disable=SC2016
+for broad_add in '-A' '.' '--all'; do
+  must_block "$ROOT/scripts/hooks/block-git-add-all.sh" 'echo $(date); git add '"$broad_add"
+done
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/scan-secrets.sh" 'git commit -m "Run `make check` first."'
+must_block "$ROOT/scripts/hooks/scan-secrets.sh" $'git commit -F - <<EOF\n$(date)\nEOF'
+
 NOJQ_PATH=$(path_without_tools "$TMP/nojq-bin" jq)
 PATH="$NOJQ_PATH" bash -c 'command -v jq' >/dev/null 2>&1 \
   && fail "jq-less PATH still contains jq"
@@ -2580,6 +2657,7 @@ if [ -x "$SECRET_GUARD" ]; then
   }
 
   stage "aws_key = \"$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')\""
+  (cd "$SECFIX" && must_block "$SECRET_GUARD" $'git commit -F - <<\'EOF\'\nRun `make check` first.\nEOF')
   status=0
   (cd "$SECFIX" && hook_payload 'sudo git commit -m x' | "$SECRET_GUARD") \
     >/dev/null 2>&1 || status=$?
@@ -2628,6 +2706,7 @@ if [ -x "$SECRET_GUARD" ]; then
 
   (cd "$SECFIX" && git reset -q)
   secret_hook 'git commit -m x' || fail "secret scanner blocked a commit with nothing staged"
+  (cd "$SECFIX" && must_allow "$SECRET_GUARD" $'git commit -F - <<\'EOF\'\nRun `make check` first.\nEOF')
 
   # The default index is empty. Every redirected invocation below must inspect
   # its own staged content, and a block must use the hook's documented exit 2.
