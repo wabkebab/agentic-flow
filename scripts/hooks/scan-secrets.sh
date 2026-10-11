@@ -18,7 +18,7 @@ set -uo pipefail
 
 raw=$(head -c 65537)
 if ! hook_read_command "$raw"; then
-  if hook_maybe_protected "$raw"; then
+  if hook_maybe_protected "$raw" commit raw; then
     echo 'Blocked: could not parse a protected command.' >&2
     exit 2
   fi
@@ -185,8 +185,11 @@ return 0
 
 hook_walk "$HOOK_COMMAND" scan_commit
 status=$?
-if [ "$status" -eq 1 ] && hook_maybe_protected "$HOOK_COMMAND"; then
-  echo 'Blocked: could not parse a protected command.' >&2
-  exit 2
+if [ "$status" -eq 1 ]; then
+  if hook_maybe_protected "$HOOK_COMMAND" commit; then
+    echo 'Blocked: could not parse a protected command.' >&2
+    exit 2
+  fi
+  exit 0
 fi
 exit "$status"
