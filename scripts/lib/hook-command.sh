@@ -332,8 +332,8 @@ hook_maybe_protected() { # <unparsed command> <protected Git verb> [raw JSON]
   boundary="(^|[[:space:];|&()\`])"
   # If JSON decoding failed, its command-opening quote is a tool boundary.
   [ "${3:-}" != raw ] || boundary="(^|[[:space:];|&()\`\"'])"
-  git_pattern="$boundary(git|git-[[:alnum:]_-]+)[[:space:]]+([^;|&"$'\n'"]*[[:space:]])?[\"']?($verb)([[:space:]\"';|&()]|$)"
-  gh_pattern="${boundary}gh[[:space:]]+([^;|&"$'\n'"]*[[:space:]])?pr[[:space:]]+merge([[:space:]\"';|&()]|$)"
+  git_pattern="$boundary(git|git-[[:alnum:]_-]+)[[:space:]]+([^;|&"$'\n'"]*[[:space:]])?[\"']?($verb)([[:space:]\"'\`<>;|&()]|$)"
+  gh_pattern="${boundary}gh[[:space:]]+([^;|&"$'\n'"]*[[:space:]])?pr[[:space:]]+merge([[:space:]\"'\`<>;|&()]|$)"
   # A permissive token pass is only an operation detector. It never authorizes
   # a protected invocation or executes substitutions. Preserve the dispatcher's
   # data-command exemptions when an earlier unrelated substitution broke parsing.

@@ -2367,6 +2367,25 @@ fi
 
 # --- hook invariants (run everywhere) ----------------------------------------------------
 if should_run hooks; then
+# Review #110: closing substitutions and adjacent redirects are verb boundaries.
+# shellcheck disable=SC2016 # Command strings are hook input, never executed.
+for protected_command in 'git push' 'git-claude push' 'gh pr merge'; do
+  must_block "$ROOT/scripts/hooks/block-push.sh" 'echo "`'"$protected_command"'`"'
+  must_block "$ROOT/scripts/hooks/block-push.sh" 'echo "$('"$protected_command"'>out)"'
+  must_block "$ROOT/scripts/hooks/block-push.sh" 'echo "$('"$protected_command"'</dev/null)"'
+done
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/scan-secrets.sh" 'echo "`git commit`"'
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/scan-secrets.sh" 'echo "$(git commit>out)"'
+# shellcheck disable=SC2016
+must_block "$ROOT/scripts/hooks/scan-secrets.sh" 'echo "$(git commit</dev/null)"'
+# Single-quoted backticks remain data, including after a parser failure elsewhere.
+for guard in block-push block-git-add-all scan-secrets; do
+  must_allow "$ROOT/scripts/hooks/$guard.sh" "echo '\`git push\`'"
+  must_allow "$ROOT/scripts/hooks/$guard.sh" "echo \$(date); echo '\`git push\`'"
+done
+
 # Broken tool-call JSON must still fail closed on a protected operation.
 for guard_command in 'block-push:git push' 'block-git-add-all:git add -A' 'scan-secrets:git commit'; do
   status=0
