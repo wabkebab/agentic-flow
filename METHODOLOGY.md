@@ -109,6 +109,10 @@ The gate authenticates the comment author, but in single-operator mode the revie
 is only an attestation, not proof of independence. Comments and Actions runs remain mutable:
 verification is point-in-time, not a merge guard.
 
+Approvals bind to commits: rebasing or amending a reviewed branch requires re-review.
+Every approved step commit must be an ancestor of the PR head. Missing objects or
+shallow history leave ancestry UNVERIFIED until the operator fetches the history.
+
 Copy the step verdict into the comment on that step's own issue, using the executor's
 full implementation SHA. For rejection, use `status=changes-requested`:
 
@@ -161,13 +165,18 @@ the applicable assurance profile. Emergency restoration may proceed as a hotfix,
 by a retrospective Feature/Security document and the applicable evidence and review.
 
 An independently-shippable step is the **tracking** unit — one issue, one logical commit,
-closed via `Fixes #N` when that commit lands. The **shipping** unit is coarser: a whole
+closed by the reviewer under Strict, or the closer under Standard. The **shipping** unit is coarser: a whole
 Feature/Security pass ships as **one branch and one PR**, so a reviewer sees the complete
 arc of the pass instead of fragments merged out of order. "Independently shippable" still
 means each step must stand alone as a coherent, working commit — if two proposed steps can't
 be reviewed and merged in that order within the pass, they are one step.
 
 ---
+
+Review evidence is accepted only from logins in the review policy. Comments
+from authors outside all configured roles are ignored before parsing; executor
+handoffs require an executor login and verdicts require a reviewer login.
+
 
 ## 3. Document types
 
@@ -257,7 +266,7 @@ Each finding states **location** (`file:line`), **what's wrong**, and a concrete
 ## 6. Plan → GitHub issues
 
 A markdown tracker is versioned and offline; GitHub issues give a live progress bar,
-`Fixes #N` auto-close, and PR linkage. They're complementary — **doc = design intent,
+issue state, and PR linkage. They're complementary — **doc = design intent,
 issues = execution units**.
 
 Use the `plan-to-issues` skill (`.claude/skills/plan-to-issues/`) once a plan is
@@ -316,6 +325,8 @@ Rules:
 
 ## 7. Commit contract
 
+Review fixes land as new commits; never amend a commit after its review handoff.
+
 Identity is enforced by wrapper scripts, each with its own SSH signing key:
 
 - **Claude commits with `git-claude`.**
@@ -327,7 +338,9 @@ Rules (both agents):
   commits without reason.
 - **Verbose, *why*-first commit bodies** — name the risk/bug, the approach, the blast
   radius. A reviewer months later should understand the change from the message alone.
-- **Reference the issue** — `Fixes #N` in the PR (or commit) so merge closes it.
+- **Reference the issue** — keep `Fixes #N` in the PR or commit for traceability.
+  The reviewer closes Strict steps; the closer closes Standard work issues and trackers.
+  Remove workflow labels after closing; Standard requires `needs-closing` at close time.
 - **Never push.** The human controls all pushes and merges.
 - The `Co-Authored-By:` trailer is **appended by the wrapper** when the message lacks one —
   don't hand-maintain it (model names in prose go stale); a trailer you write is kept as-is.
@@ -355,8 +368,10 @@ Fixes #73
 `.claude/settings.json` wires hooks that mechanize the contract so it can't be quietly missed:
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`): blocks a turn from
   ending while the fast gate is red, feeding the failure back to the agent; if the retry is
-  still red it warns and allows rather than looping forever. Skipped when the working tree
-  is clean (nothing uncommitted to gate — spares no-edit turns and read-only subagents).
+  still red it warns and allows rather than looping forever. Only an exact green state
+  stamp silently skips the gate; clean committed work is checked too. A change during a
+  green run triggers one rerun; a red rerun or further change blocks. Stacks whose check
+  takes over half the hook timeout must raise that timeout to accommodate both runs.
   Scoped to the *fast* gate, not the full suite. `check` ships prefilled with harness sanity
   checks; extend it with the stack's type-check + lint.
 - **PreToolUse(Bash) → block `git add -A` / `git add .` / `--all`**
@@ -407,8 +422,11 @@ These make the handoff explicit and parallel instead of sequential:
   Subagents without it share the parent's working directory, so one can stage or overwrite
   another's half-finished edit, and a green `make check` covers whatever mixture of both
   changes was on disk at the time. The Stop gate does not save you: its state stamp lives in
-  the shared git-dir and is keyed on the whole tree, so it certifies the mixture rather than
-  either change. A read-only fan-out (`Explore` / `Plan`) needs no isolation.
+  the shared git-dir and covers HEAD’s tree plus staged, unstaged and untracked content.
+  It is written atomically only when the state is unchanged across a green run. A separate
+  acknowledged-red record repeats the loop-safety warning for that exact state and never
+  counts as green. Unwritable records disable reuse. Even a stable mixture certifies neither
+  individual change. A read-only fan-out (`Explore` / `Plan`) needs no isolation.
 - **`/code-review`** (`low|medium|high|max`, and **`ultra`** for a deep multi-agent cloud
   review of a whole branch) — a whole-branch or second-opinion pass, **not** a substitute for
   §1's independent per-step review, and the reviewer's role if a project opts out of OpenCode.

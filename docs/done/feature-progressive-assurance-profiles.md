@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-07-25) -->
 > **Superseded:** `feature-harness-optimization.md` Part A §7 and Step F-9 own assurance
 > policy and baseline implementation. This proposal remains for design history.
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🕰️ Superseded
 > Introduce Quick, Standard, and Strict assurance profiles so routine work pays less
 > ceremony while risky work retains decomposition, independent review, and traceability.
 
@@ -9,7 +9,7 @@
 
 ## Execution status
 
-This document is actionable but not yet approved.
+Superseded by `feature-harness-optimization.md`; retained for design history.
 
 Before execution:
 

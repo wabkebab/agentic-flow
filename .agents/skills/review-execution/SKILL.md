@@ -103,13 +103,13 @@ Post step verdicts on step issues and final approval on `Tracking issue`, includ
 
 Moving the step issue is the one exception, authorized standingly by the state machine in
 `CLAUDE.md`. Post the verdict as an issue comment **first** — findings, or an explicit
-no-findings approval, with the range reviewed and verification run. A verdict living only in
-chat is lost to close-out. Then:
+no-findings approval, with the range reviewed and verification run. Then:
 
 - **`changes requested`** — leave open and return it:
   `gh issue edit <N> --add-label "agent:codex,needs-execution" --remove-label "agent:opencode,needs-review"`.
   Capped at two returns; a third escalates to the human.
-- **`approved`** — under Strict, `gh issue close <N>`; a closed sub-issue records
+- **`approved`** — under Strict, `gh issue close <N>`, then
+  `gh issue edit <N> --remove-label "agent:opencode,needs-review"`; a closed sub-issue records
   *reviewed clean*, not *shipped*. Under Standard, post the approving verdict, then
   relabel the sole work issue `agent:claude,needs-closing` and leave it open.
 - **last open Strict step of a plan** — also

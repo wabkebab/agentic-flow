@@ -19,7 +19,7 @@
   1.5.1/1.5.5 landed earlier with the export work; 1.5.2 (`42fcc94`), 1.5.3 (`9948062`),
   1.5.4 (`b2c6311`).
 - 🚧 **Tier 2 — close the loop honestly** — **all but one item delivered.**
-  2.1 ✅ · 2.2 ✅ · 2.4 ✅ · 2.5 ✅ · 2.7 ✅ · 2.6 🚧 (blocked on repo settings, not code) ·
+  2.1 ✅ · 2.2 ✅ · 2.4 ✅ · 2.5 ✅ · 2.7 ✅ · 2.6 🚧 (publish decided 2026-11-11; ruleset after 0.14.0 merges) ·
   2.3 ⬜. See the 2026-07-25 re-evaluation.
 - 🚧 **Tier 3 — durability & scale** — below. **3.2 / 3.2a shipped on
   `codex/upgrade-surface`**; the remaining 1.0 blocker is using the tool on a real adopter
@@ -374,6 +374,13 @@ honest version of 2.1 (CI is where evidence gets derived instead of pasted); 2.1
 - **Not a substitute:** local `pre-commit`/`pre-push` hooks. They don't distribute via git
   and die to `--no-verify`. The original framing stands — don't build them and let them be
   mistaken for a gate.
+- **Status 2026-11-11 — resolution chosen: make the repo public** (R-0f in
+  `docs/inprogress/product-harness-factory-optimization.md`). Publishing waited on the
+  0.14.0 gate fixes (tracker #114), which make review evidence ignore comments from
+  logins outside the review policy. After that PR merges, the human scans history for
+  secrets, publishes, and adds a `main` ruleset with `CI gate` as the single required
+  check (`docs/done/feature-gate-and-handoff-fixes.md`, "Publishing"). 2.6 is done when
+  that ruleset is live.
 
 ### 2.7 Render the CI runtime block from the stack profile — ✅ done
 - **Problem:** stack profiles made the *Makefile* data-driven, but `templates/ci/ci.yml`

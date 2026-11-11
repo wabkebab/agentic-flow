@@ -95,6 +95,19 @@ pretool_hook_wired() {
   ' "$file" >/dev/null 2>&1
 }
 
+# Every matching handler must fail closed, including duplicate registrations.
+pretool_hook_fail_closed() {
+  local file="$1" script="$2"
+  jq -e --arg script "$script" '
+    [.hooks.PreToolUse[]?
+      | select(.matcher == "Bash")
+      | .hooks[]?
+      | select(.command? | strings | contains($script))] as $handlers
+    | ($handlers | length) > 0
+      and all($handlers[]; .type == "command" and .onFailure == "block")
+  ' "$file" >/dev/null 2>&1
+}
+
 # Codex does not export Claude's project-root variable, so every Codex hook command must
 # resolve the repository root itself (#92). An unresolved path fails before the guard runs.
 codex_hooks_portable() {
@@ -348,6 +361,13 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
         ok "$adapter PreToolUse: $guard"
       else
         fail "$adapter PreToolUse wired to scripts/hooks/$guard"
+      fi
+      if [ "$adapter" = .claude/settings.json ]; then
+        if pretool_hook_fail_closed "$ROOT/$adapter" "scripts/hooks/$guard"; then
+          ok "$adapter PreToolUse: $guard onFailure=block"
+        else
+          fail "$adapter PreToolUse: $guard requires onFailure=block"
+        fi
       fi
     done
     case "$adapter" in

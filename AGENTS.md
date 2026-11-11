@@ -97,7 +97,7 @@ If the brief conflicts with any of these, stop and flag it — do not silently p
 
 - Commit with **`git-codex`** (signs with the Codex key).
 - **Stage files by name** — never `git add -A` / `git add .`.
-- **One logical commit per step.** Don't bundle multiple steps into one commit.
+- **One commit per step; never amend a commit after its review handoff.**
 - **Verbose, *why*-first commit body** — name the problem, the approach, the blast radius.
   A reviewer should understand the change from the message alone. This is the rule most
   often missed; an example follows.

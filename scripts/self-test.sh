@@ -798,7 +798,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
 
   INIT_TARGET="$TMP/init-empty"
-  "$ROOT/scripts/init.sh" "$INIT_TARGET" --name demo-proj --stack none --yes >"$TMP/init-empty.log" 2>&1 \
+  "$ROOT/scripts/init.sh" "$INIT_TARGET" --owner-login wabkebab --name demo-proj --stack none --yes >"$TMP/init-empty.log" 2>&1 \
     || { cat "$TMP/init-empty.log" >&2; fail "init failed for an empty target"; }
   if grep -RE "$TOKEN_RE" "$INIT_TARGET" >/dev/null 2>&1; then
     grep -RE "$TOKEN_RE" "$INIT_TARGET" >&2 || true
@@ -813,7 +813,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   INIT_EXISTING="$TMP/init-existing"
   mkdir -p "$INIT_EXISTING"
   printf '%s\n' "# Existing project guidance" > "$INIT_EXISTING/CLAUDE.md"
-  "$ROOT/scripts/init.sh" "$INIT_EXISTING" --name demo-proj --stack none --yes >"$TMP/init-existing.log" 2>&1 \
+  "$ROOT/scripts/init.sh" "$INIT_EXISTING" --owner-login wabkebab --name demo-proj --stack none --yes >"$TMP/init-existing.log" 2>&1 \
     || { cat "$TMP/init-existing.log" >&2; fail "init failed for a target with existing CLAUDE.md"; }
   grep -qx "# Existing project guidance" "$INIT_EXISTING/CLAUDE.md" \
     || fail "init modified a pre-existing CLAUDE.md"
@@ -830,7 +830,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail "init missing-name error did not explain --name requirement"
 
   INIT_NONTty="$TMP/init-nontty"
-  "$ROOT/scripts/init.sh" "$INIT_NONTty" --name pipe-proj --stack none < /dev/null >"$TMP/init-nontty.log" 2>&1 \
+  "$ROOT/scripts/init.sh" "$INIT_NONTty" --owner-login wabkebab --name pipe-proj --stack none < /dev/null >"$TMP/init-nontty.log" 2>&1 \
     || { cat "$TMP/init-nontty.log" >&2; fail "init non-TTY fallback failed"; }
   grep -q "pipe-proj" "$INIT_NONTty/CLAUDE.md" || fail "non-TTY init did not stamp project name"
   if grep -RE "$TOKEN_RE" "$INIT_NONTty" >/dev/null 2>&1; then
@@ -838,7 +838,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   fi
 
   INIT_RUST="$TMP/init-rust"
-  "$ROOT/scripts/init.sh" "$INIT_RUST" --name rust-proj --stack rust --yes >"$TMP/init-rust.log" 2>&1 \
+  "$ROOT/scripts/init.sh" "$INIT_RUST" --owner-login wabkebab --name rust-proj --stack rust --yes >"$TMP/init-rust.log" 2>&1 \
     || { cat "$TMP/init-rust.log" >&2; fail "init failed for a rust target"; }
   assert_no_file "$INIT_RUST/.github/workflows/ci.yml"
   assert_no_file "$INIT_RUST/.github/workflows/deploy.yml"
@@ -1062,6 +1062,35 @@ fi
 
 # --- shellcheck is required, not optional ------------------------------------------------
 if should_run contracts; then
+# Guard failures must block locally even when a guard cannot return its own exit 2.
+if [ -f "$ROOT/.claude/settings.json" ]; then
+  GUARD_FIX="$TMP/guard-failure-fixture"
+  mkdir -p "$GUARD_FIX/scripts/lib" "$GUARD_FIX/.claude"
+  cp "$ROOT/scripts/doctor.sh" "$GUARD_FIX/scripts/doctor.sh"
+  cp "$ROOT/scripts/lib/payload-apply.sh" "$GUARD_FIX/scripts/lib/payload-apply.sh"
+  for guard in block-git-add-all.sh block-push.sh scan-secrets.sh; do
+    for failure_mode in missing continue; do
+      jq --arg guard "$guard" --arg mode "$failure_mode" '
+        (.hooks.PreToolUse[] | .hooks[]
+          | select(.command | endswith($guard))) |=
+          (if $mode == "missing" then del(.onFailure) else .onFailure = "continue" end)
+      ' "$ROOT/.claude/settings.json" > "$GUARD_FIX/.claude/settings.json"
+      (cd "$GUARD_FIX" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo --skip-make-check) \
+        > "$TMP/guard-failure.out" 2>&1 \
+        && fail "doctor accepted $failure_mode onFailure for $guard"
+      grep -q "missing .claude/settings.json PreToolUse: $guard requires onFailure=block" \
+        "$TMP/guard-failure.out" \
+        || fail "doctor did not name the missing failure policy for $guard ($failure_mode)"
+    done
+  done
+  jq -e '
+    [.hooks[][] .hooks[] | select(has("onFailure"))]
+    | length == 3 and all(.[];
+        .type == "command" and .onFailure == "block" and
+        (.command | test("scripts/hooks/(block-git-add-all|block-push|scan-secrets)\\.sh$")))
+  ' "$ROOT/.claude/settings.json" >/dev/null \
+    || fail "Claude failure policy must cover exactly the three local guards"
+fi
 if [ -f "$ROOT/scripts/export.sh" ]; then
   [ -x "$ROOT/scripts/shell-inventory.sh" ] \
     || fail "scaffold shell inventory is missing"
@@ -1095,10 +1124,38 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   cmp -s "$TMP/shell-expected" "$TMP/shell-actual" \
     || fail "scaffold shell inventory is incomplete against manifest source tree"
 
+  # A customized adopter may predate installation records. Sources are not installed.
+  inventory_adopter="$TMP/inventory-adopter"
+  "$ROOT/scripts/export.sh" --exclude-scope=codex "$inventory_adopter" >/dev/null
+  rm "$inventory_adopter/.agentic-flow-installation"
+  (cd "$inventory_adopter" && scripts/shell-inventory.sh --syntax) \
+    > "$TMP/inventory-adopter.out" 2>&1 \
+    || { cat "$TMP/inventory-adopter.out" >&2; fail "recordless adopter syntax gate failed"; }
+  (cd "$inventory_adopter" && make check) > "$TMP/inventory-adopter-check.out" 2>&1 \
+    || { cat "$TMP/inventory-adopter-check.out" >&2; fail "recordless adopter make check failed"; }
+  # Excluded destinations remain absent; deleting an active destination must fail by name.
+  [ ! -e "$inventory_adopter/.codex/hooks.json" ] \
+    || fail "inventory fixture unexpectedly installed excluded scope"
+  rm "$inventory_adopter/scripts/agentic-flow"
+  (cd "$inventory_adopter" && scripts/shell-inventory.sh --syntax) \
+    > "$TMP/inventory-missing.out" 2>&1 \
+    && fail "recordless inventory accepted a missing active script"
+  grep -q 'shell inventory: missing installed file scripts/agentic-flow; run scripts/doctor.sh' \
+    "$TMP/inventory-missing.out" \
+    || fail "recordless inventory did not name the missing installed script"
+  rm "$inventory_adopter/AGENTS.md"
+  (cd "$inventory_adopter" && scripts/shell-inventory.sh --syntax) \
+    > "$TMP/inventory-missing.out" 2>&1 \
+    && fail "recordless inventory accepted a missing mapped destination"
+  grep -q 'shell inventory: missing installed file AGENTS.md; run scripts/doctor.sh' \
+    "$TMP/inventory-missing.out" \
+    || fail "recordless inventory did not check mapped destinations"
+
   shell_fix="$TMP/shell-inventory-fixture"
   mkdir -p "$shell_fix/source/config" "$shell_fix/source/scripts" \
     "$shell_fix/source/harness-src" "$shell_fix/source/scoped-src"
   cp "$ROOT/scripts/shell-inventory.sh" "$shell_fix/source/scripts/"
+  touch "$shell_fix/source/scripts/export.sh"
   printf 'harness-src\tscripts\tcore\tpreserve\texport\n' > "$shell_fix/source/config/payload.tsv"
   printf 'scoped-src\tscoped-dest\tcodex\tpreserve\texport\n' >> "$shell_fix/source/config/payload.tsv"
   printf 'scripts/shell-inventory.sh\tscripts/shell-inventory.sh\tsource-only\tnone\tsource-only\n' \
@@ -2501,7 +2558,7 @@ must_allow_nojq "$ADD_GUARD" 'git add README.md'
 # --- Stop gate (check-gate.sh) -----------------------------------------------------------
 # The highest-leverage hook and previously untested (ROADMAP 1.5.4). All four paths matter:
 # a green check must not block, a red one must, the loop-safety escape must fire on the
-# retry, and both no-op paths (no Makefile, clean tree) must stay out of the way.
+# retry, and the no-Makefile path must stay out of the way.
 GATE="$ROOT/scripts/hooks/check-gate.sh"
 if [ -x "$GATE" ]; then
   GATEFIX="$TMP/gate-fixture"
@@ -2559,18 +2616,18 @@ if [ -x "$GATE" ]; then
   rm -f "$GATEFIX/Makefile"
   gate_run false || fail "Stop gate blocked with no Makefile at all"
 
-  # Clean tree → skip even with a red check: pre-existing breakage must not hold an
-  # unrelated, no-edit turn hostage.
+  # A verified dirty fix cannot certify the broken committed tree beneath it.
   gate_makefile 'exit 1'
   (cd "$GATEFIX" && git add Makefile && git commit -q --no-gpg-sign -m "fixture") >/dev/null 2>&1 \
     || fail "gate fixture commit failed (git exit $?) — fixture is not hermetic"
-  gate_run false || fail "Stop gate blocked a no-edit turn on a clean working tree"
+  gate_makefile true
+  gate_run false || fail "Stop gate blocked the uncommitted fix"
+  (cd "$GATEFIX" && git checkout -- Makefile)
+  gate_run false && fail "Stop gate allowed broken clean HEAD after discarding a verified fix"
+  gate_run false && fail "Stop gate allowed a red commit on a clean tree"
 
-  # Tree-state cache: the clean-tree exit keys on cleanliness, not on who is stopping, so a
-  # fan-out of subagents against one dirty worktree paid a full `make check` each, plus once
-  # more for the parent turn. Re-running is skipped only while the tree is byte-identical to
-  # the state that last passed. The counter lives outside the fixture: a log written inside
-  # it would itself change the tree and defeat what is being measured.
+  # Reuse only the complete state that passed. Keep the counter outside the fixture:
+  # writing it inside would itself change the tree being measured.
   GATE_RUNS="$TMP/gate-run-counter"
   : > "$GATE_RUNS"
   printf 'check:\n\t@echo run >> %s\n' "$GATE_RUNS" > "$GATEFIX/Makefile"
@@ -2608,6 +2665,92 @@ if [ -x "$GATE" ]; then
   printf 'check:\n\t@exit 1\n' > "$GATEFIX/Makefile"
   gate_run false && fail "Stop gate allowed a red check after a cached green"
   rm -f "$GATEFIX/cache-probe.txt"
+
+  # Mutation fixtures keep their counters outside the tree being hashed.
+  gate_reset() {
+    rm -f "$GATEFIX/.git/agentic-flow-check-gate-state" "$GATEFIX/.git/agentic-flow-check-gate-red"
+    : > "$GATE_RUNS"
+  }
+  gate_capture() {
+    gate_status=0
+    (cd "$GATEFIX" && printf '{"stop_hook_active":%s}' "$1" | "$GATE") >"$TMP/gate-result" 2>&1 || gate_status=$?
+    [ "$gate_status" = "$2" ] || fail "Stop gate expected exit $2, got $gate_status"
+  }
+  gate_stamp="$GATEFIX/.git/agentic-flow-check-gate-state"
+  gate_red="$GATEFIX/.git/agentic-flow-check-gate-red"
+  gate_mutator() { # once|always|red
+    printf 'check:\n\t@echo run >> %s; ' "$GATE_RUNS" > "$GATEFIX/Makefile"
+    case "$1" in
+      once) printf 'if [ ! -f mutation ]; then echo x > mutation; fi\n' ;;
+      always) printf 'echo x >> mutation\n' ;;
+      red) printf 'if [ -f mutation ]; then exit 1; fi; echo x > mutation\n' ;;
+    esac >> "$GATEFIX/Makefile"
+    rm -f "$GATEFIX/mutation"
+    gate_reset
+  }
+
+  gate_mutator always
+  gate_capture false 2
+  [ "$(gate_runs)" = 2 ] || fail "changing gate did not stop after two runs"
+  [ ! -f "$gate_stamp" ] || fail "changing gate wrote a green stamp"
+  grep -q 'tree changed during' "$TMP/gate-result" || fail "missing tree-change diagnostic"
+
+  gate_mutator red
+  gate_capture false 2
+  [ "$(gate_runs)" = 2 ] || fail "red rerun was not attempted"
+  [ ! -f "$gate_stamp" ] || fail "red rerun wrote a green stamp"
+
+  gate_mutator once
+  gate_capture false 0
+  [ "$(gate_runs)" = 2 ] || fail "one edit did not trigger exactly one rerun"
+  [ -s "$gate_stamp" ] || fail "stable rerun did not stamp its final state"
+  gate_capture false 0
+  [ "$(gate_runs)" = 2 ] || fail "final state stamp did not match the tree"
+  saved_green=$(cat "$gate_stamp")
+  printf 'check:\n\t@echo run >> %s; exit 1\n' "$GATE_RUNS" > "$GATEFIX/Makefile"
+  gate_capture true 0
+  [ "$(cat "$gate_stamp")" = "$saved_green" ] || fail "red retry overwrote green stamp"
+  [ -s "$gate_red" ] || fail "red retry did not record acknowledged state"
+  saved_red=$(cat "$gate_red")
+  red_runs=$(gate_runs)
+  gate_capture false 0
+  [ "$(gate_runs)" = "$red_runs" ] || fail "acknowledged red reran the gate"
+  grep -q 'Warning:' "$TMP/gate-result" || fail "acknowledged red skipped silently"
+  printf 'changed\n' >> "$GATEFIX/mutation"
+  gate_capture false 2
+  [ "$(cat "$gate_red")" = "$saved_red" ] || fail "ordinary red stop acknowledged a new state"
+
+  gate_mutator always
+  printf '%s\n' "$saved_green" > "$gate_stamp"
+  gate_capture true 0
+  [ "$(cat "$gate_stamp")" = "$saved_green" ] || fail "changing retry overwrote green stamp"
+  [ -s "$gate_red" ] || fail "changing retry did not record its final state"
+  gate_capture false 0
+  [ "$(gate_runs)" = 2 ] || fail "acknowledged changing state reran the gate"
+
+  rm -f "$GATEFIX/mutation"
+  printf 'check:\n\t@echo run >> %s\n' "$GATE_RUNS" > "$GATEFIX/Makefile"
+  (cd "$GATEFIX" && git add Makefile && git commit -q --no-gpg-sign -m green)
+  gate_reset
+  gate_capture false 0
+  gate_capture false 0
+  [ "$(gate_runs)" = 1 ] || fail "clean green state was not checked exactly once"
+  printf 'new tree\n' > "$GATEFIX/committed"
+  (cd "$GATEFIX" && git add committed && git commit -q --no-gpg-sign -m moved)
+  gate_capture false 0
+  [ "$(gate_runs)" = 2 ] || fail "moved clean HEAD reused another tree's stamp"
+
+  # Inject write denial without chmod: this also works under privileged test runners.
+  # Pre-existing green records must not bypass the writeability probe.
+  probe_bin="$TMP/gate-denied-bin"
+  mkdir -p "$probe_bin"
+  # Deny the atomic rename for records while preserving normal git operations.
+  real_mv=$(command -v mv)
+  printf '#!/usr/bin/env bash\ncase "$*" in *agentic-flow-check-gate*) exit 1 ;; esac\nexec "%s" "$@"\n' "$real_mv" > "$probe_bin/mv"
+  chmod +x "$probe_bin/mv"
+  PATH="$probe_bin:$PATH" gate_capture false 0
+  PATH="$probe_bin:$PATH" gate_capture false 0
+  [ "$(gate_runs)" = 4 ] || fail "unwritable metadata reused a gate record"
 
   # Failure output must go somewhere unique per run, not a fixed shared path
   # (ROADMAP 1.5.2) — two sessions sharing one log show each other's errors.
@@ -2848,13 +2991,25 @@ must_allow_nojq "$PUSH_GUARD" 'git pull --rebase'
 
 STEP_HOOK="$ROOT/scripts/hooks/require-step-comment.sh"
 STEP_HOOK_GH="$TMP/step-hook-gh"
-mkdir -p "$STEP_HOOK_GH"
+mkdir -p "$STEP_HOOK_GH" "$TMP/step-hook-project/scripts/lib" "$TMP/step-hook-project/docs"
+git -C "$TMP/step-hook-project" init -q
+cp "$ROOT/scripts/lib/review-policy.sh" "$TMP/step-hook-project/scripts/lib/review-policy.sh"
+printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=single-operator' \
+  'accepted-risk=docs/accepted_risks.md#single-operator-review' \
+  'reviewer=wabkebab' 'executor=wabkebab' 'approver=wabkebab' > "$TMP/step-hook-project/.agentic-flow-review-policy"
+printf '%s\n' '<a id="single-operator-review"></a>' > "$TMP/step-hook-project/docs/accepted_risks.md"
 cat > "$STEP_HOOK_GH/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 case "$*" in
   *'--jq .body'*) printf '%s\n' '<!-- agentic-flow:topology:standard -->' ;;
   *'--jq .labels[].name'*) printf '%s\n' "${STEP_HOOK_LABELS:-needs-review}" ;;
-  *'--jq .comments[-1].body'*) printf '%s\n' "${STEP_HOOK_COMMENT:-}" ;;
+  *'--json comments'*)
+    [ "${STEP_HOOK_GH_FAIL:-0}" = 0 ] || exit 1
+    if [ -n "${STEP_HOOK_COMMENTS_JSON:-}" ]; then
+      jq -n --argjson comments "$STEP_HOOK_COMMENTS_JSON" '{comments:$comments}'
+    else
+      jq -n --arg body "${STEP_HOOK_COMMENT:-}" '{comments:[{body:$body,author:{login:"wabkebab"}}]}'
+    fi ;;
   *) exit 2 ;;
 esac
 FAKE_GH
@@ -2862,11 +3017,26 @@ chmod +x "$STEP_HOOK_GH/gh"
 step_hook_status() { # <command> <comment> <labels> <expected status>
   status=0
   hook_payload "$1" | PATH="$STEP_HOOK_GH:$PATH" \
-    STEP_HOOK_COMMENT="$2" STEP_HOOK_LABELS="$3" "$STEP_HOOK" \
+    STEP_HOOK_COMMENT="$2" STEP_HOOK_LABELS="$3" bash -c 'cd "$1" && "$2"' _ "$TMP/step-hook-project" "$STEP_HOOK" \
     > "$TMP/step-hook.out" 2>&1 || status=$?
   [ "$status" -eq "$4" ] \
     || fail "step handoff hook returned $status, expected $4: $(cat "$TMP/step-hook.out")"
 }
+printf '%s\n' 'reviewer=review-only' >> "$TMP/step-hook-project/.agentic-flow-review-policy"
+# shellcheck disable=SC2089 # JSON data parsed by jq, never executed as shell words.
+STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"stranger"}}]'
+# shellcheck disable=SC2090 # The fake gh reads this exported value as JSON data.
+export STEP_HOOK_COMMENTS_JSON
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
+STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"review-only"}}]'
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
+STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"wabkebab"}},{"body":"unrelated","author":{"login":"stranger"}}]'
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 0
+unset STEP_HOOK_COMMENTS_JSON
+STEP_HOOK_GH_FAIL=1; export STEP_HOOK_GH_FAIL
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
+grep -q 'Blocked:.*comments.*issue #1' "$TMP/step-hook.out" || fail 'gh failure blocked silently'
+unset STEP_HOOK_GH_FAIL
 STEP_APPROVAL='agentic-flow-review: status=approved; step=alpha; head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; role=reviewer'
 STEP_FINAL='agentic-flow-review: status=approved; pr=2; head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; run=https://github.com/owner/repo/actions/runs/100; attempt=1; role=reviewer'
 step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
@@ -2981,6 +3151,10 @@ case "${1:-} ${2:-}" in
       case "$1" in
         --title) printf '%s\n' "$2" > "$dir/title"; shift 2 ;;
         --body) printf '%s\n' "$2" > "$dir/body"; shift 2 ;;
+        --remove-label)
+          [ "$(cat "$dir/state")" = CLOSED ] || exit 2
+          printf '%s\n' "$2" >> "$dir/removed-labels"
+          shift 2 ;;
         --repo|--add-label) shift 2 ;;
         *) shift ;;
       esac
@@ -3209,6 +3383,11 @@ jq '.steps = [.steps[0]]' "$UPDATED_SPEC" > "$REMOVED_SPEC"
 plan_apply "$REMOVED_SPEC" || fail "plan with a removed step did not reconcile"
 beta_state=$(grep -Rl "step:beta" "$GHSTATE"/issue-*/body | sed 's|/body$|/state|' | xargs cat)
 [ "$beta_state" = CLOSED ] || fail "removed plan step was not closed with history retained"
+beta_dir=$(grep -Rl "step:beta" "$GHSTATE"/issue-*/body | sed 's|/body$||')
+[ -f "$beta_dir/removed-labels" ] \
+  || fail "removed plan step retained workflow labels"
+[ "$(cat "$beta_dir/removed-labels")" = 'agent:claude,agent:codex,agent:opencode,needs-review,needs-execution,needs-closing' ] \
+  || fail "removed plan step did not clear all workflow labels after closing"
 
 PARTIAL_STATE="$TMP/gh-partial-state"
 PARTIAL_SPEC="$TMP/partial-spec.json"
@@ -3491,13 +3670,17 @@ done
 # one Actions lookup, including attempt mismatch and failure cases.
 printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' \
   'identity-mode=single-operator' \
+  'reviewer=reviewer' 'executor=executor' 'approver=approver' \
   'accepted-risk=docs/accepted_risks.md#single-operator-review' \
   > "$V2FIX/.agentic-flow-review-policy"
 mkdir -p "$V2FIX/docs"
 printf '%s\n' '<a id="single-operator-review"></a>' > "$V2FIX/docs/accepted_risks.md"
 git -C "$V2FIX" init -q
 git -C "$V2FIX" remote add origin git@github.com:owner/repo.git
-LIFE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+git -C "$V2FIX" -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid commit -q --allow-empty -m base
+STEP_HEAD=$(git -C "$V2FIX" rev-parse HEAD)
+git -C "$V2FIX" -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid commit -q --allow-empty -m head
+LIFE_HEAD=$(git -C "$V2FIX" rev-parse HEAD)
 LIFE_RUN_URL=https://github.com/owner/repo/actions/runs/100
 LIFE_MARKER="agentic-flow-review: status=approved; pr=2; head=$LIFE_HEAD; run=$LIFE_RUN_URL; attempt=1; role=reviewer"
 LIFE_API="$TMP/lifecycle-api"
@@ -3573,7 +3756,6 @@ cp "$TMP/valid-v2.md" "$STANDARD_LIFE_DOC"
 printf '%s\n' \
   '<!-- agentic-flow:plan:standard-plan step:alpha spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa approved-by:Tester approved-at:2026-01-01T00:00:00Z -->' \
   '<!-- agentic-flow:topology:standard -->' > "$TMP/standard-life-body"
-STEP_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 jq -n --arg head "$LIFE_HEAD" --arg step "$STEP_HEAD" --arg run "$LIFE_RUN_URL" \
   '{data:{repository:{issue:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
     {id:"handoff",fullDatabaseId:"9",body:("Implemented in " + $step + " — implementation"),author:{login:"executor"},lastEditedAt:null},
@@ -3594,6 +3776,15 @@ for phase_state in 'close-out OPEN' 'pre-merge CLOSED'; do
   [ "$(grep -c 'api graphql ' "$LIFE_CALLS" || true)" -eq 1 ] \
     || fail 'Standard queried more than its one review thread'
 done
+# Standard's reused tracking page must also reject an approved alternate commit.
+STANDARD_ALT=$(printf '%s\n' standard-alternate | git -C "$V2FIX" -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid commit-tree "${LIFE_HEAD}^{tree}" -p "$STEP_HEAD")
+jq --arg old "$STEP_HEAD" --arg new "$STANDARD_ALT" '.data.repository.issue.comments.nodes |= map(.body |= gsub($old; $new))' \
+  "$TMP/standard-life-comments.json" > "$TMP/standard-life-alternate.json"
+PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" LIFE_COMMENTS_JSON="$TMP/standard-life-alternate.json" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" --check --verify-evidence \
+  > "$TMP/standard-life-alternate.out" 2>&1 && fail 'Standard accepted an approved alternate commit'
+grep -q "^BLOCKED.*$STANDARD_ALT.*$LIFE_HEAD" "$TMP/standard-life-alternate.out" \
+  || fail 'Standard ancestry rejection lacked both SHAs'
 sed 's/approved-by:Tester/approved-by:Other/' "$TMP/standard-life-body" \
   > "$TMP/standard-life-bad-body"
 LIFE_ISSUE_BODY_FILE="$TMP/standard-life-bad-body" \
@@ -3614,7 +3805,7 @@ PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
   && fail 'Standard accepted missing step review'
 grep -q 'UNVERIFIED.*no review' "$TMP/standard-life-no-step.out" \
   || fail 'Standard missing review lacked diagnostic'
-jq '.data.repository.issue.comments.nodes[-1].body |= sub("head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";"head=cccccccccccccccccccccccccccccccccccccccc")' \
+jq '.data.repository.issue.comments.nodes[-1].body |= sub("head=[a-f0-9]{40}";"head=cccccccccccccccccccccccccccccccccccccccc")' \
   "$TMP/standard-life-comments.json" > "$TMP/standard-life-stale.json"
 LIFE_COMMENTS_JSON="$TMP/standard-life-stale.json"
 export LIFE_COMMENTS_JSON
@@ -3757,6 +3948,60 @@ review_case() { # <name> <state> <diagnostic>
 }
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
+# Unlisted authors cannot inject malformed evidence or replace a real handoff.
+jq '.data.repository.issue.comments.nodes += [{id:"stranger",body:"agentic-flow-review: malformed",author:{login:"stranger"}}]' "$TMP/lifecycle-comments.json" > "$TMP/stranger-final.json"
+jq '.data.repository.issue.comments.nodes += [{id:"stranger",body:"Implemented in bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",author:{login:"stranger"}}]' "$TMP/lifecycle-step-comments.json" > "$TMP/stranger-step.json"
+LIFE_COMMENTS_JSON="$TMP/stranger-final.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/stranger-step.json"
+review_case 'stranger malformed marker and later handoff' READY 'review by reviewer'
+grep -q 'EVIDENCE ignored 1' "$TMP/lifecycle-review.out" || fail 'stranger comments not counted'
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
+jq '.data.repository.issue.comments.nodes += [{id:"reviewer-handoff",body:"Implemented in bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",author:{login:"reviewer"}}]' "$TMP/lifecycle-step-comments.json" > "$TMP/reviewer-handoff.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/reviewer-handoff.json"
+review_case 'reviewer handoff rejected' BLOCKED 'is not an executor'
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
+# Approved commits must remain reachable from the live PR head.
+ancestry_case() { # <name> <head> <state> <diagnostic>
+  jq --arg head "$2" --arg old "$LIFE_HEAD" '.data.repository.issue.comments.nodes |= map(.body |= gsub($old; $head))' \
+    "$TMP/lifecycle-step-comments.json" > "$TMP/ancestry-step.json"
+  LIFE_STEP_COMMENTS_JSON="$TMP/ancestry-step.json"
+  review_case "$1" "$3" "$4"
+}
+# An alternate commit models an amended implementation, absent from the PR.
+ALT_HEAD=$(printf '%s\n' alternate | git -C "$V2FIX" -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid commit-tree "${LIFE_HEAD}^{tree}" -p "$STEP_HEAD")
+ancestry_case 'amended approved step' "$ALT_HEAD" BLOCKED "$ALT_HEAD.*$LIFE_HEAD"
+ancestry_case 'missing approved step' cccccccccccccccccccccccccccccccccccccccc UNVERIFIED 'cccccccccccccccccccccccccccccccccccccccc.*git fetch'
+jq '.head.sha = "cccccccccccccccccccccccccccccccccccccccc"' "$TMP/lifecycle-pr.json" > "$TMP/missing-pr.json"
+sed "s/$LIFE_HEAD/cccccccccccccccccccccccccccccccccccccccc/g" "$TMP/lifecycle-comments.json" > "$TMP/missing-pr-comments.json"
+sed "s/$LIFE_HEAD/cccccccccccccccccccccccccccccccccccccccc/g" "$TMP/lifecycle-run.json" > "$TMP/missing-pr-run.json"
+LIFE_PR_JSON="$TMP/missing-pr.json"
+LIFE_COMMENTS_JSON="$TMP/missing-pr-comments.json"
+LIFE_RUN_JSON="$TMP/missing-pr-run.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
+review_case 'missing PR object' UNVERIFIED 'cccccccccccccccccccccccccccccccccccccccc.*git fetch origin pull/2/head'
+LIFE_PR_JSON="$TMP/lifecycle-pr.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_RUN_JSON="$TMP/lifecycle-run.json"
+# A genuine shallow boundary hides an otherwise present ancestor object.
+printf '%s\n' "$LIFE_HEAD" > "$V2FIX/.git/shallow"
+ancestry_case 'shallow ancestry' "$STEP_HEAD" UNVERIFIED 'git fetch --unshallow'
+rm "$V2FIX/.git/shallow"
+# Inject only the ancestry command failure; object checks still use real Git.
+REAL_LIFE_GIT=$(command -v git)
+export REAL_LIFE_GIT
+cat > "$LIFE_API/git" <<'FAKE_GIT'
+#!/usr/bin/env bash
+case "$*" in
+  *'merge-base --is-ancestor'*) echo 'fatal: fixture ancestry error' >&2; exit 128 ;;
+esac
+exec "$REAL_LIFE_GIT" "$@"
+FAKE_GIT
+chmod +x "$LIFE_API/git"
+ancestry_case 'git ancestry error' "$STEP_HEAD" UNVERIFIED 'fatal: fixture ancestry error'
+rm "$LIFE_API/git"
+ancestry_case 'ancestor approved step' "$STEP_HEAD" READY 'review by reviewer'
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
 review_case 'authenticated final and step' READY 'review by reviewer'
 grep -q 'EVIDENCE step f-1.*author=reviewer' "$TMP/lifecycle-review.out" \
   || fail 'step evidence did not print comment and author'
@@ -3780,19 +4025,19 @@ grep -q '^READY.*feature-v2.md' "$TMP/lifecycle-premerge.out" \
 jq 'del(.data.repository.issue.comments.nodes[0].author)' "$TMP/lifecycle-comments.json" \
   > "$TMP/lifecycle-comments-case.json"
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
-review_case 'missing final author' UNVERIFIED 'author unavailable'
+review_case 'missing final author' UNVERIFIED 'no approval for PR head'
 jq '.data.repository.issue.comments.nodes[0].author.login = "intruder"' \
   "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
 printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=distinct-account' \
   'reviewer=reviewer' 'executor=executor' 'approver=approver' \
   > "$V2FIX/.agentic-flow-review-policy"
-review_case 'unauthorized author' BLOCKED 'not an authorized reviewer'
+review_case 'unauthorized author' UNVERIFIED 'no approval for PR head'
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 review_case 'distinct account reviewer' READY 'review by reviewer'
 jq '.data.repository.issue.comments.nodes[0].author.login = "intruder"' \
   "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-case.json"; export LIFE_STEP_COMMENTS_JSON
-review_case 'unauthorized step handoff' BLOCKED 'handoff author intruder is not an executor'
+review_case 'unauthorized step handoff' UNVERIFIED 'no full implementation SHA handoff'
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
 printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=distinct-account' \
   'reviewer=reviewer' 'executor=reviewer' 'approver=approver' \
@@ -3868,6 +4113,9 @@ LIFE_PR_JSON="$TMP/lifecycle-pr.json"; export LIFE_PR_JSON
 printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=single-operator' \
   'accepted-risk=docs/accepted_risks.md#missing-entry' > "$V2FIX/.agentic-flow-review-policy"
 review_case 'unlinked accepted risk' UNVERIFIED 'review policy missing or invalid'
+cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
+sed '/^reviewer=/d; /^executor=/d; /^approver=/d' "$TMP/lifecycle-policy-valid" > "$V2FIX/.agentic-flow-review-policy"
+review_case 'missing role logins' UNVERIFIED 'review policy missing or invalid'
 cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
 
 fi

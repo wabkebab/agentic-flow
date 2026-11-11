@@ -11,4 +11,5 @@ Gotchas bullet or a `make check` assertion and delete the line.
 |-------|------|-------------|
 | `manifest-validation-duplicated` | trap | `merge-policy` is validated compatibility metadata, not executable per-file policy; removal needs a versioned migration for old upgraders. |
 | `docs-index-stage-allowlist` | trap | Any `.md` under `docs/` outside the four lifecycle stages fails `make check`; a new subtree must join the skip list in the same commit. |
+| `close-out-needs-pr-first` | trap | `Implementation PR` must be a real pull URL, so the final close-out commit waits for the human's push and PR; check for the PR first. |
 | `cp-restores-interactively` | trap | `cp` prompts on overwrite and `-f` may not suppress it, so a `cp`-based fixture restore can silently fail; stage first and restore with `git checkout --`. |

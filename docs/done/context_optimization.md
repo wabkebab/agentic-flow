@@ -1,5 +1,6 @@
 <!-- TRIAGE (first pass · 2026-07-25) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
+> Shipped in `0.10.0` under #46.
 > Optimize the existing harness before adding assurance profiles: reduce repeated execution,
 > repeated context loading, and unnecessary role transitions without weakening any gate,
 > review requirement, or source-of-truth rule.
@@ -8,7 +9,7 @@
 
 ## Execution status
 
-Approved 2026-07-25; executed on `codex/context-optimization`; under review.
+Approved 2026-07-25; shipped in `0.10.0` under #46.
 
 This is Part 1 of the harness rescope:
 
@@ -24,11 +25,11 @@ Before execution:
 
 ## Tracker
 
-- [ ] O-1 Define minimal role contexts and single-source the hot-path guidance.
-- [ ] O-2 Make focused verification real and remove redundant CI work.
-- [ ] O-3 Remove contract drift without adding new manifest or severity concepts.
-- [ ] O-4 Reduce close-out and review-bounce context boots.
-- [ ] O-5 Add regression budgets, benchmark the result, and document the optimized workflow.
+- [x] #47 O-1 Define minimal role contexts and single-source the hot-path guidance.
+- [x] #48 O-2 Make focused verification real and remove redundant CI work.
+- [x] #49 O-3 Remove contract drift without adding new manifest or severity concepts.
+- [x] #50 O-4 Reduce close-out and review-bounce context boots.
+- [x] #51 O-5 Add regression budgets, benchmark the result, and document the optimized workflow.
 
 ---
 
