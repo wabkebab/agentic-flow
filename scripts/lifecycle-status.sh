@@ -171,12 +171,12 @@ normalize_decimal() { # <validated decimal string>
 
 # Check one step against the implementation SHA recorded on its own thread.
 # The same bounded GraphQL page carries both implementation handoff and verdict.
-verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> [reuse-tracking-page]
+verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [reuse-tracking-page]
   local repo=$1 number=$2 step=$3 tmp=$4 owner=${1%%/*} name=${1#*/} \
     query response node body id dbid edited handoff_author step_head="" selected_id="" \
     selected_dbid="" selected_marker="" selected_author="" selected_edited="" \
-    null_index candidate normalized
-  if [ "${5:-}" = reuse-tracking-page ]; then
+    null_index candidate normalized pr_head=$5 ancestry_status shallow git_error
+  if [ "${6:-}" = reuse-tracking-page ]; then
     response=$(cat "$tmp/comments")
   else
     # shellcheck disable=SC2016
@@ -285,10 +285,34 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> [reuse-tracki
   if [ "$REVIEW_STATUS" != approved ] || [ "$REVIEW_STEP" != "$step" ]; then
     blocked_evidence "step $step comment $selected_id does not approve implementation head $step_head"; return 1
   fi
+  for candidate in "$step_head" "$pr_head"; do
+    if ! git -C "$ROOT" cat-file -e "${candidate}^{commit}" 2>/dev/null; then
+      unverified_evidence "step $step commit $candidate unavailable locally; run git fetch origin $candidate"; return 1
+    fi
+  done
+  ancestry_status=0
+  git -C "$ROOT" merge-base --is-ancestor "$step_head" "$pr_head" 2> "$tmp/ancestry-error" || ancestry_status=$?
+  case "$ancestry_status" in
+    0) return 0 ;;
+    1)
+      if ! shallow=$(git -C "$ROOT" rev-parse --is-shallow-repository 2> "$tmp/ancestry-error"); then
+        git_error=$(cat "$tmp/ancestry-error")
+        unverified_evidence "step $step history unavailable: $git_error; run git fetch origin"; return 1
+      fi
+      case "$shallow" in
+        true) unverified_evidence "step $step ancestry unavailable in shallow history; run git fetch --unshallow" ;;
+        false) blocked_evidence "approved step $step commit $step_head is not an ancestor of PR head $pr_head" ;;
+        *) unverified_evidence "step $step history completeness unavailable; run git fetch origin" ;;
+      esac ;;
+    *)
+      git_error=$(cat "$tmp/ancestry-error")
+      unverified_evidence "step $step ancestry git error: $git_error; run git fetch origin" ;;
+  esac
+  return 1
 }
 
-verify_strict_steps() { # <repo> <tracking-body> <tmp-dir>
-  local repo=$1 tracking_body=$2 tmp=$3 plan number step state count=0
+verify_strict_steps() { # <repo> <tracking-body> <tmp-dir> <pr-head>
+  local repo=$1 tracking_body=$2 tmp=$3 pr_head=$4 plan number step state count=0
   plan=$(printf '%s\n' "$tracking_body" | sed -nE 's/^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:[[:xdigit:]]{40}.* -->$/\1/p' | head -1)
   if [ -z "$plan" ]; then
     unverified_evidence 'Tracking issue identity stamp unavailable'; return 1
@@ -308,7 +332,7 @@ verify_strict_steps() { # <repo> <tracking-body> <tmp-dir>
     if [ "$state" != CLOSED ]; then
       blocked_evidence "step $step issue $number is $state"; return 1
     fi
-    verify_step_review "$repo" "$number" "$step" "$tmp" || return 1
+    verify_step_review "$repo" "$number" "$step" "$tmp" "$pr_head" || return 1
   done < "$tmp/steps"
   if [ "$count" -eq 0 ]; then
     unverified_evidence "plan $plan has no stamped step issues"; return 1
@@ -481,10 +505,10 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
       if [ -z "$step_id" ]; then
         unverified_evidence 'Standard work issue identity stamp unavailable'
       else
-        verify_step_review "$repo" "$issue_number" "$step_id" "$tmp" reuse-tracking-page || true
+        verify_step_review "$repo" "$issue_number" "$step_id" "$tmp" "$head" reuse-tracking-page || true
       fi
     else
-      verify_strict_steps "$repo" "$tracking_body" "$tmp" || true
+      verify_strict_steps "$repo" "$tracking_body" "$tmp" "$head" || true
     fi
     if [ "$evidence_reason" = 'external evidence unresolved' ]; then
       evidence_status=READY

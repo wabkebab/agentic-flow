@@ -109,6 +109,10 @@ The gate authenticates the comment author, but in single-operator mode the revie
 is only an attestation, not proof of independence. Comments and Actions runs remain mutable:
 verification is point-in-time, not a merge guard.
 
+Approvals bind to commits: rebasing or amending a reviewed branch requires re-review.
+Every approved step commit must be an ancestor of the PR head. Missing objects or
+shallow history leave ancestry UNVERIFIED until the operator fetches the history.
+
 Copy the step verdict into the comment on that step's own issue, using the executor's
 full implementation SHA. For rejection, use `status=changes-requested`:
 
@@ -320,6 +324,8 @@ Rules:
 ---
 
 ## 7. Commit contract
+
+Review fixes land as new commits; never amend a commit after its review handoff.
 
 Identity is enforced by wrapper scripts, each with its own SSH signing key:
 

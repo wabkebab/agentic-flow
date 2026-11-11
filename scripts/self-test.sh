@@ -3525,7 +3525,10 @@ mkdir -p "$V2FIX/docs"
 printf '%s\n' '<a id="single-operator-review"></a>' > "$V2FIX/docs/accepted_risks.md"
 git -C "$V2FIX" init -q
 git -C "$V2FIX" remote add origin git@github.com:owner/repo.git
-LIFE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+git -C "$V2FIX" -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid commit -q --allow-empty -m base
+STEP_HEAD=$(git -C "$V2FIX" rev-parse HEAD)
+git -C "$V2FIX" -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid commit -q --allow-empty -m head
+LIFE_HEAD=$(git -C "$V2FIX" rev-parse HEAD)
 LIFE_RUN_URL=https://github.com/owner/repo/actions/runs/100
 LIFE_MARKER="agentic-flow-review: status=approved; pr=2; head=$LIFE_HEAD; run=$LIFE_RUN_URL; attempt=1; role=reviewer"
 LIFE_API="$TMP/lifecycle-api"
@@ -3601,7 +3604,6 @@ cp "$TMP/valid-v2.md" "$STANDARD_LIFE_DOC"
 printf '%s\n' \
   '<!-- agentic-flow:plan:standard-plan step:alpha spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa approved-by:Tester approved-at:2026-01-01T00:00:00Z -->' \
   '<!-- agentic-flow:topology:standard -->' > "$TMP/standard-life-body"
-STEP_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 jq -n --arg head "$LIFE_HEAD" --arg step "$STEP_HEAD" --arg run "$LIFE_RUN_URL" \
   '{data:{repository:{issue:{comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
     {id:"handoff",fullDatabaseId:"9",body:("Implemented in " + $step + " — implementation"),author:{login:"executor"},lastEditedAt:null},
@@ -3622,6 +3624,15 @@ for phase_state in 'close-out OPEN' 'pre-merge CLOSED'; do
   [ "$(grep -c 'api graphql ' "$LIFE_CALLS" || true)" -eq 1 ] \
     || fail 'Standard queried more than its one review thread'
 done
+# Standard's reused tracking page must also reject an approved alternate commit.
+STANDARD_ALT=$(printf '%s\n' standard-alternate | git -C "$V2FIX" -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid commit-tree "${LIFE_HEAD}^{tree}" -p "$STEP_HEAD")
+jq --arg old "$STEP_HEAD" --arg new "$STANDARD_ALT" '.data.repository.issue.comments.nodes |= map(.body |= gsub($old; $new))' \
+  "$TMP/standard-life-comments.json" > "$TMP/standard-life-alternate.json"
+PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" LIFE_COMMENTS_JSON="$TMP/standard-life-alternate.json" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_LIFE_DOC" --check --verify-evidence \
+  > "$TMP/standard-life-alternate.out" 2>&1 && fail 'Standard accepted an approved alternate commit'
+grep -q "^BLOCKED.*$STANDARD_ALT.*$LIFE_HEAD" "$TMP/standard-life-alternate.out" \
+  || fail 'Standard ancestry rejection lacked both SHAs'
 sed 's/approved-by:Tester/approved-by:Other/' "$TMP/standard-life-body" \
   > "$TMP/standard-life-bad-body"
 LIFE_ISSUE_BODY_FILE="$TMP/standard-life-bad-body" \
@@ -3642,7 +3653,7 @@ PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
   && fail 'Standard accepted missing step review'
 grep -q 'UNVERIFIED.*no review' "$TMP/standard-life-no-step.out" \
   || fail 'Standard missing review lacked diagnostic'
-jq '.data.repository.issue.comments.nodes[-1].body |= sub("head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";"head=cccccccccccccccccccccccccccccccccccccccc")' \
+jq '.data.repository.issue.comments.nodes[-1].body |= sub("head=[a-f0-9]{40}";"head=cccccccccccccccccccccccccccccccccccccccc")' \
   "$TMP/standard-life-comments.json" > "$TMP/standard-life-stale.json"
 LIFE_COMMENTS_JSON="$TMP/standard-life-stale.json"
 export LIFE_COMMENTS_JSON
@@ -3797,6 +3808,47 @@ LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
 jq '.data.repository.issue.comments.nodes += [{id:"reviewer-handoff",body:"Implemented in bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",author:{login:"reviewer"}}]' "$TMP/lifecycle-step-comments.json" > "$TMP/reviewer-handoff.json"
 LIFE_STEP_COMMENTS_JSON="$TMP/reviewer-handoff.json"
 review_case 'reviewer handoff rejected' BLOCKED 'is not an executor'
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
+# Approved commits must remain reachable from the live PR head.
+ancestry_case() { # <name> <head> <state> <diagnostic>
+  jq --arg head "$2" --arg old "$LIFE_HEAD" '.data.repository.issue.comments.nodes |= map(.body |= gsub($old; $head))' \
+    "$TMP/lifecycle-step-comments.json" > "$TMP/ancestry-step.json"
+  LIFE_STEP_COMMENTS_JSON="$TMP/ancestry-step.json"
+  review_case "$1" "$3" "$4"
+}
+# An alternate commit models an amended implementation, absent from the PR.
+ALT_HEAD=$(printf '%s\n' alternate | git -C "$V2FIX" -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid commit-tree "${LIFE_HEAD}^{tree}" -p "$STEP_HEAD")
+ancestry_case 'amended approved step' "$ALT_HEAD" BLOCKED "$ALT_HEAD.*$LIFE_HEAD"
+ancestry_case 'missing approved step' cccccccccccccccccccccccccccccccccccccccc UNVERIFIED 'cccccccccccccccccccccccccccccccccccccccc.*git fetch'
+jq '.head.sha = "cccccccccccccccccccccccccccccccccccccccc"' "$TMP/lifecycle-pr.json" > "$TMP/missing-pr.json"
+sed "s/$LIFE_HEAD/cccccccccccccccccccccccccccccccccccccccc/g" "$TMP/lifecycle-comments.json" > "$TMP/missing-pr-comments.json"
+sed "s/$LIFE_HEAD/cccccccccccccccccccccccccccccccccccccccc/g" "$TMP/lifecycle-run.json" > "$TMP/missing-pr-run.json"
+LIFE_PR_JSON="$TMP/missing-pr.json"
+LIFE_COMMENTS_JSON="$TMP/missing-pr-comments.json"
+LIFE_RUN_JSON="$TMP/missing-pr-run.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
+review_case 'missing PR object' UNVERIFIED 'cccccccccccccccccccccccccccccccccccccccc.*git fetch'
+LIFE_PR_JSON="$TMP/lifecycle-pr.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_RUN_JSON="$TMP/lifecycle-run.json"
+# A genuine shallow boundary hides an otherwise present ancestor object.
+printf '%s\n' "$LIFE_HEAD" > "$V2FIX/.git/shallow"
+ancestry_case 'shallow ancestry' "$STEP_HEAD" UNVERIFIED 'git fetch --unshallow'
+rm "$V2FIX/.git/shallow"
+# Inject only the ancestry command failure; object checks still use real Git.
+REAL_LIFE_GIT=$(command -v git)
+export REAL_LIFE_GIT
+cat > "$LIFE_API/git" <<'FAKE_GIT'
+#!/usr/bin/env bash
+case "$*" in
+  *'merge-base --is-ancestor'*) echo 'fatal: fixture ancestry error' >&2; exit 128 ;;
+esac
+exec "$REAL_LIFE_GIT" "$@"
+FAKE_GIT
+chmod +x "$LIFE_API/git"
+ancestry_case 'git ancestry error' "$STEP_HEAD" UNVERIFIED 'fatal: fixture ancestry error'
+rm "$LIFE_API/git"
+ancestry_case 'ancestor approved step' "$STEP_HEAD" READY 'review by reviewer'
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
 review_case 'authenticated final and step' READY 'review by reviewer'
 grep -q 'EVIDENCE step f-1.*author=reviewer' "$TMP/lifecycle-review.out" \
