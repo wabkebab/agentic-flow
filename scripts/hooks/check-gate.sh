@@ -14,48 +14,66 @@ else
   active=false
 fi
 
-# Clean working tree → nothing uncommitted that this turn could have broken; skip. This
-# keeps pre-existing red state (someone else's broken commit) from holding unrelated,
-# no-edit turns hostage, and spares read-only subagents a pointless gate run.
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-   && [ -z "$(git status --porcelain 2>/dev/null)" ]; then
-  exit 0
-fi
-
-# No Makefile / no real `check` target → nothing to gate on; allow.
+# No Makefile / no real check target means there is no project gate.
 if [ ! -f Makefile ] || ! grep -Eq '^check:' Makefile; then
   exit 0
 fi
 
-# Skip a re-run when nothing has changed since the last green gate. The clean-tree exit
-# above keys on tree-cleanliness, not on who is stopping, so a fan-out of subagents against
-# one dirty worktree re-ran the whole of `make check` per subagent plus once more for the
-# parent turn — the same validation, several times, for one logical change.
-#
-# The stamp records the tree state at the moment `make check` last passed. It lives in
-# $GIT_DIR, so it is never committed and a `worktree`-isolated subagent gets its own.
-#
-# The id must be content-sensitive, not just `git status --porcelain`: a file edited but
-# still listed as "M" produces identical porcelain output, and keying on that would skip a
-# gate that should run. `git diff HEAD` covers tracked content (staged and unstaged) and
-# each untracked file is hashed explicitly. Anything unexpected yields an empty id, which
-# disables the cache rather than trusting it.
+# Hash the committed tree and all visible staged, unstaged and untracked content.
+# Failure disables reuse; an unborn repository still hashes its staged content.
+state_hash() (
+  set -e
+  tree=$(git rev-parse --verify 'HEAD^{tree}' 2>/dev/null) || {
+    if git symbolic-ref -q HEAD >/dev/null && ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+      tree=unborn
+    else
+      exit 1
+    fi
+  }
+  snapshot=$(mktemp "${TMPDIR:-/tmp}/agentic-gate-state.XXXXXX") || exit 1
+  trap 'rm -f "$snapshot" "$snapshot.files"' EXIT
+  {
+    printf '%s\n' "$tree"
+    git status --porcelain || exit 1
+    if [ "$tree" = unborn ]; then
+      git diff --cached || exit 1
+      git diff || exit 1
+    else
+      git diff HEAD || exit 1
+    fi
+    git ls-files --others --exclude-standard -z > "$snapshot.files" || exit 1
+    while IFS= read -r -d '' f; do
+      git hash-object -- "$f" || exit 1
+    done < "$snapshot.files"
+  } > "$snapshot" || exit 1
+  git hash-object --stdin < "$snapshot"
+)
+
+# Probe atomic writes before trusting either record. Read-only metadata must never
+# turn an old record into permission to skip the gate.
+write_record() {
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  if (umask 077; printf '%s\n' "$2" > "$1.tmp.$$") 2>/dev/null; then
+    mv -f "$1.tmp.$$" "$1" 2>/dev/null && return 0
+  fi
+  rm -f "$1.tmp.$$" 2>/dev/null
+  return 1
+}
 STAMP=""
-STATE=""
-if [ "${AGENTIC_CHECK_GATE_NO_CACHE:-0}" != "1" ] && git rev-parse --git-dir >/dev/null 2>&1; then
-  STAMP="$(git rev-parse --git-dir)/agentic-flow-check-gate-state"
-  STATE=$(
-    {
-      git status --porcelain
-      git diff HEAD 2>/dev/null
-      while IFS= read -r -d '' f; do
-        [ -f "$f" ] && git hash-object "$f" 2>/dev/null
-      done < <(git ls-files --others --exclude-standard -z 2>/dev/null)
-    } | git hash-object --stdin 2>/dev/null
-  ) || STATE=""
-  if [ -n "$STATE" ] && [ -f "$STAMP" ] \
-     && [ "$STATE" = "$(cat "$STAMP" 2>/dev/null)" ]; then
-    exit 0
+RED=""
+gitdir=$(git rev-parse --git-dir 2>/dev/null) || gitdir=""
+STATE=$(state_hash 2>/dev/null) || STATE=""
+if [ "${AGENTIC_CHECK_GATE_NO_CACHE:-0}" != 1 ] && [ -n "$gitdir" ]; then
+  probe="$gitdir/agentic-flow-check-gate-probe.$$"
+  if write_record "$probe" "$STATE"; then
+    rm -f "$probe"
+    STAMP="$gitdir/agentic-flow-check-gate-state"
+    RED="$gitdir/agentic-flow-check-gate-red"
+    if [ "$STATE" = "$(cat "$STAMP" 2>/dev/null)" ]; then exit 0; fi
+    if [ "$STATE" = "$(cat "$RED" 2>/dev/null)" ]; then
+      echo "Warning: previously acknowledged failing or changing state; allowing stop to avoid a loop." >&2
+      exit 0
+    fi
   fi
 fi
 
@@ -65,24 +83,25 @@ fi
 # is echoed below, so uniqueness costs nothing in usability.
 LOG=$(mktemp "${TMPDIR:-/tmp}/agentic-check-gate.XXXXXX") || LOG="${TMPDIR:-/tmp}/agentic-check-gate.$$.log"
 
-if make check >"$LOG" 2>&1; then
-  rm -f "$LOG"
-  # Record the state this green verdict belongs to. Written atomically: several subagents
-  # can finish at once, and a half-written stamp would either skip a needed gate or, worse,
-  # match nothing forever. A stale stamp is never dangerous on its own — it only ever
-  # matches a tree state that did pass, so reverting to a known-green state skips correctly.
-  if [ -n "$STAMP" ] && [ -n "$STATE" ]; then
-    if printf '%s\n' "$STATE" > "$STAMP.tmp.$$" 2>/dev/null; then
-      mv -f "$STAMP.tmp.$$" "$STAMP" 2>/dev/null || rm -f "$STAMP.tmp.$$" 2>/dev/null
-    else
-      rm -f "$STAMP.tmp.$$" 2>/dev/null
-    fi
+# A green run may have edited the tree. Verify that new state once, bounded.
+for attempt in 1 2; do
+  if ! make check >"$LOG" 2>&1; then break; fi
+  FINAL=$(state_hash 2>/dev/null) || FINAL=""
+  if [ -n "$STATE" ] && [ "$STATE" = "$FINAL" ]; then
+    write_record "$STAMP" "$FINAL" || true
+    rm -f "$LOG"
+    exit 0
   fi
-  exit 0
-fi
+  STATE="$FINAL"
+  if [ "$attempt" = 2 ]; then
+    echo 'the tree changed during make check; stop editing before ending the turn' > "$LOG"
+  fi
+done
 
 if [ "$active" = "true" ]; then
-  echo "Warning: \`make check\` still failing, but allowing stop to avoid a loop. See $LOG" >&2
+  FINAL=$(state_hash 2>/dev/null) || FINAL=""
+  write_record "$RED" "$FINAL" || true
+  echo "Warning: \`make check\` still failing or the tree changed during verification, but allowing stop to avoid a loop. See $LOG" >&2
   exit 0
 fi
 

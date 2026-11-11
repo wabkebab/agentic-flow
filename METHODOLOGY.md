@@ -366,8 +366,10 @@ Fixes #73
 `.claude/settings.json` wires hooks that mechanize the contract so it can't be quietly missed:
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`): blocks a turn from
   ending while the fast gate is red, feeding the failure back to the agent; if the retry is
-  still red it warns and allows rather than looping forever. Skipped when the working tree
-  is clean (nothing uncommitted to gate — spares no-edit turns and read-only subagents).
+  still red it warns and allows rather than looping forever. Only an exact green state
+  stamp silently skips the gate; clean committed work is checked too. A change during a
+  green run triggers one rerun; a red rerun or further change blocks. Stacks whose check
+  takes over half the hook timeout must raise that timeout to accommodate both runs.
   Scoped to the *fast* gate, not the full suite. `check` ships prefilled with harness sanity
   checks; extend it with the stack's type-check + lint.
 - **PreToolUse(Bash) → block `git add -A` / `git add .` / `--all`**
@@ -418,8 +420,11 @@ These make the handoff explicit and parallel instead of sequential:
   Subagents without it share the parent's working directory, so one can stage or overwrite
   another's half-finished edit, and a green `make check` covers whatever mixture of both
   changes was on disk at the time. The Stop gate does not save you: its state stamp lives in
-  the shared git-dir and is keyed on the whole tree, so it certifies the mixture rather than
-  either change. A read-only fan-out (`Explore` / `Plan`) needs no isolation.
+  the shared git-dir and covers HEAD’s tree plus staged, unstaged and untracked content.
+  It is written atomically only when the state is unchanged across a green run. A separate
+  acknowledged-red record repeats the loop-safety warning for that exact state and never
+  counts as green. Unwritable records disable reuse. Even a stable mixture certifies neither
+  individual change. A read-only fan-out (`Explore` / `Plan`) needs no isolation.
 - **`/code-review`** (`low|medium|high|max`, and **`ultra`** for a deep multi-agent cloud
   review of a whole branch) — a whole-branch or second-opinion pass, **not** a substitute for
   §1's independent per-step review, and the reviewer's role if a project opts out of OpenCode.

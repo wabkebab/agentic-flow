@@ -2501,7 +2501,7 @@ must_allow_nojq "$ADD_GUARD" 'git add README.md'
 # --- Stop gate (check-gate.sh) -----------------------------------------------------------
 # The highest-leverage hook and previously untested (ROADMAP 1.5.4). All four paths matter:
 # a green check must not block, a red one must, the loop-safety escape must fire on the
-# retry, and both no-op paths (no Makefile, clean tree) must stay out of the way.
+# retry, and the no-Makefile path must stay out of the way.
 GATE="$ROOT/scripts/hooks/check-gate.sh"
 if [ -x "$GATE" ]; then
   GATEFIX="$TMP/gate-fixture"
@@ -2559,18 +2559,18 @@ if [ -x "$GATE" ]; then
   rm -f "$GATEFIX/Makefile"
   gate_run false || fail "Stop gate blocked with no Makefile at all"
 
-  # Clean tree → skip even with a red check: pre-existing breakage must not hold an
-  # unrelated, no-edit turn hostage.
+  # A verified dirty fix cannot certify the broken committed tree beneath it.
   gate_makefile 'exit 1'
   (cd "$GATEFIX" && git add Makefile && git commit -q --no-gpg-sign -m "fixture") >/dev/null 2>&1 \
     || fail "gate fixture commit failed (git exit $?) — fixture is not hermetic"
-  gate_run false || fail "Stop gate blocked a no-edit turn on a clean working tree"
+  gate_makefile true
+  gate_run false || fail "Stop gate blocked the uncommitted fix"
+  (cd "$GATEFIX" && git checkout -- Makefile)
+  gate_run false && fail "Stop gate allowed broken clean HEAD after discarding a verified fix"
+  gate_run false && fail "Stop gate allowed a red commit on a clean tree"
 
-  # Tree-state cache: the clean-tree exit keys on cleanliness, not on who is stopping, so a
-  # fan-out of subagents against one dirty worktree paid a full `make check` each, plus once
-  # more for the parent turn. Re-running is skipped only while the tree is byte-identical to
-  # the state that last passed. The counter lives outside the fixture: a log written inside
-  # it would itself change the tree and defeat what is being measured.
+  # Reuse only the complete state that passed. Keep the counter outside the fixture:
+  # writing it inside would itself change the tree being measured.
   GATE_RUNS="$TMP/gate-run-counter"
   : > "$GATE_RUNS"
   printf 'check:\n\t@echo run >> %s\n' "$GATE_RUNS" > "$GATEFIX/Makefile"
@@ -2608,6 +2608,92 @@ if [ -x "$GATE" ]; then
   printf 'check:\n\t@exit 1\n' > "$GATEFIX/Makefile"
   gate_run false && fail "Stop gate allowed a red check after a cached green"
   rm -f "$GATEFIX/cache-probe.txt"
+
+  # Mutation fixtures keep their counters outside the tree being hashed.
+  gate_reset() {
+    rm -f "$GATEFIX/.git/agentic-flow-check-gate-state" "$GATEFIX/.git/agentic-flow-check-gate-red"
+    : > "$GATE_RUNS"
+  }
+  gate_capture() {
+    gate_status=0
+    (cd "$GATEFIX" && printf '{"stop_hook_active":%s}' "$1" | "$GATE") >"$TMP/gate-result" 2>&1 || gate_status=$?
+    [ "$gate_status" = "$2" ] || fail "Stop gate expected exit $2, got $gate_status"
+  }
+  gate_stamp="$GATEFIX/.git/agentic-flow-check-gate-state"
+  gate_red="$GATEFIX/.git/agentic-flow-check-gate-red"
+  gate_mutator() { # once|always|red
+    printf 'check:\n\t@echo run >> %s; ' "$GATE_RUNS" > "$GATEFIX/Makefile"
+    case "$1" in
+      once) printf 'if [ ! -f mutation ]; then echo x > mutation; fi\n' ;;
+      always) printf 'echo x >> mutation\n' ;;
+      red) printf 'if [ -f mutation ]; then exit 1; fi; echo x > mutation\n' ;;
+    esac >> "$GATEFIX/Makefile"
+    rm -f "$GATEFIX/mutation"
+    gate_reset
+  }
+
+  gate_mutator always
+  gate_capture false 2
+  [ "$(gate_runs)" = 2 ] || fail "changing gate did not stop after two runs"
+  [ ! -f "$gate_stamp" ] || fail "changing gate wrote a green stamp"
+  grep -q 'tree changed during' "$TMP/gate-result" || fail "missing tree-change diagnostic"
+
+  gate_mutator red
+  gate_capture false 2
+  [ "$(gate_runs)" = 2 ] || fail "red rerun was not attempted"
+  [ ! -f "$gate_stamp" ] || fail "red rerun wrote a green stamp"
+
+  gate_mutator once
+  gate_capture false 0
+  [ "$(gate_runs)" = 2 ] || fail "one edit did not trigger exactly one rerun"
+  [ -s "$gate_stamp" ] || fail "stable rerun did not stamp its final state"
+  gate_capture false 0
+  [ "$(gate_runs)" = 2 ] || fail "final state stamp did not match the tree"
+  saved_green=$(cat "$gate_stamp")
+  printf 'check:\n\t@echo run >> %s; exit 1\n' "$GATE_RUNS" > "$GATEFIX/Makefile"
+  gate_capture true 0
+  [ "$(cat "$gate_stamp")" = "$saved_green" ] || fail "red retry overwrote green stamp"
+  [ -s "$gate_red" ] || fail "red retry did not record acknowledged state"
+  saved_red=$(cat "$gate_red")
+  red_runs=$(gate_runs)
+  gate_capture false 0
+  [ "$(gate_runs)" = "$red_runs" ] || fail "acknowledged red reran the gate"
+  grep -q 'Warning:' "$TMP/gate-result" || fail "acknowledged red skipped silently"
+  printf 'changed\n' >> "$GATEFIX/mutation"
+  gate_capture false 2
+  [ "$(cat "$gate_red")" = "$saved_red" ] || fail "ordinary red stop acknowledged a new state"
+
+  gate_mutator always
+  printf '%s\n' "$saved_green" > "$gate_stamp"
+  gate_capture true 0
+  [ "$(cat "$gate_stamp")" = "$saved_green" ] || fail "changing retry overwrote green stamp"
+  [ -s "$gate_red" ] || fail "changing retry did not record its final state"
+  gate_capture false 0
+  [ "$(gate_runs)" = 2 ] || fail "acknowledged changing state reran the gate"
+
+  rm -f "$GATEFIX/mutation"
+  printf 'check:\n\t@echo run >> %s\n' "$GATE_RUNS" > "$GATEFIX/Makefile"
+  (cd "$GATEFIX" && git add Makefile && git commit -q --no-gpg-sign -m green)
+  gate_reset
+  gate_capture false 0
+  gate_capture false 0
+  [ "$(gate_runs)" = 1 ] || fail "clean green state was not checked exactly once"
+  printf 'new tree\n' > "$GATEFIX/committed"
+  (cd "$GATEFIX" && git add committed && git commit -q --no-gpg-sign -m moved)
+  gate_capture false 0
+  [ "$(gate_runs)" = 2 ] || fail "moved clean HEAD reused another tree's stamp"
+
+  # Inject write denial without chmod: this also works under privileged test runners.
+  # Pre-existing green records must not bypass the writeability probe.
+  probe_bin="$TMP/gate-denied-bin"
+  mkdir -p "$probe_bin"
+  # Deny the atomic rename for records while preserving normal git operations.
+  real_mv=$(command -v mv)
+  printf '#!/usr/bin/env bash\ncase "$*" in *agentic-flow-check-gate*) exit 1 ;; esac\nexec "%s" "$@"\n' "$real_mv" > "$probe_bin/mv"
+  chmod +x "$probe_bin/mv"
+  PATH="$probe_bin:$PATH" gate_capture false 0
+  PATH="$probe_bin:$PATH" gate_capture false 0
+  [ "$(gate_runs)" = 4 ] || fail "unwritable metadata reused a gate record"
 
   # Failure output must go somewhere unique per run, not a fixed shared path
   # (ROADMAP 1.5.2) — two sessions sharing one log show each other's errors.
