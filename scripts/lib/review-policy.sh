@@ -36,7 +36,10 @@ read_review_policy() {
         [[ "$value" =~ ^docs/accepted_risks\.md#[A-Za-z0-9_-]+$ ]] || return 1
         REVIEW_ACCEPTED_RISK=$value ;;
       reviewer|executor|approver)
-        [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] || return 1
+        [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] || {
+          echo "review policy invalid $key login: $value; set a GitHub login in $root/.agentic-flow-review-policy" >&2
+          return 1
+        }
         case "$key" in
           reviewer) role=REVIEW_REVIEWERS ;;
           executor) role=REVIEW_EXECUTORS ;;

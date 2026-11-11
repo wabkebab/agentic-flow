@@ -23,7 +23,10 @@ issue_number() {
 
 last_comment() {
   local root roles
-  root=$(git rev-parse --show-toplevel) || exit 2
+  root=$(git rev-parse --show-toplevel) || {
+    echo 'Blocked: cannot locate the project Git root for review policy checks.' >&2
+    return 1
+  }
   # shellcheck disable=SC1091
   . "$root/scripts/lib/review-policy.sh"
   if ! read_review_policy "$root"; then
@@ -33,7 +36,10 @@ last_comment() {
   roles=$REVIEW_REVIEWERS
   [ "${2:-reviewer}" != executor ] || roles=$REVIEW_EXECUTORS
   gh issue view "$1" --json comments 2>/dev/null |
-    jq -r --arg roles "$roles" '[.comments[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)] | last | .body // ""'
+    jq -r --arg roles "$roles" '[.comments[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)] | last | .body // ""' || {
+      echo "Blocked: could not read comments for issue #$1; check GitHub access and retry." >&2
+      return 1
+    }
 }
 
 # Handoff: implementor -> reviewer. `gh issue edit <N> --add-label "...needs-review..."`

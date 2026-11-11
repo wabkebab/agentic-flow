@@ -2860,7 +2860,13 @@ cat > "$STEP_HOOK_GH/gh" <<'FAKE_GH'
 case "$*" in
   *'--jq .body'*) printf '%s\n' '<!-- agentic-flow:topology:standard -->' ;;
   *'--jq .labels[].name'*) printf '%s\n' "${STEP_HOOK_LABELS:-needs-review}" ;;
-  *'--json comments'*) jq -n --arg body "${STEP_HOOK_COMMENT:-}" '{comments:[{body:$body,author:{login:"wabkebab"}}]}' ;;
+  *'--json comments'*)
+    [ "${STEP_HOOK_GH_FAIL:-0}" = 0 ] || exit 1
+    if [ -n "${STEP_HOOK_COMMENTS_JSON:-}" ]; then
+      jq -n --argjson comments "$STEP_HOOK_COMMENTS_JSON" '{comments:$comments}'
+    else
+      jq -n --arg body "${STEP_HOOK_COMMENT:-}" '{comments:[{body:$body,author:{login:"wabkebab"}}]}'
+    fi ;;
   *) exit 2 ;;
 esac
 FAKE_GH
@@ -2873,6 +2879,21 @@ step_hook_status() { # <command> <comment> <labels> <expected status>
   [ "$status" -eq "$4" ] \
     || fail "step handoff hook returned $status, expected $4: $(cat "$TMP/step-hook.out")"
 }
+printf '%s\n' 'reviewer=review-only' >> "$TMP/step-hook-project/.agentic-flow-review-policy"
+# shellcheck disable=SC2089 # JSON data parsed by jq, never executed as shell words.
+STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"stranger"}}]'
+# shellcheck disable=SC2090 # The fake gh reads this exported value as JSON data.
+export STEP_HOOK_COMMENTS_JSON
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
+STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"review-only"}}]'
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
+STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"wabkebab"}},{"body":"unrelated","author":{"login":"stranger"}}]'
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 0
+unset STEP_HOOK_COMMENTS_JSON
+STEP_HOOK_GH_FAIL=1; export STEP_HOOK_GH_FAIL
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
+grep -q 'Blocked:.*comments.*issue #1' "$TMP/step-hook.out" || fail 'gh failure blocked silently'
+unset STEP_HOOK_GH_FAIL
 STEP_APPROVAL='agentic-flow-review: status=approved; step=alpha; head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; role=reviewer'
 STEP_FINAL='agentic-flow-review: status=approved; pr=2; head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; run=https://github.com/owner/repo/actions/runs/100; attempt=1; role=reviewer'
 step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
@@ -3772,6 +3793,10 @@ LIFE_STEP_COMMENTS_JSON="$TMP/stranger-step.json"
 review_case 'stranger malformed marker and later handoff' READY 'review by reviewer'
 grep -q 'EVIDENCE ignored 1' "$TMP/lifecycle-review.out" || fail 'stranger comments not counted'
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
+jq '.data.repository.issue.comments.nodes += [{id:"reviewer-handoff",body:"Implemented in bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",author:{login:"reviewer"}}]' "$TMP/lifecycle-step-comments.json" > "$TMP/reviewer-handoff.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/reviewer-handoff.json"
+review_case 'reviewer handoff rejected' BLOCKED 'is not an executor'
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
 review_case 'authenticated final and step' READY 'review by reviewer'
 grep -q 'EVIDENCE step f-1.*author=reviewer' "$TMP/lifecycle-review.out" \

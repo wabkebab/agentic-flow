@@ -157,3 +157,5 @@ Existing adopters must add reviewer, executor and approver login lines to
 `.agentic-flow-review-policy`, including in single-operator mode. One login may
 hold all three roles. Initialize new projects with `--owner-login <login>`;
 otherwise init uses `gh api user --jq .login`.
+For direct `scripts/export.sh` installs, replace the owner-login tokens in all
+three policy role lines with GitHub logins before running doctor or the gates.
