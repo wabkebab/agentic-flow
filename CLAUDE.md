@@ -62,11 +62,9 @@ final Status and Tracker, change TRIAGE to Done, move the doc and update the ind
 last repository change, then commit. The human pushes that candidate. CI and the reviewer
 must approve that exact PR head after the push. Run
 `scripts/lifecycle-status.sh --doc docs/done/<doc>.md --phase close-out --check --verify-evidence`,
-then close the named issue without another edit. The human checks the document
-with `--phase pre-merge` immediately before merge (or relies on protected-branch required
-checks). That phase expects the issue closed. Any repository edit after approval restarts
-the external CI/review round. Verification proves the current external evidence; comments
-and runs can change later, and this script is not a merge guard. Confirm steps are closed;
+close the issue, then remove `agent:claude,needs-closing`. No repository edits. The human rechecks
+with `--phase pre-merge` immediately before merge (or relies on required checks). That phase expects the issue closed. Any repository edit after approval restarts
+the external CI/review round. Verification is point-in-time, not a merge guard. Confirm steps are closed;
 the tracker label is a notification, not the authority. This repository uses the
 single-operator review mode: its role claim is accountable but does not prove independent
 review (see `docs/accepted_risks.md#single-operator-review`).

@@ -165,7 +165,7 @@ the applicable assurance profile. Emergency restoration may proceed as a hotfix,
 by a retrospective Feature/Security document and the applicable evidence and review.
 
 An independently-shippable step is the **tracking** unit — one issue, one logical commit,
-closed via `Fixes #N` when that commit lands. The **shipping** unit is coarser: a whole
+closed by the reviewer under Strict, or the closer under Standard. The **shipping** unit is coarser: a whole
 Feature/Security pass ships as **one branch and one PR**, so a reviewer sees the complete
 arc of the pass instead of fragments merged out of order. "Independently shippable" still
 means each step must stand alone as a coherent, working commit — if two proposed steps can't
@@ -266,7 +266,7 @@ Each finding states **location** (`file:line`), **what's wrong**, and a concrete
 ## 6. Plan → GitHub issues
 
 A markdown tracker is versioned and offline; GitHub issues give a live progress bar,
-`Fixes #N` auto-close, and PR linkage. They're complementary — **doc = design intent,
+issue state, and PR linkage. They're complementary — **doc = design intent,
 issues = execution units**.
 
 Use the `plan-to-issues` skill (`.claude/skills/plan-to-issues/`) once a plan is
@@ -338,7 +338,9 @@ Rules (both agents):
   commits without reason.
 - **Verbose, *why*-first commit bodies** — name the risk/bug, the approach, the blast
   radius. A reviewer months later should understand the change from the message alone.
-- **Reference the issue** — `Fixes #N` in the PR (or commit) so merge closes it.
+- **Reference the issue** — keep `Fixes #N` in the PR or commit for traceability.
+  The reviewer closes Strict steps; the closer closes Standard work issues and trackers.
+  Remove workflow labels after closing; Standard requires `needs-closing` at close time.
 - **Never push.** The human controls all pushes and merges.
 - The `Co-Authored-By:` trailer is **appended by the wrapper** when the message lacks one —
   don't hand-maintain it (model names in prose go stale); a trailer you write is kept as-is.

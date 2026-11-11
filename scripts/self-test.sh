@@ -3151,6 +3151,10 @@ case "${1:-} ${2:-}" in
       case "$1" in
         --title) printf '%s\n' "$2" > "$dir/title"; shift 2 ;;
         --body) printf '%s\n' "$2" > "$dir/body"; shift 2 ;;
+        --remove-label)
+          [ "$(cat "$dir/state")" = CLOSED ] || exit 2
+          printf '%s\n' "$2" >> "$dir/removed-labels"
+          shift 2 ;;
         --repo|--add-label) shift 2 ;;
         *) shift ;;
       esac
@@ -3379,6 +3383,11 @@ jq '.steps = [.steps[0]]' "$UPDATED_SPEC" > "$REMOVED_SPEC"
 plan_apply "$REMOVED_SPEC" || fail "plan with a removed step did not reconcile"
 beta_state=$(grep -Rl "step:beta" "$GHSTATE"/issue-*/body | sed 's|/body$|/state|' | xargs cat)
 [ "$beta_state" = CLOSED ] || fail "removed plan step was not closed with history retained"
+beta_dir=$(grep -Rl "step:beta" "$GHSTATE"/issue-*/body | sed 's|/body$||')
+[ -f "$beta_dir/removed-labels" ] \
+  || fail "removed plan step retained workflow labels"
+[ "$(cat "$beta_dir/removed-labels")" = 'agent:claude,agent:codex,agent:opencode,needs-review,needs-execution,needs-closing' ] \
+  || fail "removed plan step did not clear all workflow labels after closing"
 
 PARTIAL_STATE="$TMP/gh-partial-state"
 PARTIAL_SPEC="$TMP/partial-spec.json"

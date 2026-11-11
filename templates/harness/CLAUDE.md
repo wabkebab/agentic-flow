@@ -132,8 +132,8 @@ full mechanism and rationale for each in `METHODOLOGY.md` §8:
   Status/Tracker, set TRIAGE to Done, move the document to `docs/done/`, update the index,
   and commit that as the last repository edit. The human pushes; CI and a reviewer approve
   the exact PR head. Verify with `scripts/lifecycle-status.sh --doc docs/done/<doc>.md
-  --phase close-out --check --verify-evidence`, then close the tracker or Standard work issue without another
-  repository edit. The human rechecks with `--phase pre-merge` immediately before merge
+  --phase close-out --check --verify-evidence`, close the tracker or Standard work issue, then remove
+  `agent:claude,needs-closing`, without repository edits. The human rechecks with `--phase pre-merge` immediately before merge
   (or relies on protected-branch required checks). That phase expects the named issue closed.
   Any edit after approval restarts the external round. Verification is point-in-time and
   does not guard a later merge. A closed step is *reviewed clean*, not *shipped*.

@@ -467,6 +467,9 @@ while IFS="$(printf '\t')" read -r old_identity old_num; do
   gh issue close "$old_num" --repo "$REPO" \
     --comment "Closed by plan reconciliation: step '$old_id' is no longer in spec revision $SPEC_HASH." \
     >/dev/null
+  gh issue edit "$old_num" --repo "$REPO" \
+    --remove-label "agent:claude,agent:codex,agent:opencode,needs-review,needs-execution,needs-closing" \
+    >/dev/null
   echo "closed removed step #$old_num [$old_id]"
 done < "$INDEX"
 
