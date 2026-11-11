@@ -9,6 +9,95 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="agent-thread-prompt-injection"></a>
+## D-9 — Interactive agents still read raw issue threads
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-11
+**Decided by:** Human approval of the gate-fix brief, tracker #114
+**Tracking:** docs/done/feature-gate-and-handoff-fixes.md; R-19 in
+docs/inprogress/product-harness-factory-optimization.md
+
+### Finding / proposal
+Once the repository is public, any GitHub user can comment on step and tracking issues.
+G-1 stops those comments from changing lifecycle or hook outcomes, but an agent that reads
+the thread with `gh issue view` still sees the text. Instructions planted in a comment are
+a prompt-injection path into Claude, Codex or OpenCode.
+
+### Proposed mitigation / implementation
+R-19: build each station's input from the brief, the approved commit and comments by
+policy logins only, and deny stations raw thread reads.
+
+### Acceptance rationale
+Every station runs interactively today, under a human who reads its actions, and the push,
+merge and secret guards still apply. The evidence path that decides close-out ignores
+non-policy authors. R-19 belongs with the headless line controller that would remove the
+human from that loop.
+
+### Revisit if
+- Any station runs headless or unattended. **No headless stations before R-19.**
+- A hostile comment is observed steering an agent.
+
+<a id="codex-guard-fail-open"></a>
+## G-4 — Codex guard hooks fail open on error or timeout
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-11
+**Decided by:** Human approval of the gate-fix brief, tracker #114 (conditional on G-4's
+finding)
+**Tracking:** docs/done/feature-gate-and-handoff-fixes.md; step #118
+
+### Finding / proposal
+G-4 set `"onFailure": "block"` on the Claude push, staged-secret and broad-staging guards.
+The Codex hooks documentation lists no equivalent, and says a `PreToolUse` error, timeout
+or malformed response can let the tool run. A hung or crashed guard under Codex therefore
+lets `git push`, a secret-bearing commit or `git add -A` through. Claude Code before
+v2.1.295 ignores the field, with the same result.
+
+### Proposed mitigation / implementation
+A Codex-side failure policy if one ships, or a wrapper that runs the guard and refuses the
+command itself when the guard does not answer.
+
+### Acceptance rationale
+The guards are fast local scripts with no network calls, so failure is rare. Pushes and
+merges stay with the human, and `CI gate` re-runs the gates on every PR head. A secret
+committed past a failed guard is caught only by the human before pushing; publishing step 1
+scans the full history with gitleaks and trufflehog.
+
+### Revisit if
+- Codex documents a hook failure policy.
+- A guard is observed failing or timing out under Codex.
+
+<a id="recordless-inventory-sweep"></a>
+## G-5 — A recordless adopter's gate also checks the adopter's own scripts
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-11
+**Decided by:** Proposed at close-out from the G-5 review; pending the human owner's
+confirmation at merge
+**Tracking:** docs/done/feature-gate-and-handoff-fixes.md; step #119; #109
+
+### Finding / proposal
+Without `.agentic-flow-installation`, `shell-inventory.sh` walks the manifest destinations
+of active export rows. Directory destinations such as `scripts/` and `.claude/skills/` are
+walked whole, so `--syntax` and `--lint` also cover adopter-owned shell files there. An
+adopter script with a syntax error fails `make check`, which a project with a record does
+not.
+
+### Proposed mitigation / implementation
+Restrict the walk to files the scaffold ships. The precise helper,
+`payload_destination_files`, skips missing files and never expands directories, so it
+cannot report a missing installed file; a fix needs a per-file list, which R-14a's per-file
+hashes provide.
+
+### Acceptance rationale
+Before G-5 the recordless gate failed on every run (#109), so no adopter regresses. The
+extra coverage fails closed on real syntax errors, never open.
+
+### Revisit if
+- An adopter reports a false gate failure from its own scripts.
+- R-14a lands and every upgraded adopter carries an installation record.
+
 <a id="f10-unreviewed-amendment"></a>
 ## F-10 — Post-approval amendment `987c58b` was not re-reviewed
 
