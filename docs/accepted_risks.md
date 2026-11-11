@@ -78,6 +78,7 @@ the account that posts a verdict, but cannot prove that a different person revie
 ### Acceptance rationale
 
 The lifecycle gate requires a structured reviewer role claim and records the API author.
+Policy role logins restrict whose comments qualify as evidence in both identity modes.
 The result is accountable single-operator attestation, with a persistent warning; it is
 not independent review. Revisit when separate reviewer credentials are available.
 

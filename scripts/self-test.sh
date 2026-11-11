@@ -798,7 +798,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
 
   INIT_TARGET="$TMP/init-empty"
-  "$ROOT/scripts/init.sh" "$INIT_TARGET" --name demo-proj --stack none --yes >"$TMP/init-empty.log" 2>&1 \
+  "$ROOT/scripts/init.sh" "$INIT_TARGET" --owner-login wabkebab --name demo-proj --stack none --yes >"$TMP/init-empty.log" 2>&1 \
     || { cat "$TMP/init-empty.log" >&2; fail "init failed for an empty target"; }
   if grep -RE "$TOKEN_RE" "$INIT_TARGET" >/dev/null 2>&1; then
     grep -RE "$TOKEN_RE" "$INIT_TARGET" >&2 || true
@@ -813,7 +813,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   INIT_EXISTING="$TMP/init-existing"
   mkdir -p "$INIT_EXISTING"
   printf '%s\n' "# Existing project guidance" > "$INIT_EXISTING/CLAUDE.md"
-  "$ROOT/scripts/init.sh" "$INIT_EXISTING" --name demo-proj --stack none --yes >"$TMP/init-existing.log" 2>&1 \
+  "$ROOT/scripts/init.sh" "$INIT_EXISTING" --owner-login wabkebab --name demo-proj --stack none --yes >"$TMP/init-existing.log" 2>&1 \
     || { cat "$TMP/init-existing.log" >&2; fail "init failed for a target with existing CLAUDE.md"; }
   grep -qx "# Existing project guidance" "$INIT_EXISTING/CLAUDE.md" \
     || fail "init modified a pre-existing CLAUDE.md"
@@ -830,7 +830,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail "init missing-name error did not explain --name requirement"
 
   INIT_NONTty="$TMP/init-nontty"
-  "$ROOT/scripts/init.sh" "$INIT_NONTty" --name pipe-proj --stack none < /dev/null >"$TMP/init-nontty.log" 2>&1 \
+  "$ROOT/scripts/init.sh" "$INIT_NONTty" --owner-login wabkebab --name pipe-proj --stack none < /dev/null >"$TMP/init-nontty.log" 2>&1 \
     || { cat "$TMP/init-nontty.log" >&2; fail "init non-TTY fallback failed"; }
   grep -q "pipe-proj" "$INIT_NONTty/CLAUDE.md" || fail "non-TTY init did not stamp project name"
   if grep -RE "$TOKEN_RE" "$INIT_NONTty" >/dev/null 2>&1; then
@@ -838,7 +838,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   fi
 
   INIT_RUST="$TMP/init-rust"
-  "$ROOT/scripts/init.sh" "$INIT_RUST" --name rust-proj --stack rust --yes >"$TMP/init-rust.log" 2>&1 \
+  "$ROOT/scripts/init.sh" "$INIT_RUST" --owner-login wabkebab --name rust-proj --stack rust --yes >"$TMP/init-rust.log" 2>&1 \
     || { cat "$TMP/init-rust.log" >&2; fail "init failed for a rust target"; }
   assert_no_file "$INIT_RUST/.github/workflows/ci.yml"
   assert_no_file "$INIT_RUST/.github/workflows/deploy.yml"
@@ -2848,13 +2848,19 @@ must_allow_nojq "$PUSH_GUARD" 'git pull --rebase'
 
 STEP_HOOK="$ROOT/scripts/hooks/require-step-comment.sh"
 STEP_HOOK_GH="$TMP/step-hook-gh"
-mkdir -p "$STEP_HOOK_GH"
+mkdir -p "$STEP_HOOK_GH" "$TMP/step-hook-project/scripts/lib" "$TMP/step-hook-project/docs"
+git -C "$TMP/step-hook-project" init -q
+cp "$ROOT/scripts/lib/review-policy.sh" "$TMP/step-hook-project/scripts/lib/review-policy.sh"
+printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=single-operator' \
+  'accepted-risk=docs/accepted_risks.md#single-operator-review' \
+  'reviewer=wabkebab' 'executor=wabkebab' 'approver=wabkebab' > "$TMP/step-hook-project/.agentic-flow-review-policy"
+printf '%s\n' '<a id="single-operator-review"></a>' > "$TMP/step-hook-project/docs/accepted_risks.md"
 cat > "$STEP_HOOK_GH/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 case "$*" in
   *'--jq .body'*) printf '%s\n' '<!-- agentic-flow:topology:standard -->' ;;
   *'--jq .labels[].name'*) printf '%s\n' "${STEP_HOOK_LABELS:-needs-review}" ;;
-  *'--jq .comments[-1].body'*) printf '%s\n' "${STEP_HOOK_COMMENT:-}" ;;
+  *'--json comments'*) jq -n --arg body "${STEP_HOOK_COMMENT:-}" '{comments:[{body:$body,author:{login:"wabkebab"}}]}' ;;
   *) exit 2 ;;
 esac
 FAKE_GH
@@ -2862,7 +2868,7 @@ chmod +x "$STEP_HOOK_GH/gh"
 step_hook_status() { # <command> <comment> <labels> <expected status>
   status=0
   hook_payload "$1" | PATH="$STEP_HOOK_GH:$PATH" \
-    STEP_HOOK_COMMENT="$2" STEP_HOOK_LABELS="$3" "$STEP_HOOK" \
+    STEP_HOOK_COMMENT="$2" STEP_HOOK_LABELS="$3" bash -c 'cd "$1" && "$2"' _ "$TMP/step-hook-project" "$STEP_HOOK" \
     > "$TMP/step-hook.out" 2>&1 || status=$?
   [ "$status" -eq "$4" ] \
     || fail "step handoff hook returned $status, expected $4: $(cat "$TMP/step-hook.out")"
@@ -3491,6 +3497,7 @@ done
 # one Actions lookup, including attempt mismatch and failure cases.
 printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' \
   'identity-mode=single-operator' \
+  'reviewer=reviewer' 'executor=executor' 'approver=approver' \
   'accepted-risk=docs/accepted_risks.md#single-operator-review' \
   > "$V2FIX/.agentic-flow-review-policy"
 mkdir -p "$V2FIX/docs"
@@ -3757,6 +3764,15 @@ review_case() { # <name> <state> <diagnostic>
 }
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
+# Unlisted authors cannot inject malformed evidence or replace a real handoff.
+jq '.data.repository.issue.comments.nodes += [{id:"stranger",body:"agentic-flow-review: malformed",author:{login:"stranger"}}]' "$TMP/lifecycle-comments.json" > "$TMP/stranger-final.json"
+jq '.data.repository.issue.comments.nodes += [{id:"stranger",body:"Implemented in bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",author:{login:"stranger"}}]' "$TMP/lifecycle-step-comments.json" > "$TMP/stranger-step.json"
+LIFE_COMMENTS_JSON="$TMP/stranger-final.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/stranger-step.json"
+review_case 'stranger malformed marker and later handoff' READY 'review by reviewer'
+grep -q 'EVIDENCE ignored 1' "$TMP/lifecycle-review.out" || fail 'stranger comments not counted'
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
 review_case 'authenticated final and step' READY 'review by reviewer'
 grep -q 'EVIDENCE step f-1.*author=reviewer' "$TMP/lifecycle-review.out" \
   || fail 'step evidence did not print comment and author'
@@ -3780,19 +3796,19 @@ grep -q '^READY.*feature-v2.md' "$TMP/lifecycle-premerge.out" \
 jq 'del(.data.repository.issue.comments.nodes[0].author)' "$TMP/lifecycle-comments.json" \
   > "$TMP/lifecycle-comments-case.json"
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
-review_case 'missing final author' UNVERIFIED 'author unavailable'
+review_case 'missing final author' UNVERIFIED 'no approval for PR head'
 jq '.data.repository.issue.comments.nodes[0].author.login = "intruder"' \
   "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
 printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=distinct-account' \
   'reviewer=reviewer' 'executor=executor' 'approver=approver' \
   > "$V2FIX/.agentic-flow-review-policy"
-review_case 'unauthorized author' BLOCKED 'not an authorized reviewer'
+review_case 'unauthorized author' UNVERIFIED 'no approval for PR head'
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 review_case 'distinct account reviewer' READY 'review by reviewer'
 jq '.data.repository.issue.comments.nodes[0].author.login = "intruder"' \
   "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-case.json"; export LIFE_STEP_COMMENTS_JSON
-review_case 'unauthorized step handoff' BLOCKED 'handoff author intruder is not an executor'
+review_case 'unauthorized step handoff' UNVERIFIED 'no full implementation SHA handoff'
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
 printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=distinct-account' \
   'reviewer=reviewer' 'executor=reviewer' 'approver=approver' \
@@ -3868,6 +3884,9 @@ LIFE_PR_JSON="$TMP/lifecycle-pr.json"; export LIFE_PR_JSON
 printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=single-operator' \
   'accepted-risk=docs/accepted_risks.md#missing-entry' > "$V2FIX/.agentic-flow-review-policy"
 review_case 'unlinked accepted risk' UNVERIFIED 'review policy missing or invalid'
+cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
+sed '/^reviewer=/d; /^executor=/d; /^approver=/d' "$TMP/lifecycle-policy-valid" > "$V2FIX/.agentic-flow-review-policy"
+review_case 'missing role logins' UNVERIFIED 'review policy missing or invalid'
 cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
 
 fi

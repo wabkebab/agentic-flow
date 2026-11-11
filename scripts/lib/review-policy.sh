@@ -50,6 +50,10 @@ read_review_policy() {
   done < "$root/.agentic-flow-review-policy"
   [ "$seen_version" = true ] && [ "$seen_workflow" = true ] &&
     [ "$seen_identity_mode" = true ] || { echo 'review policy missing required field' >&2; return 1; }
+  for key in reviewer executor approver; do
+    case "$key" in reviewer) value=$REVIEW_REVIEWERS ;; executor) value=$REVIEW_EXECUTORS ;; approver) value=$REVIEW_APPROVERS ;; esac
+    [ "$value" != ' ' ] || { echo "review policy missing $key login" >&2; return 1; }
+  done
   if [ "$REVIEW_IDENTITY_MODE" = distinct-account ]; then
     [ "$seen_accepted_risk" = false ] && [ "$REVIEW_REVIEWERS" != ' ' ] &&
       [ "$REVIEW_EXECUTORS" != ' ' ] && [ "$REVIEW_APPROVERS" != ' ' ] || return 1

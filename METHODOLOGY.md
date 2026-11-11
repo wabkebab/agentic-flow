@@ -169,6 +169,11 @@ be reviewed and merged in that order within the pass, they are one step.
 
 ---
 
+Review evidence is accepted only from logins in the review policy. Comments
+from authors outside all configured roles are ignored before parsing; executor
+handoffs require an executor login and verdicts require a reviewer login.
+
+
 ## 3. Document types
 
 Four types live under `docs/`. Pick the template that matches the work.

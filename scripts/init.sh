@@ -10,6 +10,7 @@ set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/.." && pwd -P)
 PROJECT_NAME=""
+OWNER_LOGIN=""
 STACK=""
 CLAUDE_ONLY=false
 GIT_INIT=false
@@ -116,6 +117,10 @@ is_kebab() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --owner-login)
+      [ "$#" -ge 2 ] || die "--owner-login requires a value"
+      OWNER_LOGIN="$2"; shift 2 ;;
+    --owner-login=*) OWNER_LOGIN="${1#*=}"; shift ;;
     --name)
       [ "$#" -ge 2 ] || die "--name requires a value"
       PROJECT_NAME="$2"; shift 2 ;;
@@ -183,6 +188,11 @@ is_kebab "$PROJECT_NAME" || die "--name must be kebab-case lowercase letters, nu
 [ -f "$SRC/profiles/$STACK.tsv" ] \
   || die "--stack must name a profile in profiles/ ('none' aliases generic)"
 
+if [ -z "$OWNER_LOGIN" ]; then
+  OWNER_LOGIN=$(gh api user --jq .login 2>/dev/null) || OWNER_LOGIN=""
+fi
+[[ "$OWNER_LOGIN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] || die "provide a valid --owner-login (gh api user unavailable)"
+
 # Claude-only means the Codex and OpenCode adapters are dead weight in the target: hooks
 # that no tool reads, skills no runtime scans. AGENTS.md is deliberately not in this set —
 # it is `core` scope and ships with its OPT-OUT banner so CLAUDE.md's link still resolves.
@@ -221,6 +231,13 @@ preexisting_ci_template=false
 [ -e "$TARGET_ABS/templates/ci/ci.yml" ] && preexisting_ci_template=true
 
 "$SRC/scripts/export.sh" "${EXCLUDE_SCOPE_ARGS[@]+"${EXCLUDE_SCOPE_ARGS[@]}"}" "$TARGET_ABS"
+
+owner_token=$(printf '{%sOWNER_LOGIN}%s' '{' '}')
+for policy in "$TARGET_ABS/.agentic-flow-review-policy" "$TARGET_ABS/.agentic-flow-review-policy.agentic-new"; do
+  [ -f "$policy" ] || continue
+  sed "s/$owner_token/$OWNER_LOGIN/g" "$policy" > "$policy.tmp.$$"
+  mv "$policy.tmp.$$" "$policy"
+done
 
 fill_project_name() {
   local file="$1" tmp

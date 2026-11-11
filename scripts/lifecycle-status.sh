@@ -144,9 +144,9 @@ authenticate_verdict() { # <comment-id> <API-author> <claimed-role>
   [ "$role" = reviewer ] || {
     blocked_evidence "comment $comment_id role claim differs from reviewer"; return 1;
   }
-  if [ "$REVIEW_IDENTITY_MODE" = distinct-account ]; then
-    case "$REVIEW_REVIEWERS" in *" $author "*) ;; *)
+  case "$REVIEW_REVIEWERS" in *" $author "*) ;; *)
       blocked_evidence "comment $comment_id author $author is not an authorized reviewer"; return 1 ;; esac
+  if [ "$REVIEW_IDENTITY_MODE" = distinct-account ]; then
     case "$REVIEW_EXECUTORS$REVIEW_APPROVERS" in *" $author "*)
       blocked_evidence "comment $comment_id author $author overlaps executor or approver"; return 1 ;; esac
   fi
@@ -202,21 +202,24 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> [reuse-tracki
   if [ -n "$null_index" ]; then
     unverified_evidence "step $step comment node $null_index unreadable"; return 1
   fi
-  printf '%s' "$response" | jq -c '.data.repository.issue.comments.nodes[]' > "$tmp/step-nodes-$number"
+  local ignored
+  ignored=$(printf '%s' "$response" | jq --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '[.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) == null)] | length')
+  [ "$ignored" -eq 0 ] || printf 'EVIDENCE ignored %s comment(s) from authors outside the review policy\n' "$ignored"
+  printf '%s' "$response" | jq -c --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)' > "$tmp/step-nodes-$number"
   # The latest executor handoff on this thread identifies the implementation
   # commit. A full SHA is required so a truncated hash cannot masquerade as head.
   while IFS= read -r node; do
     body=$(printf '%s' "$node" | jq -r '.body // empty')
     candidate=$(printf '%s\n' "$body" | sed -nE 's/.*Implemented in ([[:xdigit:]]{40})([^[:xdigit:]]|$).*/\1/p' | head -1)
     if [ -n "$candidate" ]; then
-      if [ "$REVIEW_IDENTITY_MODE" = distinct-account ]; then
+      {
         handoff_author=$(printf '%s' "$node" | jq -r '.author.login // empty')
         [ -n "$handoff_author" ] || {
           unverified_evidence "step $step implementation handoff author unavailable"; return 1;
         }
         case "$REVIEW_EXECUTORS" in *" $handoff_author "*) ;; *)
           blocked_evidence "step $step implementation handoff author $handoff_author is not an executor"; return 1 ;; esac
-      fi
+      }
       step_head=$candidate
     fi
   done < "$tmp/step-nodes-$number"
@@ -370,7 +373,10 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   if [ -n "$null_index" ]; then
     unverified_evidence "Tracking issue comment node $null_index unreadable"; rm -rf "$tmp"; return
   fi
-  printf '%s' "$comments_json" | jq -c '.data.repository.issue.comments.nodes[]' > "$tmp/nodes"
+  local ignored
+  ignored=$(printf '%s' "$comments_json" | jq --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '[.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) == null)] | length')
+  [ "$ignored" -eq 0 ] || printf 'EVIDENCE ignored %s comment(s) from authors outside the review policy\n' "$ignored"
+  printf '%s' "$comments_json" | jq -c --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)' > "$tmp/nodes"
   while IFS= read -r nodes; do
     body=$(printf '%s' "$nodes" | jq -r '.body // empty')
     marker=$(printf '%s\n' "$body" | sed -n '/^[[:space:]]*agentic-flow-review:/p')

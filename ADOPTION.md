@@ -152,3 +152,8 @@ is the optional deploy counterpart; read its runbook comment before enabling it.
 Run `scripts/export.sh` from the source scaffold for low-level installs or update
 candidates. It is intentionally source-only; adopted projects receive runtime checks and
 profiles, not another installer.
+
+Existing adopters must add reviewer, executor and approver login lines to
+`.agentic-flow-review-policy`, including in single-operator mode. One login may
+hold all three roles. Initialize new projects with `--owner-login <login>`;
+otherwise init uses `gh api user --jq .login`.
