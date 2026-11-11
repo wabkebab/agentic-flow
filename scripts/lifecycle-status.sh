@@ -285,11 +285,9 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [re
   if [ "$REVIEW_STATUS" != approved ] || [ "$REVIEW_STEP" != "$step" ]; then
     blocked_evidence "step $step comment $selected_id does not approve implementation head $step_head"; return 1
   fi
-  for candidate in "$step_head" "$pr_head"; do
-    if ! git -C "$ROOT" cat-file -e "${candidate}^{commit}" 2>/dev/null; then
-      unverified_evidence "step $step commit $candidate unavailable locally; run git fetch origin $candidate"; return 1
-    fi
-  done
+  if ! git -C "$ROOT" cat-file -e "${step_head}^{commit}" 2>/dev/null; then
+    unverified_evidence "step $step SHA $step_head unavailable locally as a commit; run git fetch origin $step_head"; return 1
+  fi
   ancestry_status=0
   git -C "$ROOT" merge-base --is-ancestor "$step_head" "$pr_head" 2> "$tmp/ancestry-error" || ancestry_status=$?
   case "$ancestry_status" in
@@ -500,7 +498,10 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   elif [ "$conclusion" != success ]; then
     blocked_evidence "Actions run $REVIEW_RUN concluded $conclusion"
   else
-    if [ "$topology" = standard ]; then
+    # Shared by both topologies; Strict checks the PR object once for all steps.
+    if ! git -C "$ROOT" cat-file -e "${head}^{commit}" 2>/dev/null; then
+      unverified_evidence "PR head SHA $head unavailable locally as a commit; run git fetch origin pull/$pr_number/head"
+    elif [ "$topology" = standard ]; then
       step_id=$(printf '%s\n' "$tracking_body" | sed -nE 's/^<!-- agentic-flow:plan:[a-z0-9][a-z0-9._-]* step:([a-z0-9][a-z0-9._-]*) spec:[a-f0-9]{40}.* -->$/\1/p' | head -1)
       if [ -z "$step_id" ]; then
         unverified_evidence 'Standard work issue identity stamp unavailable'

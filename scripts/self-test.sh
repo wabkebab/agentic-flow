@@ -3827,7 +3827,7 @@ LIFE_PR_JSON="$TMP/missing-pr.json"
 LIFE_COMMENTS_JSON="$TMP/missing-pr-comments.json"
 LIFE_RUN_JSON="$TMP/missing-pr-run.json"
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
-review_case 'missing PR object' UNVERIFIED 'cccccccccccccccccccccccccccccccccccccccc.*git fetch'
+review_case 'missing PR object' UNVERIFIED 'cccccccccccccccccccccccccccccccccccccccc.*git fetch origin pull/2/head'
 LIFE_PR_JSON="$TMP/lifecycle-pr.json"
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
 LIFE_RUN_JSON="$TMP/lifecycle-run.json"
