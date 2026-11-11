@@ -1,17 +1,17 @@
 <!-- TRIAGE (first pass · 2026-11-11) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
-> Phase 0 of `product-harness-factory-optimization.md`: close the gate, evidence and adopter-breakage defects that must be fixed before the repo goes public, then publish. Awaiting human approval; no issues exist yet.
+> Phase 0 of `product-harness-factory-optimization.md`: close the gate, evidence and adopter-breakage defects that must be fixed before the repo goes public, then publish. Shipped as `0.14.0` in PR #121 (tracker #114); publishing follows the merge.
 
 # Feature — Gate and handoff fixes before publishing
 
 ## Tracker
-- [ ] G-1 Accept review evidence and handoffs only from role logins — open
-- [ ] G-2 Bind every approved step commit to the PR head — open
-- [ ] G-3 Close the Stop-gate commit bypass and the stamp race — open
-- [ ] G-4 Fail closed when a guard hook times out — open
-- [ ] G-5 Keep an adopter's gate green without an installation record — open
-- [ ] G-6 Ignore OS files, settle stale docs, clear labels on close — open
+- [x] G-1 Accept review evidence and handoffs only from role logins — #115; `2b6a7f2` + review fix `4f09a17`, approved at `4f09a17`
+- [x] G-2 Bind every approved step commit to the PR head — #116; `af636b6` + review nits `bf5b691`, approved at `bf5b691`
+- [x] G-3 Close the Stop-gate commit bypass and the stamp race — #117; `a5a0091`, approved
+- [x] G-4 Fail closed when a guard hook times out — #118; `5963820`, approved
+- [x] G-5 Keep an adopter's gate green without an installation record — #119; `967e9de`, approved (sweep finding accepted: `docs/accepted_risks.md#recordless-inventory-sweep`)
+- [x] G-6 Ignore OS files, settle stale docs, clear labels on close — #120; `90f5bf3`, approved
 
 ---
 
@@ -353,12 +353,19 @@ G-1 must be on `main` before the repository is public, so this comes after the m
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/114
 - **Approval:** status=approved; by=wabkebab; at=2026-11-11
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** url=https://github.com/wabkebab/agentic-flow/pull/121
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=pr-head-approval
-- **Memory:** pending
-- Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
-  the index in the last repository commit. After human push, obtain CI and a structured
-  reviewer approval on the `Tracking issue` for that exact PR head and run attempt.
-  Verify this moved file with `--phase close-out`, close the tracker without another
-  repository edit, then recheck with `--phase pre-merge` before human merge.
+- **Memory:** path=docs/memory/close-out-needs-pr-first.md
+- All six steps are reviewed clean on `codex/gate-and-handoff-fixes` (`2b6a7f2..90f5bf3`).
+  Review fixes landed as new commits; nothing was amended after a handoff.
+- Close-out commits on the same branch: the brief and analysis (`bd29133`), `0.14.0`
+  and the CHANGELOG (`d264f4d`), accepted risks `agent-thread-prompt-injection`,
+  `codex-guard-fail-open` and `recordless-inventory-sweep` (`e6a29b6`), and roadmap 2.6
+  (`6e73352`), then this move. `make check`, `make test`, `make build` and
+  `scripts/doctor.sh --check` passed locally at `6e73352`, and CI passed on PR #121 at
+  that head.
+- Next: the human pushes this commit, then CI and a structured reviewer approval for
+  that exact head and run attempt are posted on #114. Then run `--phase close-out`,
+  close #114, comment on #113 and list the label cleanup. Before the merge, recheck
+  with `--phase pre-merge`.

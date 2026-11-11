@@ -105,12 +105,12 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-adaptative-assurance-opus | Feature | 🕰️ Superseded | done |
 | feature-ci-as-authority | Feature | ✅ Done | done |
 | feature-export-banner-leak | Feature | ✅ Done | done |
+| feature-gate-and-handoff-fixes | Feature | ✅ Done | done |
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-harness-optimization | Feature | ✅ Done | done |
 | feature-init-and-template-split | Feature | ✅ Done | done |
 | feature-opencode-reviewer-role | Feature | ✅ Done | done |
 | feature-progressive-assurance-profiles | Feature | 🕰️ Superseded | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
-| feature-gate-and-handoff-fixes | Feature | 🟦 Proposal | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |
 <!-- END: generated index -->
