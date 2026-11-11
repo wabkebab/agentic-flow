@@ -1124,10 +1124,38 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   cmp -s "$TMP/shell-expected" "$TMP/shell-actual" \
     || fail "scaffold shell inventory is incomplete against manifest source tree"
 
+  # A customized adopter may predate installation records. Sources are not installed.
+  inventory_adopter="$TMP/inventory-adopter"
+  "$ROOT/scripts/export.sh" --exclude-scope=codex "$inventory_adopter" >/dev/null
+  rm "$inventory_adopter/.agentic-flow-installation"
+  (cd "$inventory_adopter" && scripts/shell-inventory.sh --syntax) \
+    > "$TMP/inventory-adopter.out" 2>&1 \
+    || { cat "$TMP/inventory-adopter.out" >&2; fail "recordless adopter syntax gate failed"; }
+  (cd "$inventory_adopter" && make check) > "$TMP/inventory-adopter-check.out" 2>&1 \
+    || { cat "$TMP/inventory-adopter-check.out" >&2; fail "recordless adopter make check failed"; }
+  # Excluded destinations remain absent; deleting an active destination must fail by name.
+  [ ! -e "$inventory_adopter/.codex/hooks.json" ] \
+    || fail "inventory fixture unexpectedly installed excluded scope"
+  rm "$inventory_adopter/scripts/agentic-flow"
+  (cd "$inventory_adopter" && scripts/shell-inventory.sh --syntax) \
+    > "$TMP/inventory-missing.out" 2>&1 \
+    && fail "recordless inventory accepted a missing active script"
+  grep -q 'shell inventory: missing installed file scripts/agentic-flow; run scripts/doctor.sh' \
+    "$TMP/inventory-missing.out" \
+    || fail "recordless inventory did not name the missing installed script"
+  rm "$inventory_adopter/AGENTS.md"
+  (cd "$inventory_adopter" && scripts/shell-inventory.sh --syntax) \
+    > "$TMP/inventory-missing.out" 2>&1 \
+    && fail "recordless inventory accepted a missing mapped destination"
+  grep -q 'shell inventory: missing installed file AGENTS.md; run scripts/doctor.sh' \
+    "$TMP/inventory-missing.out" \
+    || fail "recordless inventory did not check mapped destinations"
+
   shell_fix="$TMP/shell-inventory-fixture"
   mkdir -p "$shell_fix/source/config" "$shell_fix/source/scripts" \
     "$shell_fix/source/harness-src" "$shell_fix/source/scoped-src"
   cp "$ROOT/scripts/shell-inventory.sh" "$shell_fix/source/scripts/"
+  touch "$shell_fix/source/scripts/export.sh"
   printf 'harness-src\tscripts\tcore\tpreserve\texport\n' > "$shell_fix/source/config/payload.tsv"
   printf 'scoped-src\tscoped-dest\tcodex\tpreserve\texport\n' >> "$shell_fix/source/config/payload.tsv"
   printf 'scripts/shell-inventory.sh\tscripts/shell-inventory.sh\tsource-only\tnone\tsource-only\n' \

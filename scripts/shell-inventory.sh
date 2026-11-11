@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Scaffold-only shell inventory. Walk manifest source paths, never adopter destinations.
+# Shell inventory: scaffold sources, recorded files, or recordless adopter destinations.
 set -euo pipefail
 
 root=${AGENTIC_PROJECT_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}
@@ -7,7 +7,7 @@ manifest="$root/config/payload.tsv"
 [ -f "$manifest" ] || { echo "shell inventory: missing $manifest" >&2; exit 1; }
 
 shell_sources() {
-  local source _destination scope _merge disposition file rel excluded
+  local source destination scope _merge disposition file rel excluded adopted=false
   if [ -f "$root/.agentic-flow-installation" ]; then
     # shellcheck disable=SC1091 # Installed library is resolved from the project root.
     . "$root/scripts/lib/payload-apply.sh"
@@ -15,8 +15,23 @@ shell_sources() {
     printf '%s\n' "${PAYLOAD_STATE_FILES[@]}"
     return
   fi
-  while IFS="$(printf '\t')" read -r source _destination scope _merge disposition; do
+  if [ ! -f "$root/scripts/export.sh" ]; then
+    adopted=true
+    # shellcheck disable=SC1091 # Installed library is resolved from the project root.
+    . "$root/scripts/lib/payload-apply.sh"
+    payload_resolve_installation "$root" "$manifest" "${PAYLOAD_EXCLUDED_SCOPES:-}"
+  fi
+  while IFS="$(printf '\t')" read -r source destination scope _merge disposition; do
     case "${source:-}" in ''|\#*) continue ;; esac
+    if [ "$adopted" = true ]; then
+      [ "$disposition" = export ] || continue
+      payload_has_word "$scope" "$PAYLOAD_ACTIVE_SCOPES" || continue
+      source=$destination
+      [ -e "$root/$source" ] || {
+        echo "shell inventory: missing installed file $destination; run scripts/doctor.sh" >&2
+        return 1
+      }
+    fi
     excluded=false
     if [ "$disposition" = export ]; then
       case " ${PAYLOAD_EXCLUDED_SCOPES:-} " in *" $scope "*) excluded=true ;; esac
