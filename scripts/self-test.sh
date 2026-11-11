@@ -1062,6 +1062,35 @@ fi
 
 # --- shellcheck is required, not optional ------------------------------------------------
 if should_run contracts; then
+# Guard failures must block locally even when a guard cannot return its own exit 2.
+if [ -f "$ROOT/.claude/settings.json" ]; then
+  GUARD_FIX="$TMP/guard-failure-fixture"
+  mkdir -p "$GUARD_FIX/scripts/lib" "$GUARD_FIX/.claude"
+  cp "$ROOT/scripts/doctor.sh" "$GUARD_FIX/scripts/doctor.sh"
+  cp "$ROOT/scripts/lib/payload-apply.sh" "$GUARD_FIX/scripts/lib/payload-apply.sh"
+  for guard in block-git-add-all.sh block-push.sh scan-secrets.sh; do
+    for failure_mode in missing continue; do
+      jq --arg guard "$guard" --arg mode "$failure_mode" '
+        (.hooks.PreToolUse[] | .hooks[]
+          | select(.command | endswith($guard))) |=
+          (if $mode == "missing" then del(.onFailure) else .onFailure = "continue" end)
+      ' "$ROOT/.claude/settings.json" > "$GUARD_FIX/.claude/settings.json"
+      (cd "$GUARD_FIX" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo --skip-make-check) \
+        > "$TMP/guard-failure.out" 2>&1 \
+        && fail "doctor accepted $failure_mode onFailure for $guard"
+      grep -q "missing .claude/settings.json PreToolUse: $guard requires onFailure=block" \
+        "$TMP/guard-failure.out" \
+        || fail "doctor did not name the missing failure policy for $guard ($failure_mode)"
+    done
+  done
+  jq -e '
+    [.hooks[][] .hooks[] | select(has("onFailure"))]
+    | length == 3 and all(.[];
+        .type == "command" and .onFailure == "block" and
+        (.command | test("scripts/hooks/(block-git-add-all|block-push|scan-secrets)\\.sh$")))
+  ' "$ROOT/.claude/settings.json" >/dev/null \
+    || fail "Claude failure policy must cover exactly the three local guards"
+fi
 if [ -f "$ROOT/scripts/export.sh" ]; then
   [ -x "$ROOT/scripts/shell-inventory.sh" ] \
     || fail "scaffold shell inventory is missing"
