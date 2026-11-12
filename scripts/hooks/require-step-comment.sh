@@ -35,8 +35,10 @@ last_comment() {
   fi
   roles=$REVIEW_REVIEWERS
   [ "${2:-reviewer}" != executor ] || roles=$REVIEW_EXECUTORS
-  gh issue view "$1" --json comments 2>/dev/null |
-    jq -r --arg roles "$roles" '[.comments[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)] | last | .body // ""' || {
+  review_bounded gh api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" 2>/dev/null |
+    jq -e 'if type == "array" and length < 100 then . else error("comment page may be truncated") end' |
+    review_normalize_comments |
+    jq -r --arg roles "$roles" '[.[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)] | last | .body // ""' || {
       echo "Blocked: could not read comments for issue #$1; check GitHub access and retry." >&2
       return 1
     }

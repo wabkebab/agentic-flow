@@ -180,7 +180,7 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [re
     response=$(cat "$tmp/comments")
   else
     # shellcheck disable=SC2016
-    query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login} createdAt lastEditedAt}}}}}'
+    query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login __typename} createdAt lastEditedAt}}}}}'
     if ! bounded_gh "$tmp/step-$number" api graphql -f "query=$query" -f "owner=$owner" -f "name=$name" -F "number=$number"; then
       unverified_evidence "step $step comments unavailable"; return 1
     fi
@@ -202,7 +202,11 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [re
   if [ -n "$null_index" ]; then
     unverified_evidence "step $step comment node $null_index unreadable"; return 1
   fi
-  local ignored
+  local ignored normalized_comments
+  normalized_comments=$(printf '%s' "$response" | jq '.data.repository.issue.comments.nodes' | review_normalize_comments) || {
+    unverified_evidence 'comment author normalization failed'; return 1;
+  }
+  response=$(printf '%s' "$response" | jq --argjson nodes "$normalized_comments" '.data.repository.issue.comments.nodes=$nodes')
   ignored=$(printf '%s' "$response" | jq --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '[.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) == null)] | length')
   [ "$ignored" -eq 0 ] || printf 'EVIDENCE ignored %s comment(s) from authors outside the review policy\n' "$ignored"
   printf '%s' "$response" | jq -c --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)' > "$tmp/step-nodes-$number"
@@ -373,7 +377,7 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
     unverified_evidence 'Implementation PR head unavailable'; rm -rf "$tmp"; return
   fi
   # shellcheck disable=SC2016 # GraphQL variables belong in the literal query.
-  query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login} createdAt lastEditedAt}}}}}'
+  query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login __typename} createdAt lastEditedAt}}}}}'
   if ! bounded_gh "$tmp/comments" api graphql -f "query=$query" -f "owner=$owner" -f "name=$name" -F "number=$issue_number"; then
     unverified_evidence 'Tracking issue comments unavailable'; rm -rf "$tmp"; return
   fi
@@ -395,7 +399,11 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   if [ -n "$null_index" ]; then
     unverified_evidence "Tracking issue comment node $null_index unreadable"; rm -rf "$tmp"; return
   fi
-  local ignored
+  local ignored normalized_comments
+  normalized_comments=$(printf '%s' "$comments_json" | jq '.data.repository.issue.comments.nodes' | review_normalize_comments) || {
+    unverified_evidence 'comment author normalization failed'; rm -rf "$tmp"; return;
+  }
+  comments_json=$(printf '%s' "$comments_json" | jq --argjson nodes "$normalized_comments" '.data.repository.issue.comments.nodes=$nodes')
   ignored=$(printf '%s' "$comments_json" | jq --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '[.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) == null)] | length')
   [ "$ignored" -eq 0 ] || printf 'EVIDENCE ignored %s comment(s) from authors outside the review policy\n' "$ignored"
   printf '%s' "$comments_json" | jq -c --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)' > "$tmp/nodes"

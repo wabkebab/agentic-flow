@@ -1,5 +1,29 @@
 #!/usr/bin/env bash
 # Source this file, then call read_review_policy <project-root>.
+review_valid_login() {
+  [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?(\[bot\])?$ ]]
+}
+
+# REST user.type=Bot uses slug[bot]; GraphQL author.__typename=Bot uses slug.
+# gh issue view --json comments drops the type. Read typed API data instead;
+# never infer bot identity merely because a slug appears in the policy.
+review_normalize_comments() {
+  jq 'map((.author // .user) as $a | .author = ($a |
+    if ((.__typename // .type) == "Bot") and (.login | endswith("[bot]") | not)
+    then .login += "[bot]" else . end))'
+}
+
+# No output files: caller captures the child's inherited stdout in memory.
+review_bounded() {
+  local pid timer status=0
+  "$@" <&0 & pid=$!
+  ( sleep 20; kill "$pid" 2>/dev/null || true ) </dev/null >/dev/null 2>&1 & timer=$!
+  wait "$pid" || status=$?
+  kill "$timer" 2>/dev/null || true
+  wait "$timer" 2>/dev/null || true
+  return "$status"
+}
+
 read_review_policy() {
   local root=$1 line key value seen_version=false seen_workflow=false \
     seen_identity_mode=false seen_accepted_risk=false login role seen_login
@@ -36,7 +60,7 @@ read_review_policy() {
         [[ "$value" =~ ^docs/accepted_risks\.md#[A-Za-z0-9_-]+$ ]] || return 1
         REVIEW_ACCEPTED_RISK=$value ;;
       reviewer|executor|approver)
-        [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] || {
+        review_valid_login "$value" || {
           echo "review policy invalid $key login: $value; set a GitHub login in $root/.agentic-flow-review-policy" >&2
           return 1
         }

@@ -701,6 +701,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/config/payload.tsv"
   assert_file "$TARGET/config/workflow.tsv"
   assert_file "$TARGET/scripts/lib/workflow.sh"
+  # shellcheck disable=SC1091
   ( . "$TARGET/scripts/lib/workflow.sh"; workflow_load "$TARGET" ) \
     || fail 'exported workflow did not validate'
   assert_file "$TARGET/.agentic-flow-review-policy"
@@ -1083,6 +1084,150 @@ fi
 # --- shellcheck is required, not optional ------------------------------------------------
 if should_run contracts; then
 workflow_contract_check
+# S-2: these tests travel alone to the red base, so a missing library is an assertion.
+[ -f "$ROOT/scripts/lib/identity.sh" ] || fail 'identity library is missing'
+IDENTITY_FIX="$TMP/identity"
+mkdir -p "$IDENTITY_FIX/project/scripts/lib" "$IDENTITY_FIX/bin" "$IDENTITY_FIX/config/agentic-flow/identities/owner"
+cp "$ROOT/scripts/agentic-flow" "$IDENTITY_FIX/project/scripts/agentic-flow"
+cp "$ROOT/scripts/lib/identity.sh" "$ROOT/scripts/lib/review-policy.sh" "$IDENTITY_FIX/project/scripts/lib/"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$IDENTITY_FIX/project/scripts/lib/"
+cp "$ROOT/scripts/doctor.sh" "$IDENTITY_FIX/project/scripts/doctor.sh"
+(
+  cd "$IDENTITY_FIX/project"
+  git init -q
+  git remote add origin git@github.com:owner/repo.git
+)
+printf 'version=1\nworkflow=.github/workflows/ci.yml\nidentity-mode=distinct-account\nreviewer=review-app[bot]\nexecutor=execute-app[bot]\napprover=plan-app[bot]\n' > "$IDENTITY_FIX/project/.agentic-flow-review-policy"
+IDENTITY_CONFIG="$IDENTITY_FIX/config/agentic-flow/identities/owner/repo.tsv"
+printf 'executor\texecute-app[bot]\t123\t456\ttest key\n' > "$IDENTITY_CONFIG"
+openssl genrsa -out "$IDENTITY_FIX/key" 2048 >/dev/null 2>&1
+openssl rsa -in "$IDENTITY_FIX/key" -pubout -out "$IDENTITY_FIX/public" >/dev/null 2>&1
+cat > "$IDENTITY_FIX/bin/security" <<'MOCK'
+#!/usr/bin/env bash
+[ "$*" = 'find-generic-password -s test key -w' ] || exit 1
+[ "${IDENTITY_CASE:-}" != key-failure ] || exit 1
+if [ "${IDENTITY_CASE:-}" = invalid-key ]; then printf 'invalid'; exit 0; fi
+if [ "${IDENTITY_CASE:-}" = encoded-key ]; then openssl base64 -A < "$IDENTITY_FIX/key"; exit 0; fi
+cat "$IDENTITY_FIX/key"
+MOCK
+cat > "$IDENTITY_FIX/bin/secret-tool" <<'MOCK'
+#!/usr/bin/env bash
+[ "$*" = 'lookup service agentic-flow key-ref test key' ] || exit 1
+cat "$IDENTITY_FIX/key"
+MOCK
+cat > "$IDENTITY_FIX/bin/uname" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "${IDENTITY_OS:-Darwin}"
+MOCK
+cat > "$IDENTITY_FIX/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+# Token minting must never use the ambient gh identity.
+printf 'ambient gh used\n' >> "$IDENTITY_FIX/ambient"
+exit 1
+MOCK
+cat > "$IDENTITY_FIX/bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+config=$(cat)
+jwt=${config#*Bearer }; jwt=${jwt%%\"*}
+[ "$*" != "${*#*https://api.github.com/app/installations/456/access_tokens}" ]
+request=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in --data-binary) request=$2; shift ;; esac
+  shift
+done
+printf '%s' "$request" | jq -e '.repositories == ["repo"] and .permissions == {issues:"write",pull_requests:"write",contents:"read",metadata:"read"}' >/dev/null
+base64url_decode() { local v=$1; while [ "$((${#v} % 4))" -ne 0 ]; do v="${v}="; done; printf '%s' "$v" | tr '_-' '/+' | openssl base64 -d -A; }
+payload=${jwt#*.}; payload=${payload%%.*}
+claims=$(base64url_decode "$payload")
+printf '%s' "$claims" | jq -e --argjson now "$(date +%s)" '.iss == "123" and .iat <= $now and .exp > $now and .exp <= ($now+600)' >/dev/null
+printf '%s' "${jwt%.*}" | openssl dgst -sha256 -verify "$IDENTITY_FIX/public" -signature <(base64url_decode "${jwt##*.}") >/dev/null
+case "${IDENTITY_CASE:-}" in
+  mint-failure) exit 22 ;;
+  timeout) exit 28 ;;
+  malformed) printf 'not-json'; exit 0 ;;
+  broad) permission=write ;;
+  *) permission=read ;;
+esac
+jq -n --arg contents "$permission" --arg value 'fixture-installation-value' --arg mode "${IDENTITY_CASE:-}" '
+  {token:$value,expires_at:"2099-01-01T00:00:00Z",permissions:{issues:"write",pull_requests:"write",contents:$contents,metadata:"read"},repositories:[{full_name:"owner/repo"}]} |
+  if $mode == "wrong-repo" then .repositories[0].full_name="owner/other"
+  elif $mode == "extra-permission" then .permissions.administration="write"
+  elif $mode == "expired" then .expires_at="2000-01-01T00:00:00Z"
+  elif $mode == "missing-token" then del(.token) else . end'
+MOCK
+# Doctor's workstation inventory is unrelated to identity behavior; keep it hermetic
+# on CI runners that do not install local signing wrappers or gitleaks.
+for tool in git-claude git-codex gitleaks; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$IDENTITY_FIX/bin/$tool"
+done
+chmod +x "$IDENTITY_FIX/bin/"*
+identity_run() { # role optional flags; capture output only from fake credentials
+  local status=0
+  # shellcheck disable=SC2097,SC2098 # Fixture env is passed to the child, not used by the parent.
+  ( cd "$IDENTITY_FIX/project"; PATH="$IDENTITY_FIX/bin:$PATH" XDG_CONFIG_HOME="$IDENTITY_FIX/config" \
+    IDENTITY_FIX="$IDENTITY_FIX" IDENTITY_CASE="${IDENTITY_CASE:-}" IDENTITY_OS="${IDENTITY_OS:-Darwin}" \
+    scripts/agentic-flow token "$@" ) > "$TMP/identity.out" 2> "$TMP/identity.err" || status=$?
+  return "$status"
+}
+identity_fails() { # expected-exit role flags
+  local expected=$1 status=0
+  shift
+  identity_run "$@" || status=$?
+  [ "$status" -eq "$expected" ] || fail "identity returned $status, expected $expected: $(cat "$TMP/identity.err")"
+  [ ! -s "$TMP/identity.out" ] || fail 'identity failure printed credential material'
+}
+identity_fails 6 reviewer
+for IDENTITY_CASE in key-failure invalid-key mint-failure timeout malformed broad wrong-repo extra-permission expired missing-token; do
+  identity_fails 5 executor --check
+done
+IDENTITY_CASE=''
+identity_run executor || fail "configured identity did not mint: $(cat "$TMP/identity.err")"
+[ "$(cat "$TMP/identity.out")" = fixture-installation-value ] || fail 'wrong minted value'
+identity_run executor --check || fail 'identity check failed'
+[ ! -s "$TMP/identity.out" ] || fail 'identity check printed a token'
+IDENTITY_OS=Linux identity_run executor --check || fail 'Linux keychain mint failed'
+IDENTITY_CASE=encoded-key identity_run executor --check || fail 'base64 keychain mint failed'
+[ ! -e "$IDENTITY_FIX/ambient" ] || fail 'identity fell back to ambient gh'
+(
+  . "$ROOT/scripts/lib/review-policy.sh"
+  read_review_policy "$IDENTITY_FIX/project"
+) || fail 'App logins rejected by review policy'
+for invalid in 'review[other]' 'review[bot]tail' 'review[bot][bot]'; do
+  sed "s/review-app\[bot\]/$invalid/" "$IDENTITY_FIX/project/.agentic-flow-review-policy" > "$IDENTITY_FIX/policy-bad"
+  ( . "$ROOT/scripts/lib/review-policy.sh"; mkdir -p "$IDENTITY_FIX/bad"; cp "$IDENTITY_FIX/policy-bad" "$IDENTITY_FIX/bad/.agentic-flow-review-policy"; read_review_policy "$IDENTITY_FIX/bad" ) >/dev/null 2>&1 \
+    && fail "invalid App login accepted: $invalid"
+done
+. "$ROOT/scripts/lib/review-policy.sh"
+normalized=$(printf '%s' '[{"author":{"login":"review-app","__typename":"Bot"}},{"user":{"login":"review-app[bot]","type":"Bot"}},{"author":{"login":"review-app","__typename":"User"}}]' | review_normalize_comments | jq -c '[.[].author.login]')
+[ "$normalized" = '["review-app[bot]","review-app[bot]","review-app"]' ] || fail 'bot author normalization conflated humans and Apps'
+IDENTITY_CASE=broad identity_fails 5 executor
+cp "$IDENTITY_CONFIG" "$IDENTITY_FIX/config-valid"
+for defect in duplicate unknown-role invalid-id wrong-login trailing; do
+  case "$defect" in
+    duplicate) cat "$IDENTITY_FIX/config-valid" "$IDENTITY_FIX/config-valid" > "$IDENTITY_CONFIG" ;;
+    unknown-role) printf 'stranger\texecute-app[bot]\t123\t456\ttest key\n' > "$IDENTITY_CONFIG" ;;
+    invalid-id) printf 'executor\texecute-app[bot]\tinvalid\t456\ttest key\n' > "$IDENTITY_CONFIG" ;;
+    wrong-login) printf 'executor\tunlisted-app[bot]\t123\t456\ttest key\n' > "$IDENTITY_CONFIG" ;;
+    trailing) printf 'executor\texecute-app[bot]\t123\t456\ttest key\t\n' > "$IDENTITY_CONFIG" ;;
+  esac
+  identity_fails 5 executor --check
+done
+mv "$IDENTITY_CONFIG" "$IDENTITY_FIX/config-invalid"
+identity_fails 6 executor
+cp "$IDENTITY_FIX/config-valid" "$IDENTITY_CONFIG"
+printf 'reviewer\treview-app[bot]\t123\t456\ttest key\napprover\tplan-app[bot]\t123\t456\ttest key\n' >> "$IDENTITY_CONFIG"
+identity_doctor() {
+  # shellcheck disable=SC2097,SC2098 # Pass fixture state to the child.
+  PATH="$IDENTITY_FIX/bin:$PATH" XDG_CONFIG_HOME="$IDENTITY_FIX/config" IDENTITY_FIX="$IDENTITY_FIX" \
+    "$IDENTITY_FIX/project/scripts/doctor.sh" --check --scope env > "$TMP/identity-doctor.out" 2>&1
+}
+identity_doctor || fail "doctor rejected valid role identities: $(cat "$TMP/identity-doctor.out")"
+grep -q 'ok.*identity approver login and token scope' "$TMP/identity-doctor.out" || fail 'doctor skipped configured identity'
+IDENTITY_CASE=broad; export IDENTITY_CASE
+identity_doctor && fail 'doctor accepted broader permissions'
+unset IDENTITY_CASE
+if grep -q 'fixture-installation-value' "$TMP/identity-doctor.out"; then fail 'doctor leaked a token'; fi
 WORKFLOW_FIX="$TMP/workflow"
 mkdir -p "$WORKFLOW_FIX/config"
 workflow_reject() { # <description> <expected diagnostic>
@@ -3072,12 +3217,12 @@ cat > "$STEP_HOOK_GH/gh" <<'FAKE_GH'
 case "$*" in
   *'--jq .body'*) printf '%s\n' '<!-- agentic-flow:topology:standard -->' ;;
   *'--jq .labels[].name'*) printf '%s\n' "${STEP_HOOK_LABELS:-needs-review}" ;;
-  *'--json comments'*)
+  'api repos/{owner}/{repo}/issues/'*'/comments?per_page=100')
     [ "${STEP_HOOK_GH_FAIL:-0}" = 0 ] || exit 1
     if [ -n "${STEP_HOOK_COMMENTS_JSON:-}" ]; then
-      jq -n --argjson comments "$STEP_HOOK_COMMENTS_JSON" '{comments:$comments}'
+      jq -n --argjson comments "$STEP_HOOK_COMMENTS_JSON" '$comments'
     else
-      jq -n --arg body "${STEP_HOOK_COMMENT:-}" '{comments:[{body:$body,author:{login:"wabkebab"}}]}'
+      jq -n --arg body "${STEP_HOOK_COMMENT:-}" '[{body:$body,author:{login:"wabkebab"}}]'
     fi ;;
   *) exit 2 ;;
 esac
@@ -3101,6 +3246,13 @@ STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"re
 step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
 STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"wabkebab"}},{"body":"unrelated","author":{"login":"stranger"}}]'
 step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 0
+printf '%s\n' 'executor=execute-app[bot]' >> "$TMP/step-hook-project/.agentic-flow-review-policy"
+STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","user":{"login":"execute-app[bot]","type":"Bot"}}]'
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 0
+STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","user":{"login":"execute-app","type":"User"}}]'
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
+STEP_HOOK_COMMENTS_JSON=$(jq -nc '[range(100) | {body:"Implemented in aaaaaaa",author:{login:"wabkebab"}}]')
+step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
 unset STEP_HOOK_COMMENTS_JSON
 STEP_HOOK_GH_FAIL=1; export STEP_HOOK_GH_FAIL
 step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
@@ -4018,6 +4170,24 @@ review_case() { # <name> <state> <diagnostic>
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
 # Unlisted authors cannot inject malformed evidence or replace a real handoff.
+sed 's/^reviewer=.*/reviewer=review-app[bot]/; s/^executor=.*/executor=execute-app[bot]/' \
+  "$TMP/lifecycle-policy-valid" > "$V2FIX/.agentic-flow-review-policy"
+for comments in lifecycle-comments lifecycle-step-comments; do
+  jq '.data.repository.issue.comments.nodes |= map(
+    if .author.login == "reviewer" then .author={login:"review-app",__typename:"Bot"}
+    elif .author.login == "executor" then .author={login:"execute-app",__typename:"Bot"}
+    else . end)' "$TMP/$comments.json" > "$TMP/$comments-app.json"
+done
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-app.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments-app.json"
+review_case 'typed App verdicts and handoff' READY 'review by review-app'
+jq '.data.repository.issue.comments.nodes[].author.__typename="User"' \
+  "$TMP/lifecycle-comments-app.json" > "$TMP/lifecycle-comments-human.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-human.json"
+review_case 'human slug cannot impersonate App reviewer' UNVERIFIED 'no approval for PR head'
+cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
 jq '.data.repository.issue.comments.nodes += [{id:"stranger",body:"agentic-flow-review: malformed",author:{login:"stranger"}}]' "$TMP/lifecycle-comments.json" > "$TMP/stranger-final.json"
 jq '.data.repository.issue.comments.nodes += [{id:"stranger",body:"Implemented in bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",author:{login:"stranger"}}]' "$TMP/lifecycle-step-comments.json" > "$TMP/stranger-step.json"
 LIFE_COMMENTS_JSON="$TMP/stranger-final.json"

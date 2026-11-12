@@ -159,3 +159,56 @@ hold all three roles. Initialize new projects with `--owner-login <login>`;
 otherwise init uses `gh api user --jq .login`.
 For direct `scripts/export.sh` installs, replace the owner-login tokens in all
 three policy role lines with GitHub logins before running doctor or the gates.
+
+## GitHub App role identities (optional)
+
+The `executor` implements steps and the `reviewer` reviews them. The `approver` is
+the planner/closer identity, distinct from `--approved-by`, which names the human
+who approved the plan. This repository retains single-operator mode for this pass.
+
+1. Register three GitHub Apps, one per role. Disable webhooks if unused. Give each
+   only repository permissions **Issues: write**, **Pull requests: write**,
+   **Contents: read**, **Metadata: read**. Install each using **Only select
+   repositories**, selecting the target repository. Record its numeric App ID,
+   installation ID and bot login (`app-slug[bot]`).
+2. Generate each App's RSA private key and store it in the workstation keychain,
+   never in the repository or identity TSV. On macOS, use
+   store a single-line base64 encoding through `security`'s stdin protocol:
+
+   ```bash
+   printf 'add-generic-password -U -s execute-key -a "%s" -w "%s"\n' \
+     "$USER" "$(openssl base64 -A < /path/to/downloaded.pem)" | security -i
+   ```
+
+   On Linux, store the raw PEM with
+   `secret-tool store --label="Executor App" service agentic-flow key-ref execute-key < /path/to/downloaded.pem`.
+   Use separate key-ref names for reviewer and approver. Remove downloaded key
+   files after confirming keychain access.
+3. Create `${XDG_CONFIG_HOME:-$HOME/.config}/agentic-flow/identities/<owner>/<repo>.tsv`.
+   Each row has five **tab-separated** fields, with no header (comments start `#`):
+   `role`, `login`, `app-id`, `installation-id`, `key-ref`. For example, an executor
+   row contains `executor`, `execute-app[bot]`, its numeric App ID, its numeric
+   installation ID, and `execute-key`. Add one row for each role.
+4. Put those canonical bot logins into their corresponding role lines in
+   `.agentic-flow-review-policy`, preserving its workflow and identity-mode rules.
+   `distinct-account` rejects a reviewer overlapping executor or approver. Run
+   `scripts/agentic-flow token executor --check`, repeat for reviewer and approver,
+   then run `scripts/doctor.sh --check` to check all roles.
+
+Minting requires `openssl`, `curl`, `jq`, `git` and the platform keychain tool.
+The request selects the repository and four permissions explicitly, following
+[GitHub's installation-token interface](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+Every mint validates returned scope and expiry. `--check` prints no token; without
+it, the command prints the token to stdout for an in-memory caller. The command
+never persists keys, JWTs or tokens. Do not redirect them to files.
+
+A missing role returns 6 (`no identity`). A configured identity that cannot mint
+returns 5 and never falls back to ambient credentials. Only callers may use an
+ambient login after exit 6, and only if it holds the role in the policy. Doctor
+skips identity checks quietly when no operator file exists. `--scope repo` remains
+portable and never reads the keychain or mints tokens.
+
+REST comment authors use `slug[bot]`; GraphQL and `gh issue view --json comments`
+can use `slug`. The hook reads REST user types and lifecycle requests GraphQL
+`__typename`. Both share a normalizer that adds `[bot]` only for a typed Bot,
+keeping a human with the same slug separate.

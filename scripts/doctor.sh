@@ -430,6 +430,22 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   fi
 fi
 
+# Operator credentials are workstation state. Portable --scope repo never mints.
+if [ "$SCOPE" != repo ] && [ -f "$ROOT/scripts/lib/identity.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/lib/identity.sh"
+  identity_file=$(identity_config_path "$ROOT" 2>/dev/null || true)
+  if [ -n "$identity_file" ] && [ -f "$identity_file" ]; then
+    for identity_role in executor reviewer approver; do
+      if identity_token "$ROOT" "$identity_role" --check >/dev/null 2>&1; then
+        ok "identity $identity_role login and token scope"
+      else
+        fail "identity $identity_role login and token scope (run scripts/agentic-flow token $identity_role --check)"
+      fi
+    done
+  fi
+fi
+
 echo
 echo "Summary: $failures missing/failed, $warnings warning(s)."
 

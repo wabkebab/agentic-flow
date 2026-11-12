@@ -5,6 +5,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 usage:
+  agentic-flow token <executor|reviewer|approver> [--check]
   agentic-flow status [--json]
   agentic-flow diff [--ref <ref>] [--json]
   agentic-flow upgrade [--ref <ref>] [--force] [--yes]
@@ -432,6 +433,15 @@ status_cmd() {
   [ "$action_needed" = false ] || exit 1
 }
 
+token_cmd() {
+  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die 'usage: agentic-flow token <role> [--check]'
+  local token_root
+  token_root=$(find_root) || token_root=$(git rev-parse --show-toplevel) || die 'not inside a Git project'
+  # shellcheck disable=SC1091
+  . "$token_root/scripts/lib/identity.sh"
+  identity_token "$token_root" "$@"
+}
+
 version_cmd() {
   local root
   root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
@@ -445,6 +455,7 @@ subcommand="${1:-}"
   case "$subcommand" in
     ""|-h|--help) usage; exit 0 ;;
     --version) version_cmd ;;
+    token) shift; token_cmd "$@" ;;
     status) shift; status_cmd "$@" ;;
     diff) shift; diff_cmd "$@" ;;
     upgrade) shift; upgrade_cmd "$@" ;;

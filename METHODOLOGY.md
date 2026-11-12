@@ -130,6 +130,20 @@ agentic-flow-review: status=approved; pr=<PR-number>; head=<40-hex-PR-head>; run
 The loop is **one-directional** (doc → issues), never the reverse. The document stays the
 source of design intent; issues are the disposable execution units.
 
+### Optional App identities
+
+`approver` means the planner/closer identity, distinct from `--approved-by`, which
+records the human's plan approval. Create three GitHub Apps with Issues/Pull
+requests write and Contents/Metadata read, install each on only the target
+repository, and store each RSA key in the workstation keychain. Configure role,
+canonical `slug[bot]` login, App ID, installation ID and key-ref in the operator's
+repository-specific identity TSV; add the logins to the review policy.
+[ADOPTION.md](ADOPTION.md#github-app-role-identities-optional) gives the setup and
+file location. `agentic-flow token <role> --check` mints a repository-scoped token
+and validates permissions without printing it. Configured identity failures never
+fall back to ambient credentials. This pass retains single-operator mode;
+changing the policy to distinct-account is a separate adoption decision.
+
 ### Assurance profiles
 
 The tracked `.agentic-flow-assurance` file holds the project's minimum profile: `quick`,
