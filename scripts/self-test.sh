@@ -336,9 +336,25 @@ should_run() { # <group>
   return 0
 }
 
+workflow_contract_check() {
+  local workflow_root=${1:-$ROOT}
+  [ -f "$workflow_root/scripts/lib/workflow.sh" ] || fail 'workflow library is missing'
+  # shellcheck disable=SC1091
+  . "$workflow_root/scripts/lib/workflow.sh"
+  workflow_load "$workflow_root" || fail 'workflow validation failed'
+  # These legacy readers mention only part of the label set. Include label creation
+  # when comparing the union, so the new escalation label is covered as well.
+  local legacy_labels
+  legacy_labels=$(grep -Eoh 'agent:[a-z]+|needs-[a-z-]+' \
+    "$workflow_root/scripts/hooks/require-step-comment.sh" "$workflow_root/scripts/lifecycle-status.sh" \
+    "$workflow_root/scripts/create-tags.sh" | LC_ALL=C sort -u)
+  [ "$legacy_labels" = "$(workflow_labels)" ] || fail 'hard-coded workflow labels drifted from config/workflow.tsv'
+}
+
 fast_check_group() { # <group>; fast mode only
   case "$1" in
     contracts)
+      workflow_contract_check
       [ -f "$ROOT/config/payload.tsv" ] || fail 'payload manifest is missing'
       [ -f "$ROOT/templates/harness/Makefile" ] || [ ! -f "$ROOT/scripts/export.sh" ] \
         || fail 'pristine Makefile is missing'
@@ -683,6 +699,10 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/.codex/hooks.json"
   assert_file "$TARGET/.agents/skills/plan-to-issues/SKILL.md"
   assert_file "$TARGET/config/payload.tsv"
+  assert_file "$TARGET/config/workflow.tsv"
+  assert_file "$TARGET/scripts/lib/workflow.sh"
+  ( . "$TARGET/scripts/lib/workflow.sh"; workflow_load "$TARGET" ) \
+    || fail 'exported workflow did not validate'
   assert_file "$TARGET/.agentic-flow-review-policy"
   cmp "$ROOT/templates/harness/.agentic-flow-review-policy" "$TARGET/.agentic-flow-review-policy" \
     || fail 'export changed the default review policy'
@@ -1062,6 +1082,55 @@ fi
 
 # --- shellcheck is required, not optional ------------------------------------------------
 if should_run contracts; then
+workflow_contract_check
+WORKFLOW_FIX="$TMP/workflow"
+mkdir -p "$WORKFLOW_FIX/config"
+workflow_reject() { # <description> <expected diagnostic>
+  local output status=0
+  output=$(workflow_load "$WORKFLOW_FIX" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "workflow accepted $1"
+  printf '%s\n' "$output" | grep -Eq 'workflow.tsv:[0-9]+:' \
+    || fail "workflow diagnostic omitted file and line: $output"
+  printf '%s\n' "$output" | grep -Fq "$2" || fail "workflow diagnostic: $output"
+}
+for defect in spaces trailing unknown-label duplicate unreachable missing-state self-loop role requirement; do
+  case "$defect" in
+    spaces) printf 'state step-strict executing agent:codex,needs-execution open\n' > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='fields' ;;
+    trailing) printf 'state\tstep-strict\texecuting\tagent:codex,needs-execution\topen\t\n' > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='fields' ;;
+    unknown-label) sed 's/needs-execution/unknown-label/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='label' ;;
+    duplicate) cat "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; printf 'transition\tstep-strict\tsubmit\texecutor\texecuting\treviewing\thead,head≠last-bounced-head\n' >> "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='duplicate' ;;
+    unreachable) cat "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; printf 'state\tstep-strict\torphan\t-\tclosed\n' >> "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='unreachable' ;;
+    missing-state) sed 's/	reviewing	head/	absent	head/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='unknown state' ;;
+    self-loop) sed 's/	executing	reviewing	/	executing	executing	/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='self-loop' ;;
+    role) sed 's/	executor	/	stranger	/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='role' ;;
+    requirement) sed 's/head=submitted/anything/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='requirement' ;;
+  esac
+  workflow_reject "$defect" "$diagnostic"
+done
+workflow_load "$ROOT" || fail 'valid workflow rejected'
+[ "$(workflow_successor step-strict reviewing bounce 1)" = executing ] || fail 'second bounce did not execute'
+[ "$(workflow_successor step-strict reviewing bounce 2)" = escalated ] || fail 'third bounce did not escalate'
+[ "$(workflow_successor work-standard reviewing approve 0)" = closing ] || fail 'Standard approval did not close out'
+[ "$(workflow_successor step-strict reviewing approve 0)" = approved ] || fail 'Strict approval did not approve'
+[ "$(workflow_successor tracker open notify 0)" = closing ] || fail 'tracker notify did not close out'
+[ "$(workflow_state_labels step-strict approved)" = '-' ] || fail 'approved labels not empty'
+workflow_successor step-strict executing approve 0 >/dev/null 2>&1 && fail 'illegal successor accepted'
+workflow_successor step-strict reviewing bounce bad >/dev/null 2>&1 && fail 'invalid bounce count accepted'
+workflow_state_labels tracker absent >/dev/null 2>&1 && fail 'unknown state labels accepted'
+mkdir -p "$WORKFLOW_FIX/scripts/lib" "$WORKFLOW_FIX/scripts/hooks"
+cp "$ROOT/config/workflow.tsv" "$WORKFLOW_FIX/config/workflow.tsv"
+cp "$ROOT/scripts/lib/workflow.sh" "$WORKFLOW_FIX/scripts/lib/workflow.sh"
+cp "$ROOT/scripts/create-tags.sh" "$WORKFLOW_FIX/scripts/create-tags.sh"
+cp "$ROOT/scripts/lifecycle-status.sh" "$WORKFLOW_FIX/scripts/lifecycle-status.sh"
+for reader in scripts/hooks/require-step-comment.sh scripts/lifecycle-status.sh; do
+  cp "$ROOT/scripts/hooks/require-step-comment.sh" "$WORKFLOW_FIX/scripts/hooks/require-step-comment.sh"
+  cp "$ROOT/scripts/lifecycle-status.sh" "$WORKFLOW_FIX/scripts/lifecycle-status.sh"
+  sed 's/needs-closing/needs-unknown/g' "$ROOT/$reader" > "$WORKFLOW_FIX/$reader"
+  ( workflow_contract_check "$WORKFLOW_FIX" ) > "$TMP/workflow-drift.out" 2>&1 \
+    && fail "workflow accepted drift in $reader"
+  grep -Fq 'hard-coded workflow labels drifted' "$TMP/workflow-drift.out" \
+    || fail 'workflow drift diagnostic missing'
+done
 # Guard failures must block locally even when a guard cannot return its own exit 2.
 if [ -f "$ROOT/.claude/settings.json" ]; then
   GUARD_FIX="$TMP/guard-failure-fixture"
