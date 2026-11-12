@@ -94,7 +94,7 @@ full mechanism and rationale for each in `METHODOLOGY.md` §8:
 - **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)
 - **PreToolUse(Bash) → scan staged content before a commit** (`scripts/hooks/scan-secrets.sh`)
   — override a false positive with `AGENTIC_ALLOW_SECRET=1` on the commit.
-- **PreToolUse(Bash) → require a comment before a step issue's label flips**
+- **PreToolUse(Bash) → route workflow writes through `handoff`**
   (`scripts/hooks/require-step-comment.sh`) — Claude/Codex only; **OpenCode has no hook
   engine in this stack**, so the reviewer side still relies on
   `.opencode/agent/code-reviewer.md` being followed, not on mechanical enforcement.

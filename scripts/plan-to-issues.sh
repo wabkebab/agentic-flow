@@ -169,8 +169,8 @@ printf '%s\n' "$ISSUES_JSON" | jq -e --arg repo "$REPO" '
 # not permission to choose the first search result.
 INDEX="$TMP/issue-index"
 : > "$INDEX"
-TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( approved-by:.+ approved-at:[^ ]+)? -->$'
-STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( approved-by:.+ approved-at:[^ ]+)? -->$'
+TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved-by:.+ approved-at:[^ ]+)? -->$'
+STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved-by:.+ approved-at:[^ ]+)? -->$'
 printf '%s\n' "$ISSUES_JSON" | jq -r --arg prefix "<!-- $PLAN_MARKER " '
   .[] | .number as $number | .body | split("\n")[]
   | select(contains($prefix)) | [$number, .] | @tsv
@@ -250,7 +250,11 @@ if [ "$PROFILE" = standard ]; then
   if [ "$MODE" = apply ] && [ -z "$approval_by" ]; then
     die "standard work issue requires --approved-by to record plan approval"
   fi
-  stamp="<!-- $PLAN_MARKER step:$step_id spec:$SPEC_HASH"
+  journal_value='journal=v1'
+  if [ -n "$existing" ]; then
+    journal_value=$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+  fi
+  stamp="<!-- $PLAN_MARKER step:$step_id spec:$SPEC_HASH${journal_value:+ $journal_value}"
   [ -z "$approval_by" ] || stamp="$stamp approved-by:$approval_by approved-at:$approval_at"
   stamp="$stamp -->"
   packet=$(jq -r '.steps[0].packet | "Profile: Standard\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"' "$SPEC")
@@ -332,7 +336,11 @@ if [ -n "$APPROVED_BY" ]; then
     APPROVAL_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   fi
 fi
-TRACK_STAMP="<!-- $TRACK_ID_MARKER spec:$SPEC_HASH"
+journal_value='journal=v1'
+if [ -n "$existing_tracker" ]; then
+  journal_value=$(printf '%s' "$existing_tracker" | jq -r .body | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+fi
+TRACK_STAMP="<!-- $TRACK_ID_MARKER spec:$SPEC_HASH${journal_value:+ $journal_value}"
 if [ -n "$APPROVAL_BY" ]; then
   TRACK_STAMP="$TRACK_STAMP approved-by:$APPROVAL_BY approved-at:$APPROVAL_AT"
 fi
@@ -351,7 +359,7 @@ if [ "$MODE" = diff ]; then
     echo "Tracker: missing (would create)"
   else
     existing_spec=$(printf '%s\n' "$existing_tracker" | jq -r '.body' \
-      | sed -n 's/.* spec:\([^ ]*\) -->.*/\1/p' | head -1)
+      | sed -n 's/.* spec:\([^ ]*\).* -->.*/\1/p' | head -1)
     if [ "$existing_spec" = "$SPEC_HASH" ]; then
       echo
       echo "Tracker: current"
@@ -422,7 +430,12 @@ while [ "$i" -lt "$STEP_COUNT" ]; do
   labels=$(jq -r ".steps[$i].labels // [] | join(\",\")" "$SPEC")
   step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
   marker="$PLAN_MARKER step:$step_id"
-  stamp="<!-- $marker spec:$SPEC_HASH -->"
+  existing=$(issue_for_identity "step:$step_id")
+  journal_value='journal=v1'
+  if [ -n "$existing" ]; then
+    journal_value=$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+  fi
+  stamp="<!-- $marker spec:$SPEC_HASH${journal_value:+ $journal_value} -->"
   if [ "$PROFILE" = strict ]; then
     stamp="$stamp
 <!-- agentic-flow:topology:strict -->"

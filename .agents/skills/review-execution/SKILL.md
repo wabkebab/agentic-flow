@@ -98,22 +98,15 @@ is no longer reviewing it.
 
 ## Record the verdict and move the issue
 
-Post step verdicts on step issues and final approval on `Tracking issue`, including
-`attempt=`. Copy `METHODOLOGY.md` §2 templates. Change verdicts with new comments.
+Use `handoff` for step verdicts. Post final approval on `Tracking issue`, including
+`attempt=`, using `METHODOLOGY.md` §2. Change final verdicts with new comments.
 
-Moving the step issue is the one exception, authorized standingly by the state machine in
-`CLAUDE.md`. Post the verdict as an issue comment **first** — findings, or an explicit
-no-findings approval, with the range reviewed and verification run. Then:
-
-- **`changes requested`** — leave open and return it:
-  `gh issue edit <N> --add-label "agent:codex,needs-execution" --remove-label "agent:opencode,needs-review"`.
-  Capped at two returns; a third escalates to the human.
-- **`approved`** — under Strict, `gh issue close <N>`, then
-  `gh issue edit <N> --remove-label "agent:opencode,needs-review"`; a closed sub-issue records
-  *reviewed clean*, not *shipped*. Under Standard, post the approving verdict, then
-  relabel the sole work issue `agent:claude,needs-closing` and leave it open.
-- **last open Strict step of a plan** — also
-  `gh issue edit <TRACKER> --add-label "agent:claude,needs-closing"`, leaving the tracker open.
-- **`pending`** — change nothing; name the missing input.
+Move step issues with `scripts/agentic-flow handoff <N> approve --as reviewer
+--head <submitted-sha40> --body-file <review-file>`, or `handoff <N> bounce
+--as reviewer --body-file <findings-file>`. Include the range reviewed and verification.
+The command journals the verdict, closes approved Strict steps, keeps Standard work
+issues open for close-out, and notifies the Strict tracker after the last approval.
+A third findings return escalates; only an approver may `handoff resume` with a note.
+For `pending`, change nothing and name the missing input. Never relabel by hand.
 
 Never edit the doc's Status block — that is close-out's job.

@@ -1,109 +1,130 @@
 #!/usr/bin/env bash
-# PreToolUse hook (matcher: Bash). Enforces the step issue label state machine in
-# CLAUDE.md: an implementor must comment the commit sha + title on the step issue before
-# flipping it to needs-review, and closing a step issue requires a verdict comment first.
-# Reads the tool-call JSON on stdin. Exit 2 = block the call and show stderr to the agent;
-# exit 0 = allow.
+# PreToolUse: workflow writes go through handoff. Kept at the installed hook path
+# so existing Claude/Codex wiring and trust hashes have one migration to review.
+# shellcheck disable=SC2329,SC1091
 set -uo pipefail
-
-raw=$(cat 2>/dev/null || true)
-if command -v jq >/dev/null 2>&1; then
-  cmd=$(printf '%s' "$raw" | jq -r '.tool_input.command // ""' 2>/dev/null) || cmd=""
-else
-  cmd=$raw
-fi
-[ -n "$cmd" ] || exit 0
-
-# Without gh there is nothing to check against; let the command fail on its own.
-command -v gh >/dev/null 2>&1 || exit 0
-
-issue_number() {
-  printf '%s' "$1" | grep -Eo '[0-9]+' | head -n1
+# shellcheck disable=SC1091
+. "$(dirname "$0")/../lib/hook-command.sh"
+. "$(dirname "$0")/../lib/workflow.sh"
+. "$(dirname "$0")/../lib/review-policy.sh"
+HOOK_ROOT=$(cd "$(dirname "$0")/../.." && pwd -P)
+workflow_load "$HOOK_ROOT" || exit 2
+WORKFLOW_LABELS=$(workflow_labels)
+block_handoff() {
+  echo 'Blocked: use agentic-flow handoff <issue> <event> --as <role>; workflow state and role tokens belong to handoff.' >&2
+  return 2
 }
-
-last_comment() {
-  local root roles
-  root=$(git rev-parse --show-toplevel) || {
-    echo 'Blocked: cannot locate the project Git root for review policy checks.' >&2
-    return 1
-  }
-  # shellcheck disable=SC1091
-  . "$root/scripts/lib/review-policy.sh"
-  if ! read_review_policy "$root"; then
-    echo "Blocked: fix $root/.agentic-flow-review-policy; reviewer, executor and approver logins are required." >&2
-    return 1
-  fi
-  roles=$REVIEW_REVIEWERS
-  [ "${2:-reviewer}" != executor ] || roles=$REVIEW_EXECUTORS
-  review_bounded gh api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" 2>/dev/null |
-    jq -e 'if type == "array" and length < 100 then . else error("comment page may be truncated") end' |
-    review_normalize_comments |
-    jq -r --arg roles "$roles" '[.[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)] | last | .body // ""' || {
-      echo "Blocked: could not read comments for issue #$1; check GitHub access and retry." >&2
-      return 1
-    }
+check_handoff_write() {
+  local i=0 j word operation='' number='' endpoint='' method='' opaque=false payload='' repo=''
+  local -a read_args
+  if [ "$HOOK_KIND" = cd ]; then HANDOFF_HOOK_CWD_CHANGED=true; return 0; fi
+  # Literal examples passed to data commands are not executable invocations.
+  case "${HOOK_WORDS[0]:-}" in echo|printf|rg|grep|sed|jq|cat) return 0 ;; esac
+  for ((i=0;i<${#HOOK_WORDS[@]};i++)); do
+    word=${HOOK_WORDS[i]}
+    if [ "${word##*/}" = agentic-flow ] && [ "${HOOK_WORDS[i+1]:-}" = token ]; then block_handoff; return 2; fi
+    case "${word##*/}" in
+      bash|sh|zsh)
+        case "${HOOK_WORDS[i+1]:-}" in
+          -c|-lc|-ic)
+            local nested=${HOOK_WORDS[i+2]:-} depth=${HANDOFF_HOOK_DEPTH:-0} nested_status=0
+            [ "$depth" -lt 4 ] || { block_handoff; return 2; }
+            ( HANDOFF_HOOK_DEPTH=$((depth+1)) hook_walk "$nested" check_handoff_write ) || nested_status=$?
+            if [ "$nested_status" -eq 1 ]; then
+              nested_status=0
+              ( HANDOFF_HOOK_DEPTH=$((depth+1)) hook_walk "$nested" check_handoff_write fallback ) || nested_status=$?
+            fi
+            [ "$nested_status" -ne 1 ] || { block_handoff; return 2; }
+            return "$nested_status" ;;
+        esac ;;
+    esac
+    [ "${word##*/}" = gh ] || continue
+    j=$((i+1))
+    while [ "$j" -lt "${#HOOK_WORDS[@]}" ]; do
+      case "${HOOK_WORDS[j]}" in
+        -R|--repo|--hostname) repo=${HOOK_WORDS[j+1]:-}; j=$((j+2)) ;;
+        -R?*) repo=${HOOK_WORDS[j]#-R}; j=$((j+1)) ;;
+        --repo=*) repo=${HOOK_WORDS[j]#--repo=}; j=$((j+1)) ;;
+        *) break ;;
+      esac
+    done
+    if [ "${HOOK_WORDS[j]:-}" = issue ]; then
+      operation=${HOOK_WORDS[j+1]:-}
+      case "$operation" in
+        edit)
+          for ((j=j+2;j<${#HOOK_WORDS[@]};j++)); do
+            word=${HOOK_WORDS[j]}
+            case "$word" in
+              --add-label|--remove-label|--add-label=*|--remove-label=*)
+                local labels=${word#*=} label
+                [ "$labels" != "$word" ] || labels=${HOOK_WORDS[j+1]:-}
+                labels=$(printf '%s' "$labels" | tr -d '[:space:]')
+                while IFS= read -r label; do
+                  case ",$labels," in *",$label,"*) block_handoff; return 2 ;; esac
+                done <<< "$WORKFLOW_LABELS"
+                # Expansion is opaque to the lexer; fail closed for label writes.
+                case "$labels" in *'$'*|*'`'*) block_handoff; return 2 ;; esac ;;
+            esac
+          done ;;
+        close|reopen)
+          # The lexer does not execute cd. An unknown read context fails closed.
+          [ "${HANDOFF_HOOK_CWD_CHANGED:-false}" = false ] || { block_handoff; return 2; }
+          for ((j=j+2;j<${#HOOK_WORDS[@]};j++)); do
+            word=${HOOK_WORDS[j]}
+            case "$word" in
+              -R|--repo) repo=${HOOK_WORDS[j+1]:-}; j=$((j+1)) ;;
+              --repo=*) repo=${word#*=} ;;
+              [0-9]*|https://github.com/*/issues/*) number=$word ;;
+            esac
+          done
+          [ -n "$number" ] || { block_handoff; return 2; }
+          read_args=(issue view "$number" --json body --jq .body)
+          [ -z "$repo" ] || read_args+=(--repo "$repo")
+          payload=$(review_bounded gh "${read_args[@]}" 2>/dev/null) || { block_handoff; return 2; }
+          if [[ "$payload" = *'agentic-flow:plan:'* ]]; then block_handoff; return 2; fi ;;
+      esac
+    elif [ "${HOOK_WORDS[j]:-}" = api ]; then
+      for ((j=j+1;j<${#HOOK_WORDS[@]};j++)); do
+        word=${HOOK_WORDS[j]}
+        case "$word" in
+          -X|--method) method=${HOOK_WORDS[j+1]:-}; j=$((j+1)) ;;
+          -X?*) method=${word#-X} ;;
+          --method=*) method=${word#--method=} ;;
+          --input|--input=*) opaque=true ;;
+          -f|-F|--field|--raw-field) [ -n "$method" ] || method=POST ;;
+          *repos/*/issues*|graphql|/graphql) endpoint=$word ;;
+        esac
+        payload="$payload $word"
+      done
+      case "$method" in GET|HEAD) continue ;; esac
+      case "$endpoint" in
+        */issues*)
+          if [ "$opaque" = true ]; then block_handoff; return 2; fi
+          local label
+          while IFS= read -r label; do
+            case "$payload" in *"$label"*) block_handoff; return 2 ;; esac
+          done <<< "$WORKFLOW_LABELS"
+          case "$payload:$method" in *state=closed*|*state=open*|*state_reason=*|*/labels*:DELETE) block_handoff; return 2 ;; esac ;;
+        *graphql*)
+          [ "$opaque" = false ] || { block_handoff; return 2; }
+          case "$payload" in *mutation*) block_handoff; return 2 ;; esac ;;
+      esac
+    fi
+  done
+  return 0
 }
-
-# Handoff: implementor -> reviewer. `gh issue edit <N> --add-label "...needs-review..."`
-# AGENTS.md step 5 requires a comment naming the sha + what changed before this runs.
-if printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+issue[[:space:]]+edit[[:space:]]+[0-9]+.*--add-label[[:space:]]+"?[^"]*needs-review'; then
-  n=$(issue_number "$(printf '%s' "$cmd" | grep -Eo 'issue[[:space:]]+edit[[:space:]]+[0-9]+')")
-  last=$(last_comment "$n" executor) || exit 2
-  if ! printf '%s' "$last" | grep -Eiq 'implemented in' || ! printf '%s' "$last" | grep -Eq '[0-9a-f]{7,40}'; then
-    echo "Blocked: comment the commit sha + title on issue #$n before moving it to needs-review (AGENTS.md step 5)." >&2
-    exit 2
-  fi
+raw=$(head -c 65537)
+if ! hook_read_command "$raw"; then
+  # Without a trustworthy decode, never authorize an apparent GitHub mutation.
+  if [[ "$raw" = *gh* || "$raw" = *agentic-flow* ]]; then block_handoff; exit 2; fi
+  exit 0
 fi
-
-# Bounce-back: reviewer -> implementor. `gh issue edit <N> --add-label "...needs-execution..."`
-# on an issue that already carries needs-review means a findings comment must exist first.
-if printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+issue[[:space:]]+edit[[:space:]]+[0-9]+.*--add-label[[:space:]]+"?[^"]*needs-execution'; then
-  n=$(issue_number "$(printf '%s' "$cmd" | grep -Eo 'issue[[:space:]]+edit[[:space:]]+[0-9]+')")
-  labels=$(gh issue view "$n" --json labels --jq '.labels[].name' 2>/dev/null || printf '')
-  if printf '%s' "$labels" | grep -Fxq 'needs-review'; then
-    last=$(last_comment "$n") || exit 2
-    if ! printf '%s' "$last" | grep -Eiq 'changes requested|finding'; then
-      echo "Blocked: comment the findings on issue #$n before sending it back to needs-execution (code-reviewer.md)." >&2
-      exit 2
-    fi
-  fi
+status=0
+hook_walk "$HOOK_COMMAND" check_handoff_write || status=$?
+if [ "$status" -eq 1 ]; then
+  # Run the permissive lexer only to identify protected operations, never execute.
+  status=0
+  hook_walk "$HOOK_COMMAND" check_handoff_write fallback || status=$?
+  [ "$status" -ne 1 ] || { block_handoff; exit 2; }
 fi
-
-# Standard review handoff: the sole work issue stays open until close-out.
-if printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+issue[[:space:]]+edit[[:space:]]+[0-9]+.*--add-label[[:space:]]+"?[^"]*needs-closing'; then
-  n=$(issue_number "$(printf '%s' "$cmd" | grep -Eo 'issue[[:space:]]+edit[[:space:]]+[0-9]+')")
-  body=$(gh issue view "$n" --json body --jq .body 2>/dev/null || printf '')
-  if printf '%s\n' "$body" | grep -Fxq '<!-- agentic-flow:topology:standard -->'; then
-    last=$(last_comment "$n") || exit 2
-    if ! printf '%s\n' "$last" | grep -Eq '^[[:space:]]*agentic-flow-review: status=approved; step=[a-z0-9][a-z0-9._-]*; head=[0-9a-f]{40}; role=reviewer$'; then
-      echo "Blocked: post the approving structured step verdict on Standard work issue #$n before needs-closing." >&2
-      exit 2
-    fi
-  fi
-fi
-
-# Approval: reviewer closing a step issue. `gh issue close <N>`
-if printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+issue[[:space:]]+close[[:space:]]+[0-9]+'; then
-  n=$(issue_number "$(printf '%s' "$cmd" | grep -Eo 'issue[[:space:]]+close[[:space:]]+[0-9]+')")
-  body=$(gh issue view "$n" --json body --jq .body 2>/dev/null || printf '')
-  if printf '%s\n' "$body" | grep -Fxq '<!-- agentic-flow:topology:standard -->'; then
-    labels=$(gh issue view "$n" --json labels --jq '.labels[].name' 2>/dev/null || printf '')
-    if ! printf '%s\n' "$labels" | grep -Fxq needs-closing; then
-      echo "Blocked: Standard work issue #$n must reach needs-closing before close-out." >&2
-      exit 2
-    fi
-    last=$(last_comment "$n") || exit 2
-    if ! printf '%s\n' "$last" | grep -Eq '^[[:space:]]*agentic-flow-review: status=approved; pr=[1-9][0-9]*; head=[0-9a-f]{40}; run=https://github.com/[^/]+/[^/]+/actions/runs/[1-9][0-9]*; attempt=[1-9][0-9]*; role=reviewer$'; then
-      echo "Blocked: Standard work issue #$n needs final-head approval before close-out." >&2
-      exit 2
-    fi
-    exit 0
-  fi
-  last=$(last_comment "$n") || exit 2
-  if ! printf '%s' "$last" | grep -Eiq 'approved'; then
-    echo "Blocked: post the review verdict as a comment on issue #$n before closing it (code-reviewer.md)." >&2
-    exit 2
-  fi
-fi
-
-exit 0
+exit "$status"

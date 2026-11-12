@@ -65,8 +65,8 @@ opt-out reassigns the review, it never leaves it to both.
         │
         ▼
   Execute (Codex)                   one branch + PR per pass; one commit + "Fixes #N"
-        │                            per step; git-codex; comments the commit sha and
-        │                            verification on the step issue, then flips it
+        │                            per step; git-codex; runs handoff submit with sha
+        │                            and verification on the step issue, projecting it
         │                            to agent:opencode + needs-review
         ▼
   Review (OpenCode)                 reads the commented commit against the brief
@@ -95,8 +95,8 @@ is recorded in the implementation doc's Status block and enforced by
 against a CI run (§10). The Strict tracker or Standard work issue stays open through
 close-out and carries `agent:claude` + `needs-closing`.
 
-**Why the handoffs carry data, not just labels.** Codex comments the commit sha and the
-verification it actually ran; OpenCode comments the verdict. Each role then starts from the
+**Why the handoffs carry data, not just labels.** `agentic-flow handoff` journals the
+commit sha and verification for submit, or the verdict for approve/bounce. Each role then starts from the
 issue instead of re-deriving state from `git log` and guesswork, and close-out can read the
 whole pass off GitHub rather than asking a human what the reviewer decided. A label with no
 comment behind it is a handoff that costs the next role a full re-investigation.
@@ -113,8 +113,8 @@ Approvals bind to commits: rebasing or amending a reviewed branch requires re-re
 Every approved step commit must be an ancestor of the PR head. Missing objects or
 shallow history leave ancestry UNVERIFIED until the operator fetches the history.
 
-Copy the step verdict into the comment on that step's own issue, using the executor's
-full implementation SHA. For rejection, use `status=changes-requested`:
+`agentic-flow handoff approve|bounce` writes the step verdict on that step's issue,
+using the executor's full implementation SHA (`status=changes-requested` for bounce):
 
 ```text
 agentic-flow-review: status=approved; step=<step-id>; head=<40-hex-implementation-sha>; role=reviewer
@@ -305,7 +305,7 @@ backward in this state machine.
 `scripts/init.sh` runs it once at adoption; `plan-to-issues.sh` checks whether any of the six
 already exist and only invokes it when none do, so a label a spec never mentions —
 `agent:opencode` + `needs-review`, added later by the reviewer, not by the spec — still
-exists by the time `gh issue edit --add-label` needs it, without recreating labels on every
+exists by the time `agentic-flow handoff` needs it, without recreating labels on every
 apply. Anything else (`plan` on the tracker, `sev:high|med|low|nit` on findings, §5) gets a
 neutral gray (`#CCCCCC`) from `plan-to-issues.sh`'s own per-spec label loop.
 
@@ -321,10 +321,11 @@ Rules:
   plan ships as **one branch and one PR** — a Feature/Security pass is the review unit, not
   each step. Split a pass across multiple PRs only when the brief says so explicitly (e.g. a
   pass too large or long-running to hold on one branch); don't default to a branch per step.
-- **Every handoff carries its evidence in a comment.** Codex comments the commit sha and the
-  verification actually run before flipping to `needs-review`; OpenCode comments findings or
-  the approving verdict before relabelling or closing. The label says who holds it; the
-  comment says what they are holding.
+- **Every handoff carries its evidence in a journal comment.** Run `agentic-flow handoff`
+  with `submit --as executor --head <sha40>`, `approve --as reviewer --head <sha40>`, or
+  `bounce --as reviewer`, and `--body-file <evidence-file>`. Retry the same request after
+  failure. Use `reconcile` to repair projections and pending tracker notifications.
+  The journal decides state; labels and issue open/closed state are projections.
 - Profiled specs supply `packet.brief`, `packet.definition_of_done`,
   `packet.verification`, and `packet.risks` for each step. These come from the approved
   brief and render into the issue's executor packet. The driver rejects packets over
@@ -398,13 +399,10 @@ Fixes #73
   secret has to be rotated. Runs `gitleaks` (required) **and** a local high-signal pattern
   set, always both — see §11.1 on why the second layer is not a fallback.
   `AGENTIC_ALLOW_SECRET=1` overrides a false positive, visibly.
-- **PreToolUse(Bash) → require a comment before a step issue's label flips**
-  (`scripts/hooks/require-step-comment.sh`): blocks `gh issue edit --add-label
-  ...needs-review`, `...needs-execution` (bounce-back), and `gh issue close` on a step issue
-  unless the required comment (sha + title, findings, or verdict) already landed. Wired for
-  Claude and Codex, whose bash calls go through a hook engine. **OpenCode has no hook engine
-  in this stack**, so the reviewer side still relies on `.opencode/agent/code-reviewer.md`
-  being followed, not on mechanical enforcement.
+- **PreToolUse(Bash) → route workflow writes through `handoff`**
+  (`scripts/hooks/require-step-comment.sh`): blocks raw workflow label mutations,
+  closing/reopening plan-stamped issues, and direct role-token calls. Claude and Codex
+  use the shared lexer; OpenCode follows its reviewer contract without a hook engine.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
 - **`scripts/check-payload-manifest.sh`** fails when an agent adapter, harness template, or

@@ -5,6 +5,8 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 usage:
+  agentic-flow handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]
+  agentic-flow handoff <issue> reconcile [--json]
   agentic-flow token <executor|reviewer|approver> [--check]
   agentic-flow status [--json]
   agentic-flow diff [--ref <ref>] [--json]
@@ -455,6 +457,11 @@ subcommand="${1:-}"
   case "$subcommand" in
     ""|-h|--help) usage; exit 0 ;;
     --version) version_cmd ;;
+    handoff)
+      shift
+      # shellcheck disable=SC1091 # Installed alongside the CLI.
+      . "$(dirname "$0")/lib/handoff.sh"
+      handoff_cmd "$@" ;;
     token) shift; token_cmd "$@" ;;
     status) shift; status_cmd "$@" ;;
     diff) shift; diff_cmd "$@" ;;

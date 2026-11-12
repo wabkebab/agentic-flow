@@ -37,7 +37,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade]" >&2
+      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations]" >&2
       exit 0
       ;;
     *)
@@ -47,7 +47,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 # The one list both the flag parser and every `should_run` call site are checked against.
-SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade"
+SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade stations"
 GROUPS_RAN=" "
 case " $SELF_TEST_GROUPS " in
   *" $ONLY_GROUP "*) ;;
@@ -371,6 +371,9 @@ fast_check_group() { # <group>; fast mode only
     plan-to-issues)
       [ -x "$ROOT/scripts/plan-to-issues.sh" ] || fail 'plan driver is missing'
       bash -n "$ROOT/scripts/plan-to-issues.sh" || fail 'plan driver has invalid syntax'
+      ;;
+    stations)
+      [ -f "$ROOT/scripts/lib/journal.sh" ] || fail "journal library is missing"
       ;;
     lifecycle)
       [ -x "$ROOT/scripts/lifecycle-status.sh" ] || fail 'lifecycle gate is missing'
@@ -1266,16 +1269,13 @@ mkdir -p "$WORKFLOW_FIX/scripts/lib" "$WORKFLOW_FIX/scripts/hooks"
 cp "$ROOT/config/workflow.tsv" "$WORKFLOW_FIX/config/workflow.tsv"
 cp "$ROOT/scripts/lib/workflow.sh" "$WORKFLOW_FIX/scripts/lib/workflow.sh"
 cp "$ROOT/scripts/create-tags.sh" "$WORKFLOW_FIX/scripts/create-tags.sh"
-cp "$ROOT/scripts/lifecycle-status.sh" "$WORKFLOW_FIX/scripts/lifecycle-status.sh"
-for reader in scripts/hooks/require-step-comment.sh scripts/lifecycle-status.sh; do
+reader=scripts/lifecycle-status.sh
   cp "$ROOT/scripts/hooks/require-step-comment.sh" "$WORKFLOW_FIX/scripts/hooks/require-step-comment.sh"
-  cp "$ROOT/scripts/lifecycle-status.sh" "$WORKFLOW_FIX/scripts/lifecycle-status.sh"
   sed 's/needs-closing/needs-unknown/g' "$ROOT/$reader" > "$WORKFLOW_FIX/$reader"
   ( workflow_contract_check "$WORKFLOW_FIX" ) > "$TMP/workflow-drift.out" 2>&1 \
     && fail "workflow accepted drift in $reader"
   grep -Fq 'hard-coded workflow labels drifted' "$TMP/workflow-drift.out" \
     || fail 'workflow drift diagnostic missing'
-done
 # Guard failures must block locally even when a guard cannot return its own exit 2.
 if [ -f "$ROOT/.claude/settings.json" ]; then
   GUARD_FIX="$TMP/guard-failure-fixture"
@@ -2178,7 +2178,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail 'nested fast dispatch failed'
   actual_fast_groups=$(awk -F: '$1 == "group" { print $2 }' \
     "$MEASURE_FIX/dispatch.events" | sort -u | tr '\n' ' ')
-  [ "$actual_fast_groups" = 'contracts hooks lifecycle plan-to-issues ' ] \
+  [ "$actual_fast_groups" = 'contracts hooks lifecycle plan-to-issues stations ' ] \
     || fail "fast dispatch included an unexpected group: $actual_fast_groups"
   assert_cost_budget "$MEASURE_FIX/dispatch.events" fast
 fi
@@ -3205,76 +3205,46 @@ must_allow_nojq "$PUSH_GUARD" 'git pull --rebase'
 
 STEP_HOOK="$ROOT/scripts/hooks/require-step-comment.sh"
 STEP_HOOK_GH="$TMP/step-hook-gh"
-mkdir -p "$STEP_HOOK_GH" "$TMP/step-hook-project/scripts/lib" "$TMP/step-hook-project/docs"
-git -C "$TMP/step-hook-project" init -q
-cp "$ROOT/scripts/lib/review-policy.sh" "$TMP/step-hook-project/scripts/lib/review-policy.sh"
-printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=single-operator' \
-  'accepted-risk=docs/accepted_risks.md#single-operator-review' \
-  'reviewer=wabkebab' 'executor=wabkebab' 'approver=wabkebab' > "$TMP/step-hook-project/.agentic-flow-review-policy"
-printf '%s\n' '<a id="single-operator-review"></a>' > "$TMP/step-hook-project/docs/accepted_risks.md"
+mkdir -p "$STEP_HOOK_GH"
 cat > "$STEP_HOOK_GH/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
-case "$*" in
-  *'--jq .body'*) printf '%s\n' '<!-- agentic-flow:topology:standard -->' ;;
-  *'--jq .labels[].name'*) printf '%s\n' "${STEP_HOOK_LABELS:-needs-review}" ;;
-  'api repos/{owner}/{repo}/issues/'*'/comments?per_page=100')
-    [ "${STEP_HOOK_GH_FAIL:-0}" = 0 ] || exit 1
-    if [ -n "${STEP_HOOK_COMMENTS_JSON:-}" ]; then
-      jq -n --argjson comments "$STEP_HOOK_COMMENTS_JSON" '$comments'
-    else
-      jq -n --arg body "${STEP_HOOK_COMMENT:-}" '[{body:$body,author:{login:"wabkebab"}}]'
-    fi ;;
-  *) exit 2 ;;
-esac
+[ "${STEP_HOOK_GH_FAIL:-0}" = 0 ] || exit 1
+printf '%s\n' "${STEP_HOOK_BODY:-<!-- agentic-flow:plan:fixture step:alpha spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->}"
 FAKE_GH
 chmod +x "$STEP_HOOK_GH/gh"
-step_hook_status() { # <command> <comment> <labels> <expected status>
-  status=0
-  hook_payload "$1" | PATH="$STEP_HOOK_GH:$PATH" \
-    STEP_HOOK_COMMENT="$2" STEP_HOOK_LABELS="$3" bash -c 'cd "$1" && "$2"' _ "$TMP/step-hook-project" "$STEP_HOOK" \
-    > "$TMP/step-hook.out" 2>&1 || status=$?
-  [ "$status" -eq "$4" ] \
-    || fail "step handoff hook returned $status, expected $4: $(cat "$TMP/step-hook.out")"
-}
-printf '%s\n' 'reviewer=review-only' >> "$TMP/step-hook-project/.agentic-flow-review-policy"
-# shellcheck disable=SC2089 # JSON data parsed by jq, never executed as shell words.
-STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"stranger"}}]'
-# shellcheck disable=SC2090 # The fake gh reads this exported value as JSON data.
-export STEP_HOOK_COMMENTS_JSON
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
-STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"review-only"}}]'
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
-STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"wabkebab"}},{"body":"unrelated","author":{"login":"stranger"}}]'
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 0
-printf '%s\n' 'executor=execute-app[bot]' >> "$TMP/step-hook-project/.agentic-flow-review-policy"
-STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","user":{"login":"execute-app[bot]","type":"Bot"}}]'
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 0
-STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","user":{"login":"execute-app","type":"User"}}]'
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
-STEP_HOOK_COMMENTS_JSON=$(jq -nc '[range(100) | {body:"Implemented in aaaaaaa",author:{login:"wabkebab"}}]')
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
-unset STEP_HOOK_COMMENTS_JSON
-STEP_HOOK_GH_FAIL=1; export STEP_HOOK_GH_FAIL
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
-grep -q 'Blocked:.*comments.*issue #1' "$TMP/step-hook.out" || fail 'gh failure blocked silently'
-unset STEP_HOOK_GH_FAIL
-STEP_APPROVAL='agentic-flow-review: status=approved; step=alpha; head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; role=reviewer'
-STEP_FINAL='agentic-flow-review: status=approved; pr=2; head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; run=https://github.com/owner/repo/actions/runs/100; attempt=1; role=reviewer'
-step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
-  'changes requested' needs-review 2
-step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
-  "$STEP_APPROVAL" needs-review 0
-step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
-  "Review approved after checking the failure path.
-  $STEP_APPROVAL
-Verification passed." needs-review 0
-step_hook_status 'gh issue close 1' "$STEP_APPROVAL" needs-review 2
-step_hook_status 'gh issue close 1' "$STEP_APPROVAL" needs-closing 2
-step_hook_status 'gh issue close 1' "$STEP_FINAL" needs-closing 0
-step_hook_status 'gh issue close 1' \
-  "Final head and CI checked.
-  $STEP_FINAL
-Ready for close-out." needs-closing 0
+for mutation in \
+  'gh issue edit 1 --add-label needs-review' \
+  'rtk gh issue edit --add-label=needs-review 1' \
+  'gh -R owner/repo issue edit 1 --remove-label agent:codex' \
+  'gh issue edit 1 --add-label "bug,needs-human"' \
+  'gh api repos/owner/repo/issues/1 -X PATCH -f labels[]=needs-review' \
+  'gh api repos/owner/repo/issues/1/labels -X DELETE' \
+  'gh api repos/owner/repo/issues/1 --method PATCH --input file.json' \
+  'gh api repos/owner/repo/issues/1 -X PATCH -f state=closed' \
+  'scripts/agentic-flow token reviewer' \
+  'rtk proxy scripts/agentic-flow token executor' \
+  'bash -lc "scripts/agentic-flow token reviewer"' \
+  'gh api graphql -f query=mutation' \
+  'gh api graphql --input request.json' \
+  'bash -c "echo ok"; gh issue edit 1 --add-label needs-review'; do
+  must_block "$STEP_HOOK" "$mutation"
+done
+PATH="$STEP_HOOK_GH:$PATH" must_block "$STEP_HOOK" 'gh issue close 1'
+PATH="$STEP_HOOK_GH:$PATH" must_block "$STEP_HOOK" 'gh issue reopen 1'
+PATH="$STEP_HOOK_GH:$PATH" STEP_HOOK_GH_FAIL=1 must_block "$STEP_HOOK" 'gh issue close 1'
+PATH="$STEP_HOOK_GH:$PATH" STEP_HOOK_BODY='ordinary issue' must_allow "$STEP_HOOK" 'gh issue close 1'
+# shellcheck disable=SC2016 # Literal shell input for the hook lexer, never evaluated.
+for read_command in \
+  'gh issue view 1 --json body,comments' \
+  'rtk gh issue view 127' \
+  'bash -lc "n=$(echo 127); gh issue view 127"' \
+  'gh issue edit 1 --add-label bug' \
+  'gh api repos/owner/repo/issues/1' \
+  'gh api repos/owner/repo/issues/1 --method GET' \
+  'rg "gh issue edit --add-label needs-review" AGENTS.md' \
+  'scripts/agentic-flow handoff 1 submit --as executor --head abc'; do
+  must_allow "$STEP_HOOK" "$read_command"
+done
 fi
 
 # --- plan-to-issues spec validation ------------------------------------------------------
@@ -3516,6 +3486,22 @@ if grep -Eq 'issue edit 3 .*--add-label' "$TMP/plan-reapply-calls"; then
 fi
 [ "$(cat "$GHSTATE/issue-3/labels")" = 'agent:opencode,needs-review' ] \
   || fail 'reapply changed live reviewer labels'
+
+# Journal eligibility is fixed at creation and survives every reapply.
+for created_issue in 1 2 3; do
+  grep -q ' journal=v1' "$GHSTATE/issue-$created_issue/body" || fail 'created issue lacks journal=v1'
+done
+for legacy_issue in 1 2; do
+  sed 's/ journal=v1//' "$GHSTATE/issue-$legacy_issue/body" > "$TMP/legacy-body"
+  mv "$TMP/legacy-body" "$GHSTATE/issue-$legacy_issue/body"
+done
+sed 's/journal=v1/journal=v2/' "$GHSTATE/issue-3/body" > "$TMP/other-journal-body"
+mv "$TMP/other-journal-body" "$GHSTATE/issue-3/body"
+plan_apply "$PLAN_SPEC" || fail 'journal-preserving reapply failed'
+for legacy_issue in 1 2; do
+  if grep -q ' journal=' "$GHSTATE/issue-$legacy_issue/body"; then fail 'reapply changed legacy eligibility'; fi
+done
+grep -q ' journal=v2' "$GHSTATE/issue-3/body" || fail 'reapply discarded an existing journal value'
 
 APPROVAL_DOC_ROOT="$TMP/approval-doc-root"
 mkdir -p "$APPROVAL_DOC_ROOT/docs/inprogress"
@@ -4169,6 +4155,34 @@ review_case() { # <name> <state> <diagnostic>
 }
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
+# Same-sequence race losers carry valid compatibility lines. The journal must
+# choose the winner before the old marker parser ever sees those lines.
+jq --arg head "$LIFE_HEAD" '
+  .data.repository.issue.body="<!-- agentic-flow:plan:fixture step:f-1 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa journal=v1 -->" |
+  .data.repository.issue.comments.nodes |= (
+    .[0].body=("agentic-flow-transition: v=1; id=fixture/f-1/1/submit; event=submit; from=executing; role=executor; head="+$head+"\n"+.[0].body) |
+    .[1].body=("agentic-flow-transition: v=1; id=fixture/f-1/2/approve; event=approve; from=reviewing; role=reviewer; head="+$head+"\n"+.[1].body) |
+    . + [{id:"race-loser",fullDatabaseId:"12",lastEditedAt:null,author:{login:"reviewer"},
+      body:("agentic-flow-transition: v=1; id=fixture/f-1/2/bounce; event=bounce; from=reviewing; role=reviewer; head=none\nagentic-flow-review: status=changes-requested; step=f-1; head="+$head+"; role=reviewer\nFindings")}])
+' "$TMP/lifecycle-step-comments.json" > "$TMP/journal-approved.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-approved.json"
+review_case 'accepted approval with losing bounce' READY 'review by reviewer'
+grep -q 'journal skipped 1' "$TMP/lifecycle-review.out" || fail 'lifecycle did not count racing loser'
+jq '.data.repository.issue.comments.nodes |= [.[0],.[2],.[1]]' \
+  "$TMP/journal-approved.json" > "$TMP/journal-bounced.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-bounced.json"
+review_case 'accepted bounce with losing approval' BLOCKED 'journal state executing'
+jq '.data.repository.issue.comments.nodes[1].lastEditedAt="2026-01-01T00:00:00Z"' \
+  "$TMP/journal-approved.json" > "$TMP/journal-edited.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-edited.json"
+review_case 'accepted journal approval edited' BLOCKED 'was edited'
+# With no journal lines, the legacy latest-marker reader still blocks the bounce.
+jq 'del(.data.repository.issue.body) | .data.repository.issue.comments.nodes[].body |=
+  (split("\n")|map(select(startswith("agentic-flow-transition:")|not))|join("\n"))' \
+  "$TMP/journal-approved.json" > "$TMP/journal-legacy-reader.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-legacy-reader.json"
+review_case 'legacy latest marker selects bounce' BLOCKED 'does not approve'
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
 # Unlisted authors cannot inject malformed evidence or replace a real handoff.
 sed 's/^reviewer=.*/reviewer=review-app[bot]/; s/^executor=.*/executor=execute-app[bot]/' \
   "$TMP/lifecycle-policy-valid" > "$V2FIX/.agentic-flow-review-policy"
@@ -4359,6 +4373,12 @@ cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
 
 fi
 
+# --- deterministic station regressions -------------------------------------------------
+if should_run stations; then
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/tests/stations.sh"
+fi
+
 # --- the run did what the mode promised --------------------------------------------------
 # Without this, deleting or mis-guarding a group's `if should_run` block still prints
 # "self-test passed." A pass has to mean the groups for this mode actually executed.
@@ -4367,7 +4387,7 @@ if [ -n "$ONLY_GROUP" ]; then
 elif [ "$SELF_TEST_MODE" = full ]; then
   EXPECTED_GROUPS="$SELF_TEST_GROUPS"
 else
-  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle'
+  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle stations'
 fi
 for group in $EXPECTED_GROUPS; do
   case "$GROUPS_RAN" in

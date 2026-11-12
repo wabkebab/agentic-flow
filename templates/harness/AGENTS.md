@@ -44,28 +44,19 @@ order, edge cases — not finished code. Read the brief for the step before writ
    selector>` per step; run the full `make test` at the end. (The Stop hook runs
    `make check` regardless.)
 5. **Commit** (see contract below), one logical commit for the step, with `Fixes #N`.
-   Then hand the step to the reviewer — **comment first, relabel second** (`METHODOLOGY.md` §6):
+   Write the commit title, changes, verification and a `Red first:` failure output
+   to a body file.
+   Hand the step to review with the real full commit SHA:
 
    ```bash
-   gh issue comment <N> --body "Implemented in <sha> — <commit title>.
-   <what changed; anything the reviewer should look at first>
-
-   Verification: <commands run, with results>
-   Red first: <the new test's output when run against the old code>"
-
-   gh issue edit <N> --add-label "agent:opencode,needs-review" \
-                     --remove-label "agent:codex,needs-execution"
+   scripts/agentic-flow handoff <N> submit --as executor --head <sha40> --body-file <evidence-file>
    ```
 
-   The comment is not optional: without it the reviewer re-derives the step's commit from
-   `git log`, and close-out does it again later. Name the real sha(s) and title, and only
-   verification you actually ran, and show the new test failing against the old code — the
-   reviewer re-runs it either way, and should not have to take your word for it. Where the
-   stack wires a `require-step-comment.sh`-style hook, the label edit above is blocked if the
-   comment doesn't already name a sha, so a skipped comment fails loudly instead of silently.
-   The **reviewer** closes Strict sub-issues; the closer closes Standard work issues.
-   (If the project opts out of OpenCode, `CLAUDE.md` says who reviews
-   instead — hand off to them, never to yourself.)
+   `handoff` posts the journal entry and evidence, then reconciles labels. Retry the
+   same command after a partial failure; it does not duplicate the transition.
+   Raw workflow label edits and direct token calls are blocked by the hook.
+   The reviewer approves Strict sub-issues; the closer closes Standard work issues.
+   Do not close the issue yourself. See `METHODOLOGY.md` §6.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 

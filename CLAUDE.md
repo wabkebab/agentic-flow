@@ -32,8 +32,8 @@ Step issues move by label pair:
 
 ```
 agent:codex + needs-execution          (plan-to-issues default)
-      │  Codex commits with Fixes #N, then comments the sha +
-      │  the verification it ran on the step issue
+      │  Codex commits with Fixes #N, then runs handoff submit
+      │  with the sha and verification evidence
       ▼
 agent:opencode + needs-review
       │  OpenCode reviews that commit against the brief
@@ -86,7 +86,7 @@ review (see `docs/accepted_risks.md#single-operator-review`).
 |--------|------------------------------|-----------------|
 | `make check` | Bash syntax for shipped scripts, docs index freshness, action-pin structure, and `scripts/self-test.sh` | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
 | `make test` | full offline scaffold regression suite, plus `shellcheck` over `scripts/` | no network or GitHub writes; **fails if `shellcheck` is missing** rather than skipping |
-| `make test-one F=…` | one focused harness group (`export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, or `upgrade`) | the Makefile owns exact behavior |
+| `make test-one F=…` | one focused harness group (`export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, `upgrade`, or `stations`) | the Makefile owns exact behavior |
 | `make build` | dry-run export into a temporary directory | validates the payload assembles without writing a real target |
 | `make run` | `scripts/doctor.sh` report mode | the scaffold's "app" is its adoption report |
 
@@ -119,7 +119,7 @@ full mechanism and rationale for each in `METHODOLOGY.md` §8:
 - **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)
 - **PreToolUse(Bash) → scan staged content before a commit** (`scripts/hooks/scan-secrets.sh`)
   — override a false positive with `AGENTIC_ALLOW_SECRET=1` on the commit.
-- **PreToolUse(Bash) → require a comment before a step issue relabels**
+- **PreToolUse(Bash) → route workflow writes through `handoff`**
   (`scripts/hooks/require-step-comment.sh`) — Claude/Codex only; **OpenCode has no hook
   engine here**, so its side still relies on `.opencode/agent/code-reviewer.md`.
 
