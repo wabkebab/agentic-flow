@@ -1,20 +1,20 @@
 <!-- TRIAGE (first pass · 2026-11-12) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > **Assurance:** Strict
 > Phase 1 of `product-harness-factory-optimization.md` (R-1–R-6, R-18, R-19): turn the mechanical stations into deterministic `agentic-flow` commands so a later controller can drive them. Draft for approval; nothing is executed. Next: human review, then `plan-to-issues`.
 
 # Feature — Deterministic stations
 
 ## Tracker
-- [ ] S-1 Define the workflow once in `config/workflow.tsv` — open
-- [ ] S-2 Accept GitHub App identities and mint a scoped token per role — open
-- [ ] S-3 Move issues only through `agentic-flow handoff`, journaled on the thread — open
-- [ ] S-4 Read the plan from the brief; plan approval authorizes apply — open
-- [ ] S-5 Hand a role one step: `agentic-flow brief` and a SessionStart hook — open
-- [ ] S-6 Verify a step in a clean worktree of its commit — open
-- [ ] S-7 Build station input only from trusted sources — open
-- [ ] S-8 Script close-out and attest a bookkeeping-only final delta — open
-- [ ] S-9 Render the state machine into the contracts and route them to the commands — open
+- [ ] S-1 Define the workflow once in `config/workflow.tsv` — #125, open
+- [ ] S-2 Accept GitHub App identities and mint a scoped token per role — #126, open
+- [ ] S-3 Move issues only through `agentic-flow handoff`, journaled on the thread — #127, open
+- [ ] S-4 Read the plan from the brief; plan approval authorizes apply — #128, open
+- [ ] S-5 Hand a role one step: `agentic-flow brief` and a SessionStart hook — #129, open
+- [ ] S-6 Verify a step in a clean worktree of its commit — #130, open
+- [ ] S-7 Build station input only from trusted sources — #131, open
+- [ ] S-8 Script close-out and attest a bookkeeping-only final delta — #132, open
+- [ ] S-9 Render the state machine into the contracts and route them to the commands — #133, open
 
 ---
 
@@ -721,8 +721,8 @@ Claude, on `phase-1`, before final approval; the sequence is the one in `CLAUDE.
 
 ## Status / Implementation status
 - **Evidence schema:** v2
-- **Tracking issue:** pending
-- **Approval:** pending
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/124
+- **Approval:** status=approved; by=wabkebab; at=2026-11-12
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
