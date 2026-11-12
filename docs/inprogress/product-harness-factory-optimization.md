@@ -329,7 +329,7 @@ One cost follows from the R-4 correction: a clean worktree has no installed depe
 ## If approved → next docs
 
 - [x] `docs/done/feature-gate-and-handoff-fixes.md` — Phase 0 (Strict, because it changes gates and review provenance). Drafted 2026-11-11; shipped as `0.14.0` in PR #121, tracker #114. R-0b was replaced by G-5: #113's 89.5 s was measured at `0.13.1`, before F-12, and a fresh `0.13.3` export runs `make check` in 5.5 s.
-- [ ] `docs/inprogress/feature-deterministic-stations.md` — Phase 1 (Strict)
+- [ ] `docs/inprogress/feature-deterministic-stations.md` — Phase 1 (Strict). Drafted 2026-11-12; awaiting approval. Defers flipping this repo to `distinct-account` to a one-step follow-up pass, so this pass's own evidence stays valid.
 - [ ] `docs/inprogress/feature-line-controller.md` — Phase 2 (Strict)
 - [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 3 (Strict; R-14 is a public compatibility change)
 
