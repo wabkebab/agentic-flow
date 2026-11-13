@@ -68,7 +68,7 @@ valid_value() { # <key> <value>
   case "$1" in
     'Evidence schema') [ "$2" = v2 ] ;;
     'Tracking issue') [[ "$2" =~ ^url=https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$ ]] ;;
-    Approval) [[ "$2" =~ ^status=approved\;\ by=[A-Za-z0-9]([A-Za-z0-9._\ -]*[A-Za-z0-9])?\;\ at=[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$ ]] ;;
+    Approval) [[ "$2" =~ ^status=approved\;\ by=[A-Za-z0-9]([A-Za-z0-9._\ -]*[A-Za-z0-9])?\;\ at=[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9](\;\ rev=[a-f0-9]{40})?$ ]] ;;
     'Implementation head') [ "$2" = source=pr-head ] ;;
     'Implementation PR') [[ "$2" =~ ^url=https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$ ]] ;;
     'Verification evidence') [ "$2" = source=final-approval-run ] ;;

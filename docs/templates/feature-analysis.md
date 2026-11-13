@@ -88,6 +88,15 @@ Bounds: <every query's limit, every loop's cap, every request's timeout — §11
 > (never `git add -A`). Use verbose, *why*-first commit bodies. This brief carries the
 > **approach and insights — not the code.**
 
+```agentic-flow-plan
+id: <stable-plan-id>
+profile: strict
+tracking: Plan: <topic>
+branch: <branch>
+steps: f-1 f-2
+```
+<!-- Standard: profile: standard, one step, and omit tracking. -->
+
 ## Branch
 Base: `<base branch>`. One branch and one PR for the whole brief:
 <!-- The issue spec packet takes brief path/heading, Definition of Done,
@@ -110,7 +119,7 @@ make test                 # end of brief: full suite
 
 ---
 
-## Step 1 — <imperative summary>
+## F-1 — <imperative summary>
 **Why first:** <foundational / unblocks the rest / riskiest — why this leads.>
 
 **Approach (do NOT write code yet):**
@@ -121,11 +130,14 @@ make test                 # end of brief: full suite
 name the timeout / malformed / unauthorized case, not just the happy one.>
 
 **DoD:** <Observable end state for this step.>
+**Verify:** `make test-one F=<selector>`
+**Risks:** <Failure paths and edge cases.>
+**Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<imperative commit subject>`
 
 ---
 
-## Step 2 — <imperative summary>
+## F-2 — <imperative summary>
 **Why second:** <…>
 
 **Approach:**
@@ -134,6 +146,9 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 **Test:** <…>
 
 **DoD:** <…>
+**Verify:** `make test-one F=<selector>`
+**Risks:** <Failure paths and edge cases.>
+**Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<…>`
 
 ---

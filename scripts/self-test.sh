@@ -3249,6 +3249,7 @@ fi
 
 # --- plan-to-issues spec validation ------------------------------------------------------
 if should_run plan-to-issues; then
+[ -f "$ROOT/scripts/lib/brief.sh" ] || fail 'strict brief parser is missing'
 INVALID_SPEC="$TMP/invalid-spec.json"
 printf '%s\n' '{"tracking":{"title":"Plan: bad"},"steps":[]}' > "$INVALID_SPEC"
 "$ROOT/scripts/plan-to-issues.sh" "$INVALID_SPEC" >/dev/null 2>"$TMP/plan.err" && fail "invalid plan spec was accepted"
@@ -3492,7 +3493,7 @@ for created_issue in 1 2 3; do
   grep -q ' journal=v1' "$GHSTATE/issue-$created_issue/body" || fail 'created issue lacks journal=v1'
 done
 for legacy_issue in 1 2; do
-  sed 's/ journal=v1//' "$GHSTATE/issue-$legacy_issue/body" > "$TMP/legacy-body"
+  sed -E 's/ journal=v1//; s/ approved=[a-f0-9]{40}//' "$GHSTATE/issue-$legacy_issue/body" > "$TMP/legacy-body"
   mv "$TMP/legacy-body" "$GHSTATE/issue-$legacy_issue/body"
 done
 sed 's/journal=v1/journal=v2/' "$GHSTATE/issue-3/body" > "$TMP/other-journal-body"
@@ -3720,6 +3721,192 @@ grep -q 'agentic-flow:topology:strict' "$STRICT_STATE/issue-1/body" \
   || fail 'Strict parent lacks topology stamp'
 grep -q '## Executor packet' "$STRICT_STATE/issue-2/body" \
   || fail 'Strict step lacks executor packet'
+
+# Document-derived specs: real commits, fake GitHub, no ambient working-tree input.
+BRIEF_FIX="$TMP/brief-repo"
+mkdir -p "$BRIEF_FIX/docs"
+git -C "$BRIEF_FIX" init -q
+git -C "$BRIEF_FIX" config user.name Tester
+git -C "$BRIEF_FIX" config user.email tester@example.invalid
+if [ -f "$ROOT/docs/inprogress/feature-deterministic-stations.md" ]; then
+  cp "$ROOT/docs/inprogress/feature-deterministic-stations.md" "$BRIEF_FIX/docs/plan.md"
+else
+  # Adopter exports have the harness, not this repository's in-progress plan.
+  cat > "$BRIEF_FIX/docs/plan.md" <<'MD'
+# Feature — Fixture stations
+## Tracker
+- [ ] S-1 fixture
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: deterministic-stations
+profile: strict
+tracking: Plan: Deterministic stations
+branch: phase-1
+steps: s-1 s-2 s-3 s-4 s-5 s-6 s-7 s-8 s-9
+```
+## Verification commands
+```bash
+make check
+make test
+```
+MD
+  for n in 1 2 3 4 5 6 7 8 9; do
+    cat >> "$BRIEF_FIX/docs/plan.md" <<MD
+## S-$n — Fixture step $n
+**Approach:** Parsing is strict.
+**DoD:** The fixture passes.
+**Verify:** make test-one F=plan-to-issues
+**Risks:** A malformed plan must fail.
+**Red-first:** \`scripts/self-test.sh --only plan-to-issues\` — scripts/self-test.sh
+MD
+  done
+  cat >> "$BRIEF_FIX/docs/plan.md" <<'MD'
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** pending
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=pr-head-approval
+- **Memory:** pending
+MD
+fi
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record approved plan'
+BRIEF_REV=$(git -C "$BRIEF_FIX" rev-parse HEAD)
+sed "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=Tester; at=2026-11-12; rev=$BRIEF_REV/" \
+  "$BRIEF_FIX/docs/plan.md" > "$TMP/approved-plan.md"
+cp "$TMP/approved-plan.md" "$BRIEF_FIX/docs/plan.md"
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record approval revision'
+brief_run() { (cd "$BRIEF_FIX" && PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/brief-gh" \
+  FAKE_GH_CALLS="$TMP/brief-calls" "$PLAN_DRIVER" --doc docs/plan.md "$@"); }
+brief_run > "$TMP/brief-dry.out" || fail 'approved brief did not dry-run'
+grep -q 'Steps (9)' "$TMP/brief-dry.out" || fail 'brief generated the wrong issue set'
+# shellcheck source=scripts/lib/brief.sh
+source "$ROOT/scripts/lib/brief.sh"
+brief_parse "$BRIEF_FIX/docs/plan.md" docs/plan.md "$BRIEF_REV" > "$TMP/brief-spec.json" \
+  || fail 'valid brief parser failed'
+[ "$(jq -r '.steps[3].id' "$TMP/brief-spec.json")" = s-4 ] || fail 'brief order changed'
+jq -e '.steps[3].red_first == [{selector:"scripts/self-test.sh --only plan-to-issues",paths:["scripts/self-test.sh"]}]' \
+  "$TMP/brief-spec.json" > /dev/null || fail 'Red-first proof was not parsed'
+printf 'plan without newline' | brief_normalize > "$TMP/normalized"
+printf 'plan without newline' > "$TMP/expected-normalized"
+cmp -s "$TMP/normalized" "$TMP/expected-normalized" || fail 'normalization changed content bytes'
+printf '%s\n' '## Approach' '- **Memory:** keep this instruction visible' | brief_normalize > "$TMP/normalized"
+grep -q 'keep this instruction visible' "$TMP/normalized" || fail 'normalization erased plan content outside Status'
+
+
+for label in DoD Verify Risks; do
+  case "$label" in DoD) field=definition_of_done ;; Verify) field=verification ;; Risks) field=risks ;; esac
+  git -C "$BRIEF_FIX" show "$BRIEF_REV:docs/plan.md" | \
+    awk -v label="$label" '/^## S-4 — / {step=1; next} step && /^## / {exit}
+      step && index($0,"**" label ":** ")==1 {sub(/^\*\*[^*]+:\*\* /,""); print; exit}' > "$TMP/label-source"
+  jq -r --arg field "$field" '.steps[3].packet[$field] | split("\n")[0]' "$TMP/brief-spec.json" > "$TMP/label-packet"
+  cmp -s "$TMP/label-source" "$TMP/label-packet" || fail "packet changed $label bytes"
+done
+# Strict parse failures must name a source line.
+for mutation in duplicate duplicate-section missing orphan extra-section malformed traversal; do
+  case "$mutation" in
+    duplicate-section) sed 's/^## S-2 — /## S-1 — /' "$TMP/approved-plan.md" ;;
+    extra-section) sed 's/steps: s-1 s-2 /steps: s-1 /' "$TMP/approved-plan.md" ;;
+    traversal) sed 's@— scripts/self-test.sh@— ../outside.sh@' "$TMP/approved-plan.md" ;;
+    duplicate) sed 's/steps: s-1 /steps: s-1 s-1 /' "$TMP/approved-plan.md" ;;
+    missing) sed '/^\*\*Risks:\*\*/d' "$TMP/approved-plan.md" ;;
+    orphan) sed 's/steps: s-1 /steps: absent s-1 /' "$TMP/approved-plan.md" ;;
+    malformed) sed 's/^\*\*Red-first:\*\*.*/**Red-first:** broken/' "$TMP/approved-plan.md" ;;
+  esac > "$TMP/bad-brief.md"
+  if brief_parse "$TMP/bad-brief.md" fixture.md "$BRIEF_REV" > /dev/null 2> "$TMP/parse.err"; then
+    fail "brief accepted $mutation"
+  fi
+  grep -Eq 'fixture.md:[0-9]+:' "$TMP/parse.err" || fail 'parse error omitted line'
+done
+brief_run --apply > /dev/null || fail 'approved document apply failed'
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record tracking issue'
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q "approved=$BRIEF_REV" "$TMP/brief-gh/issue-$n/body" || fail 'issue lacks approved revision'
+  # Simulate legacy creation without journal=v1. Migration must preserve eligibility.
+  sed -E 's/ journal=v1//; s/ approved=[a-f0-9]{40}//' "$TMP/brief-gh/issue-$n/body" > "$TMP/legacy-body"
+  cp "$TMP/legacy-body" "$TMP/brief-gh/issue-$n/body"
+  cp "$TMP/legacy-body" "$TMP/legacy-before-$n"
+done
+# Replay three distinct legacy states across the actual migration.
+source "$ROOT/scripts/lib/workflow.sh"
+source "$ROOT/scripts/lib/journal.sh"
+workflow_load "$ROOT" || fail 'migration workflow load failed'
+REVIEW_EXECUTORS=' exec ' REVIEW_REVIEWERS=' review ' REVIEW_APPROVERS=' plan '
+brief_replays() {
+  local n step comments
+  for n in 2 3 4; do
+    journal_context "$(cat "$TMP/brief-gh/issue-$n/body")" || fail 'migration stamp context failed'
+    step=$JOURNAL_STEP
+    comments=$(jq -nc --arg step "$step" --arg head "$BRIEF_REV" --argjson n "$n" '
+      if $n==4 then [] else
+        [{id:"submit",dbid:"1",last_edited_at:null,author:"exec",body:("Implemented in "+$head)},
+         {id:"review",dbid:"2",last_edited_at:null,author:"review",
+          body:("agentic-flow-review: status="+(if $n==2 then "approved" else "changes-requested" end)+"; step="+$step+"; head="+$head+"; role=reviewer")}] end')
+    journal_replay "$comments" step-strict || fail 'migration replay failed'
+  done
+}
+brief_replays > "$TMP/replay-before"
+brief_run --diff > "$TMP/brief-diff.out" || fail 'brief diff failed'
+brief_run --apply > /dev/null || fail 'legacy stamp migration failed'
+brief_replays > "$TMP/replay-after"
+cmp -s "$TMP/replay-before" "$TMP/replay-after" || fail 'migration changed replay state, seq, bounces or heads'
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  sed -E 's/ approved=[a-f0-9]{40}//' "$TMP/brief-gh/issue-$n/body" > "$TMP/migrated-body"
+  cmp -s "$TMP/legacy-before-$n" "$TMP/migrated-body" || fail 'migration changed more than approved stamp'
+done
+if grep -q 'journal=v1' "$TMP/brief-gh"/issue-*/body; then fail 'migration changed legacy eligibility'; fi
+# Bookkeeping is exempt from drift; content is not. Refusal precedes GitHub access.
+printf '\n' >> "$BRIEF_FIX/docs/plan.md"
+: > "$TMP/brief-calls"
+brief_run --apply > "$TMP/brief-reject.out" 2>&1 && fail 'dirty doc applied'
+[ ! -s "$TMP/brief-calls" ] || fail 'dirty doc reached GitHub'
+git -C "$BRIEF_FIX" add docs/plan.md
+brief_run --apply > "$TMP/brief-reject.out" 2>&1 && fail 'staged dirty doc applied'
+[ ! -s "$TMP/brief-calls" ] || fail 'staged dirty doc reached GitHub'
+git -C "$BRIEF_FIX" reset -q HEAD -- docs/plan.md
+cp "$TMP/approved-plan.md" "$BRIEF_FIX/docs/untracked.md"
+(cd "$BRIEF_FIX" && PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/brief-gh" \
+  FAKE_GH_CALLS="$TMP/brief-calls" "$PLAN_DRIVER" --doc docs/untracked.md --apply) \
+  > "$TMP/brief-reject.out" 2>&1 && fail 'uncommitted doc applied'
+grep -q 'uncommitted' "$TMP/brief-reject.out" || fail 'uncommitted refusal omitted reason'
+[ ! -s "$TMP/brief-calls" ] || fail 'uncommitted doc reached GitHub'
+
+git -C "$BRIEF_FIX" checkout -- docs/plan.md
+sed 's/^- \[ \] S-1 /- [x] S-1 /' "$BRIEF_FIX/docs/plan.md" > "$TMP/bookkeeping.md"
+cp "$TMP/bookkeeping.md" "$BRIEF_FIX/docs/plan.md"
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Update tracker only'
+brief_run > /dev/null || fail 'tracker-only change invalidated approval'
+sed 's/Parsing is strict/Parsing is very strict/' "$BRIEF_FIX/docs/plan.md" > "$TMP/drift.md"
+cp "$TMP/drift.md" "$BRIEF_FIX/docs/plan.md"
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Change approved approach'
+DRIFT_SHA=$(git -C "$BRIEF_FIX" rev-parse HEAD)
+: > "$TMP/brief-calls"
+brief_run --apply > "$TMP/brief-reject.out" 2>&1 && fail 'drifted approval applied'
+grep -q "changed at $DRIFT_SHA: re-approve" "$TMP/brief-reject.out" || fail 'drift diagnostic omitted changing commit'
+[ ! -s "$TMP/brief-calls" ] || fail 'drifted approval reached GitHub'
+git -C "$BRIEF_FIX" checkout HEAD~1 -- docs/plan.md
+UNRELATED_REV=$(printf 'Unrelated plan\n' | git -C "$BRIEF_FIX" -c commit.gpgsign=false commit-tree "$(git -C "$BRIEF_FIX" rev-parse 'HEAD^{tree}')")
+for approval_case in unapproved missing-rev unknown-rev unrelated-rev; do
+  case "$approval_case" in
+    unapproved) replacement='pending' ;;
+    missing-rev) replacement='status=approved; by=Tester; at=2026-11-12' ;;
+    unrelated-rev) replacement="status=approved; by=Tester; at=2026-11-12; rev=$UNRELATED_REV" ;;
+    unknown-rev) replacement="status=approved; by=Tester; at=2026-11-12; rev=$(printf '%040d' 9)" ;;
+  esac
+  sed "s/^- \*\*Approval:\*\*.*/- **Approval:** $replacement/" "$TMP/bookkeeping.md" > "$BRIEF_FIX/docs/plan.md"
+  : > "$TMP/brief-calls"
+  brief_run --apply > "$TMP/brief-reject.out" 2>&1 && fail "accepted $approval_case"
+  [ ! -s "$TMP/brief-calls" ] || fail "$approval_case reached GitHub"
+done
+
+
 fi
 
 # --- lifecycle qualification -------------------------------------------------------------

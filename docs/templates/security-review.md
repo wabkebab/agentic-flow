@@ -84,6 +84,15 @@ severity says how bad it is, this section says what was decided about it.
 > step; do not bundle.** Stage files by name (never `git add -A`). Use verbose, *why*-first
 > commit bodies. This brief carries the **approach and insights — not the code.**
 
+```agentic-flow-plan
+id: <stable-plan-id>
+profile: strict
+tracking: Plan: <topic>
+branch: <branch>
+steps: sec-1 sec-2
+```
+<!-- Standard: profile: standard, one step, and omit tracking. -->
+
 ## Branch
 Base: `<base branch>`. One branch and one PR for the whole brief:
 <!-- The issue spec packet takes brief path/heading, Definition of Done,
@@ -106,7 +115,7 @@ make test                 # end of brief: full suite
 
 ---
 
-## Step 1 — SEC-1: <imperative summary>  🔴
+## SEC-1 — <imperative summary>  🔴
 **Why first:** <highest blast radius / a live bug / no dependencies — why this leads.>
 
 **Problem:** <Precise statement with `file:line`. The mechanism, not just the symptom.>
@@ -119,11 +128,14 @@ make test                 # end of brief: full suite
 passes after.>
 
 **DoD:** <Observable end state.>
+**Verify:** `make test-one F=<selector>`
+**Risks:** <Failure paths and edge cases.>
+**Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<imperative commit subject>`
 
 ---
 
-## Step 2 — SEC-2: <imperative summary>  🟠
+## SEC-2 — <imperative summary>  🟠
 **Why second:** <…>
 
 **Problem:** <…>
@@ -134,6 +146,9 @@ passes after.>
 **Regression test:** <…>
 
 **DoD:** <…>
+**Verify:** `make test-one F=<selector>`
+**Risks:** <Failure paths and edge cases.>
+**Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<…>`
 
 ---

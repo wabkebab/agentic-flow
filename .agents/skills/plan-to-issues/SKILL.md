@@ -11,7 +11,7 @@ keeps its tracker and steps. The doc stays the source of
 design intent; the issues are the execution burndown (progress bar + `Fixes #N` auto-close).
 
 This skill does the reading/extraction; the deterministic GitHub calls live in
-`scripts/plan-to-issues.sh`, driven by a JSON spec.
+`scripts/plan-to-issues.sh`, driven by the approved document or a legacy JSON spec.
 
 ## When to use
 - A Security or Feature doc with an inlined implementation brief exists **and the human has
@@ -28,62 +28,40 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
    branch, the ordered steps, and each step's concise Definition of Done. Preserve the risk
    ordering. The approved brief owns intent; the Makefile owns executable command behavior.
    If the issue must point to the Stack profile, name `CLAUDE.md` as the owner.
-2. **Build a JSON spec** (write to a temp file, e.g. the session scratchpad):
-   ```json
-   {
-     "profile": "standard",
-     "id": "<stable-kebab-id>",
-     "steps": [
-       {
-         "id": "<stable-step-id>",
-         "title": "Step 1 — <summary>",
-         "body": "<brief-step link + concise DoD + current label state. Keep the *why* and Make recipes in the doc/Makefile.>",
-         "packet": {
-           "brief": "<approved brief path and step heading>",
-           "definition_of_done": "<the approved step's acceptance criteria>",
-           "verification": "<focused and broader Make targets from the brief>",
-           "risks": "<failure path and edge cases from the brief>"
-         },
-         "labels": ["needs-execution", "agent:codex"]
-       }
-     ]
-   }
+2. **Record human approval.** When the human approves the plan, record the Status field
+   `Approval: status=approved; by=<human>; at=<date>; rev=<sha40>`, where `rev` is the
+   commit they read. Commit the approval field. Plan content at HEAD must normalize
+   equal to that revision; later design changes require re-approval.
+3. **Dry run** the plan block and step labels, extracted directly from the approved revision:
    ```
-   - Give the plan and every step a stable `id`. These identities survive title/body edits
-     and let the driver reconcile without duplicating issues.
-   - Standard has exactly one step and no `tracking` object. Strict requires a `tracking`
-     object with a title and may have multiple steps. Omit `profile` only when reapplying
-     a legacy plan. The project assurance baseline is a floor.
-   - Every profiled step requires all four packet strings above, taken from the approved
-     brief. The driver rejects a packet over 800 words; revise the source fields instead
-     of truncating a requirement.
-   - One issue per brief step. Don't merge steps or split per-commit.
-   - Step body = brief-step link + concise Definition of Done + current label state. Design
-     rationale stays in the doc; Make recipes stay in the Makefile.
-   - Labels follow METHODOLOGY.md §6: `plan` on a Strict tracker;
-     `needs-execution` + `agent:codex` on work and step issues. For a **Security** doc
-     add the matching `sev:high|med|low|nit` per issue.
-   - Strict's sub-issues close on approval; its parent then receives `needs-closing`.
-     Standard's sole work issue receives `needs-closing` after an approving comment and
-     stays open for close-out. Never pre-apply that label.
-3. **Dry run** — show the user exactly what the spec describes. This is fully offline:
+   scripts/plan-to-issues.sh --doc docs/inprogress/<doc>.md
    ```
-   scripts/plan-to-issues.sh <spec.json>
+   The brief declares one fenced `agentic-flow-plan` block with `id`, `profile`, `branch`,
+   ordered `steps`, and (Strict only) `tracking`. Each step section has `**DoD:**`,
+   `**Verify:**`, `**Risks:**` and `**Red-first:**` labels. Packets must stay below 800 words.
+   The Stack profile in `CLAUDE.md` explains the Makefile commands.
+4. **Compare an existing plan** before reconciling:
    ```
-4. **Optional live diff** — after a plan has been applied, compare it with GitHub:
+   scripts/plan-to-issues.sh --doc docs/inprogress/<doc>.md --diff
    ```
-   scripts/plan-to-issues.sh --diff <spec.json>
+5. **Apply.** Human plan approval authorizes apply; no second go-ahead is required.
+   The document must be committed, clean and approved at HEAD:
    ```
-5. **Get explicit approval.** Creating or reconciling issues writes public artifacts —
-   never run `--apply`
-   without the user's go-ahead in this turn.
-6. **Apply and write the issue link back:**
+   scripts/plan-to-issues.sh --doc docs/inprogress/<doc>.md --apply
    ```
-   scripts/plan-to-issues.sh --apply --approved-by '<human identity>' \
-     --doc docs/inprogress/<doc>.md <spec.json>
-   ```
-   Standard requires `--approved-by` on first apply; its work issue stores the identity
-   and timestamp. Reapply preserves them. Strict also records them when supplied.
+   Reapply stamps `approved=<rev>` without changing existing workflow labels or
+   `journal=` eligibility. A changed plan names the first changing commit: re-approve it.
+6. **Legacy JSON path.** For legacy plans and Security docs without a plan block, write
+   a JSON spec and use `scripts/plan-to-issues.sh <spec.json>` to dry-run; `--diff` compares,
+   and `--apply --approved-by <human> [--doc <path>] <spec.json>` reconciles.
+   The spec has a stable `id`, `profile` (`standard` or `strict`), and `steps` array.
+   Every step has stable `id`, `title`, `body`, `labels` and a `packet` object containing
+   `brief`, `definition_of_done`, `verification`, `risks` strings from the approved brief.
+   Standard has one step and no `tracking`; Strict requires `tracking: {title, body}`.
+   Omit `profile` only for existing legacy topology. Labels are `plan` for trackers and
+   `agent:codex`, `needs-execution` for steps. Security findings add the matching `sev:*`.
+   Human plan approval also authorizes this apply. Standard requires `--approved-by` on
+   first apply; reapply preserves the recorded identity and timestamp.
 7. **Close the loop:** tick nothing yet and tell the user the work or tracking issue URL.
 
 ## Notes
