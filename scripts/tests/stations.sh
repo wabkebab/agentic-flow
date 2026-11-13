@@ -55,6 +55,13 @@ station_append 12 submit executing executor "$STATION_C" exec
 station_append 13 bounce reviewing reviewer none review
 station_append 14 resume escalated approver none plan
 station_replay; station_expect '.seq==14 and .bounces==0 and .state=="executing" and ([.accepted[].id]|unique|length)==14'
+# A policy executor cannot author a reviewer-only tracker notification.
+JOURNAL_STEP=tracker
+STATION_COMMENTS=$(jq -nc '[{id:"foreign-notify",dbid:"20",author:"exec",last_edited_at:null,
+  body:"agentic-flow-transition: v=1; id=fixture/tracker/1/notify; event=notify; from=open; role=reviewer; head=none\nAll steps approved."}]')
+STATION_REPLAY=$(journal_replay "$STATION_COMMENTS" tracker) || fail 'tracker replay failed'
+station_expect '.state=="open" and .seq==0 and .skipped==1 and (.accepted|length)==0'
+JOURNAL_STEP=alpha
 # Legacy mapping, implied bounce, approval head binding, and fixed eligibility.
 STATION_COMMENTS=$(jq -nc --arg a "$STATION_A" --arg b "$STATION_B" '[
   {id:"s1",author:"exec",body:("Implemented in "+$a)},
@@ -111,7 +118,16 @@ case "$1 $2" in
     [ "${STATION_BAD_READ:-0}" = 0 ] || { echo '{}'; exit 0; }
     jq --argjson more "${STATION_MORE:-false}" '{data:{repository:{issue:(. | .comments.pageInfo.hasNextPage=$more)}}}' "$state/$n.json" ;;
   'issue view') jq '{body}' "$state/$3.json" ;;
-  'issue list') jq -s 'map({number,body})' "$state/"*.json ;;
+  'issue list')
+    search=''; for ((i=1;i<=$#;i++)); do
+      if [ "${!i}" = --search ]; then i=$((i+1)); search=${!i}; fi
+    done
+    author=${search##* author:}
+    jq -s --arg author "$author" --arg unfiltered "${STATION_DISCOVERY_UNFILTERED:-0}" '
+      map({number,body,author}) |
+      if $author!="" and $unfiltered!="1" then
+        map(select((.author.login + (if .author.is_bot==true and (.author.login|endswith("[bot]")|not) then "[bot]" else "" end))==$author))
+      else . end | .[0:100]' "$state/"*.json ;;
   'issue comment')
     n=$3; shift 3; file=''
     while [ "$#" -gt 0 ]; do case "$1" in --body-file) file=$2; shift 2 ;; *) shift ;; esac; done
@@ -139,7 +155,7 @@ export STATION_STATE="$STATION_FIX/state"
 station_issue() { # number identity extra topology
   jq -n --argjson n "$1" --arg body "<!-- agentic-flow:plan:fixture $2 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa journal=v1 -->
 <!-- agentic-flow:topology:${3:-strict} -->" \
-    '{number:$n,body:$body,state:"OPEN",labels:{pageInfo:{hasNextPage:false},nodes:[{name:"user-label"}]},comments:{pageInfo:{hasNextPage:false},nodes:[]}}' > "$STATION_STATE/$1.json"
+    '{number:$n,body:$body,author:{login:"plan",is_bot:false},state:"OPEN",labels:{pageInfo:{hasNextPage:false},nodes:[{name:"user-label"}]},comments:{pageInfo:{hasNextPage:false},nodes:[]}}' > "$STATION_STATE/$1.json"
 }
 station_run() { # expected status, then handoff args
   local expected=$1 rc=0; shift
@@ -151,6 +167,55 @@ station_count() { jq '.comments.nodes|length' "$STATION_STATE/$1.json"; }
 station_issue 1 step:alpha
 station_issue 2 tracker
 STATION_LOGIN=review; export STATION_LOGIN
+# Public search hits are untrusted until author and exact plan stamp match.
+station_issue 3 step:foreign
+jq '.author={login:"stranger",is_bot:false} | .body="Someone mentioned agentic-flow:plan:fixture"' "$STATION_STATE/3.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/3.json"
+station_issue 4 step:forged
+jq '.author={login:"stranger",is_bot:false}' "$STATION_STATE/4.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/4.json"
+station_issue 5 step:quoted
+jq '.body="Quote: <!-- agentic-flow:plan:fixture step:quoted spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"' "$STATION_STATE/5.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/5.json"
+station_issue 7 step:malformed
+jq '.body="<!-- agentic-flow:plan:fixture malformed -->"' "$STATION_STATE/7.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/7.json"
+station_issue 6 step:other
+jq '.body|=sub("plan:fixture";"plan:fixture-other")' "$STATION_STATE/6.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/6.json"
+printf '%s\n' 'approver=plan-app[bot]' >> "$STATION_FIX/project/.agentic-flow-review-policy"
+jq '.author={login:"plan-app",is_bot:true}' "$STATION_STATE/2.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/2.json"
+station_issue 8 step:impersonator
+jq '.author={login:"plan-app",is_bot:false}' "$STATION_STATE/8.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/8.json"
+: > "$STATION_STATE/calls"
+STATION_DISCOVERY_UNFILTERED=1 station_run 0 1 reconcile --json
+jq -e 'keys==["1","2"]' "$TMP/station.out" >/dev/null || fail 'discovery admitted foreign or non-stamped issues'
+if grep -Eq 'api graphql .*number=(3|4|5|6|7|8)$' "$STATION_STATE/calls"; then fail 'discovery read a rejected issue thread'; fi
+rm "$STATION_STATE/3.json" "$STATION_STATE/5.json" "$STATION_STATE/6.json" "$STATION_STATE/7.json" "$STATION_STATE/8.json"
+# Author filtering must precede the server result cap, not just filter one full page.
+for ((spam=10;spam<110;spam++)); do
+  jq --argjson n "$spam" '.number=$n | .author={login:"stranger",is_bot:false}' "$STATION_STATE/1.json" > "$STATION_STATE/$spam.json"
+done
+station_run 0 1 reconcile --json
+jq -e 'keys==["1","2"]' "$TMP/station.out" >/dev/null || fail 'foreign search hits exhausted discovery'
+for ((spam=10;spam<110;spam++)); do rm "$STATION_STATE/$spam.json"; done
+# Scenario 10 requires the CLI to refuse and name the mismatched legacy approval.
+jq --arg a "$STATION_A" --arg b "$STATION_B" '
+  .body|=sub(" journal=v1";"") |
+  .comments.nodes=[
+    {id:"legacy-submit",fullDatabaseId:"1",body:("Implemented in "+$a),author:{login:"exec"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null},
+    {id:"legacy-mismatch",fullDatabaseId:"2",body:("agentic-flow-review: status=approved; step=alpha; head="+$b+"; role=reviewer"),author:{login:"review"},createdAt:"2026-01-01T00:00:01Z",lastEditedAt:null}]
+' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+: > "$STATION_STATE/calls"
+STATION_LOGIN='exec'
+station_run 3 1 submit --as executor --head "$STATION_C"
+grep -q 'UNJOURNALED #1 comment legacy-mismatch' "$TMP/station.out" || fail 'UNJOURNALED refusal did not name the comment'
+if grep -Eq '^issue (comment|edit|close|reopen) ' "$STATION_STATE/calls"; then fail 'UNJOURNALED handoff mutated GitHub'; fi
+station_issue 1 step:alpha
+STATION_LOGIN=review
 station_run 3 2 notify --as reviewer
 station_run 3 1 submit --as executor --head "$STATION_A"
 [ "$(station_count 1)" = 0 ] || fail 'unauthorized role wrote a comment'
@@ -220,7 +285,7 @@ jq -e '.["2"].state=="closing" and .["1"].state=="approved"' "$TMP/station.out" 
 mkdir -p "$STATION_FIX/project/.git/agentic-flow/locks/fixture"
 printf '%s\n' 99999999 > "$STATION_FIX/project/.git/agentic-flow/locks/fixture/pid"
 station_run 0 1 reconcile
-rm "$STATION_STATE/2.json"
+rm "$STATION_STATE/2.json" "$STATION_STATE/4.json"
 station_issue 1 step:alpha standard
 STATION_LOGIN='exec'
 station_run 0 1 submit --as executor --head "$STATION_A"

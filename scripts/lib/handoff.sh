@@ -146,16 +146,38 @@ handoff_project() { # number; always re-read immediately before projection, then
 }
 
 handoff_plan_read() { # bounded exact-stamped discovery; labels are not evidence
-  local n discovery context other_plan other_step
+  local n discovery='[]' context other_plan other_step approver page candidate searches=0
   HANDOFF_ISSUES='' HANDOFF_TRACKER='' HANDOFF_ALL_APPROVED=true HANDOFF_FOUND=0
-  discovery=$(handoff_gh issue list --repo "$HANDOFF_REPO" --state all --limit 100 \
-    --search "\"agentic-flow:plan:$HANDOFF_PLAN\" in:body" --json number,body) || return 5
-  printf '%s' "$discovery" | jq -e 'type=="array" and length<100 and all(.[];(.number|type)=="number" and .number>0 and .number<10000000000 and (.number|floor)==.number and (.body|type)=="string")' >/dev/null || return 5
+  # Filter at GitHub as well as locally: strangers must not fill the bounded page.
+  # Separate searches avoid depending on multi-author qualifier OR semantics.
+  for approver in $REVIEW_APPROVERS; do
+    searches=$((searches+1))
+    [ "$searches" -le 100 ] || { handoff_error 'approver discovery exceeds 100 searches'; return 5; }
+    page=$(handoff_gh issue list --repo "$HANDOFF_REPO" --state all --limit 100 \
+      --search "\"agentic-flow:plan:$HANDOFF_PLAN\" in:body author:$approver" --json number,body,author) || return 5
+    printf '%s' "$page" | jq -e 'type=="array" and length<100 and all(.[];(.number|type)=="number" and .number>0 and .number<10000000000 and (.number|floor)==.number and (.body|type)=="string")' >/dev/null || {
+      handoff_error "invalid or incomplete discovery for approver $approver"; return 5;
+    }
+    # gh issue-list exposes typed Bot metadata as author.is_bot. Adapt it to
+    # the shared normalizer; a human with the same slug never gains [bot].
+    page=$(printf '%s' "$page" | jq 'map(select((.author|type)=="object" and (.author.login|type)=="string") |
+      if .author.is_bot==true then .author.__typename="Bot" else . end)' |
+      review_normalize_comments | jq --arg roles "$REVIEW_APPROVERS" \
+      '[.[] | select(.author.login as $login | ($roles|split(" ")|index($login))!=null)]') || return 5
+    while IFS= read -r candidate; do
+      # Search text can be a quotation or malformed stamp. It is not membership.
+      context=$(printf '%s' "$candidate" | jq -r .body | journal_stamp 2>/dev/null) || continue
+      other_plan=$(printf '%s' "$context" | jq -r .plan)
+      [ "$other_plan" = "$HANDOFF_PLAN" ] || continue
+      discovery=$(printf '%s' "$discovery" | jq --argjson issue "$candidate" '.+[$issue]|unique_by(.number)') || return 5
+      [ "$(printf '%s' "$discovery" | jq length)" -lt 100 ] || {
+        handoff_error 'plan discovery reached 100 admitted issues'; return 5;
+      }
+    done < <(printf '%s' "$page" | jq -c '.[]')
+  done
   HANDOFF_ISSUES=$(printf '%s' "$discovery" | jq -r '.[].number')
   for n in $HANDOFF_ISSUES; do
     context=$(printf '%s' "$discovery" | jq -r --argjson n "$n" '.[]|select(.number==$n)|.body' | journal_stamp) || return 5
-    other_plan=$(printf '%s' "$context" | jq -r .plan)
-    [ "$other_plan" = "$HANDOFF_PLAN" ] || continue
     other_step=$(printf '%s' "$context" | jq -r .step)
     if [ "$other_step" = tracker ]; then [ -z "$HANDOFF_TRACKER" ] || return 5; HANDOFF_TRACKER=$n; fi
     handoff_read "$n" || return $?
