@@ -189,9 +189,14 @@ mv "$STATION_STATE/next" "$STATION_STATE/2.json"
 station_issue 8 step:impersonator
 jq '.author={login:"plan-app",is_bot:false}' "$STATION_STATE/8.json" > "$STATION_STATE/next"
 mv "$STATION_STATE/next" "$STATION_STATE/8.json"
+# A matching cwd filename must never expand an App login into a glob match.
+: > "$STATION_FIX/project/plan-appo"
 : > "$STATION_STATE/calls"
 STATION_DISCOVERY_UNFILTERED=1 station_run 0 1 reconcile --json
-jq -e 'keys==["1","2"]' "$TMP/station.out" >/dev/null || fail 'discovery admitted foreign or non-stamped issues'
+# Diagnostics go to stderr; station_run captures both streams, so separate JSON.
+grep -q 'skipping approver-authored discovery hit #7: unparseable plan stamp' "$TMP/station.out" || fail 'malformed trusted hit was skipped silently'
+sed '/^handoff: /d' "$TMP/station.out" > "$TMP/discovery.json"
+jq -e 'keys==["1","2"]' "$TMP/discovery.json" >/dev/null || fail 'discovery admitted foreign or non-stamped issues'
 if grep -Eq 'api graphql .*number=(3|4|5|6|7|8)$' "$STATION_STATE/calls"; then fail 'discovery read a rejected issue thread'; fi
 rm "$STATION_STATE/3.json" "$STATION_STATE/5.json" "$STATION_STATE/6.json" "$STATION_STATE/7.json" "$STATION_STATE/8.json"
 # Author filtering must precede the server result cap, not just filter one full page.

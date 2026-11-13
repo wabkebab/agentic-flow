@@ -146,11 +146,13 @@ handoff_project() { # number; always re-read immediately before projection, then
 }
 
 handoff_plan_read() { # bounded exact-stamped discovery; labels are not evidence
+  local -a approvers
   local n discovery='[]' context other_plan other_step approver page candidate searches=0
   HANDOFF_ISSUES='' HANDOFF_TRACKER='' HANDOFF_ALL_APPROVED=true HANDOFF_FOUND=0
   # Filter at GitHub as well as locally: strangers must not fill the bounded page.
   # Separate searches avoid depending on multi-author qualifier OR semantics.
-  for approver in $REVIEW_APPROVERS; do
+  IFS=' ' read -r -a approvers <<< "$REVIEW_APPROVERS"
+  for approver in "${approvers[@]}"; do
     searches=$((searches+1))
     [ "$searches" -le 100 ] || { handoff_error 'approver discovery exceeds 100 searches'; return 5; }
     page=$(handoff_gh issue list --repo "$HANDOFF_REPO" --state all --limit 100 \
@@ -166,7 +168,11 @@ handoff_plan_read() { # bounded exact-stamped discovery; labels are not evidence
       '[.[] | select(.author.login as $login | ($roles|split(" ")|index($login))!=null)]') || return 5
     while IFS= read -r candidate; do
       # Search text can be a quotation or malformed stamp. It is not membership.
-      context=$(printf '%s' "$candidate" | jq -r .body | journal_stamp 2>/dev/null) || continue
+      context=$(printf '%s' "$candidate" | jq -r .body | journal_stamp 2>/dev/null) || context=''
+      if [ -z "$context" ]; then
+        handoff_error "skipping approver-authored discovery hit #$(printf '%s' "$candidate" | jq -r .number): unparseable plan stamp"
+        continue
+      fi
       other_plan=$(printf '%s' "$context" | jq -r .plan)
       [ "$other_plan" = "$HANDOFF_PLAN" ] || continue
       discovery=$(printf '%s' "$discovery" | jq --argjson issue "$candidate" '.+[$issue]|unique_by(.number)') || return 5
