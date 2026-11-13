@@ -40,7 +40,7 @@ scripts/lifecycle-status.sh       derive ACTIVE / READY / BLOCKED / UNVERIFIED /
 scripts/doctor.sh                 adoption checklist / scaffold health check
 scripts/agentic-flow              adopted-project status / diff / upgrade command
 scripts/self-test.sh              offline regression checks for this scaffold
-scripts/hooks/                    the five hook scripts settings.json calls
+scripts/hooks/                    the six hook scripts settings.json calls
 templates/harness/                pristine CLAUDE/AGENTS/Makefile forms shipped by export.sh
 ROADMAP.md                        planned evolution of the standard (Tier 2 / Tier 3)
 docs/

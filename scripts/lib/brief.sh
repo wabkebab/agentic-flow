@@ -149,3 +149,45 @@ brief_approved_at_head() { # repository-relative doc path, revision
   echo "approval is for $rev; the plan changed at $changed: re-approve" >&2
   return 1
 }
+
+brief_cmd() ( # <doc> <step-id> [--at <sha>] [--analysis]
+  [ "$#" -ge 2 ] || { echo 'usage: agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]' >&2; return 2; }
+  local doc=$1 step=$2 rev='' analysis=false root tmp approval spec heading
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --at) [ "$#" -ge 2 ] || return 2; rev=$2; shift 2 ;;
+      --analysis) analysis=true; shift ;;
+      *) echo "unknown brief flag: $1" >&2; return 2 ;;
+    esac
+  done
+  root=$(git rev-parse --show-toplevel) || return 2
+  cd "$root" || return 2
+  case "$doc" in ''|/*|../*|*/../*|*/..) echo 'brief path must be repository-relative' >&2; return 2 ;; esac
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/agentic-flow-brief.XXXXXX") || return 2
+  trap 'rm -rf "$tmp"' EXIT
+  if [ -z "$rev" ]; then
+    git show "HEAD:$doc" > "$tmp/head" || return 2
+    approval=$(brief_approval "$tmp/head") || return 2
+    rev=${approval%%$'\t'*}
+  fi
+  rev=$(git rev-parse --verify --end-of-options "$rev^{commit}") || return 2
+  git show "$rev:$doc" > "$tmp/doc" || return 2
+  spec=$(brief_parse "$tmp/doc" "$doc" "$rev") || return 2
+  heading=$(printf '%s' "$spec" | jq -er --arg step "$step" '.steps[] | select(.id==$step) | .title') \
+    || { echo "unknown step: $step" >&2; return 2; }
+  awk -v heading="$heading" -v analysis="$analysis" '
+    /^# / {
+      if (!title++) {print; next}
+      if (/^# Part A /) {part="a"; if(analysis=="true") print; next}
+      if (/^# Part B /) {part="b"; next}
+    }
+    part=="a" {if(analysis=="true") print; next}
+    part=="b" && /^## / {
+      section=substr($0,4)
+      emit=(section==heading || section=="Branch" || section ~ /^Word ceilings/ ||
+            section ~ /^Definition of done/ || section=="Verification commands")
+    }
+    part=="b" && emit {print}
+  ' "$tmp/doc"
+)

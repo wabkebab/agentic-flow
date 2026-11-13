@@ -112,8 +112,8 @@ review (see `docs/accepted_risks.md#single-operator-review`).
 <!-- END SHARED CLAUDE TOOLS -->
 
 ### Hooks (enforced, not optional)
-This project ships `.claude/settings.json` with five hooks that mechanize the contract —
-full mechanism and rationale for each in `METHODOLOGY.md` §8:
+Six hooks in `.claude/settings.json` enforce the contract (`METHODOLOGY.md` §8):
+- **SessionStart → cached step context** (`scripts/hooks/session-context.sh`)
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`)
 - **PreToolUse(Bash) → block `git add -A` / `.` / `--all`** (`scripts/hooks/block-git-add-all.sh`)
 - **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)

@@ -2769,6 +2769,93 @@ must_block_nojq "$ADD_GUARD" 'git add -A'
 must_block_nojq "$ADD_GUARD" 'git -C /some/path add --all'
 must_allow_nojq "$ADD_GUARD" 'git add README.md'
 
+# Session context must be shipped and wired in both adapters.
+[ -x "$ROOT/scripts/hooks/session-context.sh" ] || fail 'session context hook is missing'
+for session_adapter in .claude/settings.json .codex/hooks.json; do
+  jq -e '.hooks.SessionStart[]?.hooks[]? | select(.command | contains("scripts/hooks/session-context.sh"))' "$ROOT/$session_adapter" >/dev/null \
+    || fail "SessionStart is not wired in $session_adapter"
+done
+
+SESSION_FIX="$TMP/session-context"
+mkdir -p "$SESSION_FIX/docs/inprogress" "$SESSION_FIX/scripts"
+ln -s "$ROOT/scripts/lib" "$SESSION_FIX/scripts/lib"
+git -C "$SESSION_FIX" init -q
+git -C "$SESSION_FIX" checkout -qb topic
+cat > "$SESSION_FIX/docs/inprogress/plan.md" <<'SESSION'
+# Feature — Session
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: session
+profile: strict
+tracking: Plan: Session
+branch: topic
+steps: s-1 s-2
+```
+## S-1 — First
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** risk
+## S-2 — Second
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** risk
+SESSION
+session_run() { (cd "$SESSION_FIX" && "$ROOT/scripts/hooks/session-context.sh"); }
+session_quiet() {
+  session_run > "$TMP/session.out" 2> "$TMP/session.err" || fail 'session hook blocked'
+  [ ! -s "$TMP/session.out" ] && [ ! -s "$TMP/session.err" ] || fail "session hook noisy: $1"
+}
+session_quiet 'missing cache'
+mkdir -p "$SESSION_FIX/.git/agentic-flow/state"
+SESSION_CACHE="$SESSION_FIX/.git/agentic-flow/state/session.tsv"
+printf 'corrupt\n' > "$SESSION_CACHE"
+session_quiet 'corrupt cache'
+printf '1\ts-1\tapproved\tnone\tnone\t2026-11-14T12:00:00Z\n2\ts-2\texecuting\tnone\tnone\t2026-11-14T12:00:00Z\n' > "$SESSION_CACHE"
+session_run > "$TMP/session.out" || fail 'session context failed'
+for expected in 'Plan: session' 'Doc: docs/inprogress/plan.md' 'Open step: s-2 (#2)' 'State: executing (cached)' 'Next command: scripts/agentic-flow brief docs/inprogress/plan.md s-2'; do
+  grep -Fq "$expected" "$TMP/session.out" || fail "session context omitted $expected"
+done
+[ "$(wc -w < "$TMP/session.out")" -le 120 ] || fail 'session context exceeded word limit'
+cp "$SESSION_CACHE" "$TMP/session-cache"
+cat "$TMP/session-cache" >> "$SESSION_CACHE"
+session_quiet 'duplicate cache rows'
+cat "$TMP/session-cache" > "$SESSION_CACHE"
+sed 's/executing/reviewing/' "$TMP/session-cache" > "$SESSION_CACHE"
+session_run > "$TMP/session.out" || fail 'reviewing session failed'
+grep -Fq 'State: reviewing (cached)' "$TMP/session.out" || fail 'reviewing state omitted'
+sed 's/executing/approved/' "$TMP/session-cache" > "$SESSION_CACHE"
+session_quiet 'all steps approved'
+head -n 1 "$TMP/session-cache" > "$SESSION_CACHE"
+session_quiet 'incomplete cache'
+cat "$TMP/session-cache" > "$SESSION_CACHE"
+cp "$SESSION_FIX/docs/inprogress/plan.md" "$SESSION_FIX/docs/inprogress/duplicate.md"
+session_quiet 'ambiguous branch'
+rm "$SESSION_FIX/docs/inprogress/duplicate.md"
+git -C "$SESSION_FIX" symbolic-ref HEAD refs/heads/main
+session_quiet 'main branch'
+# A detached HEAD can point at an existing object without requiring a fixture commit.
+SESSION_TREE=$(git -C "$SESSION_FIX" mktree < /dev/null)
+SESSION_COMMIT=$(printf 'session fixture\n' | git -C "$SESSION_FIX" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit-tree "$SESSION_TREE")
+git -C "$SESSION_FIX" update-ref --no-deref HEAD "$SESSION_COMMIT"
+session_quiet 'detached HEAD'
+git -C "$SESSION_FIX" symbolic-ref HEAD refs/heads/topic
+mkdir -p "$TMP/session-nojq"
+for session_tool in bash perl git; do ln -s "$(command -v "$session_tool")" "$TMP/session-nojq/$session_tool"; done
+(cd "$SESSION_FIX" && PATH="$TMP/session-nojq" "$ROOT/scripts/hooks/session-context.sh") > "$TMP/session.out" 2> "$TMP/session.err" \
+  || fail 'missing jq blocked session'
+[ ! -s "$TMP/session.out" ] && [ ! -s "$TMP/session.err" ] || fail 'missing jq was noisy'
+# Even a hung local helper is killed within the hook bound, with no output.
+mkdir -p "$TMP/session-slow"
+printf '#!/bin/sh\nexec /bin/sleep 5\n' > "$TMP/session-slow/git"
+chmod +x "$TMP/session-slow/git"
+SESSION_START=$SECONDS
+(cd "$SESSION_FIX" && PATH="$TMP/session-slow:$PATH" "$ROOT/scripts/hooks/session-context.sh") > "$TMP/session.out" 2> "$TMP/session.err" \
+  || fail 'slow helper blocked session'
+[ $((SECONDS - SESSION_START)) -le 2 ] || fail 'session hook exceeded timeout bound'
+[ ! -s "$TMP/session.out" ] && [ ! -s "$TMP/session.err" ] || fail 'timeout emitted partial context'
+
 # --- Stop gate (check-gate.sh) -----------------------------------------------------------
 # The highest-leverage hook and previously untested (ROADMAP 1.5.4). All four paths matter:
 # a green check must not block, a red one must, the loop-safety escape must fire on the

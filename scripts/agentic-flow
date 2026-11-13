@@ -7,6 +7,7 @@ usage() {
 usage:
   agentic-flow handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]
   agentic-flow handoff <issue> reconcile [--json]
+  agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow token <executor|reviewer|approver> [--check]
   agentic-flow status [--json]
   agentic-flow diff [--ref <ref>] [--json]
@@ -462,6 +463,11 @@ subcommand="${1:-}"
       # shellcheck disable=SC1091 # Installed alongside the CLI.
       . "$(dirname "$0")/lib/handoff.sh"
       handoff_cmd "$@" ;;
+    brief)
+      shift
+      # shellcheck disable=SC1091 # Installed alongside the CLI.
+      . "$(dirname "$0")/lib/brief.sh"
+      brief_cmd "$@" ;;
     token) shift; token_cmd "$@" ;;
     status) shift; status_cmd "$@" ;;
     diff) shift; diff_cmd "$@" ;;

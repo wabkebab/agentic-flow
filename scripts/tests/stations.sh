@@ -1,6 +1,78 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091,SC2153 # ROOT comes from the sourcing test runner.
 # Sourced by self-test.sh. All credentials, GitHub state and faults are fixtures.
+grep -q "brief)" "$ROOT/scripts/agentic-flow" || fail 'brief command is missing'
+# The slice comes from Git, including its approval metadata, never dirty bytes.
+SLICE_FIX="$TMP/step-slice"
+mkdir -p "$SLICE_FIX/docs/inprogress"
+git -C "$SLICE_FIX" init -q
+git -C "$SLICE_FIX" checkout -qb topic
+git -C "$SLICE_FIX" config user.email fixture@example.invalid
+git -C "$SLICE_FIX" config user.name Fixture
+git -C "$SLICE_FIX" config commit.gpgsign false
+cat > "$SLICE_FIX/docs/inprogress/plan.md" <<'SLICE'
+# Feature — Slice fixture
+# Part A — Analysis
+Analysis sentinel
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: slice
+profile: strict
+tracking: Plan: Slice
+branch: topic
+steps: s-1 s-2
+```
+## Branch
+Base main, branch topic.
+## Word ceilings: read first
+Ceiling sentinel
+## Definition of done (whole brief)
+Whole DoD sentinel
+## Verification commands
+```bash
+make check
+```
+## S-1 — First
+First approach sentinel
+**DoD:** first done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** first risk
+## S-2 — Second
+Second approach sentinel
+**DoD:** second done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** second risk
+## Status
+- **Approval:** pending
+SLICE
+git -C "$SLICE_FIX" add docs/inprogress/plan.md
+git -C "$SLICE_FIX" commit -qm 'Fixture approved content'
+SLICE_REV=$(git -C "$SLICE_FIX" rev-parse HEAD)
+sed "s/Approval:\*\* pending/Approval:** status=approved; by=human; at=2026-11-14; rev=$SLICE_REV/" \
+  "$SLICE_FIX/docs/inprogress/plan.md" > "$TMP/slice-approved"
+cat "$TMP/slice-approved" > "$SLICE_FIX/docs/inprogress/plan.md"
+git -C "$SLICE_FIX" add docs/inprogress/plan.md
+git -C "$SLICE_FIX" commit -qm 'Record fixture approval'
+sed 's/First approach sentinel/Dirty sentinel/; s/^- \*\*Approval:.*$/- **Approval:** pending/' \
+  "$SLICE_FIX/docs/inprogress/plan.md" > "$TMP/slice-dirty"
+cat "$TMP/slice-dirty" > "$SLICE_FIX/docs/inprogress/plan.md"
+slice_run() { (cd "$SLICE_FIX" && "$ROOT/scripts/agentic-flow" brief docs/inprogress/plan.md "$@"); }
+slice_run absent > "$TMP/slice.out" 2> "$TMP/slice.err" && fail 'unknown slice step accepted'
+[ ! -s "$TMP/slice.out" ] || fail 'unknown step leaked content'
+slice_run s-1 --at missing > "$TMP/slice.out" 2> "$TMP/slice.err" && fail 'missing revision accepted'
+[ ! -s "$TMP/slice.out" ] || fail 'missing revision leaked content'
+slice_run s-1 > "$TMP/slice.out" || fail 'default approved slice failed'
+for expected in 'Feature — Slice fixture' 'Base main' 'Ceiling sentinel' 'Whole DoD sentinel' 'make check' 'First approach sentinel'; do
+  grep -q "$expected" "$TMP/slice.out" || fail "slice omitted $expected"
+done
+if grep -Eq 'Analysis sentinel|Second approach|Dirty sentinel|Approval:' "$TMP/slice.out"; then fail 'slice leaked unrelated or dirty content'; fi
+slice_run s-2 --at "$SLICE_REV" --analysis > "$TMP/slice.out" || fail 'explicit analysis slice failed'
+grep -q 'Analysis sentinel' "$TMP/slice.out" || fail 'analysis omitted'
+grep -q 'Second approach sentinel' "$TMP/slice.out" || fail 'second step omitted'
+grep -q 'First approach sentinel' "$TMP/slice.out" && fail 'other step leaked into analysis slice'
+
 [ -f "$ROOT/scripts/lib/journal.sh" ] || fail 'journal library is missing'
 must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'gh issue edit 1 --add-label "bug, needs-review"'
 must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'cd /tmp; gh issue close 1'
