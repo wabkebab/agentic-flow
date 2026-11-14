@@ -52,6 +52,8 @@ templates/shared/claude-tools.md|templates/harness/CLAUDE.md|CLAUDE TOOLS
 templates/shared/review-contract.md|.agents/skills/review-execution/SKILL.md|REVIEW CONTRACT
 templates/shared/review-contract.md|.opencode/agent/code-reviewer.md|REVIEW CONTRACT
 templates/shared/review-contract.md|METHODOLOGY.md|REVIEW CONTRACT
+templates/shared/workflow.md|templates/shared/workflow.md|whole
+templates/shared/workflow.md|METHODOLOGY.md|WORKFLOW
 SPEC
 )
 
@@ -62,10 +64,7 @@ render_region() { # source consumer marker output
   esac
   [ "$(grep -Fxc "$begin" "$consumer" || true)" -eq 1 ] || die "missing or duplicate begin marker in ${consumer#"$ROOT"/}"
   [ "$(grep -Fxc "$end" "$consumer" || true)" -eq 1 ] || die "missing or duplicate end marker in ${consumer#"$ROOT"/}"
-  if grep -E '^(<!-- |# )BEGIN SHARED ' "$consumer" | grep -Fvx "$begin" >/dev/null; then
-    die "unknown region in ${consumer#"$ROOT"/}"
-  fi
-  if grep -E '^(<!-- |# )END SHARED ' "$consumer" | grep -Fvx "$end" >/dev/null; then
+  if grep -E '^(<!-- |# )(BEGIN|END) SHARED ' "$consumer" | grep -Ev '^(<!-- |# )(BEGIN|END) SHARED (SHELL GATE|ENGINEERING STANDARDS|CLAUDE TOOLS|REVIEW CONTRACT|WORKFLOW)( -->)?$' >/dev/null; then
     die "unknown region in ${consumer#"$ROOT"/}"
   fi
   awk -v b="$begin" -v e="$end" -v src="$source" '
@@ -78,19 +77,40 @@ render_region() { # source consumer marker output
 
 # Validate and stage every consumer before any replacement. Refuse unknown
 # region names and missing inputs; a bad graph cannot partially rewrite files.
+# Validate the bounded data contract before generating any output.
+# shellcheck disable=SC1091
+. "$ROOT/scripts/lib/workflow.sh"
+workflow_load "$ROOT" || die 'invalid workflow'
+{
+  # shellcheck disable=SC2016 # Literal Markdown command references.
+  printf 'Generated from `config/workflow.tsv`; edit the data, then run `scripts/render-shared.sh`.\n\n'
+  printf '| Topology | State | Labels | Issue status |\n|---|---|---|---|\n'
+  printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' '$1 == "state" { printf "| %s | %s | %s | %s |\n", $2,$3,$4,$5 }'
+  printf '\n| Topology | Event | Role | From | To | Requires |\n|---|---|---|---|---|---|\n'
+  printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' '$1 == "transition" { printf "| %s | %s | %s | %s | %s | %s |\n", $2,$3,$4,$5,$6,$7 }'
+} > "$tmp/workflow.md"
+
 i=0
 while IFS='|' read -r source consumer mode; do
   [ -n "$source" ] || continue
-  case "$mode" in whole|'SHELL GATE'|'ENGINEERING STANDARDS'|'CLAUDE TOOLS'|'REVIEW CONTRACT') ;;
+  case "$mode" in whole|'SHELL GATE'|'ENGINEERING STANDARDS'|'CLAUDE TOOLS'|'REVIEW CONTRACT'|WORKFLOW) ;;
     *) die "unknown region: $mode" ;;
   esac
-  [ -f "$ROOT/$source" ] || die "missing canonical source: $source"
+  [ "$source" = templates/shared/workflow.md ] || [ -f "$ROOT/$source" ] || die "missing canonical source: $source"
   [ -f "$ROOT/$consumer" ] || die "missing consumer: $consumer"
   i=$((i + 1))
+  source_path="$ROOT/$source"
+  [ "$source" != templates/shared/workflow.md ] || source_path="$tmp/workflow.md"
+  consumer_path="$ROOT/$consumer"
+  # Later regions of one consumer build on its already-staged version.
+  if [ -f "$tmp/consumers" ]; then
+    previous_index=$(awk -v c="$consumer" '$0 == c { n=NR } END { if (n) print n }' "$tmp/consumers")
+    [ -z "$previous_index" ] || consumer_path="$tmp/$previous_index.new"
+  fi
   if [ "$mode" = whole ]; then
-    cp "$ROOT/$source" "$tmp/$i.new" || die "cannot stage $consumer"
+    cp "$source_path" "$tmp/$i.new" || die "cannot stage $consumer"
   else
-    render_region "$ROOT/$source" "$ROOT/$consumer" "$mode" "$tmp/$i.new"
+    render_region "$source_path" "$consumer_path" "$mode" "$tmp/$i.new"
   fi
   printf '%s\n' "$consumer" >> "$tmp/consumers"
 done <<< "$spec"

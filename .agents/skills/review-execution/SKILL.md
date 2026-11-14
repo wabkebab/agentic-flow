@@ -46,11 +46,6 @@ Run the brief's exact per-step verification where practical. At minimum, inspect
 and run the project's relevant `make test-one F=...` and `make check`; run `make test` for
 the completed brief when the environment supports it.
 
-Reuse records only when `sha` and `tree` match the reviewed head and
-`verifier.implementation_sha256` matches the current `verify-step.sh`.
-Otherwise run `scripts/agentic-flow verify-step <head> --doc <doc> --step <id>`.
-Inspect red-first output; invalid wiring or failed verification prevents approval.
-
 Record the commands and outcomes. Never describe a skipped, unavailable, or stale CI result
 as passing. A tool/environment failure may make the verdict pending, but it is not itself a
 code finding unless the branch caused it.
@@ -68,6 +63,27 @@ Use one finding scale for Security reviews, step reviews, and ordinary diffs:
 Accepted/by-design is a disposition, not a severity. Record the acceptance against the finding and move material accepted risk to `docs/accepted_risks.md`.
 
 The only verdicts are `approved`, `changes requested`, and `pending`. Use `approved` when no required findings remain and evidence covers the brief; use `changes requested` when code or tests need a fix; use `pending` when missing scope or evidence prevents a decision. Structured review comments encode `changes requested` as `status=changes-requested`.
+
+Use `packet <issue> --station reviewer`, `verify-step <head> --doc <doc> --step <id>`,
+and `handoff <issue> approve --as reviewer --head <sha40> --body-file <review-file>`
+or `handoff <issue> bounce --as reviewer --body-file <findings-file>`; states live
+in `METHODOLOGY.md` §6. Pending leaves state unchanged. Never edit accepted verdicts.
+
+Reuse evidence only when `sha` and `tree` match the reviewed head and
+`verifier.implementation_sha256` matches the current `verify-step.sh`; otherwise regenerate.
+Inspect signature-source provenance and red-first output. Exit 0 is green; nonzero
+with an assertion-signature match is red, except timeout 124 and interrupts 130/143,
+which are invalid. Missing or mismatched signatures are invalid and prevent approval.
+Prefer raw runners: make masks recipe failures as exit 2; Cargo assertions exit 101.
+
+Handoff writes `agentic-flow-review: status=approved|changes-requested; step=<id>;
+head=<sha40>; role=reviewer` compatibility markers. The journal selects accepted evidence;
+edited accepted approval blocks verification. The API author proves the account;
+`role=reviewer` attests the role, not independence in single-operator mode.
+Final-head approval belongs on the document's Tracking issue (§2):
+`agentic-flow-review: status=approved; pr=<number>; head=<sha40>;
+run=https://github.com/<owner>/<repo>/actions/runs/<id>; attempt=<positive-integer>;
+role=reviewer`. A new head or run attempt requires new approval.
 <!-- END SHARED REVIEW CONTRACT -->
 
 For every finding include:
@@ -97,15 +113,5 @@ is no longer reviewing it.
 
 ## Record the verdict and move the issue
 
-Use `handoff` for step verdicts. Post final approval on `Tracking issue`, including
-`attempt=`, using `METHODOLOGY.md` §2. Change final verdicts with new comments.
-
-Move step issues with `scripts/agentic-flow handoff <N> approve --as reviewer
---head <submitted-sha40> --body-file <review-file>`, or `handoff <N> bounce
---as reviewer --body-file <findings-file>`. Include the range reviewed and verification.
-The command journals the verdict, closes approved Strict steps, keeps Standard work
-issues open for close-out, and notifies the Strict tracker after the last approval.
-A third findings return escalates; only an approver may `handoff resume` with a note.
-For `pending`, change nothing and name the missing input. Never relabel by hand.
-
-Never edit the doc's Status block — that is close-out's job.
+Follow the shared review contract above; never relabel by hand or edit the doc's
+Status block. Close-out owns Status.

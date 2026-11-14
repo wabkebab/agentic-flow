@@ -30,11 +30,11 @@ order, edge cases — not finished code. Read the brief for the step before writ
 
 ## How to work a step
 
-1. **Read the implementation brief** for the issue (linked from the issue / tracking issue).
-   It gives the problem, the approach, the regression test to add, and the Definition of Done.
+1. Run `scripts/agentic-flow brief <doc> <step-id>` for the approved step and preamble.
+   Read its problem, approach, regression test, and Definition of Done.
 2. **Branch** as the brief specifies; work one step at a time, in the brief's order. The
    whole brief ships as **one branch and one PR** — each step is one issue and one commit
-   on that branch. Strict sub-issues close on review; Standard work issues close at close-out. If the brief instead calls for
+   on that branch. If the brief instead calls for
    a separate branch/PR per step (unusual — only for a pass too large to hold on one
    branch), follow that explicitly; don't split by default.
 3. **Implement** the step. Add the regression test the brief asks for — it must fail against
@@ -52,11 +52,9 @@ order, edge cases — not finished code. Read the brief for the step before writ
    scripts/agentic-flow handoff <N> submit --as executor --head <sha40> --body-file <evidence-file>
    ```
 
-   `handoff` posts the journal entry and evidence, then reconciles labels. Retry the
-   same command after a partial failure; it does not duplicate the transition.
-   Raw workflow label edits and direct token calls are blocked by the hook.
-   The reviewer approves Strict sub-issues; the closer closes Standard work issues.
-   Do not close the issue yourself. See `METHODOLOGY.md` §6.
+   States live in `METHODOLOGY.md` §6. Use `brief`, `verify-step <sha40>
+   --doc <doc> --step <id>`, and `handoff submit`; retry after partial failure.
+   Never move workflow labels or close issues by hand.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 
@@ -94,9 +92,7 @@ If the brief conflicts with any of these, stop and flag it — do not silently p
 - **Verbose, *why*-first commit body** — name the problem, the approach, the blast radius.
   A reviewer should understand the change from the message alone. This is the rule most
   often missed; an example follows.
-- **`Fixes #N`** to link the commit to its issue. Under Strict the reviewer closes the
-  sub-issue; under Standard the closer closes the sole work issue after review and
-  approval, so by merge time the trailer is a no-op — keep it for traceability.
+- **`Fixes #N`** links the commit to its issue; keep the trailer for traceability.
 - **Never push** — the human controls pushes and merges.
 
 Example:

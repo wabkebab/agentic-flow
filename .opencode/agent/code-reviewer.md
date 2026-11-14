@@ -45,11 +45,6 @@ A diff whose tests cover only the success path is not done. Flag missing
 coverage for: timeout, malformed input, unauthorized, and the empty/unbounded
 cases above.
 
-Reuse records only when `sha` and `tree` match the reviewed head and
-`verifier.implementation_sha256` matches `verify-step.sh`; otherwise run
-`scripts/agentic-flow verify-step <head> --doc <doc> --step <id>`.
-Invalid red-first wiring prevents approval.
-
 ## Output format
 
 <!-- BEGIN SHARED REVIEW CONTRACT -->
@@ -63,6 +58,27 @@ Use one finding scale for Security reviews, step reviews, and ordinary diffs:
 Accepted/by-design is a disposition, not a severity. Record the acceptance against the finding and move material accepted risk to `docs/accepted_risks.md`.
 
 The only verdicts are `approved`, `changes requested`, and `pending`. Use `approved` when no required findings remain and evidence covers the brief; use `changes requested` when code or tests need a fix; use `pending` when missing scope or evidence prevents a decision. Structured review comments encode `changes requested` as `status=changes-requested`.
+
+Use `packet <issue> --station reviewer`, `verify-step <head> --doc <doc> --step <id>`,
+and `handoff <issue> approve --as reviewer --head <sha40> --body-file <review-file>`
+or `handoff <issue> bounce --as reviewer --body-file <findings-file>`; states live
+in `METHODOLOGY.md` §6. Pending leaves state unchanged. Never edit accepted verdicts.
+
+Reuse evidence only when `sha` and `tree` match the reviewed head and
+`verifier.implementation_sha256` matches the current `verify-step.sh`; otherwise regenerate.
+Inspect signature-source provenance and red-first output. Exit 0 is green; nonzero
+with an assertion-signature match is red, except timeout 124 and interrupts 130/143,
+which are invalid. Missing or mismatched signatures are invalid and prevent approval.
+Prefer raw runners: make masks recipe failures as exit 2; Cargo assertions exit 101.
+
+Handoff writes `agentic-flow-review: status=approved|changes-requested; step=<id>;
+head=<sha40>; role=reviewer` compatibility markers. The journal selects accepted evidence;
+edited accepted approval blocks verification. The API author proves the account;
+`role=reviewer` attests the role, not independence in single-operator mode.
+Final-head approval belongs on the document's Tracking issue (§2):
+`agentic-flow-review: status=approved; pr=<number>; head=<sha40>;
+run=https://github.com/<owner>/<repo>/actions/runs/<id>; attempt=<positive-integer>;
+role=reviewer`. A new head or run attempt requires new approval.
 <!-- END SHARED REVIEW CONTRACT -->
 
 For each finding give:
@@ -74,38 +90,5 @@ End with a one-line verdict: `approved` / `changes requested` / `pending`.
 
 ## Moving the issue
 
-`handoff approve|bounce` writes the step verdict with its step ID and the
-executor's full implementation SHA:
-
-```text
-agentic-flow-review: status=approved; step=<step-id>; head=<40-hex-implementation-sha>; role=reviewer
-```
-
-For a rejection, `handoff bounce` writes `status=changes-requested`. Change verdicts
-through a new legal transition; never edit an accepted verdict. The journal selects
-accepted step evidence; an edited accepted approval blocks verification. The API author proves the account, while
-`role=reviewer` is an attestation and single-operator mode does not prove independence.
-
-After the final PR head and CI run exist, put the final approval on the document's
-`Tracking issue`, not on the PR or step thread:
-
-```text
-agentic-flow-review: status=approved; pr=<PR-number>; head=<40-hex-PR-head>; run=https://github.com/<owner>/<repo>/actions/runs/<run-id>; attempt=<positive-integer>; role=reviewer
-```
-
-Record the live run attempt. A new PR commit or run attempt needs a new approval.
-The closer verifies this evidence after the document-move commit is pushed; verification
-is point-in-time and does not guard merge.
-
-Do not edit files, do not stage, do not commit, do not push — the executor owns
-fixes. You do own the step issue's workflow state, standingly authorized by the
-workflow in `CLAUDE.md`. Save the review and verification to a file, then run
-`scripts/agentic-flow handoff <N> approve --as reviewer --head <submitted-sha40>
---body-file <review-file>`, or `handoff <N> bounce --as reviewer --body-file <findings-file>`.
-The command journals evidence and reconciles workflow state, including the last-step
-tracker notification. The third bounce escalates to the human. For `pending`, change
-nothing and name the missing input. Never relabel or close a step by hand.
-
-Never edit the implementation doc's Status block. That is close-out's job.
-See `.agents/skills/review-execution/SKILL.md` for the full contract — OpenCode discovers
-skills there natively, so it is the single copy.
+Follow the shared review contract above. Never edit the implementation doc's Status;
+close-out owns it. See `.agents/skills/review-execution/SKILL.md` for review scope.

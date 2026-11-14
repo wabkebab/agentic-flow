@@ -58,8 +58,7 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
    Every step has stable `id`, `title`, `body`, `labels` and a `packet` object containing
    `brief`, `definition_of_done`, `verification`, `risks` strings from the approved brief.
    Standard has one step and no `tracking`; Strict requires `tracking: {title, body}`.
-   Omit `profile` only for existing legacy topology. Labels are `plan` for trackers and
-   `agent:codex`, `needs-execution` for steps. Security findings add the matching `sev:*`.
+   Omit `profile` only for existing legacy topology. Creation labels come from `config/workflow.tsv`; states live in `METHODOLOGY.md` §6. Security findings add the matching `sev:*`.
    Human plan approval also authorizes this apply. Standard requires `--approved-by` on
    first apply; reapply preserves the recorded identity and timestamp.
 7. **Close the loop:** tick nothing yet and tell the user the work or tracking issue URL.

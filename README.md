@@ -108,7 +108,7 @@ For adopted projects, `scripts/doctor.sh` is the verifier and can be used in CI.
 
 ## Opt-outs
 
-- **Claude-only** (no Codex): keep the docs + review discipline; drop `agent:codex` /
+- **Claude-only** (no Codex): keep the docs + review discipline; configure the role policy (METHODOLOGY.md §6) and omit
   `git-codex`. Note it at the top of `CLAUDE.md`.
 - **No GitHub issues**: the in-doc Tracker checklist is a complete burndown on its own; skip
   `plan-to-issues`.

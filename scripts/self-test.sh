@@ -1114,6 +1114,23 @@ fi
 # --- shellcheck is required, not optional ------------------------------------------------
 if should_run contracts; then
 workflow_contract_check
+# S-9: the workflow is generated once; installed projects keep rendered contracts.
+if [ -d "$ROOT/templates/shared" ]; then
+  [ -f "$ROOT/templates/shared/workflow.md" ] || fail 'canonical rendered workflow is missing'
+  grep -q '^<!-- BEGIN SHARED WORKFLOW -->$' "$ROOT/METHODOLOGY.md" || fail 'methodology workflow region is missing'
+  "$ROOT/scripts/render-shared.sh" --check >/dev/null || fail 'workflow render is stale'
+  for role in CLAUDE.md AGENTS.md .agents/skills/review-execution/SKILL.md; do
+    case "$role" in CLAUDE.md) baseline=1515 ;; AGENTS.md) baseline=1088 ;; *) baseline=996 ;; esac
+    [ "$(wc -w < "$ROOT/$role")" -lt "$baseline" ] || fail "S-9 role did not shrink: $role"
+  done
+  for contract in CLAUDE.md AGENTS.md templates/harness/CLAUDE.md templates/harness/AGENTS.md \
+      .opencode/agent/code-reviewer.md .agents/skills/review-execution/SKILL.md \
+      .agents/skills/plan-to-issues/SKILL.md ADOPTION.md docs/README.md; do
+    grep -Eq 'agent:(claude|codex|opencode)|needs-(execution|review|closing|human)' "$ROOT/$contract" \
+      && fail "duplicated workflow labels in $contract"
+  done
+
+fi
 # S-2: these tests travel alone to the red base, so a missing library is an assertion.
 [ -f "$ROOT/scripts/lib/identity.sh" ] || fail 'identity library is missing'
 IDENTITY_FIX="$TMP/identity"
@@ -1627,7 +1644,8 @@ if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
   else
     cp -R "$ROOT/templates/shared" "$RENDER_FIX/templates/"
   fi
-  for rel in Makefile templates/harness/Makefile AGENTS.md templates/harness/AGENTS.md \
+  for rel in config/workflow.tsv scripts/lib/workflow.sh \
+             Makefile templates/harness/Makefile AGENTS.md templates/harness/AGENTS.md \
              CLAUDE.md templates/harness/CLAUDE.md \
              METHODOLOGY.md .agents/skills/plan-to-issues/SKILL.md \
              .claude/skills/plan-to-issues/SKILL.md .agents/skills/create-tags/SKILL.md \
@@ -1638,6 +1656,24 @@ if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
   done
   AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null \
     || fail "pristine shared render fixture drifted"
+  sed 's/needs-human/needs-review/g' "$ROOT/config/workflow.tsv" > "$RENDER_FIX/config/workflow.tsv"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" --check > "$TMP/workflow-drift.out" 2>&1 \
+    && fail 'changed workflow data was accepted as fresh'
+  grep -q 'shared render drift: templates/shared/workflow.md' "$TMP/workflow-drift.out" || fail 'workflow drift did not name generated source'
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" >/dev/null || fail 'workflow regeneration failed'
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" --check >/dev/null || fail 'regenerated workflow is stale'
+  installed_render_fix="$TMP/installed-render"
+  mkdir -p "$installed_render_fix"
+  AGENTIC_PROJECT_ROOT="$installed_render_fix" "$ROOT/scripts/render-shared.sh" --check >/dev/null \
+    || fail 'installed project requires absent render sources'
+  # Invalid input must leave every consumer untouched.
+  cp "$RENDER_FIX/METHODOLOGY.md" "$TMP/workflow-before"
+  printf 'invalid\n' >> "$RENDER_FIX/config/workflow.tsv"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" > "$TMP/workflow-invalid.out" 2>&1 \
+    && fail 'invalid workflow rendered successfully'
+  cmp -s "$RENDER_FIX/METHODOLOGY.md" "$TMP/workflow-before" || fail 'invalid workflow partially rewrote contracts'
+  cp "$ROOT/config/workflow.tsv" "$RENDER_FIX/config/workflow.tsv"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" >/dev/null || fail 'workflow restore failed'
   printf '\nconsumer drift\n' >> "$RENDER_FIX/.claude/skills/create-tags/SKILL.md"
   AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
     && fail "shared render missed a whole skill drift"

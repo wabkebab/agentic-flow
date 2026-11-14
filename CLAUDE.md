@@ -26,52 +26,21 @@
   is the contract. Commits review notes with `git-opencode`.
 - **Own / merge / deploy — the human.** Approves plans, merges PRs, controls all pushes.
 
-### Step issue label state machine
+### Station commands
 
-Step issues move by label pair:
-
-```
-agent:codex + needs-execution          (plan-to-issues default)
-      │  Codex commits with Fixes #N, then runs handoff submit
-      │  with the sha and verification evidence
-      ▼
-agent:opencode + needs-review
-      │  OpenCode reviews that commit against the brief
-      ├─ findings noted as an issue comment ──▶ agent:codex + needs-execution
-      │                                           (loop; capped at 2 findings returns)
-      └─ approved ──▶ comments the verdict, then CLOSES the step issue.
-                      On the last open step, also sets the TRACKING issue to
-                      agent:claude + needs-closing and leaves it open.
-                                  │
-                                  ▼
-                  Claude ticks the Tracker, updates Status with review and CI
-                  evidence, moves the doc to docs/done/, then closes the
-                  tracking issue. The human still owns the PR merge.
-```
-
-After two findings returns, a third escalates to the human instead of returning it to Codex
-again or silently stopping.
-
-Strict sub-issues close on review; the parent receives `needs-closing`.
-Standard's sole work issue receives `needs-closing` after approval and stays open until
-close-out. A closed Strict step means *reviewed clean*, not *shipped*; the Status
-block plus CI evidence is the shipping record (`METHODOLOGY.md` §2).
-
-Close-out is batched: closed steps accumulate while the tracker stays open. Prepare the
-final Status and Tracker, change TRIAGE to Done, move the doc and update the index as the
-last repository change, then commit. The human pushes that candidate. CI must pass and lifecycle
-must approve the exact PR head after the push. Run
-`scripts/lifecycle-status.sh --doc docs/done/<doc>.md --phase close-out --check --verify-evidence`,
-close the issue, then remove `agent:claude,needs-closing`. No repository edits. The human rechecks
-with `--phase pre-merge` immediately before merge (or relies on required checks). That phase expects the issue closed. Any repository edit after approval restarts
-the external CI/review round. Verification is point-in-time, not a merge guard. Confirm steps are closed;
-the tracker label is a notification, not the authority. This repository uses the
-single-operator review mode: its role claim is accountable but does not prove independent
-review (see `docs/accepted_risks.md#single-operator-review`).
+States and transitions live in `METHODOLOGY.md` §6. Executors use `brief`,
+`verify-step`, and `handoff submit`; reviewers use `packet`, `verify-step`, and
+`handoff approve|bounce`. Closers run `scripts/agentic-flow close-out prep <doc>
+--pr <url>`, commit the staged candidate, then run `close-out finish <moved-doc>`
+after the human pushes and CI/final-head evidence passes. The human checks
+`lifecycle-status.sh --phase pre-merge` immediately before merging.
+A closed step means reviewed clean; the Status block and CI record shipping.
+Single-operator review attests a role, not independent accounts
+(`docs/accepted_risks.md#single-operator-review`).
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and
-      executes. Drop the agent:codex labels; keep the doc lifecycle and review discipline." -->
+      executes. Configure the role policy (§6); keep the doc lifecycle and review discipline." -->
 
 ---
 

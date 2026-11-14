@@ -109,6 +109,13 @@ that branch, closing its issue via `Fixes #N`.
 Every step's per-step DoD met; `make check` and `make test` green; the user-visible goal in
 Part A is demonstrably met (note how to verify it manually if relevant — `make run` / `/verify`).
 
+Prefer raw runner selectors for Red-first: make masks recipe failures as exit 2;
+Cargo assertion failures exit 101. Declare the project's assertion signature.
+Exit 0 is green; nonzero plus a signature match is red except timeout 124 and
+interrupts 130/143, which are invalid. Missing or mismatched signatures are invalid.
+Evidence reuse requires matching reviewed SHA/tree and verifier implementation hash;
+inspect signature-source provenance (shared review contract, METHODOLOGY.md §5).
+
 ## Verification commands
 <!-- These call the project's Makefile targets (see CLAUDE.md "Stack profile"). -->
 ```bash

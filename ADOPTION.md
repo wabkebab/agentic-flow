@@ -83,6 +83,9 @@ Planner and close-out work starts from `CLAUDE.md` plus the relevant template, T
 issue states, review verdicts, CI evidence, and lifecycle output. Load `METHODOLOGY.md` by
 referenced section, not by default.
 
+States live in `METHODOLOGY.md` §6: executors use `brief`, `verify-step`, `handoff submit`;
+reviewers use `packet`, `verify-step`, `handoff approve|bounce`; closers use `close-out prep|finish`.
+
 ## Versioning
 
 `.agentic-flow-version` in the target holds `<semver>+<sha>` — e.g. `0.9.0+661d9da`. The

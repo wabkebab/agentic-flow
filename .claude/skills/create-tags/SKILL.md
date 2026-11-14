@@ -1,22 +1,12 @@
 ---
 name: create-tags
-description: Create the seven agentic-flow workflow labels (agent:claude, agent:codex, agent:opencode, needs-review, needs-execution, needs-closing, needs-human) on the current GitHub repo with their standard colors. Use on adoption, or whenever the label state machine in METHODOLOGY.md §6 needs these labels and they don't already exist.
+description: Create the workflow labels on the current GitHub repo with their standard colors. Use on adoption or when METHODOLOGY.md §6 requires missing labels.
 ---
 
 # create-tags
 
-Create the label set the step-issue state machine (`CLAUDE.md`, `METHODOLOGY.md` §6) runs
-on, colored so the board reads at a glance:
-
-| Label | Color |
-|-------|-------|
-| `agent:claude` | orange `#FFA500` |
-| `agent:codex` | blue `#0052CC` |
-| `agent:opencode` | black `#000000` |
-| `needs-review` | orange `#FFA500` |
-| `needs-execution` | yellow `#FBCA04` |
-| `needs-closing` | purple `#5319E7` |
-| `needs-human` | red `#B60205` |
+Workflow states live in `METHODOLOGY.md` §6; run `scripts/create-tags.sh` to provision
+the labels declared in `config/workflow.tsv` with their standard colors.
 
 The deterministic GitHub calls live in `scripts/create-tags.sh`; this skill is only the
 "when to run it" judgment.

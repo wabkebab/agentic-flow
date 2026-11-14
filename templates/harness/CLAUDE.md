@@ -31,7 +31,7 @@
 
 <!-- OPT-OUT: state any opt-out here, e.g.:
      "Claude-only: no Codex executor and no OpenCode reviewer; Claude plans, executes, and
-      reviews with /code-review. Drop the agent:codex / agent:opencode labels; keep the doc
+      reviews with /code-review. Configure the role policy (§6); keep the doc
       lifecycle and review discipline."
      "No OpenCode: Claude reviews with /code-review. Independence is weaker — say so in the
       review verdict rather than implying a separate reviewer signed off." -->
@@ -125,17 +125,10 @@ Six hooks in `.claude/settings.json` enforce the contract (`METHODOLOGY.md` §8)
 - Security/Feature docs carry an **inlined implementation brief** (approach + ordered steps
   + DoD + verification commands from the Stack profile — **not code**).
 - Approved plan → run the **`plan-to-issues`** skill.
-- Under Strict, the reviewer closes each sub-issue on approval and sends the parent
-  tracker to `agent:claude + needs-closing`. Under Standard, the reviewer posts an approving
-  comment and sends the sole work issue to `needs-closing`, leaving it open for close-out.
-  After every step is reviewed, prepare the final
-  Status/Tracker, set TRIAGE to Done, move the document to `docs/done/`, update the index,
-  and commit that as the last repository edit. The human pushes; CI passes and lifecycle approves
-  the exact PR head. Verify with `scripts/lifecycle-status.sh --doc docs/done/<doc>.md
-  --phase close-out --check --verify-evidence`, close the tracker or Standard work issue, then remove
-  `agent:claude,needs-closing`, without repository edits. The human rechecks with `--phase pre-merge` immediately before merge
-  (or relies on protected-branch required checks). That phase expects the named issue closed.
-  Any edit after approval restarts the external round. Verification is point-in-time and
-  does not guard a later merge. A closed step is *reviewed clean*, not *shipped*.
+- States live in `METHODOLOGY.md` §6. Use `brief`, `verify-step`, `handoff submit`
+  for execution and `packet`, `verify-step`, `handoff approve|bounce` for review.
+  Closers use `close-out prep <doc> --pr <url>`, commit, then `close-out finish
+  <moved-doc>` after the human pushes and final-head evidence passes. The human
+  checks lifecycle `--phase pre-merge` immediately before merging.
 - On done (shipped & verified, or risk accepted) → move the doc to `docs/done/`
   (or `docs/done/security/`); record accepted risks in `docs/accepted_risks.md`.
