@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.15.0
+
+Deterministic stations, phase 1 (tracker #124). Each mechanical station is a command
+with one workflow definition, a journal it can recover from, and trusted inputs.
+
+- `config/workflow.tsv` defines states, transitions and labels once. `render-shared.sh`
+  renders them into `METHODOLOGY.md` section 6, and `make check` fails when the render
+  is stale. Role contracts route to the station commands instead of restating states.
+- `agentic-flow handoff` is the only way for agents to move a workflow issue. It journals
+  each transition on the thread and is idempotent and race-safe. Raw workflow label
+  edits are now blocked for agents by the hook.
+- `plan-to-issues --doc` reads the approved brief, and plan approval authorizes apply.
+  The new `needs-human` label (bounce-cap escalation) is created by `create-tags`.
+- `agentic-flow brief` and `packet` give a role one step, built from the approved brief
+  and policy-authored comments only. A `SessionStart` hook in `.claude/settings.json`
+  injects the cached step context.
+- `agentic-flow verify-step` verifies a step in a clean detached worktree and records
+  the run. Profiles gain a `verify-prepare` row. Red-first: a non-zero exit with the
+  assertion signature is red, except timeout 124 and interrupts 130/143, which are
+  invalid. Exit 0 is green; missing or mismatched signatures are invalid.
+- `agentic-flow close-out prep|finish` scripts close-out and attests the final head when
+  its delta is bookkeeping only.
+- GitHub App identities and per-role tokens are supported (`agentic-flow token`).
+
+Migration: run `scripts/agentic-flow upgrade`, merge `CLAUDE.md`, `AGENTS.md`, `Makefile`
+and `.claude/settings.json` by hand, add the `verify-prepare` profile row, and run
+`scripts/create-tags.sh`. Use `handoff` for every workflow move from now on.
+
 ## 0.14.0
 
 Gate and handoff fixes before publishing (tracker #114).
