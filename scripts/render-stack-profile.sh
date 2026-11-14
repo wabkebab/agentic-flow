@@ -33,7 +33,7 @@ PROFILE_FILE="$ROOT/profiles/$PROFILE.tsv"
 
 if awk -F "$(printf '\t')" '
   /^#/ || NF == 0 { next }
-  $1 !~ /^(detect|check|test|test-one|build|run|ci-setup)$/ || NF < 2 { exit 1 }
+  $1 !~ /^(detect|check|test|test-one|build|run|ci-setup|verify-prepare|red-first-signature)$/ || NF < 2 { exit 1 }
   $1 == "ci-setup" && NF != 2 { exit 1 }
   $1 == "ci-setup" && $2 ~ /\t/ { exit 1 }
 ' "$PROFILE_FILE"; then
@@ -56,6 +56,7 @@ if [ -n "$MAKEFILE" ]; then
         tab = index(line, "\t")
         key = substr(line, 1, tab - 1)
         value = substr(line, tab + 1)
+        if (key == "red-first-signature" && value == "none") value = ""
         if (key == "detect" || key == "ci-setup") continue
         count[key]++
         command[key, count[key]] = value
@@ -78,9 +79,10 @@ if [ -n "$MAKEFILE" ]; then
         print "\t@shellcheck scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh"
       }
     }
+    /^RED_FIRST_SIGNATURE[ :?+]*=/ { print "RED_FIRST_SIGNATURE := " command["red-first-signature", 1]; next }
     skip == 1 && /^[A-Za-z0-9_.-]+:/ { skip=0 }
     skip == 1 { next }
-    /^(check|test|test-one|build|run):/ {
+    /^(check|test|test-one|build|run|verify-prepare):/ {
       target=$0
       sub(/:.*/, "", target)
       print

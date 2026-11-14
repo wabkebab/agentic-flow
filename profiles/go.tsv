@@ -9,3 +9,5 @@ ci-setup	      - name: Download locked Go modules
 ci-setup	        run: go mod download
 ci-setup	      - name: Verify Go modules
 ci-setup	        run: go mod verify
+verify-prepare	:
+red-first-signature	^--- FAIL:

@@ -35,3 +35,9 @@ build:          ## production build
 
 run:            ## start the app locally (for /run and /verify)
 	@scripts/doctor.sh
+
+# Commit verification setup and assertion failure signature.
+RED_FIRST_SIGNATURE := ^self-test failed:[[:space:]]
+.PHONY: verify-prepare
+verify-prepare:
+	@:

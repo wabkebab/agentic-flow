@@ -46,12 +46,10 @@ Run the brief's exact per-step verification where practical. At minimum, inspect
 and run the project's relevant `make test-one F=...` and `make check`; run `make test` for
 the completed brief when the environment supports it.
 
-Re-run the executor's verification. Confirm each regression test fails without the fix:
-create a temporary detached checkout with `mktemp -d` and `git worktree add --detach` at
-the pre-change commit, copy the new test there, and run it. Remove that exact worktree
-with `git worktree remove --force`. If creation fails, remove only the empty directory and report
-`pending`. Never alter the checkout under review; a test passing against old code proves nothing.
-
+Reuse a `verify-step` record only when its `sha` and `tree` match the reviewed head.
+Otherwise run `scripts/agentic-flow verify-step <head> --doc <doc> --step <id>` once.
+Inspect every red-first result and its output: wiring failures are invalid evidence.
+A missing record or failed verification prevents approval.
 Record the commands and outcomes. Never describe a skipped, unavailable, or stale CI result
 as passing. A tool/environment failure may make the verdict pending, but it is not itself a
 code finding unless the branch caused it.

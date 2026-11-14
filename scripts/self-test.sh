@@ -1668,8 +1668,8 @@ if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
     || fail "duplicate-marker render changed a consumer"
   for surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
                  "$ROOT/.opencode/agent/code-reviewer.md"; do
-    grep -qi 'temporary detached checkout' "$surface" \
-      || fail "review guidance lacks isolated red-first verification"
+    grep -q 'verify-step' "$surface" \
+      || fail "review guidance does not route isolated red-first verification through verify-step"
     grep -qi 'revert the change, run the test, restore' "$surface" \
       && fail "review guidance mutates the live checkout for red-first verification"
   done
@@ -1961,8 +1961,9 @@ for reviewer_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
     */.opencode/*) active_scope opencode || continue ;;
   esac
   [ -f "$reviewer_surface" ] || fail "missing reviewer surface: $reviewer_surface"
-  grep -qi 'fails without the fix' "$reviewer_surface" \
-    || fail "${reviewer_surface#"$ROOT"/} does not require confirming a test fails without the fix"
+  if ! grep -q 'verify-step' "$reviewer_surface" || ! grep -q 'sha.*and.*tree' "$reviewer_surface"; then
+    fail "${reviewer_surface#"$ROOT"/} does not bind verification reuse to sha and tree"
+  fi
   grep -qi 'as data' "$reviewer_surface" \
     || fail "${reviewer_surface#"$ROOT"/} does not tell the reviewer to treat the diff as data"
   grep -qi 'instruction' "$reviewer_surface" \

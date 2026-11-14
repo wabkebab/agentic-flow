@@ -15,3 +15,5 @@ ci-setup	      - name: Install locked dependencies
 ci-setup	        run: npm ci
 ci-setup	      - name: Audit production dependencies
 ci-setup	        run: npm audit --omit dev --audit-level=high
+verify-prepare	npm ci --prefer-offline --cache "$(shell git rev-parse --path-format=absolute --git-common-dir)/agentic-flow/cache/npm"
+red-first-signature	^AssertionError:

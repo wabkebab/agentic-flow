@@ -1,11 +1,13 @@
 # target	command
 detect	Cargo.toml
-check	cargo check --locked
-test	cargo test --locked
-test-one	cargo test --locked "$(F)"
+check	CARGO_TARGET_DIR="$(shell git rev-parse --path-format=absolute --git-common-dir)/agentic-flow/cache/cargo" cargo check --locked
+test	CARGO_TARGET_DIR="$(shell git rev-parse --path-format=absolute --git-common-dir)/agentic-flow/cache/cargo" cargo test --locked
+test-one	CARGO_TARGET_DIR="$(shell git rev-parse --path-format=absolute --git-common-dir)/agentic-flow/cache/cargo" cargo test --locked "$(F)"
 build	cargo build --locked
 run	cargo run --locked
 ci-setup	      - name: Set up Cargo toolchain
 ci-setup	        run: rustup toolchain install stable --profile minimal
 ci-setup	      - name: Fetch locked Cargo dependencies
 ci-setup	        run: cargo fetch --locked
+verify-prepare	CARGO_TARGET_DIR="$(shell git rev-parse --path-format=absolute --git-common-dir)/agentic-flow/cache/cargo" cargo fetch --locked
+red-first-signature	^test result: FAILED

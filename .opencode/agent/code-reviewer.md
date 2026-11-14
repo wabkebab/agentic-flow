@@ -45,11 +45,9 @@ A diff whose tests cover only the success path is not done. Flag missing
 coverage for: timeout, malformed input, unauthorized, and the empty/unbounded
 cases above.
 
-Re-run the executor's verification. Confirm each regression test fails without the fix:
-create a temporary detached checkout with `mktemp -d` and `git worktree add --detach` at
-the pre-change commit, copy the new test there, and run it. Remove that exact worktree
-with `git worktree remove --force`. If creation fails, remove only the empty directory and report
-`pending`. Never alter the checkout under review; a test passing against old code proves nothing.
+Reuse a `verify-step` record only when its `sha` and `tree` match the reviewed head.
+Otherwise run `scripts/agentic-flow verify-step <head> --doc <doc> --step <id>` once.
+Inspect red-first classifications and output; invalid wiring prevents approval.
 
 ## Output format
 

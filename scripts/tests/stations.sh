@@ -2,6 +2,31 @@
 # shellcheck disable=SC1091,SC2153 # ROOT comes from the sourcing test runner.
 # Sourced by self-test.sh. All credentials, GitHub state and faults are fixtures.
 grep -q "brief)" "$ROOT/scripts/agentic-flow" || fail 'brief command is missing'
+# Verification must certify only committed bytes and classify wiring failures.
+VERIFY_FIX="$TMP/verify-fixture"
+mkdir -p "$VERIFY_FIX"
+git -C "$VERIFY_FIX" init -q
+git -C "$VERIFY_FIX" config user.email fixture@example.invalid
+git -C "$VERIFY_FIX" config user.name Fixture
+git -C "$VERIFY_FIX" config commit.gpgsign false
+printf 'check:\n\t@test ! -e dirty\n' > "$VERIFY_FIX/Makefile"
+git -C "$VERIFY_FIX" add Makefile
+git -C "$VERIFY_FIX" commit -qm 'Verification base'
+VERIFY_BASE=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+printf 'check:\n\t@exit 1\n' > "$VERIFY_FIX/Makefile"
+git -C "$VERIFY_FIX" add Makefile
+printf 'dirty' > "$VERIFY_FIX/dirty"
+printf 'check:\n\t@exit 1\n' > "$VERIFY_FIX/Makefile"
+(cd "$VERIFY_FIX" && "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_BASE" --json) > "$TMP/verify.json" 2> "$TMP/verify.err" || fail 'clean commit verification failed'
+jq -e --arg sha "$VERIFY_BASE" '.sha==$sha and .prepare.exit==0 and .red_first=="not-declared" and .commands[0].exit==0' "$TMP/verify.json" >/dev/null || fail 'verification record invalid'
+[ "$(git -C "$VERIFY_FIX" rev-parse "HEAD^{tree}")" = "$(jq -r .tree "$TMP/verify.json")" ] || fail 'verification tree mismatch'
+[ "$(git -C "$VERIFY_FIX" worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail 'verification leaked worktree'
+printf 'check:\n\t@sleep 30\n' > "$VERIFY_FIX/Makefile"
+git -C "$VERIFY_FIX" add Makefile
+git -C "$VERIFY_FIX" commit -qm 'Timeout fixture'
+(cd "$VERIFY_FIX" && AGENTIC_VERIFY_TIMEOUT=1 "$ROOT/scripts/agentic-flow" verify-step HEAD --json) > "$TMP/verify.json" 2> "$TMP/verify.err" && fail 'verification timeout passed'
+jq -e '.commands[0].exit==124' "$TMP/verify.json" >/dev/null || fail 'timeout not recorded'
+
 # The slice comes from Git, including its approval metadata, never dirty bytes.
 SLICE_FIX="$TMP/step-slice"
 mkdir -p "$SLICE_FIX/docs/inprogress"
@@ -442,3 +467,82 @@ jq '.comments.nodes=[range(100)|{id:tostring,fullDatabaseId:tostring,author:{log
 mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 station_run 0 1 reconcile
 unset STATION_STATE STATION_LOGIN
+
+# TERM must remove the worktree and stop its command tree.
+(cd "$VERIFY_FIX" && exec "$ROOT/scripts/agentic-flow" verify-step HEAD --json) > "$TMP/interrupt.json" 2> "$TMP/interrupt.err" & verify_pid=$!
+verify_wait=0
+until grep -q '^worktree .*agentic-verify' <(git -C "$VERIFY_FIX" worktree list --porcelain); do
+  [ "$verify_wait" -lt 100 ] || fail 'interrupt fixture did not start'
+  sleep 0.1; verify_wait=$((verify_wait+1))
+done
+kill -TERM "$verify_pid"
+verify_rc=0
+wait "$verify_pid" || verify_rc=$?
+[ "$verify_rc" = 143 ] || fail 'interrupt did not preserve signal status'
+[ "$(git -C "$VERIFY_FIX" worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail 'interrupt leaked worktree'
+
+# Scenario 11: adding tests without their runner is a wiring failure, not red.
+export STATION_STATE="$STATION_FIX/state"
+rm -f "$STATION_STATE/"*.json
+mkdir -p "$VERIFY_FIX/scripts/lib" "$VERIFY_FIX/config" "$VERIFY_FIX/docs"
+cp "$ROOT/scripts/lib/"* "$VERIFY_FIX/scripts/lib/"
+cp "$ROOT/config/workflow.tsv" "$VERIFY_FIX/config/workflow.tsv"
+cp "$STATION_FIX/project/.agentic-flow-review-policy" "$VERIFY_FIX/"
+git -C "$VERIFY_FIX" remote add origin https://github.com/owner/repo.git
+cat > "$VERIFY_FIX/docs/plan.md" <<'PLAN'
+# Feature — Verify fixture
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: fixture
+profile: strict
+tracking: Plan: fixture
+branch: topic
+steps: alpha
+```
+## alpha — Verify
+**DoD:** classified
+**Verify:** `make check`
+**Red-first:** `bash scripts/runner.sh new-group` — scripts/regression.sh
+**Risks:** invalid runner
+PLAN
+printf 'RED_FIRST_SIGNATURE := ^assertion failed:\ncheck:\n\t@:\n' > "$VERIFY_FIX/Makefile"
+printf '#!/usr/bin/env bash\nexit 2\n' > "$VERIFY_FIX/scripts/runner.sh"
+printf 'exit 0\n' > "$VERIFY_FIX/scripts/regression.sh"
+git -C "$VERIFY_FIX" add Makefile scripts docs config .agentic-flow-review-policy
+git -C "$VERIFY_FIX" commit -qm 'Red base with old runner'
+VERIFY_RED_BASE=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+printf '#!/usr/bin/env bash\nbash scripts/regression.sh\n' > "$VERIFY_FIX/scripts/runner.sh"
+printf 'echo "assertion failed: regression"\nexit 1\n' > "$VERIFY_FIX/scripts/regression.sh"
+verify_fixture_commit() {
+  git -C "$VERIFY_FIX" add Makefile scripts/runner.sh scripts/regression.sh docs/plan.md
+  git -C "$VERIFY_FIX" commit -qm 'Verification candidate'
+  VERIFY_HEAD=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+  station_issue 1 step:alpha
+  jq --arg head "$VERIFY_HEAD" '.body += ("\nBrief at approved revision `"+$head+"`.") |
+    .comments.nodes=[{id:"submit",fullDatabaseId:"1",body:("agentic-flow-transition: v=1; id=fixture/alpha/1/submit; event=submit; from=executing; role=executor; head="+$head),author:{login:"exec",__typename:"User"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' \
+    "$STATION_STATE/1.json" > "$STATION_STATE/next"
+  mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+}
+verify_fixture_run() {
+  (cd "$VERIFY_FIX" && PATH="$STATION_FIX/bin:$PATH" "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_HEAD" --doc docs/plan.md --step alpha --red-base "$VERIFY_RED_BASE" --json) > "$TMP/verify.json" 2> "$TMP/verify.err"
+}
+verify_fixture_commit
+verify_fixture_run && fail 'unknown base runner counted as red'
+jq -e '.red_first[0].status=="invalid" and .red_first[0].exit==2' "$TMP/verify.json" >/dev/null || fail "unknown runner was not invalid: $(cat "$TMP/verify.err")"
+sed 's/— scripts\/regression.sh$/— scripts\/regression.sh scripts\/runner.sh/' "$VERIFY_FIX/docs/plan.md" > "$TMP/plan"
+cat "$TMP/plan" > "$VERIFY_FIX/docs/plan.md"
+verify_fixture_commit
+verify_fixture_run || fail "declared runner did not count as red: $(cat "$TMP/verify.err")"
+jq -e '.red_first[0].status=="red" and .red_first[0].tail==["assertion failed: regression"]' "$TMP/verify.json" >/dev/null || fail 'red-first evidence missing'
+printf 'exit 0\n' > "$VERIFY_FIX/scripts/regression.sh"
+verify_fixture_commit
+verify_fixture_run && fail 'green red-first accepted'
+jq -e '.red_first[0].status=="green"' "$TMP/verify.json" >/dev/null || fail 'green not classified'
+printf 'echo "assertion failed: regression"\nexit 1\n' > "$VERIFY_FIX/scripts/regression.sh"
+sed '/RED_FIRST_SIGNATURE/d' "$VERIFY_FIX/Makefile" > "$TMP/makefile"
+cat "$TMP/makefile" > "$VERIFY_FIX/Makefile"
+verify_fixture_commit
+verify_fixture_run && fail 'missing assertion signature accepted'
+jq -e '.red_first[0].status=="invalid"' "$TMP/verify.json" >/dev/null || fail 'missing signature not invalid'
+[ "$(git -C "$VERIFY_FIX" worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail 'red-first leaked worktree'
+unset STATION_STATE
