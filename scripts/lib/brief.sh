@@ -176,11 +176,13 @@ brief_cmd() ( # <doc> <step-id> [--at <sha>] [--analysis]
   spec=$(brief_parse "$tmp/doc" "$doc" "$rev") || return 2
   heading=$(printf '%s' "$spec" | jq -er --arg step "$step" '.steps[] | select(.id==$step) | .title') \
     || { echo "unknown step: $step" >&2; return 2; }
-  awk -v heading="$heading" -v analysis="$analysis" '
+  BRIEF_SLICE_HEADING="$heading" awk -v analysis="$analysis" '
+    BEGIN {heading=ENVIRON["BRIEF_SLICE_HEADING"]}
     /^# / {
       if (!title++) {print; next}
       if (/^# Part A /) {part="a"; if(analysis=="true") print; next}
-      if (/^# Part B /) {part="b"; next}
+      if (/^# Part B /) {part="b"; emit=0; next}
+      part=""; emit=0; next
     }
     part=="a" {if(analysis=="true") print; next}
     part=="b" && /^## / {

@@ -51,6 +51,7 @@ session_context() {
     end' "$cache") || return 1
   IFS=$'\t' read -r number step state _ <<< "$selected"
   case "$state" in
+    escalated) next="scripts/agentic-flow handoff $number resume --as approver" ;;
     executing|reviewing) next="scripts/agentic-flow brief $match $step" ;;
     *) next="scripts/agentic-flow handoff $number reconcile" ;;
   esac
@@ -67,6 +68,7 @@ command -v perl >/dev/null 2>&1 || exit 0
 context=$(perl -MPOSIX=setpgid -e '
   my $pid=fork(); defined($pid) or exit 1;
   if (!$pid) {setpgid(0,0); exec @ARGV; exit 1;}
+  setpgid($pid,$pid);
   $SIG{ALRM}=sub {kill "KILL", -$pid; waitpid($pid,0); exit 1;};
   alarm 1; waitpid($pid,0); my $status=$?; alarm 0;
   exit(($status & 127) ? 1 : ($status >> 8));

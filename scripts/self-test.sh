@@ -483,6 +483,33 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >/dev/null 2>&1 \
     && fail "repo-scope doctor accepted a structurally unwired Codex hook configuration"
   cp "$TMP/codex-hooks.orig" "$SOURCE_FIXTURE/.codex/hooks.json"
+  # Removing only SessionStart must fail with that adapter's diagnostic.
+  for session_adapter in .claude/settings.json .codex/hooks.json; do
+    cp "$SOURCE_FIXTURE/$session_adapter" "$TMP/session-hooks.orig"
+    jq 'del(.hooks.SessionStart)' "$TMP/session-hooks.orig" > "$SOURCE_FIXTURE/$session_adapter"
+    (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo --skip-make-check) \
+      > "$TMP/session-unwired.out" 2>&1 \
+      && fail "doctor accepted missing SessionStart in $session_adapter"
+    grep -Fq "missing $session_adapter SessionStart wired to scripts/hooks/session-context.sh" "$TMP/session-unwired.out" \
+      || fail "doctor omitted the SessionStart diagnostic for $session_adapter"
+    cat "$TMP/session-hooks.orig" > "$SOURCE_FIXTURE/$session_adapter"
+  done
+  mkdir -p "$SOURCE_FIXTURE/docs/inprogress"
+  for session_doc in doctor-session-one doctor-session-two; do
+    cat > "$SOURCE_FIXTURE/docs/inprogress/$session_doc.md" <<'DOCTOR_SESSION'
+# Doctor session fixture
+# Part B — Implementation Brief
+```agentic-flow-plan
+branch: doctor-session-fixture
+```
+DOCTOR_SESSION
+  done
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --scope repo --skip-make-check) \
+    > "$TMP/session-ambiguous.out" 2>&1 || fail 'doctor failed while reporting ambiguous session ownership'
+  grep -Fq 'warning multiple inprogress docs name branch doctor-session-fixture; session context suppressed' "$TMP/session-ambiguous.out" \
+    || fail 'doctor omitted ambiguous session branch warning'
+  rm "$SOURCE_FIXTURE/docs/inprogress/doctor-session-one.md" "$SOURCE_FIXTURE/docs/inprogress/doctor-session-two.md"
+
   # Codex has no Claude project-root variable; doctor must reject the Claude-only form (#92).
   # shellcheck disable=SC2016 # literal hook command text being rewritten, not expanded.
   sed 's|\$(git rev-parse --show-toplevel)|\$CLAUDE_PROJECT_DIR|' "$TMP/codex-hooks.orig" \
@@ -2825,6 +2852,10 @@ cat "$TMP/session-cache" > "$SESSION_CACHE"
 sed 's/executing/reviewing/' "$TMP/session-cache" > "$SESSION_CACHE"
 session_run > "$TMP/session.out" || fail 'reviewing session failed'
 grep -Fq 'State: reviewing (cached)' "$TMP/session.out" || fail 'reviewing state omitted'
+sed 's/executing/escalated/' "$TMP/session-cache" > "$SESSION_CACHE"
+session_run > "$TMP/session.out" || fail 'escalated session failed'
+grep -Fq 'Next command: scripts/agentic-flow handoff 2 resume --as approver' "$TMP/session.out" \
+  || fail 'escalated session omitted approver resume guidance'
 sed 's/executing/approved/' "$TMP/session-cache" > "$SESSION_CACHE"
 session_quiet 'all steps approved'
 head -n 1 "$TMP/session-cache" > "$SESSION_CACHE"

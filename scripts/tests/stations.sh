@@ -44,6 +44,8 @@ Second approach sentinel
 **Verify:** `make check`
 **Red-first:** none
 **Risks:** second risk
+# Close-out
+Close-out sentinel
 ## Status
 - **Approval:** pending
 SLICE
@@ -72,6 +74,16 @@ slice_run s-2 --at "$SLICE_REV" --analysis > "$TMP/slice.out" || fail 'explicit 
 grep -q 'Analysis sentinel' "$TMP/slice.out" || fail 'analysis omitted'
 grep -q 'Second approach sentinel' "$TMP/slice.out" || fail 'second step omitted'
 grep -q 'First approach sentinel' "$TMP/slice.out" && fail 'other step leaked into analysis slice'
+if grep -Eq '# Close-out|Close-out sentinel' "$TMP/slice.out"; then fail 'last step slice leaked close-out'; fi
+# awk assignments must preserve literal backslash sequences in section titles.
+SLICE_TITLE='S-2 — Second \t literal' awk '/^## S-2 / {$0="## " ENVIRON["SLICE_TITLE"]} {print}' \
+  "$TMP/slice-approved" > "$SLICE_FIX/docs/inprogress/plan.md"
+git -C "$SLICE_FIX" add docs/inprogress/plan.md
+git -C "$SLICE_FIX" commit -qm 'Exercise a literal backslash in the last step title'
+slice_run s-2 --at HEAD > "$TMP/slice.out" || fail 'literal backslash slice failed'
+grep -q 'Second approach sentinel' "$TMP/slice.out" || fail 'literal backslash title lost the selected step'
+if grep -Eq '# Close-out|Close-out sentinel' "$TMP/slice.out"; then fail 'backslash step slice leaked close-out'; fi
+
 
 [ -f "$ROOT/scripts/lib/journal.sh" ] || fail 'journal library is missing'
 must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'gh issue edit 1 --add-label "bug, needs-review"'
