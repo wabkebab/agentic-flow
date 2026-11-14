@@ -45,9 +45,10 @@ A diff whose tests cover only the success path is not done. Flag missing
 coverage for: timeout, malformed input, unauthorized, and the empty/unbounded
 cases above.
 
-Reuse a `verify-step` record only when its `sha` and `tree` match the reviewed head.
-Otherwise run `scripts/agentic-flow verify-step <head> --doc <doc> --step <id>` once.
-Inspect red-first classifications and output; invalid wiring prevents approval.
+Reuse records only when `sha` and `tree` match the reviewed head and
+`verifier.implementation_sha256` matches `verify-step.sh`; otherwise run
+`scripts/agentic-flow verify-step <head> --doc <doc> --step <id>`.
+Invalid red-first wiring prevents approval.
 
 ## Output format
 

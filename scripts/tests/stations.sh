@@ -27,6 +27,68 @@ git -C "$VERIFY_FIX" commit -qm 'Timeout fixture'
 (cd "$VERIFY_FIX" && AGENTIC_VERIFY_TIMEOUT=1 "$ROOT/scripts/agentic-flow" verify-step HEAD --json) > "$TMP/verify.json" 2> "$TMP/verify.err" && fail 'verification timeout passed'
 jq -e '.commands[0].exit==124' "$TMP/verify.json" >/dev/null || fail 'timeout not recorded'
 
+# Review fixes: timer provenance, boundary completion, and internal failures.
+VERIFY_REVIEW_FIX="$TMP/verify-review"
+mkdir -p "$VERIFY_REVIEW_FIX/bin"
+git -C "$VERIFY_REVIEW_FIX" init -q
+git -C "$VERIFY_REVIEW_FIX" config user.email fixture@example.invalid
+git -C "$VERIFY_REVIEW_FIX" config user.name Fixture
+git -C "$VERIFY_REVIEW_FIX" config commit.gpgsign false
+printf 'RED_FIRST_SIGNATURE := ^fixture assertion:\ncheck:\n\t@sleep 0.2\n' > "$VERIFY_REVIEW_FIX/Makefile"
+git -C "$VERIFY_REVIEW_FIX" add Makefile
+git -C "$VERIFY_REVIEW_FIX" commit -qm 'Review boundary fixture'
+VERIFY_REVIEW_HEAD=$(git -C "$VERIFY_REVIEW_FIX" rev-parse HEAD)
+VERIFY_REAL_PERL=$(command -v perl)
+VERIFY_REAL_GIT=$(command -v git)
+export VERIFY_REAL_PERL VERIFY_REAL_GIT
+# Deterministically emulate the timer waking while the successful child is exiting.
+cat > "$VERIFY_REVIEW_FIX/bin/perl" <<'TIMER'
+#!/usr/bin/env bash
+if [ "$1" = -e ]; then
+  printf '%s\n' "$3" > "${VERIFY_LIMIT_FILE:?}"
+  : > "$5"
+else exec "$VERIFY_REAL_PERL" "$@"; fi
+TIMER
+chmod +x "$VERIFY_REVIEW_FIX/bin/perl"
+verify_review_run() {
+  (cd "$VERIFY_REVIEW_FIX" && PATH="$VERIFY_REVIEW_FIX/bin:$PATH" VERIFY_LIMIT_FILE="$TMP/verify-limit" \
+    "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_REVIEW_HEAD" --json) > "$TMP/verify-review.json" 2> "$TMP/verify-review.err"
+}
+verify_review_rc=0
+verify_review_run || verify_review_rc=$?
+[ "$(cat "$TMP/verify-limit")" = 1800 ] || fail 'verification timeout default is not 1800 seconds'
+[ "$verify_review_rc" = 0 ] || fail 'completed command classified as timeout at the boundary'
+jq -e '.commands[0].exit==0 and .verifier.timeout_seconds==1800' "$TMP/verify-review.json" >/dev/null || fail 'boundary completion not recorded'
+VERIFY_IMPL_HASH=$(shasum -a 256 "$ROOT/scripts/lib/verify-step.sh"); VERIFY_IMPL_HASH=${VERIFY_IMPL_HASH%% *}
+jq -e --arg sha "$VERIFY_REVIEW_HEAD" --arg impl "$VERIFY_IMPL_HASH" \
+  '.verifier.implementation_sha256==$impl and .verifier.signature_source.sha==$sha and .verifier.signature_source.pattern=="^fixture assertion:"' \
+  "$TMP/verify-review.json" >/dev/null || fail 'verification provenance is missing'
+[ "$(git -C "$VERIFY_REVIEW_FIX" rev-parse "$VERIFY_REVIEW_HEAD^{tree}")" = "$(jq -r .verifier.signature_source.tree "$TMP/verify-review.json")" ] || fail 'signature source tree mismatch'
+# Record ambient committed signature provenance even when verifying an older head.
+printf 'RED_FIRST_SIGNATURE := ^new committed signature:\ncheck:\n\t@:\n' > "$VERIFY_REVIEW_FIX/Makefile"
+git -C "$VERIFY_REVIEW_FIX" add Makefile
+git -C "$VERIFY_REVIEW_FIX" commit -qm 'New signature source'
+VERIFY_SIGNATURE_HEAD=$(git -C "$VERIFY_REVIEW_FIX" rev-parse HEAD)
+printf 'RED_FIRST_SIGNATURE := dirty signature\ncheck:\n\t@exit 1\n' > "$VERIFY_REVIEW_FIX/Makefile"
+verify_review_run || fail 'older commit verification failed under a newer signature source'
+jq -e --arg head "$VERIFY_REVIEW_HEAD" --arg source "$VERIFY_SIGNATURE_HEAD" \
+  '.sha==$head and .verifier.signature_source.sha==$source and .verifier.signature_source.pattern=="^new committed signature:"' \
+  "$TMP/verify-review.json" >/dev/null || fail 'ambient or dirty signature provenance is incorrect'
+
+# The exact worktree-add failure must exit 1 and publish no record content.
+cat > "$VERIFY_REVIEW_FIX/bin/git" <<'BROKEN_GIT'
+#!/usr/bin/env bash
+if [ "$1" = worktree ] && [ "$2" = add ]; then exit 9; fi
+exec "$VERIFY_REAL_GIT" "$@"
+BROKEN_GIT
+chmod +x "$VERIFY_REVIEW_FIX/bin/git"
+verify_review_rc=0
+verify_review_run || verify_review_rc=$?
+[ "$verify_review_rc" = 1 ] || fail 'internal verification failure did not exit 1'
+[ ! -s "$TMP/verify-review.json" ] || fail 'internal failure emitted a record'
+[ "$(git -C "$VERIFY_REVIEW_FIX" worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail 'internal failure leaked worktree'
+unset VERIFY_REAL_PERL VERIFY_REAL_GIT
+
 # The slice comes from Git, including its approval metadata, never dirty bytes.
 SLICE_FIX="$TMP/step-slice"
 mkdir -p "$SLICE_FIX/docs/inprogress"

@@ -46,10 +46,11 @@ Run the brief's exact per-step verification where practical. At minimum, inspect
 and run the project's relevant `make test-one F=...` and `make check`; run `make test` for
 the completed brief when the environment supports it.
 
-Reuse a `verify-step` record only when its `sha` and `tree` match the reviewed head.
-Otherwise run `scripts/agentic-flow verify-step <head> --doc <doc> --step <id>` once.
-Inspect every red-first result and its output: wiring failures are invalid evidence.
-A missing record or failed verification prevents approval.
+Reuse records only when `sha` and `tree` match the reviewed head and
+`verifier.implementation_sha256` matches the current `verify-step.sh`.
+Otherwise run `scripts/agentic-flow verify-step <head> --doc <doc> --step <id>`.
+Inspect red-first output; invalid wiring or failed verification prevents approval.
+
 Record the commands and outcomes. Never describe a skipped, unavailable, or stale CI result
 as passing. A tool/environment failure may make the verdict pending, but it is not itself a
 code finding unless the branch caused it.
