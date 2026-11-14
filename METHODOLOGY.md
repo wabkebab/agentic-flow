@@ -38,8 +38,8 @@ not be reviewed twice by default.
 This three-agent split is the **default standard**. A project may **opt out** of either agent
 role, keeping the same document lifecycle and review discipline:
 
-- **No Codex** — drop the `agent:codex` labels and `git-codex`; Claude plans and executes.
-- **No OpenCode** — drop the `agent:opencode` labels and `git-opencode`; Claude reviews with
+- **No Codex** — configure the role policy (§6) and omit `git-codex`; Claude plans and executes.
+- **No OpenCode** — configure the role policy (§6) and omit `git-opencode`; Claude reviews with
   `/code-review` or a hand-written review doc. Independence is weaker, so say so in the review
   verdict rather than implying a separate reviewer signed off.
 
@@ -65,14 +65,14 @@ opt-out reassigns the review, it never leaves it to both.
         │
         ▼
   Execute (Codex)                   one branch + PR per pass; one commit + "Fixes #N"
-        │                            per step; git-codex; comments the commit sha and
-        │                            verification on the step issue, then flips it
-        │                            to agent:opencode + needs-review
+        │                            per step; git-codex; runs handoff submit with sha
+        │                            and verification on the step issue, projecting it
+        │                            with handoff (see §6)
         ▼
   Review (OpenCode)                 reads the commented commit against the brief
-        │                           ├─ findings ─▶ back to agent:codex (2 returns, then human)
+        │                           ├─ findings ─▶ handoff bounce (§6)
         │                           └─ approved ─▶ Strict: closes the sub-issue;
-        ▼                                          Standard: sends work issue to needs-closing
+        ▼                                          Standard: routes to close-out (§6)
   Close-out (Claude)                tick the Tracker, update Status, verify evidence,
         │                           move the doc, then close the named issue
         ▼
@@ -84,19 +84,17 @@ opt-out reassigns the review, it never leaves it to both.
                                     risks/features recorded in docs/accepted_risks.md
 ```
 
-The label pair is what moves a step between roles; the project's `CLAUDE.md` holds the exact
-state machine. Automatic findings returns are capped at two; a third return escalates to the
-human without discarding the findings.
+Use the station commands in §6 for every role handoff.
 
 **A closed Strict sub-issue means "reviewed clean", not "shipped."** The reviewer closes it before
 the PR merges, so GitHub issue state is deliberately *not* the shipping signal. What shipped
 is recorded in the implementation doc's Status block and enforced by
 `scripts/lifecycle-status.sh --doc <moved-document> --phase close-out --check --verify-evidence`
 against a CI run (§10). The Strict tracker or Standard work issue stays open through
-close-out and carries `agent:claude` + `needs-closing`.
+close-out; use `close-out prep|finish` (§6).
 
-**Why the handoffs carry data, not just labels.** Codex comments the commit sha and the
-verification it actually ran; OpenCode comments the verdict. Each role then starts from the
+**Why the handoffs carry data, not just labels.** `agentic-flow handoff` journals the
+commit sha and verification for submit, or the verdict for approve/bounce. Each role then starts from the
 issue instead of re-deriving state from `git log` and guesswork, and close-out can read the
 whole pass off GitHub rather than asking a human what the reviewer decided. A label with no
 comment behind it is a handoff that costs the next role a full re-investigation.
@@ -113,8 +111,8 @@ Approvals bind to commits: rebasing or amending a reviewed branch requires re-re
 Every approved step commit must be an ancestor of the PR head. Missing objects or
 shallow history leave ancestry UNVERIFIED until the operator fetches the history.
 
-Copy the step verdict into the comment on that step's own issue, using the executor's
-full implementation SHA. For rejection, use `status=changes-requested`:
+`agentic-flow handoff approve|bounce` writes the step verdict on that step's issue,
+using the executor's full implementation SHA (`status=changes-requested` for bounce):
 
 ```text
 agentic-flow-review: status=approved; step=<step-id>; head=<40-hex-implementation-sha>; role=reviewer
@@ -129,6 +127,20 @@ agentic-flow-review: status=approved; pr=<PR-number>; head=<40-hex-PR-head>; run
 
 The loop is **one-directional** (doc → issues), never the reverse. The document stays the
 source of design intent; issues are the disposable execution units.
+
+### Optional App identities
+
+`approver` means the planner/closer identity, distinct from `--approved-by`, which
+records the human's plan approval. Create three GitHub Apps with Issues/Pull
+requests write and Contents/Metadata read, install each on only the target
+repository, and store each RSA key in the workstation keychain. Configure role,
+canonical `slug[bot]` login, App ID, installation ID and key-ref in the operator's
+repository-specific identity TSV; add the logins to the review policy.
+[ADOPTION.md](ADOPTION.md#github-app-role-identities-optional) gives the setup and
+file location. `agentic-flow token <role> --check` mints a repository-scoped token
+and validates permissions without printing it. Configured identity failures never
+fall back to ambient credentials. This pass retains single-operator mode;
+changing the policy to distinct-account is a separate adoption decision.
 
 ### Assurance profiles
 
@@ -257,6 +269,27 @@ Use one finding scale for Security reviews, step reviews, and ordinary diffs:
 Accepted/by-design is a disposition, not a severity. Record the acceptance against the finding and move material accepted risk to `docs/accepted_risks.md`.
 
 The only verdicts are `approved`, `changes requested`, and `pending`. Use `approved` when no required findings remain and evidence covers the brief; use `changes requested` when code or tests need a fix; use `pending` when missing scope or evidence prevents a decision. Structured review comments encode `changes requested` as `status=changes-requested`.
+
+Use `packet <issue> --station reviewer`, `verify-step <head> --doc <doc> --step <id>`,
+and `handoff <issue> approve --as reviewer --head <sha40> --body-file <review-file>`
+or `handoff <issue> bounce --as reviewer --body-file <findings-file>`; states live
+in `METHODOLOGY.md` §6. Pending leaves state unchanged. Never edit accepted verdicts.
+
+Reuse evidence only when `sha` and `tree` match the reviewed head and
+`verifier.implementation_sha256` matches the current `verify-step.sh`; otherwise regenerate.
+Inspect signature-source provenance and red-first output. Exit 0 is green; nonzero
+with an assertion-signature match is red, except timeout 124 and interrupts 130/143,
+which are invalid. Missing or mismatched signatures are invalid and prevent approval.
+Prefer raw runners: make masks recipe failures as exit 2; Cargo assertions exit 101.
+
+Handoff writes `agentic-flow-review: status=approved|changes-requested; step=<id>;
+head=<sha40>; role=reviewer` compatibility markers. The journal selects accepted evidence;
+edited accepted approval blocks verification. The API author proves the account;
+`role=reviewer` attests the role, not independence in single-operator mode.
+Final-head approval belongs on the document's Tracking issue (§2):
+`agentic-flow-review: status=approved; pr=<number>; head=<sha40>;
+run=https://github.com/<owner>/<repo>/actions/runs/<id>; attempt=<positive-integer>;
+role=reviewer`. A new head or run attempt requires new approval.
 <!-- END SHARED REVIEW CONTRACT -->
 
 Each finding states **location** (`file:line`), **what's wrong**, and a concrete **Fix:**.
@@ -274,30 +307,44 @@ Use the `plan-to-issues` skill (`.claude/skills/plan-to-issues/`) once a plan is
 one tracker plus one sub-issue per independently shippable step. Existing specs without
 a profile keep the legacy tracker and steps.
 
-**Label convention (encodes the loop).** Labels move in **pairs** — one `agent:*` naming who
-holds the step, one `needs-*` naming what it needs:
+<!-- BEGIN SHARED WORKFLOW -->
+Generated from `config/workflow.tsv`; edit the data, then run `scripts/render-shared.sh`.
 
-| Holder | Color | Needs | Color | Meaning |
-|--------|-------|-------|-------|---------|
-| `agent:codex` | blue `#0052CC` | `needs-execution` | yellow `#FBCA04` | the executor implements it (the `plan-to-issues` default) |
-| `agent:opencode` | black `#000000` | `needs-review` | orange `#FFA500` | the reviewer has it; returns it to `agent:codex` with findings, or approves and closes it |
-| `agent:claude` | orange `#FFA500` | `needs-closing` | purple `#5319E7` | Strict parent tracker or Standard sole work issue awaiting close-out |
+| Topology | State | Labels | Issue status |
+|---|---|---|---|
+| step-strict | executing | agent:codex,needs-execution | open |
+| step-strict | reviewing | agent:opencode,needs-review | open |
+| step-strict | escalated | needs-human | open |
+| step-strict | approved | - | closed |
+| work-standard | executing | agent:codex,needs-execution | open |
+| work-standard | reviewing | agent:opencode,needs-review | open |
+| work-standard | escalated | needs-human | open |
+| work-standard | closing | agent:claude,needs-closing | open |
+| work-standard | closed | - | closed |
+| tracker | open | plan | open |
+| tracker | closing | plan,agent:claude,needs-closing | open |
+| tracker | closed | plan | closed |
 
-The `create-tags` skill (`scripts/create-tags.sh`) creates all six with these colors.
-Plan identity stamps are matched exactly after implicit step IDs become `step-N`;
-duplicate or incomplete discovery stops reconciliation before any issue is changed.
-The spec's labels are creation defaults, so reapplying a plan does not move a live step
-backward in this state machine.
-`scripts/init.sh` runs it once at adoption; `plan-to-issues.sh` checks whether any of the six
-already exist and only invokes it when none do, so a label a spec never mentions —
-`agent:opencode` + `needs-review`, added later by the reviewer, not by the spec — still
-exists by the time `gh issue edit --add-label` needs it, without recreating labels on every
-apply. Anything else (`plan` on the tracker, `sev:high|med|low|nit` on findings, §5) gets a
-neutral gray (`#CCCCCC`) from `plan-to-issues.sh`'s own per-spec label loop.
+| Topology | Event | Role | From | To | Requires |
+|---|---|---|---|---|---|
+| step-strict | submit | executor | executing | reviewing | head,head≠last-bounced-head |
+| step-strict | bounce | reviewer | reviewing | executing | findings,bounces<2 |
+| step-strict | bounce | reviewer | reviewing | escalated | findings,bounces=2 |
+| step-strict | resume | approver | escalated | executing | note |
+| step-strict | approve | reviewer | reviewing | approved | head=submitted |
+| work-standard | submit | executor | executing | reviewing | head,head≠last-bounced-head |
+| work-standard | bounce | reviewer | reviewing | executing | findings,bounces<2 |
+| work-standard | bounce | reviewer | reviewing | escalated | findings,bounces=2 |
+| work-standard | resume | approver | escalated | executing | note |
+| work-standard | approve | reviewer | reviewing | closing | head=submitted |
+| work-standard | close | approver | closing | closed | lifecycle-ready |
+| tracker | notify | reviewer | open | closing | all-steps-approved |
+| tracker | close | approver | closing | closed | lifecycle-ready |
+<!-- END SHARED WORKFLOW -->
 
-Strict sub-issues close on review; the parent tracker then receives `needs-closing`.
-Standard's sole work issue receives `needs-closing` after an approving reviewer comment,
-remains open for close-out, and closes only after final-head evidence is verified.
+`handoff` replays the journal; labels and issue status are projections, never evidence.
+The create-tags command provisions workflow labels at adoption. Plan reapply preserves
+live state. Resume requires an approver's note after escalation.
 
 Rules:
 - One issue per independently-shippable step — not one giant issue, not one per commit.
@@ -307,10 +354,11 @@ Rules:
   plan ships as **one branch and one PR** — a Feature/Security pass is the review unit, not
   each step. Split a pass across multiple PRs only when the brief says so explicitly (e.g. a
   pass too large or long-running to hold on one branch); don't default to a branch per step.
-- **Every handoff carries its evidence in a comment.** Codex comments the commit sha and the
-  verification actually run before flipping to `needs-review`; OpenCode comments findings or
-  the approving verdict before relabelling or closing. The label says who holds it; the
-  comment says what they are holding.
+- **Every handoff carries its evidence in a journal comment.** Run `agentic-flow handoff`
+  with `submit --as executor --head <sha40>`, `approve --as reviewer --head <sha40>`, or
+  `bounce --as reviewer`, and `--body-file <evidence-file>`. Retry the same request after
+  failure. Use `reconcile` to repair projections and pending tracker notifications.
+  The journal decides state; labels and issue open/closed state are projections.
 - Profiled specs supply `packet.brief`, `packet.definition_of_done`,
   `packet.verification`, and `packet.risks` for each step. These come from the approved
   brief and render into the issue's executor packet. The driver rejects packets over
@@ -340,7 +388,7 @@ Rules (both agents):
   radius. A reviewer months later should understand the change from the message alone.
 - **Reference the issue** — keep `Fixes #N` in the PR or commit for traceability.
   The reviewer closes Strict steps; the closer closes Standard work issues and trackers.
-  Remove workflow labels after closing; Standard requires `needs-closing` at close time.
+  Use `close-out finish` (§6) to close and reconcile workflow labels.
 - **Never push.** The human controls all pushes and merges.
 - The `Co-Authored-By:` trailer is **appended by the wrapper** when the message lacks one —
   don't hand-maintain it (model names in prose go stale); a trailer you write is kept as-is.
@@ -384,13 +432,10 @@ Fixes #73
   secret has to be rotated. Runs `gitleaks` (required) **and** a local high-signal pattern
   set, always both — see §11.1 on why the second layer is not a fallback.
   `AGENTIC_ALLOW_SECRET=1` overrides a false positive, visibly.
-- **PreToolUse(Bash) → require a comment before a step issue's label flips**
-  (`scripts/hooks/require-step-comment.sh`): blocks `gh issue edit --add-label
-  ...needs-review`, `...needs-execution` (bounce-back), and `gh issue close` on a step issue
-  unless the required comment (sha + title, findings, or verdict) already landed. Wired for
-  Claude and Codex, whose bash calls go through a hook engine. **OpenCode has no hook engine
-  in this stack**, so the reviewer side still relies on `.opencode/agent/code-reviewer.md`
-  being followed, not on mechanical enforcement.
+- **PreToolUse(Bash) → route workflow writes through `handoff`**
+  (`scripts/hooks/require-step-comment.sh`): blocks raw workflow label mutations,
+  closing/reopening plan-stamped issues, and direct role-token calls. Claude and Codex
+  use the shared lexer; OpenCode follows its reviewer contract without a hook engine.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
 - **`scripts/check-payload-manifest.sh`** fails when an agent adapter, harness template, or
@@ -446,7 +491,7 @@ These make the handoff explicit and parallel instead of sequential:
 - **`/security-review`** — a security pass on the pending branch diff; complements a
   Security doc.
 - **`/verify` and `/run`** — drive the app to confirm a fix behaves, not just that tests pass.
-- **More hooks** — beyond the five shipped hooks: a PostToolUse reminder on shared-type edits,
+- **More hooks** — beyond the six shipped hooks: a PostToolUse reminder on shared-type edits,
   a commit-message-format check, etc.
 - **Memory** — persist durable decisions (this methodology, the commit contract, recurring
   review themes) so each session doesn't re-derive them.

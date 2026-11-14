@@ -1,0 +1,18 @@
+# Install as ~/.codex/agentic-station.config.toml; select --profile agentic-station.
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+web_search = "disabled"
+
+[sandbox_workspace_write]
+network_access = false
+
+[shell_environment_policy]
+inherit = "core"
+experimental_use_profile = false
+ignore_default_excludes = false
+
+[shell_environment_policy.filters]
+GH_TOKEN = "exclude"
+GITHUB_TOKEN = "exclude"
+GH_ENTERPRISE_TOKEN = "exclude"
+GITHUB_ENTERPRISE_TOKEN = "exclude"

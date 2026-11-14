@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# create-tags.sh — create the six agentic-flow workflow labels with their standard colors.
+# create-tags.sh — create the seven agentic-flow workflow labels with their standard colors.
 #
 # Usage:
 #   scripts/create-tags.sh [--repo <owner/repo>]
@@ -32,7 +32,8 @@ agent:codex|0052CC
 agent:opencode|000000
 needs-review|FFA500
 needs-execution|FBCA04
-needs-closing|5319E7"
+needs-closing|5319E7
+needs-human|B60205"
 
 printf '%s\n' "$LABELS" | while IFS='|' read -r name color; do
   [ -n "$name" ] || continue

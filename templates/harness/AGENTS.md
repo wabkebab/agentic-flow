@@ -30,11 +30,11 @@ order, edge cases — not finished code. Read the brief for the step before writ
 
 ## How to work a step
 
-1. **Read the implementation brief** for the issue (linked from the issue / tracking issue).
-   It gives the problem, the approach, the regression test to add, and the Definition of Done.
+1. Run `scripts/agentic-flow brief <doc> <step-id>` for the approved step and preamble.
+   Read its problem, approach, regression test, and Definition of Done.
 2. **Branch** as the brief specifies; work one step at a time, in the brief's order. The
    whole brief ships as **one branch and one PR** — each step is one issue and one commit
-   on that branch. Strict sub-issues close on review; Standard work issues close at close-out. If the brief instead calls for
+   on that branch. If the brief instead calls for
    a separate branch/PR per step (unusual — only for a pass too large to hold on one
    branch), follow that explicitly; don't split by default.
 3. **Implement** the step. Add the regression test the brief asks for — it must fail against
@@ -44,28 +44,17 @@ order, edge cases — not finished code. Read the brief for the step before writ
    selector>` per step; run the full `make test` at the end. (The Stop hook runs
    `make check` regardless.)
 5. **Commit** (see contract below), one logical commit for the step, with `Fixes #N`.
-   Then hand the step to the reviewer — **comment first, relabel second** (`METHODOLOGY.md` §6):
+   Write the commit title, changes, verification and a `Red first:` failure output
+   to a body file.
+   Hand the step to review with the real full commit SHA:
 
    ```bash
-   gh issue comment <N> --body "Implemented in <sha> — <commit title>.
-   <what changed; anything the reviewer should look at first>
-
-   Verification: <commands run, with results>
-   Red first: <the new test's output when run against the old code>"
-
-   gh issue edit <N> --add-label "agent:opencode,needs-review" \
-                     --remove-label "agent:codex,needs-execution"
+   scripts/agentic-flow handoff <N> submit --as executor --head <sha40> --body-file <evidence-file>
    ```
 
-   The comment is not optional: without it the reviewer re-derives the step's commit from
-   `git log`, and close-out does it again later. Name the real sha(s) and title, and only
-   verification you actually ran, and show the new test failing against the old code — the
-   reviewer re-runs it either way, and should not have to take your word for it. Where the
-   stack wires a `require-step-comment.sh`-style hook, the label edit above is blocked if the
-   comment doesn't already name a sha, so a skipped comment fails loudly instead of silently.
-   The **reviewer** closes Strict sub-issues; the closer closes Standard work issues.
-   (If the project opts out of OpenCode, `CLAUDE.md` says who reviews
-   instead — hand off to them, never to yourself.)
+   States live in `METHODOLOGY.md` §6. Use `brief`, `verify-step <sha40>
+   --doc <doc> --step <id>`, and `handoff submit`; retry after partial failure.
+   Never move workflow labels or close issues by hand.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 
@@ -103,9 +92,7 @@ If the brief conflicts with any of these, stop and flag it — do not silently p
 - **Verbose, *why*-first commit body** — name the problem, the approach, the blast radius.
   A reviewer should understand the change from the message alone. This is the rule most
   often missed; an example follows.
-- **`Fixes #N`** to link the commit to its issue. Under Strict the reviewer closes the
-  sub-issue; under Standard the closer closes the sole work issue after review and
-  approval, so by merge time the trailer is a no-op — keep it for traceability.
+- **`Fixes #N`** links the commit to its issue; keep the trailer for traceability.
 - **Never push** — the human controls pushes and merges.
 
 Example:

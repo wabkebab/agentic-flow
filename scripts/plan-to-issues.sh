@@ -5,7 +5,8 @@
 # Usage:
 #   scripts/plan-to-issues.sh <spec.json>                   # offline dry run
 #   scripts/plan-to-issues.sh --diff <spec.json>            # compare with GitHub
-#   scripts/plan-to-issues.sh --apply [--doc <path>] <spec> # create/update/close
+#   scripts/plan-to-issues.sh --doc <path> [--apply|--diff] # approved brief
+#   scripts/plan-to-issues.sh --apply [--doc <path>] <spec> # legacy JSON
 #
 # Stable identity:
 #   spec.id, or a hash of tracking.title when id is omitted
@@ -15,6 +16,8 @@
 # resumes partial work, edits changed artifacts in place, and closes removed steps with a
 # comment. It never identifies plans by editable issue titles.
 set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
 
 MODE=dry
 SPEC=""
@@ -43,6 +46,35 @@ while [ "$#" -gt 0 ]; do
 done
 
 die() { echo "error: $*" >&2; exit 1; }
+
+APPROVED_REV=""
+BRIEF_TMP=""
+if [ -z "$SPEC" ] && [ -n "$DOC" ]; then
+  command -v jq >/dev/null || die "jq not found"
+  # shellcheck source=scripts/lib/brief.sh
+  source "$SCRIPT_DIR/lib/brief.sh"
+  repo_root=$(git rev-parse --show-toplevel) || die "--doc requires a Git checkout"
+  doc_dir=$(cd "$(dirname "$DOC")" && pwd -P) || die "--doc directory not found"
+  case "$doc_dir/$(basename "$DOC")" in
+    "$repo_root"/*) DOC="${doc_dir#"$repo_root"}/$(basename "$DOC")"; DOC=${DOC#/} ;;
+    *) die "--doc must be inside the repository" ;;
+  esac
+  cd "$repo_root"
+  [ -f "$DOC" ] || die "--doc file not found: $DOC"
+  approval=$(brief_approval "$DOC") || die "document is not approved with a revision"
+  APPROVED_REV=${approval%%"$(printf '\t')"*}
+  APPROVED_BY=${approval#*"$(printf '\t')"}
+  if [ "$MODE" = apply ]; then
+    git ls-files --error-unmatch -- "$DOC" >/dev/null 2>&1 || die "--doc is uncommitted"
+    [ -z "$(git status --porcelain -- "$DOC")" ] || die "--doc is dirty or uncommitted"
+  fi
+  brief_approved_at_head "$DOC" "$APPROVED_REV" || exit 1
+  BRIEF_TMP=$(mktemp -d "${TMPDIR:-/tmp}/brief-spec.XXXXXX")
+  trap 'rm -rf "$BRIEF_TMP"' EXIT
+  git show "$APPROVED_REV:$DOC" > "$BRIEF_TMP/approved.md" || die "doc missing at approved revision"
+  SPEC="$BRIEF_TMP/spec.json"
+  brief_parse "$BRIEF_TMP/approved.md" "$DOC" "$APPROVED_REV" > "$SPEC" || die "invalid approved brief"
+fi
 
 [ -n "$SPEC" ] || die "no spec file given. Usage: $0 [--apply|--diff] [--doc <path>] <spec.json>"
 [ -f "$SPEC" ] || die "spec file not found: $SPEC"
@@ -77,7 +109,7 @@ jq -e '
   || die "spec must contain valid profile, topology, packet, and uniquely identified steps"
 
 PROFILE=$(jq -r '.profile // "legacy"' "$SPEC")
-BASELINE=$("$(dirname "$0")/assurance.sh" status | awk '{print $1}') \
+BASELINE=$("$SCRIPT_DIR/assurance.sh" status | awk '{print $1}') \
   || die "project assurance baseline is invalid"
 case "$PROFILE:$BASELINE" in
   standard:strict) die "standard profile would downgrade the strict project baseline" ;;
@@ -101,7 +133,7 @@ fi
 if [ "$MODE" = apply ] && [ -n "$DOC" ]; then
   [ -f "$DOC" ] || die "--doc file not found: $DOC"
   [ -w "$DOC" ] || die "--doc file is not writable: $DOC"
-  "$(dirname "$0")/lifecycle-status.sh" --doc "$DOC" --validate-doc-status >/dev/null \
+  "$SCRIPT_DIR/lifecycle-status.sh" --doc "$DOC" --validate-doc-status >/dev/null \
     || die "--doc Status is not valid v2; migrate using the v2 Feature/Security template"
 fi
 
@@ -146,9 +178,10 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) || die "not in a G
 HAS_ISSUES=$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)
 [ "$HAS_ISSUES" = true ] || die "Issues are not enabled on $REPO"
 echo "Repo:            $REPO"
+[ -z "$APPROVED_REV" ] || echo "Approved stamp:  approved=$APPROVED_REV (journal and live labels preserved)"
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/plan-to-issues.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP"; [ -z "$BRIEF_TMP" ] || rm -rf "$BRIEF_TMP"' EXIT
 
 # One bounded query discovers the tracker and every step belonging to this logical plan.
 ISSUES_JSON=$(gh issue list --repo "$REPO" --state all --limit 100 \
@@ -169,8 +202,8 @@ printf '%s\n' "$ISSUES_JSON" | jq -e --arg repo "$REPO" '
 # not permission to choose the first search result.
 INDEX="$TMP/issue-index"
 : > "$INDEX"
-TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( approved-by:.+ approved-at:[^ ]+)? -->$'
-STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( approved-by:.+ approved-at:[^ ]+)? -->$'
+TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
+STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
 printf '%s\n' "$ISSUES_JSON" | jq -r --arg prefix "<!-- $PLAN_MARKER " '
   .[] | .number as $number | .body | split("\n")[]
   | select(contains($prefix)) | [$number, .] | @tsv
@@ -199,6 +232,27 @@ issue_for_identity() { # <tracker | step:id>
   [ -n "$number" ] || return 0
   printf '%s\n' "$ISSUES_JSON" | jq -c --arg number "$number" \
     '.[] | select((.number | tostring) == $number)'
+}
+
+# First document-mode reapply migrates legacy bodies in place. Preserve the old
+# spec hash and handwritten packets: bootstrap must change only approved=.
+migrate_approval_body() { # existing issue JSON, proposed body
+  local old stamped_rev
+  if [ -n "$APPROVED_REV" ] && [ -n "$1" ]; then
+    old=$(printf '%s' "$1" | jq -r .body)
+    stamped_rev=$(printf '%s\n' "$old" | sed -nE 's/^<!-- .* approved=([a-f0-9]{40}).* -->$/\1/p')
+    if [ -z "$stamped_rev" ] || [ "$stamped_rev" = "$APPROVED_REV" ]; then
+      printf '%s\n' "$old" | awk -v rev="$APPROVED_REV" '
+        /^<!-- agentic-flow:plan:/ {
+          if (index($0," approved=")>0) sub(/ approved=[a-f0-9]+/," approved=" rev)
+          else if (index($0," approved-by:")>0) sub(/ approved-by:/," approved=" rev " approved-by:")
+          else sub(/ -->$/," approved=" rev " -->")
+        }
+        {print}'
+      return
+    fi
+  fi
+  printf '%s\n' "$2"
 }
 
 # Topology is immutable for a plan identity. Check every discovered issue before
@@ -250,7 +304,13 @@ if [ "$PROFILE" = standard ]; then
   if [ "$MODE" = apply ] && [ -z "$approval_by" ]; then
     die "standard work issue requires --approved-by to record plan approval"
   fi
-  stamp="<!-- $PLAN_MARKER step:$step_id spec:$SPEC_HASH"
+  journal_value='journal=v1'
+  approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
+  if [ -n "$existing" ]; then
+    approved_value=${approved_value:-$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
+    journal_value=$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+  fi
+  stamp="<!-- $PLAN_MARKER step:$step_id spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value}"
   [ -z "$approval_by" ] || stamp="$stamp approved-by:$approval_by approved-at:$approval_at"
   stamp="$stamp -->"
   packet=$(jq -r '.steps[0].packet | "Profile: Standard\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"' "$SPEC")
@@ -262,6 +322,7 @@ ${packet}
 
 ${stamp}
 <!-- agentic-flow:topology:standard -->"
+  desired_body=$(migrate_approval_body "$existing" "$desired_body")
   if [ "$MODE" = diff ]; then
     [ -n "$existing" ] && echo 'Work issue: exists' || echo 'Work issue: missing (would create)'
     exit 0
@@ -275,7 +336,7 @@ ${stamp}
     --jq '[.[] | select(.name == "agent:claude" or .name == "agent:codex" or .name == "agent:opencode" or .name == "needs-review" or .name == "needs-execution" or .name == "needs-closing")] | length' \
     2>/dev/null || echo 0)
   if [ "$workflow_label_hit" -eq 0 ]; then
-    "$(dirname "$0")/create-tags.sh" --repo "$REPO"
+    "$SCRIPT_DIR/create-tags.sh" --repo "$REPO"
   fi
   if [ -z "$existing" ]; then
     if [ -n "$labels" ]; then
@@ -293,7 +354,8 @@ ${stamp}
   if [ -n "$DOC" ]; then
     doc_tmp="$DOC.tmp.$$"
     approval_line=""
-    [ -z "$approval_by" ] || approval_line="- **Approval:** status=approved; by=$approval_by; at=${approval_at%%T*}"
+    [ -z "$approval_by" ] || approval_line="- **Approval:** status=approved; by=$approval_by; at=${approval_at%%T*}${APPROVED_REV:+; rev=$APPROVED_REV}"
+    [ -z "$APPROVED_REV" ] || approval_line=""
     awk -v url="$url" -v approval_line="$approval_line" '
       /^- \*\*Tracking issue:\*\*/ {print "- **Tracking issue:** url=" url; found=1; next}
       approval_line != "" && /^- \*\*Approval:\*\*/ {print approval_line; approved=1; next}
@@ -332,7 +394,13 @@ if [ -n "$APPROVED_BY" ]; then
     APPROVAL_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   fi
 fi
-TRACK_STAMP="<!-- $TRACK_ID_MARKER spec:$SPEC_HASH"
+journal_value='journal=v1'
+approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
+if [ -n "$existing_tracker" ]; then
+  approved_value=${approved_value:-$(printf '%s' "$existing_tracker" | jq -r .body | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
+  journal_value=$(printf '%s' "$existing_tracker" | jq -r .body | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+fi
+TRACK_STAMP="<!-- $TRACK_ID_MARKER spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value}"
 if [ -n "$APPROVAL_BY" ]; then
   TRACK_STAMP="$TRACK_STAMP approved-by:$APPROVAL_BY approved-at:$APPROVAL_AT"
 fi
@@ -345,14 +413,23 @@ TRACK_DESIRED="${TRACK_BODY}
 
 ${TRACK_STAMP}"
 
+TRACK_DESIRED=$(migrate_approval_body "$existing_tracker" "$TRACK_DESIRED")
+
 if [ "$MODE" = diff ]; then
   if [ -z "$existing_tracker" ]; then
     echo
     echo "Tracker: missing (would create)"
   else
     existing_spec=$(printf '%s\n' "$existing_tracker" | jq -r '.body' \
-      | sed -n 's/.* spec:\([^ ]*\) -->.*/\1/p' | head -1)
-    if [ "$existing_spec" = "$SPEC_HASH" ]; then
+      | sed -n 's/.* spec:\([^ ]*\).* -->.*/\1/p' | head -1)
+    existing_approved=$(printf '%s\n' "$existing_tracker" | jq -r .body | sed -nE 's/^<!-- .* approved=([a-f0-9]{40}).* -->$/\1/p')
+    if [ -n "$APPROVED_REV" ] && [ -z "$existing_approved" ]; then
+      echo
+      echo "Tracker: add approved=$APPROVED_REV only (journal, labels and body preserved)"
+    elif [ -n "$APPROVED_REV" ] && [ "$existing_approved" = "$APPROVED_REV" ]; then
+      echo
+      echo "Tracker: current"
+    elif [ "$existing_spec" = "$SPEC_HASH" ]; then
       echo
       echo "Tracker: current"
     else
@@ -365,7 +442,18 @@ if [ "$MODE" = diff ]; then
     step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
     existing=$(issue_for_identity "step:$step_id")
     if [ -n "$existing" ]; then
-      echo "Step $step_id: exists"
+      if [ -n "$APPROVED_REV" ]; then
+        existing_approved=$(printf '%s\n' "$existing" | jq -r .body | sed -nE 's/^<!-- .* approved=([a-f0-9]{40}).* -->$/\1/p')
+        if [ -z "$existing_approved" ]; then
+          echo "Step $step_id: add approved=$APPROVED_REV only (journal, labels and body preserved)"
+        elif [ "$existing_approved" = "$APPROVED_REV" ]; then
+          echo "Step $step_id: current"
+        else
+          echo "Step $step_id: approved revision differs (would reconcile)"
+        fi
+      else
+        echo "Step $step_id: exists"
+      fi
     else
       echo "Step $step_id: missing (would create)"
     fi
@@ -390,7 +478,7 @@ WORKFLOW_LABEL_HIT=$(gh label list --repo "$REPO" --json name \
   --jq '[.[] | select(.name == "agent:claude" or .name == "agent:codex" or .name == "agent:opencode" or .name == "needs-review" or .name == "needs-execution" or .name == "needs-closing")] | length' \
   2>/dev/null || echo 0)
 if [ "$WORKFLOW_LABEL_HIT" -eq 0 ]; then
-  "$(dirname "$0")/create-tags.sh" --repo "$REPO"
+  "$SCRIPT_DIR/create-tags.sh" --repo "$REPO"
 fi
 
 # Create the tracker first. If a later step fails, the stamped tracker is the durable
@@ -422,7 +510,14 @@ while [ "$i" -lt "$STEP_COUNT" ]; do
   labels=$(jq -r ".steps[$i].labels // [] | join(\",\")" "$SPEC")
   step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
   marker="$PLAN_MARKER step:$step_id"
-  stamp="<!-- $marker spec:$SPEC_HASH -->"
+  existing=$(issue_for_identity "step:$step_id")
+  journal_value='journal=v1'
+  approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
+  if [ -n "$existing" ]; then
+    approved_value=${approved_value:-$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
+    journal_value=$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+  fi
+  stamp="<!-- $marker spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value} -->"
   if [ "$PROFILE" = strict ]; then
     stamp="$stamp
 <!-- agentic-flow:topology:strict -->"
@@ -435,6 +530,7 @@ $packet"
   desired_body="${body}
 
 ${stamp}"
+  desired_body=$(migrate_approval_body "$existing" "$desired_body")
   printf '%s\n' "$step_id" >> "$TMP/current-step-ids"
   existing=$(issue_for_identity "step:$step_id")
 
@@ -483,6 +579,7 @@ while IFS="$(printf '\t')" read -r num step_id title; do
 done < "$TMP/step-rows"
 TRACK_FINAL="${TRACK_BODY}${tasklist}
 ${TRACK_STAMP}"
+TRACK_FINAL=$(migrate_approval_body "$existing_tracker" "$TRACK_FINAL")
 gh issue edit "$track_num" --repo "$REPO" --title "$TRACK_TITLE" \
   --body "$TRACK_FINAL" >/dev/null
 
@@ -503,8 +600,9 @@ if [ -n "$DOC" ]; then
   approval_line=""
   if [ -n "$APPROVAL_BY" ]; then
     approval_day=${APPROVAL_AT%%T*}
-    approval_line="- **Approval:** status=approved; by=${APPROVAL_BY}; at=${approval_day}"
+    approval_line="- **Approval:** status=approved; by=${APPROVAL_BY}; at=${approval_day}${APPROVED_REV:+; rev=$APPROVED_REV}"
   fi
+  [ -z "$APPROVED_REV" ] || approval_line=""
   awk -v url="$track_url" -v approval_line="$approval_line" '
     /^- \*\*Tracking issue:\*\*/ && replaced != 1 {
       print "- **Tracking issue:** url=" url

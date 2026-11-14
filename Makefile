@@ -24,7 +24,7 @@ test:           ## full test suite
 # END SHARED SHELL GATE
 
 test-one:       ## one targeted harness group: make test-one F=hooks
-	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade" >&2; exit 2; }
+	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations" >&2; exit 2; }
 	@scripts/self-test.sh --only "$(F)"
 
 build:          ## production build
@@ -35,3 +35,9 @@ build:          ## production build
 
 run:            ## start the app locally (for /run and /verify)
 	@scripts/doctor.sh
+
+# Commit verification setup and assertion failure signature.
+RED_FIRST_SIGNATURE := ^self-test failed:[[:space:]]
+.PHONY: verify-prepare
+verify-prepare:
+	@:

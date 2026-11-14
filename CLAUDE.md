@@ -26,52 +26,21 @@
   is the contract. Commits review notes with `git-opencode`.
 - **Own / merge / deploy — the human.** Approves plans, merges PRs, controls all pushes.
 
-### Step issue label state machine
+### Station commands
 
-Step issues move by label pair:
-
-```
-agent:codex + needs-execution          (plan-to-issues default)
-      │  Codex commits with Fixes #N, then comments the sha +
-      │  the verification it ran on the step issue
-      ▼
-agent:opencode + needs-review
-      │  OpenCode reviews that commit against the brief
-      ├─ findings noted as an issue comment ──▶ agent:codex + needs-execution
-      │                                           (loop; capped at 2 findings returns)
-      └─ approved ──▶ comments the verdict, then CLOSES the step issue.
-                      On the last open step, also sets the TRACKING issue to
-                      agent:claude + needs-closing and leaves it open.
-                                  │
-                                  ▼
-                  Claude ticks the Tracker, updates Status with review and CI
-                  evidence, moves the doc to docs/done/, then closes the
-                  tracking issue. The human still owns the PR merge.
-```
-
-After two findings returns, a third escalates to the human instead of returning it to Codex
-again or silently stopping.
-
-Strict sub-issues close on review; the parent receives `needs-closing`.
-Standard's sole work issue receives `needs-closing` after approval and stays open until
-close-out. A closed Strict step means *reviewed clean*, not *shipped*; the Status
-block plus CI evidence is the shipping record (`METHODOLOGY.md` §2).
-
-Close-out is batched: closed steps accumulate while the tracker stays open. Prepare the
-final Status and Tracker, change TRIAGE to Done, move the doc and update the index as the
-last repository change, then commit. The human pushes that candidate. CI and the reviewer
-must approve that exact PR head after the push. Run
-`scripts/lifecycle-status.sh --doc docs/done/<doc>.md --phase close-out --check --verify-evidence`,
-close the issue, then remove `agent:claude,needs-closing`. No repository edits. The human rechecks
-with `--phase pre-merge` immediately before merge (or relies on required checks). That phase expects the issue closed. Any repository edit after approval restarts
-the external CI/review round. Verification is point-in-time, not a merge guard. Confirm steps are closed;
-the tracker label is a notification, not the authority. This repository uses the
-single-operator review mode: its role claim is accountable but does not prove independent
-review (see `docs/accepted_risks.md#single-operator-review`).
+States and transitions live in `METHODOLOGY.md` §6. Executors use `brief`,
+`verify-step`, and `handoff submit`; reviewers use `packet`, `verify-step`, and
+`handoff approve|bounce`. Closers run `scripts/agentic-flow close-out prep <doc>
+--pr <url>`, commit the staged candidate, then run `close-out finish <moved-doc>`
+after the human pushes and CI/final-head evidence passes. The human checks
+`lifecycle-status.sh --phase pre-merge` immediately before merging.
+A closed step means reviewed clean; the Status block and CI record shipping.
+Single-operator review attests a role, not independent accounts
+(`docs/accepted_risks.md#single-operator-review`).
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and
-      executes. Drop the agent:codex labels; keep the doc lifecycle and review discipline." -->
+      executes. Configure the role policy (§6); keep the doc lifecycle and review discipline." -->
 
 ---
 
@@ -86,7 +55,7 @@ review (see `docs/accepted_risks.md#single-operator-review`).
 |--------|------------------------------|-----------------|
 | `make check` | Bash syntax for shipped scripts, docs index freshness, action-pin structure, and `scripts/self-test.sh` | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
 | `make test` | full offline scaffold regression suite, plus `shellcheck` over `scripts/` | no network or GitHub writes; **fails if `shellcheck` is missing** rather than skipping |
-| `make test-one F=…` | one focused harness group (`export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, or `upgrade`) | the Makefile owns exact behavior |
+| `make test-one F=…` | one focused harness group (`export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, `upgrade`, or `stations`) | the Makefile owns exact behavior |
 | `make build` | dry-run export into a temporary directory | validates the payload assembles without writing a real target |
 | `make run` | `scripts/doctor.sh` report mode | the scaffold's "app" is its adoption report |
 
@@ -112,14 +81,14 @@ review (see `docs/accepted_risks.md#single-operator-review`).
 <!-- END SHARED CLAUDE TOOLS -->
 
 ### Hooks (enforced, not optional)
-This project ships `.claude/settings.json` with five hooks that mechanize the contract —
-full mechanism and rationale for each in `METHODOLOGY.md` §8:
+Six hooks in `.claude/settings.json` enforce the contract (`METHODOLOGY.md` §8):
+- **SessionStart → cached step context** (`scripts/hooks/session-context.sh`)
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`)
 - **PreToolUse(Bash) → block `git add -A` / `.` / `--all`** (`scripts/hooks/block-git-add-all.sh`)
 - **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)
 - **PreToolUse(Bash) → scan staged content before a commit** (`scripts/hooks/scan-secrets.sh`)
   — override a false positive with `AGENTIC_ALLOW_SECRET=1` on the commit.
-- **PreToolUse(Bash) → require a comment before a step issue relabels**
+- **PreToolUse(Bash) → route workflow writes through `handoff`**
   (`scripts/hooks/require-step-comment.sh`) — Claude/Codex only; **OpenCode has no hook
   engine here**, so its side still relies on `.opencode/agent/code-reviewer.md`.
 

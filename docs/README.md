@@ -46,13 +46,9 @@ else under `docs/` — including `docs/` itself — fails the index build (and t
 `make check`) rather than being listed under an invented stage. Non-Markdown files and
 `README.md` / `accepted_risks.md` / `templates/` and the memory tree are skipped entirely.
 
-A doc leaves `inprogress/` when its implementation steps are all shipped, independently
-reviewed, and verified. The reviewer closes each step issue on approval, so closed steps
-accumulate while the tracking issue stays open at `agent:claude + needs-closing`; close the
-plan in one pass only after all steps qualify, CI evidence is recorded, and
-`scripts/lifecycle-status.sh --check --verify-evidence` passes — then close the tracking
-issue. If the user accepts the risk / declines the feature, add an entry to
-`accepted_risks.md` and link it before moving the doc.
+Use `close-out prep <doc> --pr <url>` and `close-out finish <moved-doc>` to close
+reviewed, verified plans; states live in `METHODOLOGY.md` §6. If the user accepts
+the risk or declines the feature, link its disposition in `accepted_risks.md`.
 
 New Feature and Security Status blocks use `Evidence schema: v2` and the exact
 field values in their templates. Resolve the pending fields before close-out.
@@ -112,5 +108,6 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-opencode-reviewer-role | Feature | ✅ Done | done |
 | feature-progressive-assurance-profiles | Feature | 🕰️ Superseded | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
+| feature-deterministic-stations | Feature | 🚧 In progress | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |
 <!-- END: generated index -->

@@ -34,3 +34,5 @@ docs/inprogress/.gitkeep	docs/inprogress/.gitkeep	docs	preserve	export
 docs/done/.gitkeep	docs/done/.gitkeep	docs	preserve	export
 docs/done/security/.gitkeep	docs/done/security/.gitkeep	docs	preserve	export
 config/payload.tsv	config/payload.tsv	core	preserve	export
+config/workflow.tsv	config/workflow.tsv	core	preserve	export
+config/stations	config/stations	core	preserve	export

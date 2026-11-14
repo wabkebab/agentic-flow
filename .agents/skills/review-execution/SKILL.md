@@ -46,12 +46,6 @@ Run the brief's exact per-step verification where practical. At minimum, inspect
 and run the project's relevant `make test-one F=...` and `make check`; run `make test` for
 the completed brief when the environment supports it.
 
-Re-run the executor's verification. Confirm each regression test fails without the fix:
-create a temporary detached checkout with `mktemp -d` and `git worktree add --detach` at
-the pre-change commit, copy the new test there, and run it. Remove that exact worktree
-with `git worktree remove --force`. If creation fails, remove only the empty directory and report
-`pending`. Never alter the checkout under review; a test passing against old code proves nothing.
-
 Record the commands and outcomes. Never describe a skipped, unavailable, or stale CI result
 as passing. A tool/environment failure may make the verdict pending, but it is not itself a
 code finding unless the branch caused it.
@@ -69,6 +63,27 @@ Use one finding scale for Security reviews, step reviews, and ordinary diffs:
 Accepted/by-design is a disposition, not a severity. Record the acceptance against the finding and move material accepted risk to `docs/accepted_risks.md`.
 
 The only verdicts are `approved`, `changes requested`, and `pending`. Use `approved` when no required findings remain and evidence covers the brief; use `changes requested` when code or tests need a fix; use `pending` when missing scope or evidence prevents a decision. Structured review comments encode `changes requested` as `status=changes-requested`.
+
+Use `packet <issue> --station reviewer`, `verify-step <head> --doc <doc> --step <id>`,
+and `handoff <issue> approve --as reviewer --head <sha40> --body-file <review-file>`
+or `handoff <issue> bounce --as reviewer --body-file <findings-file>`; states live
+in `METHODOLOGY.md` §6. Pending leaves state unchanged. Never edit accepted verdicts.
+
+Reuse evidence only when `sha` and `tree` match the reviewed head and
+`verifier.implementation_sha256` matches the current `verify-step.sh`; otherwise regenerate.
+Inspect signature-source provenance and red-first output. Exit 0 is green; nonzero
+with an assertion-signature match is red, except timeout 124 and interrupts 130/143,
+which are invalid. Missing or mismatched signatures are invalid and prevent approval.
+Prefer raw runners: make masks recipe failures as exit 2; Cargo assertions exit 101.
+
+Handoff writes `agentic-flow-review: status=approved|changes-requested; step=<id>;
+head=<sha40>; role=reviewer` compatibility markers. The journal selects accepted evidence;
+edited accepted approval blocks verification. The API author proves the account;
+`role=reviewer` attests the role, not independence in single-operator mode.
+Final-head approval belongs on the document's Tracking issue (§2):
+`agentic-flow-review: status=approved; pr=<number>; head=<sha40>;
+run=https://github.com/<owner>/<repo>/actions/runs/<id>; attempt=<positive-integer>;
+role=reviewer`. A new head or run attempt requires new approval.
 <!-- END SHARED REVIEW CONTRACT -->
 
 For every finding include:
@@ -98,22 +113,5 @@ is no longer reviewing it.
 
 ## Record the verdict and move the issue
 
-Post step verdicts on step issues and final approval on `Tracking issue`, including
-`attempt=`. Copy `METHODOLOGY.md` §2 templates. Change verdicts with new comments.
-
-Moving the step issue is the one exception, authorized standingly by the state machine in
-`CLAUDE.md`. Post the verdict as an issue comment **first** — findings, or an explicit
-no-findings approval, with the range reviewed and verification run. Then:
-
-- **`changes requested`** — leave open and return it:
-  `gh issue edit <N> --add-label "agent:codex,needs-execution" --remove-label "agent:opencode,needs-review"`.
-  Capped at two returns; a third escalates to the human.
-- **`approved`** — under Strict, `gh issue close <N>`, then
-  `gh issue edit <N> --remove-label "agent:opencode,needs-review"`; a closed sub-issue records
-  *reviewed clean*, not *shipped*. Under Standard, post the approving verdict, then
-  relabel the sole work issue `agent:claude,needs-closing` and leave it open.
-- **last open Strict step of a plan** — also
-  `gh issue edit <TRACKER> --add-label "agent:claude,needs-closing"`, leaving the tracker open.
-- **`pending`** — change nothing; name the missing input.
-
-Never edit the doc's Status block — that is close-out's job.
+Follow the shared review contract above; never relabel by hand or edit the doc's
+Status block. Close-out owns Status.

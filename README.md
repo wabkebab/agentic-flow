@@ -40,7 +40,7 @@ scripts/lifecycle-status.sh       derive ACTIVE / READY / BLOCKED / UNVERIFIED /
 scripts/doctor.sh                 adoption checklist / scaffold health check
 scripts/agentic-flow              adopted-project status / diff / upgrade command
 scripts/self-test.sh              offline regression checks for this scaffold
-scripts/hooks/                    the five hook scripts settings.json calls
+scripts/hooks/                    the six hook scripts settings.json calls
 templates/harness/                pristine CLAUDE/AGENTS/Makefile forms shipped by export.sh
 ROADMAP.md                        planned evolution of the standard (Tier 2 / Tier 3)
 docs/
@@ -108,7 +108,7 @@ For adopted projects, `scripts/doctor.sh` is the verifier and can be used in CI.
 
 ## Opt-outs
 
-- **Claude-only** (no Codex): keep the docs + review discipline; drop `agent:codex` /
+- **Claude-only** (no Codex): keep the docs + review discipline; configure the role policy (METHODOLOGY.md §6) and omit
   `git-codex`. Note it at the top of `CLAUDE.md`.
 - **No GitHub issues**: the in-doc Tracker checklist is a complete burndown on its own; skip
   `plan-to-issues`.

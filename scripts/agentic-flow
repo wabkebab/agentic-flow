@@ -5,6 +5,14 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 usage:
+  agentic-flow handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]
+  agentic-flow handoff <issue> reconcile [--json]
+  agentic-flow close-out prep <doc> --pr <url> [--dry-run]
+  agentic-flow close-out finish <doc>
+  agentic-flow packet <issue> --station executor|reviewer [--json]
+  agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--json]
+  agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
+  agentic-flow token <executor|reviewer|approver> [--check]
   agentic-flow status [--json]
   agentic-flow diff [--ref <ref>] [--json]
   agentic-flow upgrade [--ref <ref>] [--force] [--yes]
@@ -432,6 +440,15 @@ status_cmd() {
   [ "$action_needed" = false ] || exit 1
 }
 
+token_cmd() {
+  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die 'usage: agentic-flow token <role> [--check]'
+  local token_root
+  token_root=$(find_root) || token_root=$(git rev-parse --show-toplevel) || die 'not inside a Git project'
+  # shellcheck disable=SC1091
+  . "$token_root/scripts/lib/identity.sh"
+  identity_token "$token_root" "$@"
+}
+
 version_cmd() {
   local root
   root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
@@ -445,6 +462,32 @@ subcommand="${1:-}"
   case "$subcommand" in
     ""|-h|--help) usage; exit 0 ;;
     --version) version_cmd ;;
+    handoff)
+      shift
+      # shellcheck disable=SC1091 # Installed alongside the CLI.
+      . "$(dirname "$0")/lib/handoff.sh"
+      handoff_cmd "$@" ;;
+    close-out)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/close-out.sh"
+      close_out_cmd "$@" ;;
+    packet)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/packet.sh"
+      packet_cmd "$@" ;;
+    verify-step)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/verify-step.sh"
+      verify_step_cmd "$@" ;;
+    brief)
+      shift
+      # shellcheck disable=SC1091 # Installed alongside the CLI.
+      . "$(dirname "$0")/lib/brief.sh"
+      brief_cmd "$@" ;;
+    token) shift; token_cmd "$@" ;;
     status) shift; status_cmd "$@" ;;
     diff) shift; diff_cmd "$@" ;;
     upgrade) shift; upgrade_cmd "$@" ;;

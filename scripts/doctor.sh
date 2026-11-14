@@ -350,6 +350,14 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
       fail "$adapter valid JSON"
       continue
     fi
+    if jq -e 'any(.hooks.SessionStart[]?.hooks[]?; .type == "command" and
+        (.command | contains("scripts/hooks/session-context.sh")) and
+        (.timeout > 0 and .timeout <= 2))' "$ROOT/$adapter" >/dev/null 2>&1; then
+      ok "$adapter SessionStart context wired"
+    else
+      fail "$adapter SessionStart wired to scripts/hooks/session-context.sh (timeout <= 2)"
+    fi
+    require_executable scripts/hooks/session-context.sh
     if stop_hook_wired "$ROOT/$adapter" Stop \
        && stop_hook_wired "$ROOT/$adapter" SubagentStop; then
       ok "$adapter Stop hooks wired"
@@ -380,6 +388,16 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
         ;;
     esac
   done
+
+  # Ambiguous branch ownership suppresses SessionStart output; explain it here.
+  local_branches=$(awk '
+    /^```agentic-flow-plan$/ {block=1; next}
+    block && /^```$/ {block=0}
+    block && /^branch: / {sub(/^branch: /, ""); print}
+  ' "$ROOT"/docs/inprogress/*.md 2>/dev/null | sort | uniq -d || true)
+  while IFS= read -r duplicate_branch; do
+    [ -z "$duplicate_branch" ] || warn "multiple inprogress docs name branch $duplicate_branch; session context suppressed"
+  done <<< "$local_branches"
 
   if ! payload_has_word ci "$PAYLOAD_ACTIVE_SCOPES"; then
     ok "CI adapter excluded"
@@ -427,6 +445,22 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     ok "make check passes"
   else
     fail "make check passes (run 'make check' to see why)"
+  fi
+fi
+
+# Operator credentials are workstation state. Portable --scope repo never mints.
+if [ "$SCOPE" != repo ] && [ -f "$ROOT/scripts/lib/identity.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/lib/identity.sh"
+  identity_file=$(identity_config_path "$ROOT" 2>/dev/null || true)
+  if [ -n "$identity_file" ] && [ -f "$identity_file" ]; then
+    for identity_role in executor reviewer approver; do
+      if identity_token "$ROOT" "$identity_role" --check >/dev/null 2>&1; then
+        ok "identity $identity_role login and token scope"
+      else
+        fail "identity $identity_role login and token scope (run scripts/agentic-flow token $identity_role --check)"
+      fi
+    done
   fi
 fi
 

@@ -68,11 +68,11 @@ valid_value() { # <key> <value>
   case "$1" in
     'Evidence schema') [ "$2" = v2 ] ;;
     'Tracking issue') [[ "$2" =~ ^url=https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$ ]] ;;
-    Approval) [[ "$2" =~ ^status=approved\;\ by=[A-Za-z0-9]([A-Za-z0-9._\ -]*[A-Za-z0-9])?\;\ at=[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$ ]] ;;
+    Approval) [[ "$2" =~ ^status=approved\;\ by=[A-Za-z0-9]([A-Za-z0-9._\ -]*[A-Za-z0-9])?\;\ at=[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9](\;\ rev=[a-f0-9]{40})?$ ]] ;;
     'Implementation head') [ "$2" = source=pr-head ] ;;
     'Implementation PR') [[ "$2" =~ ^url=https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$ ]] ;;
     'Verification evidence') [ "$2" = source=final-approval-run ] ;;
-    'Review verdict') [ "$2" = source=pr-head-approval ] ;;
+    'Review verdict') [ "$2" = source=pr-head-approval ] || [ "$2" = source=close-out-attestation ] ;;
     Memory) [ "$2" = status=n/a ] || [[ "$2" =~ ^path=docs/memory/[A-Za-z0-9._-]+\.md$ ]] ;;
   esac
 }
@@ -180,7 +180,7 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [re
     response=$(cat "$tmp/comments")
   else
     # shellcheck disable=SC2016
-    query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login} createdAt lastEditedAt}}}}}'
+    query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){body comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login __typename} createdAt lastEditedAt}}}}}'
     if ! bounded_gh "$tmp/step-$number" api graphql -f "query=$query" -f "owner=$owner" -f "name=$name" -F "number=$number"; then
       unverified_evidence "step $step comments unavailable"; return 1
     fi
@@ -202,10 +202,44 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [re
   if [ -n "$null_index" ]; then
     unverified_evidence "step $step comment node $null_index unreadable"; return 1
   fi
-  local ignored
+  local ignored normalized_comments
+  normalized_comments=$(printf '%s' "$response" | jq '.data.repository.issue.comments.nodes' | review_normalize_comments) || {
+    unverified_evidence 'comment author normalization failed'; return 1;
+  }
+  response=$(printf '%s' "$response" | jq --argjson nodes "$normalized_comments" '.data.repository.issue.comments.nodes=$nodes')
   ignored=$(printf '%s' "$response" | jq --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '[.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) == null)] | length')
   [ "$ignored" -eq 0 ] || printf 'EVIDENCE ignored %s comment(s) from authors outside the review policy\n' "$ignored"
   printf '%s' "$response" | jq -c --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)' > "$tmp/step-nodes-$number"
+  # Journaled issues select only the accepted submit/approve. A losing comment's
+  # compatibility marker must never re-enter the legacy latest-marker reader.
+  local journal_body journal_comments replay journaled=false accepted_submit accepted_approve
+  journal_body=$(printf '%s' "$response" | jq -r '.data.repository.issue.body // empty')
+  [ -n "$journal_body" ] || journal_body=${7:-${tracking_body:-}}
+  JOURNAL_PLAN='' JOURNAL_STEP=$step JOURNAL_LEGACY=true JOURNAL_TOPOLOGY=step-strict
+  if [ "${6:-}" = reuse-tracking-page ]; then JOURNAL_TOPOLOGY=work-standard; fi
+  if [ -n "$journal_body" ]; then
+    journal_context "$journal_body" || { unverified_evidence "step $step malformed plan stamp"; return 1; }
+  fi
+  [ "$JOURNAL_LEGACY" != false ] || journaled=true
+  journal_comments=$(printf '%s' "$response" | jq '.data.repository.issue.comments.nodes' | journal_normalize) || return 1
+  replay=$(journal_replay "$journal_comments" "$JOURNAL_TOPOLOGY") || {
+    unverified_evidence "step $step journal replay failed"; return 1;
+  }
+  if printf '%s' "$replay" | jq -e 'any(.accepted[]; .legacy==false)' >/dev/null; then journaled=true; fi
+  if [ "$journaled" = true ]; then
+    if [ "$(printf '%s' "$replay" | jq -r .unjournaled)" != null ]; then
+      blocked_evidence "step $step UNJOURNALED comment $(printf '%s' "$replay" | jq -r .unjournaled)"; return 1
+    fi
+    case "$(printf '%s' "$replay" | jq -r .state)" in
+      approved|closing|closed) ;;
+      *) blocked_evidence "step $step journal state $(printf '%s' "$replay" | jq -r .state)"; return 1 ;;
+    esac
+    accepted_submit=$(printf '%s' "$replay" | jq -r '[.accepted[]|select(.event=="submit")]|last|.comment_id')
+    accepted_approve=$(printf '%s' "$replay" | jq -r '[.accepted[]|select(.event=="approve")]|last|.comment_id')
+    printf '%s' "$response" | jq -c --arg s "$accepted_submit" --arg a "$accepted_approve" \
+      '.data.repository.issue.comments.nodes[] | select(.id==$s or .id==$a)' > "$tmp/step-nodes-$number"
+    printf 'EVIDENCE step %s journal skipped %s comment(s)\n' "$step" "$(printf '%s' "$replay" | jq .skipped)"
+  fi
   # The latest executor handoff on this thread identifies the implementation
   # commit. A full SHA is required so a truncated hash cannot masquerade as head.
   while IFS= read -r node; do
@@ -291,7 +325,7 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [re
   ancestry_status=0
   git -C "$ROOT" merge-base --is-ancestor "$step_head" "$pr_head" 2> "$tmp/ancestry-error" || ancestry_status=$?
   case "$ancestry_status" in
-    0) return 0 ;;
+    0) STEP_VERIFIED_HEAD=$step_head; return 0 ;;
     1)
       if ! shallow=$(git -C "$ROOT" rev-parse --is-shallow-repository 2> "$tmp/ancestry-error"); then
         git_error=$(cat "$tmp/ancestry-error")
@@ -330,7 +364,7 @@ verify_strict_steps() { # <repo> <tracking-body> <tmp-dir> <pr-head>
     if [ "$state" != CLOSED ]; then
       blocked_evidence "step $step issue $number is $state"; return 1
     fi
-    verify_step_review "$repo" "$number" "$step" "$tmp" "$pr_head" || return 1
+    verify_step_review "$repo" "$number" "$step" "$tmp" "$pr_head" "" "$(jq -r --argjson n "$number" '.[]|select(.number==$n)|.body' "$tmp/issues")" || return 1
   done < "$tmp/steps"
   if [ "$count" -eq 0 ]; then
     unverified_evidence "plan $plan has no stamped step issues"; return 1
@@ -346,6 +380,10 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   evidence_reason='external evidence unresolved'
   # shellcheck disable=SC1091 # The library is resolved from the installed script root.
   . "$SCRIPT_ROOT/scripts/lib/review-policy.sh"
+  # shellcheck disable=SC1091
+  . "$SCRIPT_ROOT/scripts/lib/workflow.sh"
+  . "$SCRIPT_ROOT/scripts/lib/journal.sh"
+  workflow_load "$SCRIPT_ROOT" || { unverified_evidence 'workflow missing or invalid'; return; }
   if ! read_review_policy "$ROOT" >/dev/null 2>&1; then
     unverified_evidence 'review policy missing or invalid'; return
   fi
@@ -372,8 +410,22 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   if ! [[ "$head" =~ ^[[:xdigit:]]{40}$ ]]; then
     unverified_evidence 'Implementation PR head unavailable'; rm -rf "$tmp"; return
   fi
+  if [ "${review_source:-}" = source=close-out-attestation ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_ROOT/scripts/lib/close-out-attestation.sh"
+    local attestation_reason
+    if close_out_attest "$repo" "$head" "$tmp" > "$tmp/attestation" 2>&1; then
+      evidence_status=READY
+      evidence_reason=$(cat "$tmp/attestation")
+      rm -rf "$tmp"; return
+    fi
+    attestation_reason=$(cat "$tmp/attestation")
+    printf 'NEEDS-REVIEW %s\n' "$attestation_reason"
+    # Existing final-head evidence remains the fallback, with its original checks.
+    evidence_status=UNVERIFIED evidence_reason='external evidence unresolved'
+  fi
   # shellcheck disable=SC2016 # GraphQL variables belong in the literal query.
-  query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login} createdAt lastEditedAt}}}}}'
+  query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){body comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login __typename} createdAt lastEditedAt}}}}}'
   if ! bounded_gh "$tmp/comments" api graphql -f "query=$query" -f "owner=$owner" -f "name=$name" -F "number=$issue_number"; then
     unverified_evidence 'Tracking issue comments unavailable'; rm -rf "$tmp"; return
   fi
@@ -395,7 +447,11 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   if [ -n "$null_index" ]; then
     unverified_evidence "Tracking issue comment node $null_index unreadable"; rm -rf "$tmp"; return
   fi
-  local ignored
+  local ignored normalized_comments
+  normalized_comments=$(printf '%s' "$comments_json" | jq '.data.repository.issue.comments.nodes' | review_normalize_comments) || {
+    unverified_evidence 'comment author normalization failed'; rm -rf "$tmp"; return;
+  }
+  comments_json=$(printf '%s' "$comments_json" | jq --argjson nodes "$normalized_comments" '.data.repository.issue.comments.nodes=$nodes')
   ignored=$(printf '%s' "$comments_json" | jq --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '[.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) == null)] | length')
   [ "$ignored" -eq 0 ] || printf 'EVIDENCE ignored %s comment(s) from authors outside the review policy\n' "$ignored"
   printf '%s' "$comments_json" | jq -c --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)' > "$tmp/nodes"
@@ -491,6 +547,13 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   run_head=$(printf '%s' "$run_json" | jq -r '.head_sha')
   conclusion=$(printf '%s' "$run_json" | jq -r '.conclusion')
   live_attempt=$(printf '%s' "$run_json" | jq -r '.run_attempt')
+  if [ "${review_source:-}" = source=close-out-attestation ]; then
+    if ! close_out_ci "$repo" "$head" "$tmp" > "$tmp/latest-ci" 2>&1 ||
+       [ "$run_id" != "${CLOSE_CI_RUN:-}" ] || [ "$live_attempt" != "${CLOSE_CI_ATTEMPT:-}" ]; then
+      blocked_evidence 'final-head fallback does not name the latest successful workflow run and attempt'
+      rm -rf "$tmp"; return
+    fi
+  fi
   if [ "$run_repo" != "$repo" ] || [ "$run_path" != "$workflow" ] || [ "$run_head" != "$head" ]; then
     blocked_evidence "Actions run $REVIEW_RUN differs from repository, workflow, or PR head $head"
   elif [ "$live_attempt" != "$REVIEW_ATTEMPT" ]; then
@@ -544,7 +607,7 @@ legacy=0
 found=0
 check_doc() { # <doc>
   local doc=$1 rel tracker_lines open checked parsed key value field_id schema="" tracking="" pr_url="" missing="" invalid="" \
-    parser_error="" state_json issue_state labels state_file issue_body topology approval approval_by approval_at stamp_by stamp_at
+    parser_error="" state_json issue_state labels state_file issue_body topology approval approval_by approval_at stamp_by stamp_at review_source=""
   tracker_lines=$(grep -Ec '^- \[[ xX]\] ' "$doc" || true)
   [ "$tracker_lines" -gt 0 ] || return 0
   found=$((found + 1))
@@ -564,6 +627,7 @@ check_doc() { # <doc>
       'Tracking issue') tracking=${value#url=} ;;
       Approval) approval=$value ;;
       'Implementation PR') pr_url=${value#url=} ;;
+      'Review verdict') review_source=$value ;;
     esac
   done <<< "$parsed"
   if [ -n "$parser_error" ]; then
@@ -639,6 +703,7 @@ check_doc() { # <doc>
     topology=strict
   fi
   if [ "$topology" = standard ]; then
+    approval=${approval%%; rev=*}
     approval_by=$(printf '%s' "$approval" | sed -nE 's/^status=approved; by=(.*); at=[0-9]{4}-[0-9]{2}-[0-9]{2}$/\1/p')
     approval_at=${approval##*at=}
     stamp_by=$(printf '%s\n' "$issue_body" | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)

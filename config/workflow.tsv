@@ -1,0 +1,27 @@
+# state	topology	state	labels	issue-status
+state	step-strict	executing	agent:codex,needs-execution	open
+state	step-strict	reviewing	agent:opencode,needs-review	open
+state	step-strict	escalated	needs-human	open
+state	step-strict	approved	-	closed
+state	work-standard	executing	agent:codex,needs-execution	open
+state	work-standard	reviewing	agent:opencode,needs-review	open
+state	work-standard	escalated	needs-human	open
+state	work-standard	closing	agent:claude,needs-closing	open
+state	work-standard	closed	-	closed
+state	tracker	open	plan	open
+state	tracker	closing	plan,agent:claude,needs-closing	open
+state	tracker	closed	plan	closed
+# transition	topology	event	role	from	to	requires
+transition	step-strict	submit	executor	executing	reviewing	head,head≠last-bounced-head
+transition	step-strict	bounce	reviewer	reviewing	executing	findings,bounces<2
+transition	step-strict	bounce	reviewer	reviewing	escalated	findings,bounces=2
+transition	step-strict	resume	approver	escalated	executing	note
+transition	step-strict	approve	reviewer	reviewing	approved	head=submitted
+transition	work-standard	submit	executor	executing	reviewing	head,head≠last-bounced-head
+transition	work-standard	bounce	reviewer	reviewing	executing	findings,bounces<2
+transition	work-standard	bounce	reviewer	reviewing	escalated	findings,bounces=2
+transition	work-standard	resume	approver	escalated	executing	note
+transition	work-standard	approve	reviewer	reviewing	closing	head=submitted
+transition	work-standard	close	approver	closing	closed	lifecycle-ready
+transition	tracker	notify	reviewer	open	closing	all-steps-approved
+transition	tracker	close	approver	closing	closed	lifecycle-ready

@@ -37,7 +37,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade]" >&2
+      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations]" >&2
       exit 0
       ;;
     *)
@@ -47,7 +47,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 # The one list both the flag parser and every `should_run` call site are checked against.
-SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade"
+SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade stations"
 GROUPS_RAN=" "
 case " $SELF_TEST_GROUPS " in
   *" $ONLY_GROUP "*) ;;
@@ -336,9 +336,25 @@ should_run() { # <group>
   return 0
 }
 
+workflow_contract_check() {
+  local workflow_root=${1:-$ROOT}
+  [ -f "$workflow_root/scripts/lib/workflow.sh" ] || fail 'workflow library is missing'
+  # shellcheck disable=SC1091
+  . "$workflow_root/scripts/lib/workflow.sh"
+  workflow_load "$workflow_root" || fail 'workflow validation failed'
+  # These legacy readers mention only part of the label set. Include label creation
+  # when comparing the union, so the new escalation label is covered as well.
+  local legacy_labels
+  legacy_labels=$(grep -Eoh 'agent:[a-z]+|needs-[a-z-]+' \
+    "$workflow_root/scripts/hooks/require-step-comment.sh" "$workflow_root/scripts/lifecycle-status.sh" \
+    "$workflow_root/scripts/create-tags.sh" | LC_ALL=C sort -u)
+  [ "$legacy_labels" = "$(workflow_labels)" ] || fail 'hard-coded workflow labels drifted from config/workflow.tsv'
+}
+
 fast_check_group() { # <group>; fast mode only
   case "$1" in
     contracts)
+      workflow_contract_check
       [ -f "$ROOT/config/payload.tsv" ] || fail 'payload manifest is missing'
       [ -f "$ROOT/templates/harness/Makefile" ] || [ ! -f "$ROOT/scripts/export.sh" ] \
         || fail 'pristine Makefile is missing'
@@ -355,6 +371,9 @@ fast_check_group() { # <group>; fast mode only
     plan-to-issues)
       [ -x "$ROOT/scripts/plan-to-issues.sh" ] || fail 'plan driver is missing'
       bash -n "$ROOT/scripts/plan-to-issues.sh" || fail 'plan driver has invalid syntax'
+      ;;
+    stations)
+      [ -f "$ROOT/scripts/lib/journal.sh" ] || fail "journal library is missing"
       ;;
     lifecycle)
       [ -x "$ROOT/scripts/lifecycle-status.sh" ] || fail 'lifecycle gate is missing'
@@ -464,6 +483,33 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >/dev/null 2>&1 \
     && fail "repo-scope doctor accepted a structurally unwired Codex hook configuration"
   cp "$TMP/codex-hooks.orig" "$SOURCE_FIXTURE/.codex/hooks.json"
+  # Removing only SessionStart must fail with that adapter's diagnostic.
+  for session_adapter in .claude/settings.json .codex/hooks.json; do
+    cp "$SOURCE_FIXTURE/$session_adapter" "$TMP/session-hooks.orig"
+    jq 'del(.hooks.SessionStart)' "$TMP/session-hooks.orig" > "$SOURCE_FIXTURE/$session_adapter"
+    (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo --skip-make-check) \
+      > "$TMP/session-unwired.out" 2>&1 \
+      && fail "doctor accepted missing SessionStart in $session_adapter"
+    grep -Fq "missing $session_adapter SessionStart wired to scripts/hooks/session-context.sh" "$TMP/session-unwired.out" \
+      || fail "doctor omitted the SessionStart diagnostic for $session_adapter"
+    cat "$TMP/session-hooks.orig" > "$SOURCE_FIXTURE/$session_adapter"
+  done
+  mkdir -p "$SOURCE_FIXTURE/docs/inprogress"
+  for session_doc in doctor-session-one doctor-session-two; do
+    cat > "$SOURCE_FIXTURE/docs/inprogress/$session_doc.md" <<'DOCTOR_SESSION'
+# Doctor session fixture
+# Part B — Implementation Brief
+```agentic-flow-plan
+branch: doctor-session-fixture
+```
+DOCTOR_SESSION
+  done
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --scope repo --skip-make-check) \
+    > "$TMP/session-ambiguous.out" 2>&1 || fail 'doctor failed while reporting ambiguous session ownership'
+  grep -Fq 'warning multiple inprogress docs name branch doctor-session-fixture; session context suppressed' "$TMP/session-ambiguous.out" \
+    || fail 'doctor omitted ambiguous session branch warning'
+  rm "$SOURCE_FIXTURE/docs/inprogress/doctor-session-one.md" "$SOURCE_FIXTURE/docs/inprogress/doctor-session-two.md"
+
   # Codex has no Claude project-root variable; doctor must reject the Claude-only form (#92).
   # shellcheck disable=SC2016 # literal hook command text being rewritten, not expanded.
   sed 's|\$(git rev-parse --show-toplevel)|\$CLAUDE_PROJECT_DIR|' "$TMP/codex-hooks.orig" \
@@ -683,6 +729,11 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   assert_file "$TARGET/.codex/hooks.json"
   assert_file "$TARGET/.agents/skills/plan-to-issues/SKILL.md"
   assert_file "$TARGET/config/payload.tsv"
+  assert_file "$TARGET/config/workflow.tsv"
+  assert_file "$TARGET/scripts/lib/workflow.sh"
+  # shellcheck disable=SC1091
+  ( . "$TARGET/scripts/lib/workflow.sh"; workflow_load "$TARGET" ) \
+    || fail 'exported workflow did not validate'
   assert_file "$TARGET/.agentic-flow-review-policy"
   cmp "$ROOT/templates/harness/.agentic-flow-review-policy" "$TARGET/.agentic-flow-review-policy" \
     || fail 'export changed the default review policy'
@@ -1062,6 +1113,213 @@ fi
 
 # --- shellcheck is required, not optional ------------------------------------------------
 if should_run contracts; then
+workflow_contract_check
+# S-9: the workflow is generated once; installed projects keep rendered contracts.
+if [ -d "$ROOT/templates/shared" ]; then
+  [ -f "$ROOT/templates/shared/workflow.md" ] || fail 'canonical rendered workflow is missing'
+  grep -q '^<!-- BEGIN SHARED WORKFLOW -->$' "$ROOT/METHODOLOGY.md" || fail 'methodology workflow region is missing'
+  "$ROOT/scripts/render-shared.sh" --check >/dev/null || fail 'workflow render is stale'
+  for role in CLAUDE.md AGENTS.md .agents/skills/review-execution/SKILL.md; do
+    case "$role" in CLAUDE.md) baseline=1515 ;; AGENTS.md) baseline=1088 ;; *) baseline=996 ;; esac
+    [ "$(wc -w < "$ROOT/$role")" -lt "$baseline" ] || fail "S-9 role did not shrink: $role"
+  done
+  for contract in CLAUDE.md AGENTS.md templates/harness/CLAUDE.md templates/harness/AGENTS.md \
+      .opencode/agent/code-reviewer.md .agents/skills/review-execution/SKILL.md \
+      .agents/skills/plan-to-issues/SKILL.md ADOPTION.md docs/README.md; do
+    grep -Eq 'agent:(claude|codex|opencode)|needs-(execution|review|closing|human)' "$ROOT/$contract" \
+      && fail "duplicated workflow labels in $contract"
+  done
+
+fi
+# S-2: these tests travel alone to the red base, so a missing library is an assertion.
+[ -f "$ROOT/scripts/lib/identity.sh" ] || fail 'identity library is missing'
+IDENTITY_FIX="$TMP/identity"
+mkdir -p "$IDENTITY_FIX/project/scripts/lib" "$IDENTITY_FIX/bin" "$IDENTITY_FIX/config/agentic-flow/identities/owner"
+cp "$ROOT/scripts/agentic-flow" "$IDENTITY_FIX/project/scripts/agentic-flow"
+cp "$ROOT/scripts/lib/identity.sh" "$ROOT/scripts/lib/review-policy.sh" "$IDENTITY_FIX/project/scripts/lib/"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$IDENTITY_FIX/project/scripts/lib/"
+cp "$ROOT/scripts/doctor.sh" "$IDENTITY_FIX/project/scripts/doctor.sh"
+(
+  cd "$IDENTITY_FIX/project"
+  git init -q
+  git remote add origin git@github.com:owner/repo.git
+)
+printf 'version=1\nworkflow=.github/workflows/ci.yml\nidentity-mode=distinct-account\nreviewer=review-app[bot]\nexecutor=execute-app[bot]\napprover=plan-app[bot]\n' > "$IDENTITY_FIX/project/.agentic-flow-review-policy"
+IDENTITY_CONFIG="$IDENTITY_FIX/config/agentic-flow/identities/owner/repo.tsv"
+printf 'executor\texecute-app[bot]\t123\t456\ttest key\n' > "$IDENTITY_CONFIG"
+openssl genrsa -out "$IDENTITY_FIX/key" 2048 >/dev/null 2>&1
+openssl rsa -in "$IDENTITY_FIX/key" -pubout -out "$IDENTITY_FIX/public" >/dev/null 2>&1
+cat > "$IDENTITY_FIX/bin/security" <<'MOCK'
+#!/usr/bin/env bash
+[ "$*" = 'find-generic-password -s test key -w' ] || exit 1
+[ "${IDENTITY_CASE:-}" != key-failure ] || exit 1
+if [ "${IDENTITY_CASE:-}" = invalid-key ]; then printf 'invalid'; exit 0; fi
+if [ "${IDENTITY_CASE:-}" = encoded-key ]; then openssl base64 -A < "$IDENTITY_FIX/key"; exit 0; fi
+cat "$IDENTITY_FIX/key"
+MOCK
+cat > "$IDENTITY_FIX/bin/secret-tool" <<'MOCK'
+#!/usr/bin/env bash
+[ "$*" = 'lookup service agentic-flow key-ref test key' ] || exit 1
+cat "$IDENTITY_FIX/key"
+MOCK
+cat > "$IDENTITY_FIX/bin/uname" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "${IDENTITY_OS:-Darwin}"
+MOCK
+cat > "$IDENTITY_FIX/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+# Token minting must never use the ambient gh identity.
+printf 'ambient gh used\n' >> "$IDENTITY_FIX/ambient"
+exit 1
+MOCK
+cat > "$IDENTITY_FIX/bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+config=$(cat)
+jwt=${config#*Bearer }; jwt=${jwt%%\"*}
+[ "$*" != "${*#*https://api.github.com/app/installations/456/access_tokens}" ]
+request=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in --data-binary) request=$2; shift ;; esac
+  shift
+done
+printf '%s' "$request" | jq -e '.repositories == ["repo"] and .permissions == {issues:"write",pull_requests:"write",contents:"read",metadata:"read"}' >/dev/null
+base64url_decode() { local v=$1; while [ "$((${#v} % 4))" -ne 0 ]; do v="${v}="; done; printf '%s' "$v" | tr '_-' '/+' | openssl base64 -d -A; }
+payload=${jwt#*.}; payload=${payload%%.*}
+claims=$(base64url_decode "$payload")
+printf '%s' "$claims" | jq -e --argjson now "$(date +%s)" '.iss == "123" and .iat <= $now and .exp > $now and .exp <= ($now+600)' >/dev/null
+printf '%s' "${jwt%.*}" | openssl dgst -sha256 -verify "$IDENTITY_FIX/public" -signature <(base64url_decode "${jwt##*.}") >/dev/null
+case "${IDENTITY_CASE:-}" in
+  mint-failure) exit 22 ;;
+  timeout) exit 28 ;;
+  malformed) printf 'not-json'; exit 0 ;;
+  broad) permission=write ;;
+  *) permission=read ;;
+esac
+jq -n --arg contents "$permission" --arg value 'fixture-installation-value' --arg mode "${IDENTITY_CASE:-}" '
+  {token:$value,expires_at:"2099-01-01T00:00:00Z",permissions:{issues:"write",pull_requests:"write",contents:$contents,metadata:"read"},repositories:[{full_name:"owner/repo"}]} |
+  if $mode == "wrong-repo" then .repositories[0].full_name="owner/other"
+  elif $mode == "extra-permission" then .permissions.administration="write"
+  elif $mode == "expired" then .expires_at="2000-01-01T00:00:00Z"
+  elif $mode == "missing-token" then del(.token) else . end'
+MOCK
+# Doctor's workstation inventory is unrelated to identity behavior; keep it hermetic
+# on CI runners that do not install local signing wrappers or gitleaks.
+for tool in git-claude git-codex gitleaks; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$IDENTITY_FIX/bin/$tool"
+done
+chmod +x "$IDENTITY_FIX/bin/"*
+identity_run() { # role optional flags; capture output only from fake credentials
+  local status=0
+  # shellcheck disable=SC2097,SC2098 # Fixture env is passed to the child, not used by the parent.
+  ( cd "$IDENTITY_FIX/project"; PATH="$IDENTITY_FIX/bin:$PATH" XDG_CONFIG_HOME="$IDENTITY_FIX/config" \
+    IDENTITY_FIX="$IDENTITY_FIX" IDENTITY_CASE="${IDENTITY_CASE:-}" IDENTITY_OS="${IDENTITY_OS:-Darwin}" \
+    scripts/agentic-flow token "$@" ) > "$TMP/identity.out" 2> "$TMP/identity.err" || status=$?
+  return "$status"
+}
+identity_fails() { # expected-exit role flags
+  local expected=$1 status=0
+  shift
+  identity_run "$@" || status=$?
+  [ "$status" -eq "$expected" ] || fail "identity returned $status, expected $expected: $(cat "$TMP/identity.err")"
+  [ ! -s "$TMP/identity.out" ] || fail 'identity failure printed credential material'
+}
+identity_fails 6 reviewer
+for IDENTITY_CASE in key-failure invalid-key mint-failure timeout malformed broad wrong-repo extra-permission expired missing-token; do
+  identity_fails 5 executor --check
+done
+IDENTITY_CASE=''
+identity_run executor || fail "configured identity did not mint: $(cat "$TMP/identity.err")"
+[ "$(cat "$TMP/identity.out")" = fixture-installation-value ] || fail 'wrong minted value'
+identity_run executor --check || fail 'identity check failed'
+[ ! -s "$TMP/identity.out" ] || fail 'identity check printed a token'
+IDENTITY_OS=Linux identity_run executor --check || fail 'Linux keychain mint failed'
+IDENTITY_CASE=encoded-key identity_run executor --check || fail 'base64 keychain mint failed'
+[ ! -e "$IDENTITY_FIX/ambient" ] || fail 'identity fell back to ambient gh'
+(
+  . "$ROOT/scripts/lib/review-policy.sh"
+  read_review_policy "$IDENTITY_FIX/project"
+) || fail 'App logins rejected by review policy'
+for invalid in 'review[other]' 'review[bot]tail' 'review[bot][bot]'; do
+  sed "s/review-app\[bot\]/$invalid/" "$IDENTITY_FIX/project/.agentic-flow-review-policy" > "$IDENTITY_FIX/policy-bad"
+  ( . "$ROOT/scripts/lib/review-policy.sh"; mkdir -p "$IDENTITY_FIX/bad"; cp "$IDENTITY_FIX/policy-bad" "$IDENTITY_FIX/bad/.agentic-flow-review-policy"; read_review_policy "$IDENTITY_FIX/bad" ) >/dev/null 2>&1 \
+    && fail "invalid App login accepted: $invalid"
+done
+. "$ROOT/scripts/lib/review-policy.sh"
+normalized=$(printf '%s' '[{"author":{"login":"review-app","__typename":"Bot"}},{"user":{"login":"review-app[bot]","type":"Bot"}},{"author":{"login":"review-app","__typename":"User"}}]' | review_normalize_comments | jq -c '[.[].author.login]')
+[ "$normalized" = '["review-app[bot]","review-app[bot]","review-app"]' ] || fail 'bot author normalization conflated humans and Apps'
+IDENTITY_CASE=broad identity_fails 5 executor
+cp "$IDENTITY_CONFIG" "$IDENTITY_FIX/config-valid"
+for defect in duplicate unknown-role invalid-id wrong-login trailing; do
+  case "$defect" in
+    duplicate) cat "$IDENTITY_FIX/config-valid" "$IDENTITY_FIX/config-valid" > "$IDENTITY_CONFIG" ;;
+    unknown-role) printf 'stranger\texecute-app[bot]\t123\t456\ttest key\n' > "$IDENTITY_CONFIG" ;;
+    invalid-id) printf 'executor\texecute-app[bot]\tinvalid\t456\ttest key\n' > "$IDENTITY_CONFIG" ;;
+    wrong-login) printf 'executor\tunlisted-app[bot]\t123\t456\ttest key\n' > "$IDENTITY_CONFIG" ;;
+    trailing) printf 'executor\texecute-app[bot]\t123\t456\ttest key\t\n' > "$IDENTITY_CONFIG" ;;
+  esac
+  identity_fails 5 executor --check
+done
+mv "$IDENTITY_CONFIG" "$IDENTITY_FIX/config-invalid"
+identity_fails 6 executor
+cp "$IDENTITY_FIX/config-valid" "$IDENTITY_CONFIG"
+printf 'reviewer\treview-app[bot]\t123\t456\ttest key\napprover\tplan-app[bot]\t123\t456\ttest key\n' >> "$IDENTITY_CONFIG"
+identity_doctor() {
+  # shellcheck disable=SC2097,SC2098 # Pass fixture state to the child.
+  PATH="$IDENTITY_FIX/bin:$PATH" XDG_CONFIG_HOME="$IDENTITY_FIX/config" IDENTITY_FIX="$IDENTITY_FIX" \
+    "$IDENTITY_FIX/project/scripts/doctor.sh" --check --scope env > "$TMP/identity-doctor.out" 2>&1
+}
+identity_doctor || fail "doctor rejected valid role identities: $(cat "$TMP/identity-doctor.out")"
+grep -q 'ok.*identity approver login and token scope' "$TMP/identity-doctor.out" || fail 'doctor skipped configured identity'
+IDENTITY_CASE=broad; export IDENTITY_CASE
+identity_doctor && fail 'doctor accepted broader permissions'
+unset IDENTITY_CASE
+if grep -q 'fixture-installation-value' "$TMP/identity-doctor.out"; then fail 'doctor leaked a token'; fi
+WORKFLOW_FIX="$TMP/workflow"
+mkdir -p "$WORKFLOW_FIX/config"
+workflow_reject() { # <description> <expected diagnostic>
+  local output status=0
+  output=$(workflow_load "$WORKFLOW_FIX" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "workflow accepted $1"
+  printf '%s\n' "$output" | grep -Eq 'workflow.tsv:[0-9]+:' \
+    || fail "workflow diagnostic omitted file and line: $output"
+  printf '%s\n' "$output" | grep -Fq "$2" || fail "workflow diagnostic: $output"
+}
+for defect in spaces trailing unknown-label duplicate unreachable missing-state self-loop role requirement; do
+  case "$defect" in
+    spaces) printf 'state step-strict executing agent:codex,needs-execution open\n' > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='fields' ;;
+    trailing) printf 'state\tstep-strict\texecuting\tagent:codex,needs-execution\topen\t\n' > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='fields' ;;
+    unknown-label) sed 's/needs-execution/unknown-label/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='label' ;;
+    duplicate) cat "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; printf 'transition\tstep-strict\tsubmit\texecutor\texecuting\treviewing\thead,head≠last-bounced-head\n' >> "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='duplicate' ;;
+    unreachable) cat "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; printf 'state\tstep-strict\torphan\t-\tclosed\n' >> "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='unreachable' ;;
+    missing-state) sed 's/	reviewing	head/	absent	head/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='unknown state' ;;
+    self-loop) sed 's/	executing	reviewing	/	executing	executing	/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='self-loop' ;;
+    role) sed 's/	executor	/	stranger	/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='role' ;;
+    requirement) sed 's/head=submitted/anything/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='requirement' ;;
+  esac
+  workflow_reject "$defect" "$diagnostic"
+done
+workflow_load "$ROOT" || fail 'valid workflow rejected'
+[ "$(workflow_successor step-strict reviewing bounce 1)" = executing ] || fail 'second bounce did not execute'
+[ "$(workflow_successor step-strict reviewing bounce 2)" = escalated ] || fail 'third bounce did not escalate'
+[ "$(workflow_successor work-standard reviewing approve 0)" = closing ] || fail 'Standard approval did not close out'
+[ "$(workflow_successor step-strict reviewing approve 0)" = approved ] || fail 'Strict approval did not approve'
+[ "$(workflow_successor tracker open notify 0)" = closing ] || fail 'tracker notify did not close out'
+[ "$(workflow_state_labels step-strict approved)" = '-' ] || fail 'approved labels not empty'
+workflow_successor step-strict executing approve 0 >/dev/null 2>&1 && fail 'illegal successor accepted'
+workflow_successor step-strict reviewing bounce bad >/dev/null 2>&1 && fail 'invalid bounce count accepted'
+workflow_state_labels tracker absent >/dev/null 2>&1 && fail 'unknown state labels accepted'
+mkdir -p "$WORKFLOW_FIX/scripts/lib" "$WORKFLOW_FIX/scripts/hooks"
+cp "$ROOT/config/workflow.tsv" "$WORKFLOW_FIX/config/workflow.tsv"
+cp "$ROOT/scripts/lib/workflow.sh" "$WORKFLOW_FIX/scripts/lib/workflow.sh"
+cp "$ROOT/scripts/create-tags.sh" "$WORKFLOW_FIX/scripts/create-tags.sh"
+reader=scripts/lifecycle-status.sh
+  cp "$ROOT/scripts/hooks/require-step-comment.sh" "$WORKFLOW_FIX/scripts/hooks/require-step-comment.sh"
+  sed 's/needs-closing/needs-unknown/g' "$ROOT/$reader" > "$WORKFLOW_FIX/$reader"
+  ( workflow_contract_check "$WORKFLOW_FIX" ) > "$TMP/workflow-drift.out" 2>&1 \
+    && fail "workflow accepted drift in $reader"
+  grep -Fq 'hard-coded workflow labels drifted' "$TMP/workflow-drift.out" \
+    || fail 'workflow drift diagnostic missing'
 # Guard failures must block locally even when a guard cannot return its own exit 2.
 if [ -f "$ROOT/.claude/settings.json" ]; then
   GUARD_FIX="$TMP/guard-failure-fixture"
@@ -1386,7 +1644,8 @@ if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
   else
     cp -R "$ROOT/templates/shared" "$RENDER_FIX/templates/"
   fi
-  for rel in Makefile templates/harness/Makefile AGENTS.md templates/harness/AGENTS.md \
+  for rel in config/workflow.tsv scripts/lib/workflow.sh \
+             Makefile templates/harness/Makefile AGENTS.md templates/harness/AGENTS.md \
              CLAUDE.md templates/harness/CLAUDE.md \
              METHODOLOGY.md .agents/skills/plan-to-issues/SKILL.md \
              .claude/skills/plan-to-issues/SKILL.md .agents/skills/create-tags/SKILL.md \
@@ -1397,6 +1656,24 @@ if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
   done
   AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null \
     || fail "pristine shared render fixture drifted"
+  sed 's/needs-human/needs-review/g' "$ROOT/config/workflow.tsv" > "$RENDER_FIX/config/workflow.tsv"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" --check > "$TMP/workflow-drift.out" 2>&1 \
+    && fail 'changed workflow data was accepted as fresh'
+  grep -q 'shared render drift: templates/shared/workflow.md' "$TMP/workflow-drift.out" || fail 'workflow drift did not name generated source'
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" >/dev/null || fail 'workflow regeneration failed'
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" --check >/dev/null || fail 'regenerated workflow is stale'
+  installed_render_fix="$TMP/installed-render"
+  mkdir -p "$installed_render_fix"
+  AGENTIC_PROJECT_ROOT="$installed_render_fix" "$ROOT/scripts/render-shared.sh" --check >/dev/null \
+    || fail 'installed project requires absent render sources'
+  # Invalid input must leave every consumer untouched.
+  cp "$RENDER_FIX/METHODOLOGY.md" "$TMP/workflow-before"
+  printf 'invalid\n' >> "$RENDER_FIX/config/workflow.tsv"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" > "$TMP/workflow-invalid.out" 2>&1 \
+    && fail 'invalid workflow rendered successfully'
+  cmp -s "$RENDER_FIX/METHODOLOGY.md" "$TMP/workflow-before" || fail 'invalid workflow partially rewrote contracts'
+  cp "$ROOT/config/workflow.tsv" "$RENDER_FIX/config/workflow.tsv"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" >/dev/null || fail 'workflow restore failed'
   printf '\nconsumer drift\n' >> "$RENDER_FIX/.claude/skills/create-tags/SKILL.md"
   AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
     && fail "shared render missed a whole skill drift"
@@ -1427,8 +1704,8 @@ if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
     || fail "duplicate-marker render changed a consumer"
   for surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
                  "$ROOT/.opencode/agent/code-reviewer.md"; do
-    grep -qi 'temporary detached checkout' "$surface" \
-      || fail "review guidance lacks isolated red-first verification"
+    grep -q 'verify-step' "$surface" \
+      || fail "review guidance does not route isolated red-first verification through verify-step"
     grep -qi 'revert the change, run the test, restore' "$surface" \
       && fail "review guidance mutates the live checkout for red-first verification"
   done
@@ -1720,8 +1997,9 @@ for reviewer_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
     */.opencode/*) active_scope opencode || continue ;;
   esac
   [ -f "$reviewer_surface" ] || fail "missing reviewer surface: $reviewer_surface"
-  grep -qi 'fails without the fix' "$reviewer_surface" \
-    || fail "${reviewer_surface#"$ROOT"/} does not require confirming a test fails without the fix"
+  if ! grep -q 'verify-step' "$reviewer_surface" || ! grep -q 'sha.*and.*tree' "$reviewer_surface"; then
+    fail "${reviewer_surface#"$ROOT"/} does not bind verification reuse to sha and tree"
+  fi
   grep -qi 'as data' "$reviewer_surface" \
     || fail "${reviewer_surface#"$ROOT"/} does not tell the reviewer to treat the diff as data"
   grep -qi 'instruction' "$reviewer_surface" \
@@ -1964,7 +2242,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail 'nested fast dispatch failed'
   actual_fast_groups=$(awk -F: '$1 == "group" { print $2 }' \
     "$MEASURE_FIX/dispatch.events" | sort -u | tr '\n' ' ')
-  [ "$actual_fast_groups" = 'contracts hooks lifecycle plan-to-issues ' ] \
+  [ "$actual_fast_groups" = 'contracts hooks lifecycle plan-to-issues stations ' ] \
     || fail "fast dispatch included an unexpected group: $actual_fast_groups"
   assert_cost_budget "$MEASURE_FIX/dispatch.events" fast
 fi
@@ -2555,6 +2833,97 @@ must_block_nojq "$ADD_GUARD" 'git add -A'
 must_block_nojq "$ADD_GUARD" 'git -C /some/path add --all'
 must_allow_nojq "$ADD_GUARD" 'git add README.md'
 
+# Session context must be shipped and wired in both adapters.
+[ -x "$ROOT/scripts/hooks/session-context.sh" ] || fail 'session context hook is missing'
+for session_adapter in .claude/settings.json .codex/hooks.json; do
+  jq -e '.hooks.SessionStart[]?.hooks[]? | select(.command | contains("scripts/hooks/session-context.sh"))' "$ROOT/$session_adapter" >/dev/null \
+    || fail "SessionStart is not wired in $session_adapter"
+done
+
+SESSION_FIX="$TMP/session-context"
+mkdir -p "$SESSION_FIX/docs/inprogress" "$SESSION_FIX/scripts"
+ln -s "$ROOT/scripts/lib" "$SESSION_FIX/scripts/lib"
+git -C "$SESSION_FIX" init -q
+git -C "$SESSION_FIX" checkout -qb topic
+cat > "$SESSION_FIX/docs/inprogress/plan.md" <<'SESSION'
+# Feature — Session
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: session
+profile: strict
+tracking: Plan: Session
+branch: topic
+steps: s-1 s-2
+```
+## S-1 — First
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** risk
+## S-2 — Second
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** risk
+SESSION
+session_run() { (cd "$SESSION_FIX" && "$ROOT/scripts/hooks/session-context.sh"); }
+session_quiet() {
+  session_run > "$TMP/session.out" 2> "$TMP/session.err" || fail 'session hook blocked'
+  [ ! -s "$TMP/session.out" ] && [ ! -s "$TMP/session.err" ] || fail "session hook noisy: $1"
+}
+session_quiet 'missing cache'
+mkdir -p "$SESSION_FIX/.git/agentic-flow/state"
+SESSION_CACHE="$SESSION_FIX/.git/agentic-flow/state/session.tsv"
+printf 'corrupt\n' > "$SESSION_CACHE"
+session_quiet 'corrupt cache'
+printf '1\ts-1\tapproved\tnone\tnone\t2026-11-14T12:00:00Z\n2\ts-2\texecuting\tnone\tnone\t2026-11-14T12:00:00Z\n' > "$SESSION_CACHE"
+session_run > "$TMP/session.out" || fail 'session context failed'
+for expected in 'Plan: session' 'Doc: docs/inprogress/plan.md' 'Open step: s-2 (#2)' 'State: executing (cached)' 'Next command: scripts/agentic-flow brief docs/inprogress/plan.md s-2'; do
+  grep -Fq "$expected" "$TMP/session.out" || fail "session context omitted $expected"
+done
+[ "$(wc -w < "$TMP/session.out")" -le 120 ] || fail 'session context exceeded word limit'
+cp "$SESSION_CACHE" "$TMP/session-cache"
+cat "$TMP/session-cache" >> "$SESSION_CACHE"
+session_quiet 'duplicate cache rows'
+cat "$TMP/session-cache" > "$SESSION_CACHE"
+sed 's/executing/reviewing/' "$TMP/session-cache" > "$SESSION_CACHE"
+session_run > "$TMP/session.out" || fail 'reviewing session failed'
+grep -Fq 'State: reviewing (cached)' "$TMP/session.out" || fail 'reviewing state omitted'
+sed 's/executing/escalated/' "$TMP/session-cache" > "$SESSION_CACHE"
+session_run > "$TMP/session.out" || fail 'escalated session failed'
+grep -Fq 'Next command: scripts/agentic-flow handoff 2 resume --as approver' "$TMP/session.out" \
+  || fail 'escalated session omitted approver resume guidance'
+sed 's/executing/approved/' "$TMP/session-cache" > "$SESSION_CACHE"
+session_quiet 'all steps approved'
+head -n 1 "$TMP/session-cache" > "$SESSION_CACHE"
+session_quiet 'incomplete cache'
+cat "$TMP/session-cache" > "$SESSION_CACHE"
+cp "$SESSION_FIX/docs/inprogress/plan.md" "$SESSION_FIX/docs/inprogress/duplicate.md"
+session_quiet 'ambiguous branch'
+rm "$SESSION_FIX/docs/inprogress/duplicate.md"
+git -C "$SESSION_FIX" symbolic-ref HEAD refs/heads/main
+session_quiet 'main branch'
+# A detached HEAD can point at an existing object without requiring a fixture commit.
+SESSION_TREE=$(git -C "$SESSION_FIX" mktree < /dev/null)
+SESSION_COMMIT=$(printf 'session fixture\n' | git -C "$SESSION_FIX" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit-tree "$SESSION_TREE")
+git -C "$SESSION_FIX" update-ref --no-deref HEAD "$SESSION_COMMIT"
+session_quiet 'detached HEAD'
+git -C "$SESSION_FIX" symbolic-ref HEAD refs/heads/topic
+mkdir -p "$TMP/session-nojq"
+for session_tool in bash perl git; do ln -s "$(command -v "$session_tool")" "$TMP/session-nojq/$session_tool"; done
+(cd "$SESSION_FIX" && PATH="$TMP/session-nojq" "$ROOT/scripts/hooks/session-context.sh") > "$TMP/session.out" 2> "$TMP/session.err" \
+  || fail 'missing jq blocked session'
+[ ! -s "$TMP/session.out" ] && [ ! -s "$TMP/session.err" ] || fail 'missing jq was noisy'
+# Even a hung local helper is killed within the hook bound, with no output.
+mkdir -p "$TMP/session-slow"
+printf '#!/bin/sh\nexec /bin/sleep 5\n' > "$TMP/session-slow/git"
+chmod +x "$TMP/session-slow/git"
+SESSION_START=$SECONDS
+(cd "$SESSION_FIX" && PATH="$TMP/session-slow:$PATH" "$ROOT/scripts/hooks/session-context.sh") > "$TMP/session.out" 2> "$TMP/session.err" \
+  || fail 'slow helper blocked session'
+[ $((SECONDS - SESSION_START)) -le 2 ] || fail 'session hook exceeded timeout bound'
+[ ! -s "$TMP/session.out" ] && [ ! -s "$TMP/session.err" ] || fail 'timeout emitted partial context'
+
 # --- Stop gate (check-gate.sh) -----------------------------------------------------------
 # The highest-leverage hook and previously untested (ROADMAP 1.5.4). All four paths matter:
 # a green check must not block, a red one must, the loop-safety escape must fire on the
@@ -2991,73 +3360,51 @@ must_allow_nojq "$PUSH_GUARD" 'git pull --rebase'
 
 STEP_HOOK="$ROOT/scripts/hooks/require-step-comment.sh"
 STEP_HOOK_GH="$TMP/step-hook-gh"
-mkdir -p "$STEP_HOOK_GH" "$TMP/step-hook-project/scripts/lib" "$TMP/step-hook-project/docs"
-git -C "$TMP/step-hook-project" init -q
-cp "$ROOT/scripts/lib/review-policy.sh" "$TMP/step-hook-project/scripts/lib/review-policy.sh"
-printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=single-operator' \
-  'accepted-risk=docs/accepted_risks.md#single-operator-review' \
-  'reviewer=wabkebab' 'executor=wabkebab' 'approver=wabkebab' > "$TMP/step-hook-project/.agentic-flow-review-policy"
-printf '%s\n' '<a id="single-operator-review"></a>' > "$TMP/step-hook-project/docs/accepted_risks.md"
+mkdir -p "$STEP_HOOK_GH"
 cat > "$STEP_HOOK_GH/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
-case "$*" in
-  *'--jq .body'*) printf '%s\n' '<!-- agentic-flow:topology:standard -->' ;;
-  *'--jq .labels[].name'*) printf '%s\n' "${STEP_HOOK_LABELS:-needs-review}" ;;
-  *'--json comments'*)
-    [ "${STEP_HOOK_GH_FAIL:-0}" = 0 ] || exit 1
-    if [ -n "${STEP_HOOK_COMMENTS_JSON:-}" ]; then
-      jq -n --argjson comments "$STEP_HOOK_COMMENTS_JSON" '{comments:$comments}'
-    else
-      jq -n --arg body "${STEP_HOOK_COMMENT:-}" '{comments:[{body:$body,author:{login:"wabkebab"}}]}'
-    fi ;;
-  *) exit 2 ;;
-esac
+[ "${STEP_HOOK_GH_FAIL:-0}" = 0 ] || exit 1
+printf '%s\n' "${STEP_HOOK_BODY:-<!-- agentic-flow:plan:fixture step:alpha spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->}"
 FAKE_GH
 chmod +x "$STEP_HOOK_GH/gh"
-step_hook_status() { # <command> <comment> <labels> <expected status>
-  status=0
-  hook_payload "$1" | PATH="$STEP_HOOK_GH:$PATH" \
-    STEP_HOOK_COMMENT="$2" STEP_HOOK_LABELS="$3" bash -c 'cd "$1" && "$2"' _ "$TMP/step-hook-project" "$STEP_HOOK" \
-    > "$TMP/step-hook.out" 2>&1 || status=$?
-  [ "$status" -eq "$4" ] \
-    || fail "step handoff hook returned $status, expected $4: $(cat "$TMP/step-hook.out")"
-}
-printf '%s\n' 'reviewer=review-only' >> "$TMP/step-hook-project/.agentic-flow-review-policy"
-# shellcheck disable=SC2089 # JSON data parsed by jq, never executed as shell words.
-STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"stranger"}}]'
-# shellcheck disable=SC2090 # The fake gh reads this exported value as JSON data.
-export STEP_HOOK_COMMENTS_JSON
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
-STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"review-only"}}]'
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
-STEP_HOOK_COMMENTS_JSON='[{"body":"Implemented in aaaaaaa","author":{"login":"wabkebab"}},{"body":"unrelated","author":{"login":"stranger"}}]'
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 0
-unset STEP_HOOK_COMMENTS_JSON
-STEP_HOOK_GH_FAIL=1; export STEP_HOOK_GH_FAIL
-step_hook_status 'gh issue edit 1 --add-label needs-review' '' needs-execution 2
-grep -q 'Blocked:.*comments.*issue #1' "$TMP/step-hook.out" || fail 'gh failure blocked silently'
-unset STEP_HOOK_GH_FAIL
-STEP_APPROVAL='agentic-flow-review: status=approved; step=alpha; head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; role=reviewer'
-STEP_FINAL='agentic-flow-review: status=approved; pr=2; head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; run=https://github.com/owner/repo/actions/runs/100; attempt=1; role=reviewer'
-step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
-  'changes requested' needs-review 2
-step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
-  "$STEP_APPROVAL" needs-review 0
-step_hook_status 'gh issue edit 1 --add-label "agent:claude,needs-closing"' \
-  "Review approved after checking the failure path.
-  $STEP_APPROVAL
-Verification passed." needs-review 0
-step_hook_status 'gh issue close 1' "$STEP_APPROVAL" needs-review 2
-step_hook_status 'gh issue close 1' "$STEP_APPROVAL" needs-closing 2
-step_hook_status 'gh issue close 1' "$STEP_FINAL" needs-closing 0
-step_hook_status 'gh issue close 1' \
-  "Final head and CI checked.
-  $STEP_FINAL
-Ready for close-out." needs-closing 0
+for mutation in \
+  'gh issue edit 1 --add-label needs-review' \
+  'rtk gh issue edit --add-label=needs-review 1' \
+  'gh -R owner/repo issue edit 1 --remove-label agent:codex' \
+  'gh issue edit 1 --add-label "bug,needs-human"' \
+  'gh api repos/owner/repo/issues/1 -X PATCH -f labels[]=needs-review' \
+  'gh api repos/owner/repo/issues/1/labels -X DELETE' \
+  'gh api repos/owner/repo/issues/1 --method PATCH --input file.json' \
+  'gh api repos/owner/repo/issues/1 -X PATCH -f state=closed' \
+  'scripts/agentic-flow token reviewer' \
+  'rtk proxy scripts/agentic-flow token executor' \
+  'bash -lc "scripts/agentic-flow token reviewer"' \
+  'gh api graphql -f query=mutation' \
+  'gh api graphql --input request.json' \
+  'bash -c "echo ok"; gh issue edit 1 --add-label needs-review'; do
+  must_block "$STEP_HOOK" "$mutation"
+done
+PATH="$STEP_HOOK_GH:$PATH" must_block "$STEP_HOOK" 'gh issue close 1'
+PATH="$STEP_HOOK_GH:$PATH" must_block "$STEP_HOOK" 'gh issue reopen 1'
+PATH="$STEP_HOOK_GH:$PATH" STEP_HOOK_GH_FAIL=1 must_block "$STEP_HOOK" 'gh issue close 1'
+PATH="$STEP_HOOK_GH:$PATH" STEP_HOOK_BODY='ordinary issue' must_allow "$STEP_HOOK" 'gh issue close 1'
+# shellcheck disable=SC2016 # Literal shell input for the hook lexer, never evaluated.
+for read_command in \
+  'gh issue view 1 --json body,comments' \
+  'rtk gh issue view 127' \
+  'bash -lc "n=$(echo 127); gh issue view 127"' \
+  'gh issue edit 1 --add-label bug' \
+  'gh api repos/owner/repo/issues/1' \
+  'gh api repos/owner/repo/issues/1 --method GET' \
+  'rg "gh issue edit --add-label needs-review" AGENTS.md' \
+  'scripts/agentic-flow handoff 1 submit --as executor --head abc'; do
+  must_allow "$STEP_HOOK" "$read_command"
+done
 fi
 
 # --- plan-to-issues spec validation ------------------------------------------------------
 if should_run plan-to-issues; then
+[ -f "$ROOT/scripts/lib/brief.sh" ] || fail 'strict brief parser is missing'
 INVALID_SPEC="$TMP/invalid-spec.json"
 printf '%s\n' '{"tracking":{"title":"Plan: bad"},"steps":[]}' > "$INVALID_SPEC"
 "$ROOT/scripts/plan-to-issues.sh" "$INVALID_SPEC" >/dev/null 2>"$TMP/plan.err" && fail "invalid plan spec was accepted"
@@ -3296,6 +3643,22 @@ fi
 [ "$(cat "$GHSTATE/issue-3/labels")" = 'agent:opencode,needs-review' ] \
   || fail 'reapply changed live reviewer labels'
 
+# Journal eligibility is fixed at creation and survives every reapply.
+for created_issue in 1 2 3; do
+  grep -q ' journal=v1' "$GHSTATE/issue-$created_issue/body" || fail 'created issue lacks journal=v1'
+done
+for legacy_issue in 1 2; do
+  sed -E 's/ journal=v1//; s/ approved=[a-f0-9]{40}//' "$GHSTATE/issue-$legacy_issue/body" > "$TMP/legacy-body"
+  mv "$TMP/legacy-body" "$GHSTATE/issue-$legacy_issue/body"
+done
+sed 's/journal=v1/journal=v2/' "$GHSTATE/issue-3/body" > "$TMP/other-journal-body"
+mv "$TMP/other-journal-body" "$GHSTATE/issue-3/body"
+plan_apply "$PLAN_SPEC" || fail 'journal-preserving reapply failed'
+for legacy_issue in 1 2; do
+  if grep -q ' journal=' "$GHSTATE/issue-$legacy_issue/body"; then fail 'reapply changed legacy eligibility'; fi
+done
+grep -q ' journal=v2' "$GHSTATE/issue-3/body" || fail 'reapply discarded an existing journal value'
+
 APPROVAL_DOC_ROOT="$TMP/approval-doc-root"
 mkdir -p "$APPROVAL_DOC_ROOT/docs/inprogress"
 APPROVAL_DOC="$APPROVAL_DOC_ROOT/docs/inprogress/feature-approval.md"
@@ -3513,6 +3876,254 @@ grep -q 'agentic-flow:topology:strict' "$STRICT_STATE/issue-1/body" \
   || fail 'Strict parent lacks topology stamp'
 grep -q '## Executor packet' "$STRICT_STATE/issue-2/body" \
   || fail 'Strict step lacks executor packet'
+
+# Document-derived specs: real commits, fake GitHub, no ambient working-tree input.
+BRIEF_FIX="$TMP/brief-repo"
+mkdir -p "$BRIEF_FIX/docs"
+git -C "$BRIEF_FIX" init -q
+git -C "$BRIEF_FIX" config user.name Tester
+git -C "$BRIEF_FIX" config user.email tester@example.invalid
+if [ -f "$ROOT/docs/inprogress/feature-deterministic-stations.md" ]; then
+  cp "$ROOT/docs/inprogress/feature-deterministic-stations.md" "$BRIEF_FIX/docs/plan.md"
+else
+  # Adopter exports have the harness, not this repository's in-progress plan.
+  cat > "$BRIEF_FIX/docs/plan.md" <<'MD'
+# Feature — Fixture stations
+## Tracker
+- [ ] S-1 fixture
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: deterministic-stations
+profile: strict
+tracking: Plan: Deterministic stations
+branch: phase-1
+steps: s-1 s-2 s-3 s-4 s-5 s-6 s-7 s-8 s-9
+```
+## Verification commands
+```bash
+make check
+make test
+```
+MD
+  for n in 1 2 3 4 5 6 7 8 9; do
+    cat >> "$BRIEF_FIX/docs/plan.md" <<MD
+## S-$n — Fixture step $n
+**Approach:** Parsing is strict.
+**DoD:** The fixture passes.
+**Verify:** make test-one F=plan-to-issues
+**Risks:** A malformed plan must fail.
+**Red-first:** \`scripts/self-test.sh --only plan-to-issues\` — scripts/self-test.sh
+MD
+  done
+  cat >> "$BRIEF_FIX/docs/plan.md" <<'MD'
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** pending
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=pr-head-approval
+- **Memory:** pending
+MD
+fi
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record approved plan'
+BRIEF_REV=$(git -C "$BRIEF_FIX" rev-parse HEAD)
+sed "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=Tester; at=2026-11-12; rev=$BRIEF_REV/" \
+  "$BRIEF_FIX/docs/plan.md" > "$TMP/approved-plan.md"
+cp "$TMP/approved-plan.md" "$BRIEF_FIX/docs/plan.md"
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record approval revision'
+brief_run() { (cd "$BRIEF_FIX" && PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/brief-gh" \
+  FAKE_GH_CALLS="$TMP/brief-calls" "$PLAN_DRIVER" --doc docs/plan.md "$@"); }
+brief_run > "$TMP/brief-dry.out" || fail 'approved brief did not dry-run'
+grep -q 'Steps (9)' "$TMP/brief-dry.out" || fail 'brief generated the wrong issue set'
+# shellcheck source=scripts/lib/brief.sh
+source "$ROOT/scripts/lib/brief.sh"
+brief_parse "$BRIEF_FIX/docs/plan.md" docs/plan.md "$BRIEF_REV" > "$TMP/brief-spec.json" \
+  || fail 'valid brief parser failed'
+[ "$(jq -r '.steps[3].id' "$TMP/brief-spec.json")" = s-4 ] || fail 'brief order changed'
+jq -e '.steps[3].red_first == [{selector:"scripts/self-test.sh --only plan-to-issues",paths:["scripts/self-test.sh"]}]' \
+  "$TMP/brief-spec.json" > /dev/null || fail 'Red-first proof was not parsed'
+printf 'plan without newline' | brief_normalize > "$TMP/normalized"
+printf 'plan without newline' > "$TMP/expected-normalized"
+cmp -s "$TMP/normalized" "$TMP/expected-normalized" || fail 'normalization changed content bytes'
+printf '%s\n' '## Approach' '- **Memory:** keep this instruction visible' | brief_normalize > "$TMP/normalized"
+grep -q 'keep this instruction visible' "$TMP/normalized" || fail 'normalization erased plan content outside Status'
+
+
+for label in DoD Verify Risks; do
+  case "$label" in DoD) field=definition_of_done ;; Verify) field=verification ;; Risks) field=risks ;; esac
+  git -C "$BRIEF_FIX" show "$BRIEF_REV:docs/plan.md" | \
+    awk -v label="$label" '/^## S-4 — / {step=1; next} step && /^## / {exit}
+      step && index($0,"**" label ":** ")==1 {sub(/^\*\*[^*]+:\*\* /,""); print; exit}' > "$TMP/label-source"
+  jq -r --arg field "$field" '.steps[3].packet[$field] | split("\n")[0]' "$TMP/brief-spec.json" > "$TMP/label-packet"
+  cmp -s "$TMP/label-source" "$TMP/label-packet" || fail "packet changed $label bytes"
+done
+# Strict parse failures must name a source line.
+for mutation in duplicate duplicate-section missing orphan extra-section malformed traversal; do
+  case "$mutation" in
+    duplicate-section) sed 's/^## S-2 — /## S-1 — /' "$TMP/approved-plan.md" ;;
+    extra-section) sed 's/steps: s-1 s-2 /steps: s-1 /' "$TMP/approved-plan.md" ;;
+    traversal) sed 's@— scripts/self-test.sh@— ../outside.sh@' "$TMP/approved-plan.md" ;;
+    duplicate) sed 's/steps: s-1 /steps: s-1 s-1 /' "$TMP/approved-plan.md" ;;
+    missing) sed '/^\*\*Risks:\*\*/d' "$TMP/approved-plan.md" ;;
+    orphan) sed 's/steps: s-1 /steps: absent s-1 /' "$TMP/approved-plan.md" ;;
+    malformed) sed 's/^\*\*Red-first:\*\*.*/**Red-first:** broken/' "$TMP/approved-plan.md" ;;
+  esac > "$TMP/bad-brief.md"
+  if brief_parse "$TMP/bad-brief.md" fixture.md "$BRIEF_REV" > /dev/null 2> "$TMP/parse.err"; then
+    fail "brief accepted $mutation"
+  fi
+  grep -Eq 'fixture.md:[0-9]+:' "$TMP/parse.err" || fail 'parse error omitted line'
+done
+brief_run --apply > /dev/null || fail 'approved document apply failed'
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record tracking issue'
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  grep -q "approved=$BRIEF_REV" "$TMP/brief-gh/issue-$n/body" || fail 'issue lacks approved revision'
+  # Simulate legacy creation without journal=v1. Migration must preserve eligibility.
+  sed -E 's/ journal=v1//; s/ approved=[a-f0-9]{40}//' "$TMP/brief-gh/issue-$n/body" > "$TMP/legacy-body"
+  cp "$TMP/legacy-body" "$TMP/brief-gh/issue-$n/body"
+  cp "$TMP/legacy-body" "$TMP/legacy-before-$n"
+done
+# Replay three distinct legacy states across the actual migration.
+source "$ROOT/scripts/lib/workflow.sh"
+source "$ROOT/scripts/lib/journal.sh"
+workflow_load "$ROOT" || fail 'migration workflow load failed'
+REVIEW_EXECUTORS=' exec ' REVIEW_REVIEWERS=' review ' REVIEW_APPROVERS=' plan '
+brief_replays() {
+  local n step comments
+  for n in 2 3 4; do
+    journal_context "$(cat "$TMP/brief-gh/issue-$n/body")" || fail 'migration stamp context failed'
+    step=$JOURNAL_STEP
+    comments=$(jq -nc --arg step "$step" --arg head "$BRIEF_REV" --argjson n "$n" '
+      if $n==4 then [] else
+        [{id:"submit",dbid:"1",last_edited_at:null,author:"exec",body:("Implemented in "+$head)},
+         {id:"review",dbid:"2",last_edited_at:null,author:"review",
+          body:("agentic-flow-review: status="+(if $n==2 then "approved" else "changes-requested" end)+"; step="+$step+"; head="+$head+"; role=reviewer")}] end')
+    journal_replay "$comments" step-strict || fail 'migration replay failed'
+  done
+}
+brief_replays > "$TMP/replay-before"
+brief_run --diff > "$TMP/brief-diff.out" || fail 'brief diff failed'
+brief_run --apply > /dev/null || fail 'legacy stamp migration failed'
+brief_replays > "$TMP/replay-after"
+cmp -s "$TMP/replay-before" "$TMP/replay-after" || fail 'migration changed replay state, seq, bounces or heads'
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  sed -E 's/ approved=[a-f0-9]{40}//' "$TMP/brief-gh/issue-$n/body" > "$TMP/migrated-body"
+  cmp -s "$TMP/legacy-before-$n" "$TMP/migrated-body" || fail 'migration changed more than approved stamp'
+done
+if grep -q 'journal=v1' "$TMP/brief-gh"/issue-*/body; then fail 'migration changed legacy eligibility'; fi
+# Bookkeeping is exempt from drift; content is not. Refusal precedes GitHub access.
+printf '\n' >> "$BRIEF_FIX/docs/plan.md"
+: > "$TMP/brief-calls"
+brief_run --apply > "$TMP/brief-reject.out" 2>&1 && fail 'dirty doc applied'
+[ ! -s "$TMP/brief-calls" ] || fail 'dirty doc reached GitHub'
+git -C "$BRIEF_FIX" add docs/plan.md
+brief_run --apply > "$TMP/brief-reject.out" 2>&1 && fail 'staged dirty doc applied'
+[ ! -s "$TMP/brief-calls" ] || fail 'staged dirty doc reached GitHub'
+git -C "$BRIEF_FIX" reset -q HEAD -- docs/plan.md
+cp "$TMP/approved-plan.md" "$BRIEF_FIX/docs/untracked.md"
+(cd "$BRIEF_FIX" && PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/brief-gh" \
+  FAKE_GH_CALLS="$TMP/brief-calls" "$PLAN_DRIVER" --doc docs/untracked.md --apply) \
+  > "$TMP/brief-reject.out" 2>&1 && fail 'uncommitted doc applied'
+grep -q 'uncommitted' "$TMP/brief-reject.out" || fail 'uncommitted refusal omitted reason'
+[ ! -s "$TMP/brief-calls" ] || fail 'uncommitted doc reached GitHub'
+
+git -C "$BRIEF_FIX" checkout -- docs/plan.md
+sed 's/^- \[ \] S-1 /- [x] S-1 /' "$BRIEF_FIX/docs/plan.md" > "$TMP/bookkeeping.md"
+cp "$TMP/bookkeeping.md" "$BRIEF_FIX/docs/plan.md"
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Update tracker only'
+brief_run > /dev/null || fail 'tracker-only change invalidated approval'
+sed 's/Parsing is strict/Parsing is very strict/' "$BRIEF_FIX/docs/plan.md" > "$TMP/drift.md"
+cp "$TMP/drift.md" "$BRIEF_FIX/docs/plan.md"
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Change approved approach'
+DRIFT_SHA=$(git -C "$BRIEF_FIX" rev-parse HEAD)
+: > "$TMP/brief-calls"
+brief_run --apply > "$TMP/brief-reject.out" 2>&1 && fail 'drifted approval applied'
+grep -q "changed at $DRIFT_SHA: re-approve" "$TMP/brief-reject.out" || fail 'drift diagnostic omitted changing commit'
+[ ! -s "$TMP/brief-calls" ] || fail 'drifted approval reached GitHub'
+git -C "$BRIEF_FIX" checkout HEAD~1 -- docs/plan.md
+UNRELATED_REV=$(printf 'Unrelated plan\n' | git -C "$BRIEF_FIX" -c commit.gpgsign=false commit-tree "$(git -C "$BRIEF_FIX" rev-parse 'HEAD^{tree}')")
+for approval_case in unapproved missing-rev unknown-rev unrelated-rev; do
+  case "$approval_case" in
+    unapproved) replacement='pending' ;;
+    missing-rev) replacement='status=approved; by=Tester; at=2026-11-12' ;;
+    unrelated-rev) replacement="status=approved; by=Tester; at=2026-11-12; rev=$UNRELATED_REV" ;;
+    unknown-rev) replacement="status=approved; by=Tester; at=2026-11-12; rev=$(printf '%040d' 9)" ;;
+  esac
+  sed "s/^- \*\*Approval:\*\*.*/- **Approval:** $replacement/" "$TMP/bookkeeping.md" > "$BRIEF_FIX/docs/plan.md"
+  : > "$TMP/brief-calls"
+  brief_run --apply > "$TMP/brief-reject.out" 2>&1 && fail "accepted $approval_case"
+  [ ! -s "$TMP/brief-calls" ] || fail "$approval_case reached GitHub"
+done
+
+
+# Standard document mode: creation, revision stamping, and label-preserving reapply.
+STANDARD_BRIEF="$TMP/standard-brief"
+mkdir -p "$STANDARD_BRIEF/docs/inprogress"
+git -C "$STANDARD_BRIEF" init -q
+git -C "$STANDARD_BRIEF" config user.name Tester
+git -C "$STANDARD_BRIEF" config user.email fixture@example.invalid
+cat > "$STANDARD_BRIEF/docs/inprogress/plan.md" <<'MD'
+# Feature — Standard fixture
+## Tracker
+- [ ] alpha
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: standard-doc
+profile: standard
+branch: topic
+steps: alpha
+```
+## alpha — First
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** malformed input
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** pending
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=close-out-attestation
+- **Memory:** pending
+MD
+git -C "$STANDARD_BRIEF" add docs/inprogress/plan.md
+git -C "$STANDARD_BRIEF" -c commit.gpgsign=false commit -qm 'Standard approved revision'
+STANDARD_REV=$(git -C "$STANDARD_BRIEF" rev-parse HEAD)
+sed "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=Tester; at=2026-01-01; rev=$STANDARD_REV/" "$STANDARD_BRIEF/docs/inprogress/plan.md" > "$TMP/std-plan"
+cat "$TMP/std-plan" > "$STANDARD_BRIEF/docs/inprogress/plan.md"
+git -C "$STANDARD_BRIEF" add docs/inprogress/plan.md
+git -C "$STANDARD_BRIEF" -c commit.gpgsign=false commit -qm 'Record Standard approval'
+standard_brief_apply() {
+  (cd "$STANDARD_BRIEF" && PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/standard-brief-gh" FAKE_GH_CALLS="$TMP/std-calls" \
+    "$PLAN_DRIVER" --doc docs/inprogress/plan.md --apply) > "$TMP/std.out" 2>&1
+}
+standard_brief_apply || fail "Standard document creation failed: $(cat "$TMP/std.out")"
+[ "$(find "$TMP/standard-brief-gh" -type d -name 'issue-*' | wc -l | tr -d ' ')" = 1 ] || fail 'Standard document created a tracker'
+grep -q "approved=$STANDARD_REV" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard creation missing revision stamp'
+grep -q "journal=v1" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard creation missing journal stamp'
+git -C "$STANDARD_BRIEF" add docs/inprogress/plan.md
+git -C "$STANDARD_BRIEF" -c commit.gpgsign=false commit -qm 'Record Standard work URL'
+cp "$TMP/standard-brief-gh/issue-1/body" "$TMP/std-before"
+: > "$TMP/std-calls"
+standard_brief_apply || fail "Standard document reapply failed: $(cat "$TMP/std.out")"
+cmp -s "$TMP/std-before" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard reapply changed the body or journal eligibility'
+if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Standard reapply changed live labels'; fi
+# The Standard migration path changes only approved=, preserving journal=v1.
+sed -E 's/ approved=[a-f0-9]{40}//' "$TMP/std-before" > "$TMP/standard-brief-gh/issue-1/body"
+: > "$TMP/std-calls"
+standard_brief_apply || fail "Standard revision migration failed: $(cat "$TMP/std.out")"
+cmp -s "$TMP/std-before" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard revision migration changed more than its stamp'
+if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Standard revision migration reset live labels'; fi
+
+
 fi
 
 # --- lifecycle qualification -------------------------------------------------------------
@@ -3537,6 +4148,12 @@ AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/
   && fail "v2 lifecycle accepted a negated approval"
 grep -q 'BLOCKED.*approval' "$TMP/lifecycle-v2-red.out" \
   || fail "v2 lifecycle did not classify a negated approval as BLOCKED"
+
+# The new evidence source must be admitted by the shared Status writer parser.
+sed 's/status=not approved/status=approved/; s/source=pr-head-approval/source=close-out-attestation/' \
+  "$V2FIX/docs/inprogress/feature-v2.md" > "$TMP/attestation-status.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc "$TMP/attestation-status.md" --validate-doc-status \
+  > "$TMP/attestation-status.out" 2>&1 || fail 'Status parser rejected close-out attestation'
 
 # Open work has precedence over any evidence schema, including legacy work.
 cat > "$V2FIX/docs/inprogress/feature-active.md" <<'MD'
@@ -3948,7 +4565,53 @@ review_case() { # <name> <state> <diagnostic>
 }
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
+# Same-sequence race losers carry valid compatibility lines. The journal must
+# choose the winner before the old marker parser ever sees those lines.
+jq --arg head "$LIFE_HEAD" '
+  .data.repository.issue.body="<!-- agentic-flow:plan:fixture step:f-1 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa journal=v1 -->" |
+  .data.repository.issue.comments.nodes |= (
+    .[0].body=("agentic-flow-transition: v=1; id=fixture/f-1/1/submit; event=submit; from=executing; role=executor; head="+$head+"\n"+.[0].body) |
+    .[1].body=("agentic-flow-transition: v=1; id=fixture/f-1/2/approve; event=approve; from=reviewing; role=reviewer; head="+$head+"\n"+.[1].body) |
+    . + [{id:"race-loser",fullDatabaseId:"12",lastEditedAt:null,author:{login:"reviewer"},
+      body:("agentic-flow-transition: v=1; id=fixture/f-1/2/bounce; event=bounce; from=reviewing; role=reviewer; head=none\nagentic-flow-review: status=changes-requested; step=f-1; head="+$head+"; role=reviewer\nFindings")}])
+' "$TMP/lifecycle-step-comments.json" > "$TMP/journal-approved.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-approved.json"
+review_case 'accepted approval with losing bounce' READY 'review by reviewer'
+grep -q 'journal skipped 1' "$TMP/lifecycle-review.out" || fail 'lifecycle did not count racing loser'
+jq '.data.repository.issue.comments.nodes |= [.[0],.[2],.[1]]' \
+  "$TMP/journal-approved.json" > "$TMP/journal-bounced.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-bounced.json"
+review_case 'accepted bounce with losing approval' BLOCKED 'journal state executing'
+jq '.data.repository.issue.comments.nodes[1].lastEditedAt="2026-01-01T00:00:00Z"' \
+  "$TMP/journal-approved.json" > "$TMP/journal-edited.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-edited.json"
+review_case 'accepted journal approval edited' BLOCKED 'was edited'
+# With no journal lines, the legacy latest-marker reader still blocks the bounce.
+jq 'del(.data.repository.issue.body) | .data.repository.issue.comments.nodes[].body |=
+  (split("\n")|map(select(startswith("agentic-flow-transition:")|not))|join("\n"))' \
+  "$TMP/journal-approved.json" > "$TMP/journal-legacy-reader.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-legacy-reader.json"
+review_case 'legacy latest marker selects bounce' BLOCKED 'does not approve'
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
 # Unlisted authors cannot inject malformed evidence or replace a real handoff.
+sed 's/^reviewer=.*/reviewer=review-app[bot]/; s/^executor=.*/executor=execute-app[bot]/' \
+  "$TMP/lifecycle-policy-valid" > "$V2FIX/.agentic-flow-review-policy"
+for comments in lifecycle-comments lifecycle-step-comments; do
+  jq '.data.repository.issue.comments.nodes |= map(
+    if .author.login == "reviewer" then .author={login:"review-app",__typename:"Bot"}
+    elif .author.login == "executor" then .author={login:"execute-app",__typename:"Bot"}
+    else . end)' "$TMP/$comments.json" > "$TMP/$comments-app.json"
+done
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-app.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments-app.json"
+review_case 'typed App verdicts and handoff' READY 'review by review-app'
+jq '.data.repository.issue.comments.nodes[].author.__typename="User"' \
+  "$TMP/lifecycle-comments-app.json" > "$TMP/lifecycle-comments-human.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-human.json"
+review_case 'human slug cannot impersonate App reviewer' UNVERIFIED 'no approval for PR head'
+cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
 jq '.data.repository.issue.comments.nodes += [{id:"stranger",body:"agentic-flow-review: malformed",author:{login:"stranger"}}]' "$TMP/lifecycle-comments.json" > "$TMP/stranger-final.json"
 jq '.data.repository.issue.comments.nodes += [{id:"stranger",body:"Implemented in bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",author:{login:"stranger"}}]' "$TMP/lifecycle-step-comments.json" > "$TMP/stranger-step.json"
 LIFE_COMMENTS_JSON="$TMP/stranger-final.json"
@@ -4120,6 +4783,12 @@ cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
 
 fi
 
+# --- deterministic station regressions -------------------------------------------------
+if should_run stations; then
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/tests/stations.sh"
+fi
+
 # --- the run did what the mode promised --------------------------------------------------
 # Without this, deleting or mis-guarding a group's `if should_run` block still prints
 # "self-test passed." A pass has to mean the groups for this mode actually executed.
@@ -4128,7 +4797,7 @@ if [ -n "$ONLY_GROUP" ]; then
 elif [ "$SELF_TEST_MODE" = full ]; then
   EXPECTED_GROUPS="$SELF_TEST_GROUPS"
 else
-  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle'
+  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle stations'
 fi
 for group in $EXPECTED_GROUPS; do
   case "$GROUPS_RAN" in

@@ -3,3 +3,5 @@ test	echo "No project test profile configured; harness tests completed."
 test-one	echo "No project targeted test configured. Requested F=$(F)"
 build	echo "No project build profile configured."
 run	scripts/doctor.sh
+verify-prepare	:
+red-first-signature	none

@@ -88,6 +88,15 @@ Bounds: <every query's limit, every loop's cap, every request's timeout — §11
 > (never `git add -A`). Use verbose, *why*-first commit bodies. This brief carries the
 > **approach and insights — not the code.**
 
+```agentic-flow-plan
+id: <stable-plan-id>
+profile: strict
+tracking: Plan: <topic>
+branch: <branch>
+steps: f-1 f-2
+```
+<!-- Standard: profile: standard, one step, and omit tracking. -->
+
 ## Branch
 Base: `<base branch>`. One branch and one PR for the whole brief:
 <!-- The issue spec packet takes brief path/heading, Definition of Done,
@@ -100,6 +109,13 @@ that branch, closing its issue via `Fixes #N`.
 Every step's per-step DoD met; `make check` and `make test` green; the user-visible goal in
 Part A is demonstrably met (note how to verify it manually if relevant — `make run` / `/verify`).
 
+Prefer raw runner selectors for Red-first: make masks recipe failures as exit 2;
+Cargo assertion failures exit 101. Declare the project's assertion signature.
+Exit 0 is green; nonzero plus a signature match is red except timeout 124 and
+interrupts 130/143, which are invalid. Missing or mismatched signatures are invalid.
+Evidence reuse requires matching reviewed SHA/tree and verifier implementation hash;
+inspect signature-source provenance (shared review contract, METHODOLOGY.md §5).
+
 ## Verification commands
 <!-- These call the project's Makefile targets (see CLAUDE.md "Stack profile"). -->
 ```bash
@@ -110,7 +126,7 @@ make test                 # end of brief: full suite
 
 ---
 
-## Step 1 — <imperative summary>
+## F-1 — <imperative summary>
 **Why first:** <foundational / unblocks the rest / riskiest — why this leads.>
 
 **Approach (do NOT write code yet):**
@@ -121,11 +137,14 @@ make test                 # end of brief: full suite
 name the timeout / malformed / unauthorized case, not just the happy one.>
 
 **DoD:** <Observable end state for this step.>
+**Verify:** `make test-one F=<selector>`
+**Risks:** <Failure paths and edge cases.>
+**Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<imperative commit subject>`
 
 ---
 
-## Step 2 — <imperative summary>
+## F-2 — <imperative summary>
 **Why second:** <…>
 
 **Approach:**
@@ -134,6 +153,9 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 **Test:** <…>
 
 **DoD:** <…>
+**Verify:** `make test-one F=<selector>`
+**Risks:** <Failure paths and edge cases.>
+**Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<…>`
 
 ---
@@ -146,7 +168,7 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
-- **Review verdict:** source=pr-head-approval
+- **Review verdict:** source=close-out-attestation
 - **Memory:** pending
 - Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
   the index in the last repository commit. After human push, obtain CI and a structured
