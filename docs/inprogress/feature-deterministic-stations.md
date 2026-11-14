@@ -722,7 +722,7 @@ Claude, on `phase-1`, before final approval; the sequence is the one in `CLAUDE.
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/124
-- **Approval:** status=approved; by=wabkebab; at=2026-11-12
+- **Approval:** status=approved; by=wabkebab; at=2026-11-12; rev=a4c4438a8f52d71dcc8f52bb2341adcc4f42814b
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
