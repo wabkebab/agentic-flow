@@ -161,7 +161,7 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
-- **Review verdict:** source=pr-head-approval
+- **Review verdict:** source=close-out-attestation
 - **Memory:** pending
 - Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
   the index in the last repository commit. After human push, obtain CI and a structured

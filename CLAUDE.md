@@ -59,8 +59,8 @@ block plus CI evidence is the shipping record (`METHODOLOGY.md` §2).
 
 Close-out is batched: closed steps accumulate while the tracker stays open. Prepare the
 final Status and Tracker, change TRIAGE to Done, move the doc and update the index as the
-last repository change, then commit. The human pushes that candidate. CI and the reviewer
-must approve that exact PR head after the push. Run
+last repository change, then commit. The human pushes that candidate. CI must pass and lifecycle
+must approve the exact PR head after the push. Run
 `scripts/lifecycle-status.sh --doc docs/done/<doc>.md --phase close-out --check --verify-evidence`,
 close the issue, then remove `agent:claude,needs-closing`. No repository edits. The human rechecks
 with `--phase pre-merge` immediately before merge (or relies on required checks). That phase expects the issue closed. Any repository edit after approval restarts

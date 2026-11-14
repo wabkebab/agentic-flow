@@ -4026,6 +4026,68 @@ for approval_case in unapproved missing-rev unknown-rev unrelated-rev; do
 done
 
 
+# Standard document mode: creation, revision stamping, and label-preserving reapply.
+STANDARD_BRIEF="$TMP/standard-brief"
+mkdir -p "$STANDARD_BRIEF/docs/inprogress"
+git -C "$STANDARD_BRIEF" init -q
+git -C "$STANDARD_BRIEF" config user.name Tester
+git -C "$STANDARD_BRIEF" config user.email fixture@example.invalid
+cat > "$STANDARD_BRIEF/docs/inprogress/plan.md" <<'MD'
+# Feature — Standard fixture
+## Tracker
+- [ ] alpha
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: standard-doc
+profile: standard
+branch: topic
+steps: alpha
+```
+## alpha — First
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** malformed input
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** pending
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=close-out-attestation
+- **Memory:** pending
+MD
+git -C "$STANDARD_BRIEF" add docs/inprogress/plan.md
+git -C "$STANDARD_BRIEF" -c commit.gpgsign=false commit -qm 'Standard approved revision'
+STANDARD_REV=$(git -C "$STANDARD_BRIEF" rev-parse HEAD)
+sed "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=Tester; at=2026-01-01; rev=$STANDARD_REV/" "$STANDARD_BRIEF/docs/inprogress/plan.md" > "$TMP/std-plan"
+cat "$TMP/std-plan" > "$STANDARD_BRIEF/docs/inprogress/plan.md"
+git -C "$STANDARD_BRIEF" add docs/inprogress/plan.md
+git -C "$STANDARD_BRIEF" -c commit.gpgsign=false commit -qm 'Record Standard approval'
+standard_brief_apply() {
+  (cd "$STANDARD_BRIEF" && PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/standard-brief-gh" FAKE_GH_CALLS="$TMP/std-calls" \
+    "$PLAN_DRIVER" --doc docs/inprogress/plan.md --apply) > "$TMP/std.out" 2>&1
+}
+standard_brief_apply || fail "Standard document creation failed: $(cat "$TMP/std.out")"
+[ "$(find "$TMP/standard-brief-gh" -type d -name 'issue-*' | wc -l | tr -d ' ')" = 1 ] || fail 'Standard document created a tracker'
+grep -q "approved=$STANDARD_REV" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard creation missing revision stamp'
+grep -q "journal=v1" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard creation missing journal stamp'
+git -C "$STANDARD_BRIEF" add docs/inprogress/plan.md
+git -C "$STANDARD_BRIEF" -c commit.gpgsign=false commit -qm 'Record Standard work URL'
+cp "$TMP/standard-brief-gh/issue-1/body" "$TMP/std-before"
+: > "$TMP/std-calls"
+standard_brief_apply || fail "Standard document reapply failed: $(cat "$TMP/std.out")"
+cmp -s "$TMP/std-before" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard reapply changed the body or journal eligibility'
+if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Standard reapply changed live labels'; fi
+# The Standard migration path changes only approved=, preserving journal=v1.
+sed -E 's/ approved=[a-f0-9]{40}//' "$TMP/std-before" > "$TMP/standard-brief-gh/issue-1/body"
+: > "$TMP/std-calls"
+standard_brief_apply || fail "Standard revision migration failed: $(cat "$TMP/std.out")"
+cmp -s "$TMP/std-before" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard revision migration changed more than its stamp'
+if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Standard revision migration reset live labels'; fi
+
+
 fi
 
 # --- lifecycle qualification -------------------------------------------------------------
@@ -4050,6 +4112,12 @@ AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/
   && fail "v2 lifecycle accepted a negated approval"
 grep -q 'BLOCKED.*approval' "$TMP/lifecycle-v2-red.out" \
   || fail "v2 lifecycle did not classify a negated approval as BLOCKED"
+
+# The new evidence source must be admitted by the shared Status writer parser.
+sed 's/status=not approved/status=approved/; s/source=pr-head-approval/source=close-out-attestation/' \
+  "$V2FIX/docs/inprogress/feature-v2.md" > "$TMP/attestation-status.md"
+AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc "$TMP/attestation-status.md" --validate-doc-status \
+  > "$TMP/attestation-status.out" 2>&1 || fail 'Status parser rejected close-out attestation'
 
 # Open work has precedence over any evidence schema, including legacy work.
 cat > "$V2FIX/docs/inprogress/feature-active.md" <<'MD'

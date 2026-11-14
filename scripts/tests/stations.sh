@@ -2,6 +2,7 @@
 # shellcheck disable=SC1091,SC2153 # ROOT comes from the sourcing test runner.
 # Sourced by self-test.sh. All credentials, GitHub state and faults are fixtures.
 grep -q "brief)" "$ROOT/scripts/agentic-flow" || fail 'brief command is missing'
+grep -q "close-out)" "$ROOT/scripts/agentic-flow" || fail 'close-out command is missing'
 grep -q "packet)" "$ROOT/scripts/agentic-flow" || fail 'packet command is missing'
 # Verification must certify only committed bytes and classify wiring failures.
 VERIFY_FIX="$TMP/verify-fixture"
@@ -284,19 +285,26 @@ case "$1 $2" in
     trap 'rmdir "$state/write-lock"' EXIT ;;
 esac
 case "$1 $2" in
+  'api repos/'*)
+    case "$2" in
+      */pulls/*) cat "$state/evidence/pr" ;;
+      */actions/workflows/*) cat "$state/evidence/runs" ;;
+      */actions/runs/*) cat "$state/evidence/run" ;;
+      *) exit 2 ;;
+    esac ;;
   'api user') printf '%s\n' "${STATION_LOGIN:-exec}" ;;
   'api graphql')
     n=''; for arg in "$@"; do case "$arg" in number=*) n=${arg#number=} ;; esac; done
     [ "${STATION_BAD_READ:-0}" = 0 ] || { echo '{}'; exit 0; }
     jq --argjson more "${STATION_MORE:-false}" '{data:{repository:{issue:(. | .comments.pageInfo.hasNextPage=$more)}}}' "$state/$n.json" ;;
-  'issue view') jq '{body}' "$state/$3.json" ;;
+  'issue view') n=${3##*/}; jq '{body,state,labels:.labels.nodes}' "$state/$n.json" ;;
   'issue list')
     search=''; for ((i=1;i<=$#;i++)); do
       if [ "${!i}" = --search ]; then i=$((i+1)); search=${!i}; fi
     done
-    author=${search##* author:}
+    author=''; case "$search" in *' author:'*) author=${search##* author:} ;; esac
     jq -s --arg author "$author" --arg unfiltered "${STATION_DISCOVERY_UNFILTERED:-0}" '
-      map({number,body,author}) |
+      map({number,body,author,state}) |
       if $author!="" and $unfiltered!="1" then
         map(select((.author.login + (if .author.is_bot==true and (.author.login|endswith("[bot]")|not) then "[bot]" else "" end))==$author))
       else . end | .[0:100]' "$state/"*.json ;;
@@ -711,6 +719,208 @@ jq --arg a "$STATION_A" --arg b "$STATION_B" '.body|=sub(" journal=v1";"") |
  {id:"bad-approval",fullDatabaseId:"2",body:("agentic-flow-review: status=approved; step=alpha; head="+$b+"; role=reviewer"),author:{login:"review"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 packet_refused
 grep -q UNJOURNALED "$TMP/packet.err" || fail 'unjournaled refusal lacked diagnosis'
+# Close-out end to end: real linear history, policy-authored journals, fake PR/CI.
+CLOSE_ORIGINAL_FIX=$STATION_FIX
+STATION_FIX="$TMP/close-stations"
+mkdir -p "$STATION_FIX/bin" "$STATION_FIX/state/evidence"
+ln "$CLOSE_ORIGINAL_FIX/bin/gh" "$STATION_FIX/bin/gh"
+export STATION_STATE="$STATION_FIX/state"
+close_commit() {
+  git -C "$STATION_FIX/project" add -- "$@"
+  git -C "$STATION_FIX/project" -c commit.gpgsign=false commit -qm 'Close-out fixture'
+  CLOSE_HEAD=$(git -C "$STATION_FIX/project" rev-parse HEAD)
+}
+close_run() {
+  (cd "$STATION_FIX/project" && PATH="$STATION_FIX/bin:$PATH" XDG_CONFIG_HOME="$STATION_FIX/config" \
+    STATION_LOGIN=plan scripts/agentic-flow close-out "$@") > "$TMP/close.out" 2>&1
+}
+close_evidence() {
+  jq -n --arg head "$CLOSE_HEAD" '{number:7,head:{sha:$head},base:{repo:{full_name:"owner/repo"}}}' > "$STATION_STATE/evidence/pr"
+  jq -n --arg head "$CLOSE_HEAD" '{workflow_runs:[{id:8,created_at:"2026-01-01T00:00:00Z",head_sha:$head,path:".github/workflows/ci.yml"}]}' > "$STATION_STATE/evidence/runs"
+  jq -n --arg head "$CLOSE_HEAD" '{repository:{full_name:"owner/repo"},head_sha:$head,path:".github/workflows/ci.yml",run_attempt:2,status:"completed",conclusion:"success"}' > "$STATION_STATE/evidence/run"
+}
+for close_profile in standard strict; do
+  rm -rf "$STATION_FIX/project"
+  rm -f "$STATION_STATE/"*.json
+  mkdir -p "$STATION_FIX/project/scripts" "$STATION_FIX/project/config" "$STATION_FIX/project/docs/inprogress"
+  mkdir -p "$STATION_FIX/project/scripts/lib"
+  for close_library in "$ROOT/scripts/lib/"*; do
+    ln "$close_library" "$STATION_FIX/project/scripts/lib/${close_library##*/}"
+  done
+  for close_script in agentic-flow lifecycle-status.sh docs-index.sh; do
+    ln "$ROOT/scripts/$close_script" "$STATION_FIX/project/scripts/$close_script"
+  done
+  ln "$ROOT/config/workflow.tsv" "$STATION_FIX/project/config/workflow.tsv"
+  ln "$CLOSE_ORIGINAL_FIX/project/.agentic-flow-review-policy" "$STATION_FIX/project/.agentic-flow-review-policy"
+  git -C "$STATION_FIX/project" init -q
+  git -C "$STATION_FIX/project" checkout -qb main
+  git -C "$STATION_FIX/project" config user.name Fixture
+  git -C "$STATION_FIX/project" config user.email fixture@example.invalid
+  git -C "$STATION_FIX/project" remote add origin https://github.com/owner/repo.git
+  printf '%s\n' '# Docs' '<!-- BEGIN: generated index — do not edit by hand (scripts/docs-index.sh) -->' '<!-- END: generated index -->' > "$STATION_FIX/project/docs/README.md"
+  AGENTIC_PROJECT_ROOT="$STATION_FIX/project" "$ROOT/scripts/docs-index.sh" >/dev/null
+  close_commit scripts config docs/README.md .agentic-flow-review-policy
+  git -C "$STATION_FIX/project" checkout -qb topic
+  cat > "$STATION_FIX/project/docs/inprogress/plan.md" <<PLAN
+> **Type:** Feature · **Status:** 🚧 In progress
+# Feature — Close fixture
+## Tracker
+- [ ] alpha
+
+# Part B — Implementation Brief
+\`\`\`agentic-flow-plan
+id: fixture
+profile: $close_profile
+$(if [ "$close_profile" = strict ]; then printf 'tracking: Plan: fixture\n'; fi)
+branch: topic
+steps: $(if [ "$close_profile" = strict ]; then echo 'alpha beta'; else echo alpha; fi)
+\`\`\`
+## alpha — First
+**Approach:** Keep this instruction.
+**DoD:** done
+**Verify:** \`make check\`
+**Red-first:** none
+**Risks:** failure
+PLAN
+  if [ "$close_profile" = strict ]; then
+    cat >> "$STATION_FIX/project/docs/inprogress/plan.md" <<'PLAN'
+## beta — Second
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** failure
+PLAN
+  fi
+  cat >> "$STATION_FIX/project/docs/inprogress/plan.md" <<'PLAN'
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** pending
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=close-out-attestation
+- **Memory:** pending
+PLAN
+  sed '/^$/d' "$STATION_FIX/project/docs/inprogress/plan.md" > "$TMP/close-doc"
+  cat "$TMP/close-doc" > "$STATION_FIX/project/docs/inprogress/plan.md"
+  close_commit docs/inprogress/plan.md
+  CLOSE_REV=$CLOSE_HEAD
+  sed "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=Tester; at=2026-01-01; rev=$CLOSE_REV/" "$STATION_FIX/project/docs/inprogress/plan.md" > "$TMP/close-doc"
+  cat "$TMP/close-doc" > "$STATION_FIX/project/docs/inprogress/plan.md"
+  close_commit docs/inprogress/plan.md
+  station_issue 1 step:alpha "$close_profile"
+  if [ "$close_profile" = strict ]; then station_issue 2 step:beta; station_issue 3 tracker; CLOSE_TARGET=3; else CLOSE_TARGET=1; fi
+  for close_n in $(if [ "$close_profile" = strict ]; then echo '1 2 3'; else echo 1; fi); do
+    jq --arg rev "$CLOSE_REV" '.body|=sub(" journal=v1";" approved="+$rev+" journal=v1") | .body += "\n<!-- agentic-flow:approval approved-by:Tester approved-at:2026-01-01 -->"' "$STATION_STATE/$close_n.json" > "$STATION_STATE/next"
+    mv "$STATION_STATE/next" "$STATION_STATE/$close_n.json"
+  done
+  close_evidence
+  close_run prep docs/inprogress/plan.md --pr https://github.com/owner/repo/pull/7 && fail 'prep accepted executing journals'
+  close_run prep docs/inprogress/plan.md && fail 'prep accepted missing PR'
+  printf 'implementation one\n' > "$STATION_FIX/project/code"
+  close_commit code
+  export STATION_LOGIN=exec
+  station_run 0 1 submit --as executor --head "$CLOSE_HEAD"
+  export STATION_LOGIN=review
+  printf 'Fix the fixture failure\n' > "$TMP/close-findings"
+  station_run 0 1 bounce --as reviewer --body-file "$TMP/close-findings"
+  printf 'review fix\n' >> "$STATION_FIX/project/code"
+  close_commit code
+  export STATION_LOGIN=exec
+  station_run 0 1 submit --as executor --head "$CLOSE_HEAD"
+  export STATION_LOGIN=review
+  station_run 0 1 approve --as reviewer --head "$CLOSE_HEAD"
+  if [ "$close_profile" = strict ]; then
+    printf 'second implementation\n' >> "$STATION_FIX/project/code"
+    close_commit code
+    export STATION_LOGIN=exec
+    station_run 0 2 submit --as executor --head "$CLOSE_HEAD"
+    export STATION_LOGIN=review
+    station_run 0 2 approve --as reviewer --head "$CLOSE_HEAD"
+  fi
+  CLOSE_APPROVED=$CLOSE_HEAD
+  close_evidence
+  close_run prep docs/inprogress/plan.md --pr https://github.com/owner/repo/pull/7 --dry-run || fail "prep dry-run failed: $(cat "$TMP/close.out")"
+  [ -f "$STATION_FIX/project/docs/inprogress/plan.md" ] || fail 'dry-run moved doc'
+  close_run prep docs/inprogress/plan.md --pr https://github.com/owner/repo/pull/7 || fail "prep failed: $(cat "$TMP/close.out")"
+  CLOSE_DONE="$STATION_FIX/project/docs/done/plan.md"
+  [ "$(grep -c '^- \[x\]' "$CLOSE_DONE")" = "$(if [ "$close_profile" = strict ]; then echo 2; else echo 1; fi)" ] || fail 'wrong Tracker line count'
+  grep -q "Tracking issue:\*\* url=https://github.com/owner/repo/issues/$CLOSE_TARGET" "$CLOSE_DONE" || fail 'wrong close target'
+  git -C "$STATION_FIX/project" diff --cached --quiet && fail 'prep did not stage changes'
+  git -C "$STATION_FIX/project" -c commit.gpgsign=false commit -qm 'Bookkeeping close-out'
+  CLOSE_HEAD=$(git -C "$STATION_FIX/project" rev-parse HEAD)
+  close_evidence
+  close_run prep docs/done/plan.md --pr https://github.com/owner/repo/pull/7 || fail 'done prep not idempotent'
+  [ -z "$(git -C "$STATION_FIX/project" status --porcelain)" ] || fail 'done prep changed tree'
+  # Pending CI cannot be used as a successful attempt.
+  jq '.status="in_progress" | .conclusion=null' "$STATION_STATE/evidence/run" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/evidence/run"
+  close_run finish docs/done/plan.md && fail 'finish accepted pending CI'
+  close_evidence
+  # Latest attempt must win over earlier success; finish must never close on failure.
+  jq '.conclusion="failure"' "$STATION_STATE/evidence/run" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/evidence/run"
+  close_run finish docs/done/plan.md && fail 'finish accepted red latest attempt'
+  [ "$(jq -r .state "$STATION_STATE/$CLOSE_TARGET.json")" = OPEN ] || fail 'failed finish closed target'
+  close_evidence
+  # Instructions and even whitespace outside the index region cannot be attested.
+  for close_mutation in instruction changelog whitespace; do
+    case "$close_mutation" in
+      instruction) sed 's/Keep this instruction/Smuggled instruction/' "$CLOSE_DONE" > "$TMP/close-doc"; cat "$TMP/close-doc" > "$CLOSE_DONE"; close_commit docs/done/plan.md ;;
+      changelog) printf 'release\n' > "$STATION_FIX/project/CHANGELOG.md"; close_commit CHANGELOG.md ;;
+      whitespace) printf '\n' >> "$STATION_FIX/project/docs/README.md"; close_commit docs/README.md ;;
+    esac
+    close_evidence
+    close_run finish docs/done/plan.md && fail "attested $close_mutation"
+    grep -q NEEDS-REVIEW "$TMP/close.out" || fail "missing review diagnosis for $close_mutation: $(cat "$TMP/close.out")"
+    if [ "$close_mutation" = changelog ]; then
+      jq --arg head "$CLOSE_HEAD" '.comments.nodes += [{id:"final",fullDatabaseId:"1000",body:("agentic-flow-review: status=approved; pr=7; head="+$head+"; run=https://github.com/owner/repo/actions/runs/8; attempt=2; role=reviewer"),author:{login:"review",__typename:"User"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' "$STATION_STATE/$CLOSE_TARGET.json" > "$STATION_STATE/next"
+      mv "$STATION_STATE/next" "$STATION_STATE/$CLOSE_TARGET.json"
+      (cd "$STATION_FIX/project" && PATH="$STATION_FIX/bin:$PATH" scripts/lifecycle-status.sh --doc docs/done/plan.md --check --verify-evidence) > "$TMP/close.out" 2>&1 || fail "final-head fallback failed: $(cat "$TMP/close.out")"
+    fi
+    git -C "$STATION_FIX/project" reset --hard -q HEAD^
+    CLOSE_HEAD=$(git -C "$STATION_FIX/project" rev-parse HEAD)
+  done
+  CLOSE_READY=$CLOSE_HEAD
+  if [ "$close_profile" = strict ]; then
+    # An extra unreviewed commit between two steps must not disappear into coverage.
+    cp "$STATION_STATE/2.json" "$TMP/beta-journal"
+    CLOSE_ALPHA=$(jq -r '[.comments.nodes[]|.body|capture("head=(?<sha>[a-f0-9]{40})").sha]|last' "$STATION_STATE/1.json")
+    CLOSE_GAP=$(printf 'Unreviewed gap\n' | git -C "$STATION_FIX/project" -c commit.gpgsign=false commit-tree "$(git -C "$STATION_FIX/project" rev-parse "$CLOSE_ALPHA^{tree}")" -p "$CLOSE_ALPHA")
+    CLOSE_BETA=$(printf 'Second step after gap\n' | git -C "$STATION_FIX/project" -c commit.gpgsign=false commit-tree "$(git -C "$STATION_FIX/project" rev-parse "$CLOSE_APPROVED^{tree}")" -p "$CLOSE_GAP")
+    CLOSE_HEAD=$(printf 'Close-out after gap\n' | git -C "$STATION_FIX/project" -c commit.gpgsign=false commit-tree "$(git -C "$STATION_FIX/project" rev-parse "$CLOSE_READY^{tree}")" -p "$CLOSE_BETA")
+    git -C "$STATION_FIX/project" reset --hard -q "$CLOSE_HEAD"
+    jq --arg old "$CLOSE_APPROVED" --arg new "$CLOSE_BETA" '.comments.nodes[].body|=gsub($old;$new)' "$TMP/beta-journal" > "$STATION_STATE/2.json"
+    close_evidence
+    close_run finish docs/done/plan.md && fail 'step coverage gap was attested'
+    grep -q 'uncovered gap' "$TMP/close.out" || fail "gap refusal lacked diagnosis: $(cat "$TMP/close.out")"
+    cat "$TMP/beta-journal" > "$STATION_STATE/2.json"
+    git -C "$STATION_FIX/project" reset --hard -q "$CLOSE_READY"
+    CLOSE_HEAD=$CLOSE_READY
+  fi
+  # Replacing a reviewed commit must retain G-2's ancestry failure.
+  CLOSE_REPLACEMENT=$(printf 'Amended step\n' | git -C "$STATION_FIX/project" -c commit.gpgsign=false commit-tree "$(git -C "$STATION_FIX/project" rev-parse "$CLOSE_APPROVED^{tree}")" -p "$(git -C "$STATION_FIX/project" rev-parse "$CLOSE_APPROVED^")")
+  CLOSE_HEAD=$(printf 'Bookkeeping after amended step\n' | git -C "$STATION_FIX/project" -c commit.gpgsign=false commit-tree "$(git -C "$STATION_FIX/project" rev-parse "$CLOSE_READY^{tree}")" -p "$CLOSE_REPLACEMENT")
+  git -C "$STATION_FIX/project" reset --hard -q "$CLOSE_HEAD"
+  close_evidence
+  close_run finish docs/done/plan.md && fail 'amended approval passed close-out'
+  [ "$(jq -r .state "$STATION_STATE/$CLOSE_TARGET.json")" = OPEN ] || fail 'amended step closed target'
+  git -C "$STATION_FIX/project" reset --hard -q "$CLOSE_READY"
+  CLOSE_SIDE=$(printf 'Side branch\n' | git -C "$STATION_FIX/project" -c commit.gpgsign=false commit-tree "$(git -C "$STATION_FIX/project" rev-parse 'main^{tree}')" -p main)
+  git -C "$STATION_FIX/project" -c commit.gpgsign=false merge --no-ff -qm 'Merge from main history' "$CLOSE_SIDE"
+  CLOSE_HEAD=$(git -C "$STATION_FIX/project" rev-parse HEAD)
+  close_evidence
+  close_run finish docs/done/plan.md && fail 'merge range was attested'
+  grep -q 'merge commit' "$TMP/close.out" || fail 'merge refusal lacked diagnosis'
+  git -C "$STATION_FIX/project" reset --hard -q "$CLOSE_READY"
+  CLOSE_HEAD=$CLOSE_READY
+  close_evidence
+  close_run finish docs/done/plan.md || fail "bookkeeping finish failed ($close_profile): $(cat "$TMP/close.out")"
+  [ "$(jq -r .state "$STATION_STATE/$CLOSE_TARGET.json")" = CLOSED ] || fail 'finish did not close target'
+  jq -e 'all(.labels.nodes[];.name=="user-label" or .name=="plan")' "$STATION_STATE/$CLOSE_TARGET.json" >/dev/null || fail 'finish left workflow labels'
+  (cd "$STATION_FIX/project" && PATH="$STATION_FIX/bin:$PATH" scripts/lifecycle-status.sh --doc docs/done/plan.md --phase pre-merge --check --verify-evidence) > "$TMP/close.out" 2>&1 || fail "pre-merge attestation failed: $(cat "$TMP/close.out")"
+done
+STATION_FIX=$CLOSE_ORIGINAL_FIX
+
 unset STATION_STATE
 
 # The shipped station settings are launch inputs; test the direct-read deny list.

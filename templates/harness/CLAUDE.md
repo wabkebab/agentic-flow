@@ -130,7 +130,7 @@ Six hooks in `.claude/settings.json` enforce the contract (`METHODOLOGY.md` §8)
   comment and sends the sole work issue to `needs-closing`, leaving it open for close-out.
   After every step is reviewed, prepare the final
   Status/Tracker, set TRIAGE to Done, move the document to `docs/done/`, update the index,
-  and commit that as the last repository edit. The human pushes; CI and a reviewer approve
+  and commit that as the last repository edit. The human pushes; CI passes and lifecycle approves
   the exact PR head. Verify with `scripts/lifecycle-status.sh --doc docs/done/<doc>.md
   --phase close-out --check --verify-evidence`, close the tracker or Standard work issue, then remove
   `agent:claude,needs-closing`, without repository edits. The human rechecks with `--phase pre-merge` immediately before merge

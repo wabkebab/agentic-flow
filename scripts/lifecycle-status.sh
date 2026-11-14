@@ -72,7 +72,7 @@ valid_value() { # <key> <value>
     'Implementation head') [ "$2" = source=pr-head ] ;;
     'Implementation PR') [[ "$2" =~ ^url=https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$ ]] ;;
     'Verification evidence') [ "$2" = source=final-approval-run ] ;;
-    'Review verdict') [ "$2" = source=pr-head-approval ] ;;
+    'Review verdict') [ "$2" = source=pr-head-approval ] || [ "$2" = source=close-out-attestation ] ;;
     Memory) [ "$2" = status=n/a ] || [[ "$2" =~ ^path=docs/memory/[A-Za-z0-9._-]+\.md$ ]] ;;
   esac
 }
@@ -325,7 +325,7 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [re
   ancestry_status=0
   git -C "$ROOT" merge-base --is-ancestor "$step_head" "$pr_head" 2> "$tmp/ancestry-error" || ancestry_status=$?
   case "$ancestry_status" in
-    0) return 0 ;;
+    0) STEP_VERIFIED_HEAD=$step_head; return 0 ;;
     1)
       if ! shallow=$(git -C "$ROOT" rev-parse --is-shallow-repository 2> "$tmp/ancestry-error"); then
         git_error=$(cat "$tmp/ancestry-error")
@@ -409,6 +409,20 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   head=$(printf '%s' "$pr_json" | jq -r '.head.sha // empty' 2>/dev/null) || head=""
   if ! [[ "$head" =~ ^[[:xdigit:]]{40}$ ]]; then
     unverified_evidence 'Implementation PR head unavailable'; rm -rf "$tmp"; return
+  fi
+  if [ "${review_source:-}" = source=close-out-attestation ]; then
+    # shellcheck disable=SC1091
+    . "$SCRIPT_ROOT/scripts/lib/close-out-attestation.sh"
+    local attestation_reason
+    if close_out_attest "$repo" "$head" "$tmp" > "$tmp/attestation" 2>&1; then
+      evidence_status=READY
+      evidence_reason=$(cat "$tmp/attestation")
+      rm -rf "$tmp"; return
+    fi
+    attestation_reason=$(cat "$tmp/attestation")
+    printf 'NEEDS-REVIEW %s\n' "$attestation_reason"
+    # Existing final-head evidence remains the fallback, with its original checks.
+    evidence_status=UNVERIFIED evidence_reason='external evidence unresolved'
   fi
   # shellcheck disable=SC2016 # GraphQL variables belong in the literal query.
   query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){body comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login __typename} createdAt lastEditedAt}}}}}'
@@ -533,6 +547,13 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   run_head=$(printf '%s' "$run_json" | jq -r '.head_sha')
   conclusion=$(printf '%s' "$run_json" | jq -r '.conclusion')
   live_attempt=$(printf '%s' "$run_json" | jq -r '.run_attempt')
+  if [ "${review_source:-}" = source=close-out-attestation ]; then
+    if ! close_out_ci "$repo" "$head" "$tmp" > "$tmp/latest-ci" 2>&1 ||
+       [ "$run_id" != "${CLOSE_CI_RUN:-}" ] || [ "$live_attempt" != "${CLOSE_CI_ATTEMPT:-}" ]; then
+      blocked_evidence 'final-head fallback does not name the latest successful workflow run and attempt'
+      rm -rf "$tmp"; return
+    fi
+  fi
   if [ "$run_repo" != "$repo" ] || [ "$run_path" != "$workflow" ] || [ "$run_head" != "$head" ]; then
     blocked_evidence "Actions run $REVIEW_RUN differs from repository, workflow, or PR head $head"
   elif [ "$live_attempt" != "$REVIEW_ATTEMPT" ]; then
@@ -586,7 +607,7 @@ legacy=0
 found=0
 check_doc() { # <doc>
   local doc=$1 rel tracker_lines open checked parsed key value field_id schema="" tracking="" pr_url="" missing="" invalid="" \
-    parser_error="" state_json issue_state labels state_file issue_body topology approval approval_by approval_at stamp_by stamp_at
+    parser_error="" state_json issue_state labels state_file issue_body topology approval approval_by approval_at stamp_by stamp_at review_source=""
   tracker_lines=$(grep -Ec '^- \[[ xX]\] ' "$doc" || true)
   [ "$tracker_lines" -gt 0 ] || return 0
   found=$((found + 1))
@@ -606,6 +627,7 @@ check_doc() { # <doc>
       'Tracking issue') tracking=${value#url=} ;;
       Approval) approval=$value ;;
       'Implementation PR') pr_url=${value#url=} ;;
+      'Review verdict') review_source=$value ;;
     esac
   done <<< "$parsed"
   if [ -n "$parser_error" ]; then
@@ -681,6 +703,7 @@ check_doc() { # <doc>
     topology=strict
   fi
   if [ "$topology" = standard ]; then
+    approval=${approval%%; rev=*}
     approval_by=$(printf '%s' "$approval" | sed -nE 's/^status=approved; by=(.*); at=[0-9]{4}-[0-9]{2}-[0-9]{2}$/\1/p')
     approval_at=${approval##*at=}
     stamp_by=$(printf '%s\n' "$issue_body" | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)
