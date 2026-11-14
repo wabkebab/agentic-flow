@@ -76,15 +76,23 @@ handoff_post() { # number event role head body; replay MUST have just been read
   file="$HANDOFF_TMP/comment"
   printf 'agentic-flow-transition: v=1; id=%s; event=%s; from=%s; role=%s; head=%s\n' \
     "$id" "$event" "$from" "$role" "$head" > "$file"
+  local compat_marker=''
   case "$event" in
     submit) printf 'Implemented in %s\n' "$head" >> "$file" ;;
     approve|bounce)
       local verdict=approved compatibility_head=$head
       [ "$event" != bounce ] || { verdict=changes-requested; compatibility_head=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .submitted_head); }
-      printf 'agentic-flow-review: status=%s; step=%s; head=%s; role=reviewer\n' \
-        "$verdict" "$JOURNAL_STEP" "$compatibility_head" >> "$file" ;;
+      compat_marker=$(printf 'agentic-flow-review: status=%s; step=%s; head=%s; role=reviewer' \
+        "$verdict" "$JOURNAL_STEP" "$compatibility_head")
+      printf '%s\n' "$compat_marker" >> "$file" ;;
   esac
-  printf '%s\n' "$note" >> "$file"
+  # The gate accepts one marker per comment. Drop a body line identical to the
+  # marker written above; a different marker in the body stays and is blocked.
+  if [ -n "$compat_marker" ]; then
+    printf '%s\n' "$note" | grep -Fvx -- "$compat_marker" >> "$file" || true
+  else
+    printf '%s\n' "$note" >> "$file"
+  fi
   posted=$(handoff_gh issue comment "$number" --repo "$HANDOFF_REPO" --body-file "$file") || rc=$?
   posted_dbid=${posted##*#issuecomment-}
   [[ "$posted_dbid" =~ ^[0-9]+$ ]] || posted_dbid=''

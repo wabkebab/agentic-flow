@@ -433,7 +433,8 @@ station_run 0 1 submit --as executor --head "$STATION_B"
 unset STATION_POST_TIMEOUT
 [ "$(station_count 1)" = 3 ] || fail 'timed-out successful post duplicated'
 STATION_LOGIN=review
-AGENTIC_HANDOFF_TESTING=1 AGENTIC_HANDOFF_FAULT=before-notify station_run 5 1 approve --as reviewer --head "$STATION_B"
+printf 'agentic-flow-review: status=approved; step=alpha; head=%s; role=reviewer\nReview note\n' "$STATION_B" > "$TMP/review-with-marker"
+AGENTIC_HANDOFF_TESTING=1 AGENTIC_HANDOFF_FAULT=before-notify station_run 5 1 approve --as reviewer --head "$STATION_B" --body-file "$TMP/review-with-marker"
 [ "$(station_count 2)" = 0 ] || fail 'before-notify fault did not stop effect'
 jq -e '.state=="CLOSED" and [.labels.nodes[].name]==["user-label"]' "$STATION_STATE/1.json" >/dev/null || fail 'approval projection incorrect'
 # Any role can reconcile, but only the reviewer may author the effect.
@@ -462,6 +463,11 @@ jq -e '.comments.nodes[0].author.login=="review"' "$STATION_STATE/2.json" >/dev/
 STATION_LOGIN=review
 station_run 0 1 approve --as reviewer --head "$STATION_B"
 station_run 0 1 approve --as reviewer --head "$STATION_B"
+# The approval posted above carried a body that repeated the compatibility marker.
+[ "$(jq -r '.comments.nodes[-1].body' "$STATION_STATE/1.json" | grep -c '^agentic-flow-review:')" = 1 ] \
+  || fail 'handoff posted the compatibility marker twice'
+jq -r '.comments.nodes[-1].body' "$STATION_STATE/1.json" | grep -Fxq 'Review note' \
+  || fail "handoff dropped the reviewer note: $(jq -c '.comments.nodes[-1]' "$STATION_STATE/1.json")"
 station_run 0 2 reconcile --json
 [ "$(station_count 1)" = 4 ] && [ "$(station_count 2)" = 1 ] || fail 'notify crash recovery duplicated comments'
 jq -e '.["2"].state=="closing" and .["1"].state=="approved"' "$TMP/station.out" >/dev/null || fail 'reconcile JSON did not report plan replay'

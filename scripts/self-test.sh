@@ -4747,6 +4747,17 @@ jq --arg head "$LIFE_HEAD" '.data.repository.issue.comments.nodes[1].body = "rev
 review_case 'removing marker recovers edit' READY 'review by reviewer'
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
 
+# A reviewer body that repeats the marker handoff writes yields two identical lines.
+# That is one claim and must not block; a different second marker still must.
+jq '.data.repository.issue.comments.nodes[1].body |= (. + "\n" + .)' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-case.json"; export LIFE_STEP_COMMENTS_JSON
+review_case 'identical repeated step marker' READY 'review by reviewer'
+jq '.data.repository.issue.comments.nodes[1].body |= (. + "\n" + sub("status=approved";"status=changes-requested"))' \
+  "$TMP/lifecycle-step-comments.json" > "$TMP/lifecycle-step-case.json"
+review_case 'conflicting second step marker' BLOCKED 'has multiple review markers'
+LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"; export LIFE_STEP_COMMENTS_JSON
+
 # Above 2^53, adjacent ids collapse if coerced through jq's floating-point number.
 # Reverse listing order and share a creation second to rule out both shortcuts.
 jq --arg head "$LIFE_HEAD" '.data.repository.issue.comments.nodes = [.data.repository.issue.comments.nodes[0],{id:"new-rejection",fullDatabaseId:"9007199254740993",body:("agentic-flow-review: status=changes-requested; step=f-1; head=" + $head + "; role=reviewer"),author:{login:"reviewer"},createdAt:"2026-09-25T12:00:00Z",lastEditedAt:null},{id:"old-approval",fullDatabaseId:"9007199254740992",body:("agentic-flow-review: status=approved; step=f-1; head=" + $head + "; role=reviewer"),author:{login:"reviewer"},createdAt:"2026-09-25T12:00:00Z",lastEditedAt:null}]' \
@@ -4763,6 +4774,16 @@ jq --arg head "$LIFE_HEAD" '.data.repository.issue.comments.nodes += [{id:"dupli
   "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
 review_case 'normalized duplicate database id' BLOCKED 'duplicate fullDatabaseId'
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
+
+# The same collapse applies to the tracking issue's final-head verdict.
+jq '.data.repository.issue.comments.nodes |= map(if (.body | startswith("agentic-flow-review: status=approved; pr=")) then .body |= (. + "\n" + .) else . end)' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-comments-case.json"; export LIFE_COMMENTS_JSON
+review_case 'identical repeated final marker' READY 'review by reviewer'
+jq '.data.repository.issue.comments.nodes |= map(if (.body | startswith("agentic-flow-review: status=approved; pr=")) then .body |= (. + "\n" + sub("attempt=1";"attempt=2")) else . end)' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
+review_case 'conflicting second final marker' BLOCKED 'has multiple review markers'
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 
 # The review thread is scoped to the current PR head. A new commit makes old

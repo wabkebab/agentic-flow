@@ -264,6 +264,8 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [re
     body=$(printf '%s' "$node" | jq -r '.body // empty')
     candidate=$(printf '%s\n' "$body" | sed -n '/^[[:space:]]*agentic-flow-review:/p')
     [ -n "$candidate" ] || continue
+    # Byte-identical repeats of one marker carry no extra claim; collapse them.
+    candidate=$(printf '%s\n' "$candidate" | awk '!seen[$0]++')
     id=$(printf '%s' "$node" | jq -r '.id // empty')
     [ -n "$id" ] || { unverified_evidence "step $step verdict has no opaque id"; return 1; }
     if [ "$(printf '%s\n' "$candidate" | wc -l | tr -d ' ')" -ne 1 ]; then
@@ -459,6 +461,8 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
     body=$(printf '%s' "$nodes" | jq -r '.body // empty')
     marker=$(printf '%s\n' "$body" | sed -n '/^[[:space:]]*agentic-flow-review:/p')
     [ -n "$marker" ] || continue
+    # Byte-identical repeats of one marker carry no extra claim; collapse them.
+    marker=$(printf '%s\n' "$marker" | awk '!seen[$0]++')
     id=$(printf '%s' "$nodes" | jq -r '.id // empty')
     [ -n "$id" ] || { unverified_evidence 'Tracking issue verdict has no opaque id'; break; }
     if grep -Fxq -- "$id" "$tmp/seen-ids" 2>/dev/null; then
