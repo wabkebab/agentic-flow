@@ -1,21 +1,20 @@
 <!-- TRIAGE (first pass · 2026-11-12) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
 > Phase 1 of `product-harness-factory-optimization.md` (R-1–R-6, R-18, R-19): turn the mechanical stations into deterministic `agentic-flow` commands so a later controller can drive them. Draft for approval; nothing is executed. Next: human review, then `plan-to-issues`.
 
 # Feature — Deterministic stations
 
 ## Tracker
-- [ ] S-1 Define the workflow once in `config/workflow.tsv` — #125, open
-- [ ] S-2 Accept GitHub App identities and mint a scoped token per role — #126, open
-- [ ] S-3 Move issues only through `agentic-flow handoff`, journaled on the thread — #127, open
-- [ ] S-4 Read the plan from the brief; plan approval authorizes apply — #128, open
-- [ ] S-5 Hand a role one step: `agentic-flow brief` and a SessionStart hook — #129, open
-- [ ] S-6 Verify a step in a clean worktree of its commit — #130, open
-- [ ] S-7 Build station input only from trusted sources — #131, open
-- [ ] S-8 Script close-out and attest a bookkeeping-only final delta — #132, open
-- [ ] S-9 Render the state machine into the contracts and route them to the commands — #133, open
-
+- [x] s-1 — #125; approved=495d7664f12c7d83a65708c711b8a84a90e21649; submissions=495d7664f12c7d83a65708c711b8a84a90e21649
+- [x] s-2 — #126; approved=60d70fe16d2b96404564e97de25dba88b3545641; submissions=60d70fe16d2b96404564e97de25dba88b3545641
+- [x] s-3 — #127; approved=fa9c0df0fb565835594279dc8bc34a48c3b1096b; submissions=0e7cdde98d2a27eeb18fe84f871cf341fe4b3559,fa9c0df0fb565835594279dc8bc34a48c3b1096b
+- [x] s-4 — #128; approved=4d17db14825484ea5aa3951bbbfebe28511cc6e2; submissions=4d17db14825484ea5aa3951bbbfebe28511cc6e2
+- [x] s-5 — #129; approved=bae40b8ff0c00db3813c802165c929533821e88b; submissions=36b42f1bc0c75c0caf5e4940fa8b6bd66d5d212b,bae40b8ff0c00db3813c802165c929533821e88b
+- [x] s-6 — #130; approved=500400eaa230206d5251d9aa70bf57f28aa473d8; submissions=500400eaa230206d5251d9aa70bf57f28aa473d8
+- [x] s-7 — #131; approved=fc7b773de055ac4d019f65133bde739cc24dcace; submissions=fc7b773de055ac4d019f65133bde739cc24dcace
+- [x] s-8 — #132; approved=91cc9830c70631744f1cf19af24eb03a9bd99bbb; submissions=91cc9830c70631744f1cf19af24eb03a9bd99bbb
+- [x] s-9 — #133; approved=99642c4a50a9d30dd0609aec417f92bbed2daaac; submissions=99642c4a50a9d30dd0609aec417f92bbed2daaac
 ---
 
 # Part A — Analysis
@@ -724,10 +723,10 @@ Claude, on `phase-1`, before final approval; the sequence is the one in `CLAUDE.
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/124
 - **Approval:** status=approved; by=wabkebab; at=2026-11-12; rev=a4c4438a8f52d71dcc8f52bb2341adcc4f42814b
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** url=https://github.com/wabkebab/agentic-flow/pull/134
 - **Verification evidence:** source=final-approval-run
-- **Review verdict:** source=pr-head-approval
-- **Memory:** pending
+- **Review verdict:** source=close-out-attestation
+- **Memory:** status=n/a
 - Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
   the index in the last repository commit. After human push, obtain CI and a structured
   reviewer approval on the `Tracking issue` for that exact PR head and run attempt.
