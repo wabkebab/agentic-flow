@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    {"action": "shell", "resource": "gh", "effect": "deny"},
+    {"action": "shell", "resource": "gh *", "effect": "deny"},
+    {"action": "webfetch", "resource": "https://github.com/*", "effect": "deny"},
+    {"action": "webfetch", "resource": "https://api.github.com/*", "effect": "deny"},
+    {"action": "webfetch", "resource": "https://raw.githubusercontent.com/*", "effect": "deny"}
+  ]
+}

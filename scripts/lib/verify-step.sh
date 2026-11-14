@@ -173,7 +173,7 @@ MAKE
         commands=$(printf '%s' "$commands" | jq --argjson r "$VERIFY_RESULT" '.+[$r]')
         status=$(printf '%s' "$VERIFY_RESULT" | jq .exit)
         if [ "$status" = 0 ]; then status=green
-        elif [ "$status" = 1 ] && [ -n "$signature" ] && grep -Eq -- "$signature" "$VERIFY_TMP/output"; then status=red
+        elif [ "$status" != 124 ] && [ "$status" != 130 ] && [ "$status" != 143 ] && [ -n "$signature" ] && grep -Eq -- "$signature" "$VERIFY_TMP/output"; then status=red
         else status=invalid; fi
         [ "$status" = red ] || passed=false
         tail -40 "$VERIFY_TMP/output" > "$VERIFY_TMP/tail"

@@ -25,18 +25,31 @@ the thread with `gh issue view` still sees the text. Instructions planted in a c
 a prompt-injection path into Claude, Codex or OpenCode.
 
 ### Proposed mitigation / implementation
-R-19: build each station's input from the brief, the approved commit and comments by
-policy logins only, and deny stations raw thread reads.
+S-7 supplies `agentic-flow packet`: admission requires an approver-created step,
+an approved revision present locally, and a readable journal. The packet uses the
+approved brief and role-relevant policy-authored comments only; outsiders are
+counted and dropped without quoting their text. Reviewer packets preserve verifier
+provenance and refuse stale records for reuse. Each packet is capped at 3,000 words.
+
+The exported `config/stations/` profiles deny direct GitHub CLI/web reads in Claude
+and OpenCode; the Codex profile disables sandbox network access, web search and
+GitHub-token inheritance. These are explicit launch inputs, not changes to an
+interactive session's settings. See `config/stations/README.md` for activation,
+version compatibility and isolation limits.
 
 ### Acceptance rationale
-Every station runs interactively today, under a human who reads its actions, and the push,
-merge and secret guards still apply. The evidence path that decides close-out ignores
-non-policy authors. R-19 belongs with the headless line controller that would remove the
-human from that loop.
+Interactive agents can still read raw threads. Policy-authored text is trusted by
+identity, not screened for instructions. Claude/OpenCode command permissions do
+not provide an OS network boundary or stop every alternate program from reaching
+GitHub. Codex environment filtering does not remove on-disk credentials or inherited
+connectors. Headless deployment still needs a controller-enforced credential-free,
+network-isolated environment and must actually activate the station profiles.
+The packet narrows thread exposure; it is not proof of complete process isolation.
 
 ### Revisit if
-- Any station runs headless or unattended. **No headless stations before R-19.**
-- A hostile comment is observed steering an agent.
+- Any station runs headless or unattended: verify the controller's isolation and
+  profile activation before launch; packet-only admission is not sufficient.
+- A hostile comment is observed steering an interactive agent or a policy identity.
 
 <a id="codex-guard-fail-open"></a>
 ## G-4 — Codex guard hooks fail open on error or timeout
