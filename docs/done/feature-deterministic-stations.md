@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-12) -->
 > **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
-> Phase 1 of `product-harness-factory-optimization.md` (R-1–R-6, R-18, R-19): turn the mechanical stations into deterministic `agentic-flow` commands so a later controller can drive them. Draft for approval; nothing is executed. Next: human review, then `plan-to-issues`.
+> Phase 1 of `product-harness-factory-optimization.md` (R-1–R-6, R-18, R-19): turn the mechanical stations into deterministic `agentic-flow` commands so a later controller can drive them. Shipped as `0.15.0` in PR #135 (merged 2026-11-15), tracker #124. Next: the identity-flip follow-up (decision 1), then Phase 2 (`feature-line-controller.md`).
 
 # Feature — Deterministic stations
 
