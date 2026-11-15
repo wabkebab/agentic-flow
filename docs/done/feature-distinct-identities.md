@@ -1,13 +1,12 @@
 <!-- TRIAGE (first pass · 2026-11-15) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
 > Phase 1 decision 1's follow-up (R-18): switch this repo to `distinct-account`, so each role posts as its own GitHub App and `single-operator-review` is retired. Prerequisite for Phase 2. The three Apps exist and mint tokens; draft for approval. Next: human review, then `plan-to-issues --doc`.
 
 # Feature — Distinct role identities
 
 ## Tracker
-- [ ] d-1 — switch the policy to distinct-account and retire single-operator review — open
-
+- [x] d-1 — #147; approved=9e77fa1c86bc137a8ce3bc97496ef43a0307cfe7; submissions=9e77fa1c86bc137a8ce3bc97496ef43a0307cfe7
 ---
 
 # Part A — Analysis
@@ -192,10 +191,10 @@ The close-out delta must stay bookkeeping-only, so `close-out finish` can attest
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/146
 - **Approval:** status=approved; by=wabkebab; at=2026-11-15; rev=f7593c9498faa44600d73422003a47863c18602c
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** url=https://github.com/wabkebab/agentic-flow/pull/148
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
   the index in the last repository commit. After human push, obtain CI and a structured
   reviewer approval on the `Tracking issue` for that exact PR head and run attempt.
