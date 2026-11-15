@@ -279,6 +279,7 @@ The human approves at Spec, releases at Release, and answers andon calls. Every 
 | R-15 | Split `self-test.sh` into `tests/<group>.sh`. Add an adopter-twin fixture (customized `CLAUDE.md` and `Makefile`, realistic commit commands) and run upgrade, hooks and `make check` against it as holdout scenarios. | C-4, F-1 |
 | R-16 | Docs diet: one reviewer contract, `METHODOLOGY.md` §9–§11 moved to reference files, roadmap cut to the open queue, the HTML explainer generated or dropped. | B-4, B-6, E-4 |
 | R-17 | Scenario-first brief template with a word cap. Acceptance scenarios are written at Spec and the executor cannot edit them. | F-1, F-2 |
+| R-22 | Role-neutral roles (added 2026-11-15, split from the signing follow-up). Role contracts move to role-named files, and `CLAUDE.md` and `AGENTS.md` become thin routers that load the session's role, so any vendor can plan, execute, review or close. Workflow labels become role-named (`role:executor` and the like, instead of `agent:codex`), which is a breaking change with a migration. Plan it with R-14b, since both rework the same files. This supersedes the line in `feature-line-controller.md`'s out-of-scope list that sends this work to the signing pass. | F-4 |
 
 ### Expected effect
 
@@ -331,8 +332,9 @@ One cost follows from the R-4 correction: a clean worktree has no installed depe
 
 - [x] `docs/done/feature-gate-and-handoff-fixes.md` — Phase 0 (Strict, because it changes gates and review provenance). Drafted 2026-11-11; shipped as `0.14.0` in PR #121, tracker #114. R-0b was replaced by G-5: #113's 89.5 s was measured at `0.13.1`, before F-12, and a fresh `0.13.3` export runs `make check` in 5.5 s.
 - [x] `docs/done/feature-deterministic-stations.md` — Phase 1 (Strict). Drafted 2026-11-12; shipped as `0.15.0` in PR #135 (merged 2026-11-15), tracker #124, steps #125–#133 all approved, with two bounces (s-3, s-5). Delivered R-1 to R-6 and R-19, plus R-18's App-identity support. This repo stays `single-operator` until the follow-up below.
-- [ ] `docs/inprogress/feature-distinct-identities.md` — the identity flip, Phase 1 decision 1's one-step follow-up (Strict). Drafted 2026-11-15; awaiting approval. The three App identities exist and mint tokens (policy commit `8b1b249`). It switches this repo to `distinct-account` and retires `single-operator-review`. Decision 4's required-review test is deferred, because the private repo cannot have branch protection. Phase 2 requires this pass first.
-- [ ] `docs/inprogress/feature-line-controller.md` — Phase 2 (Strict). Drafted 2026-11-15; awaiting approval. Covers R-7 to R-11, R-20 and R-21.
+- [ ] `docs/inprogress/feature-distinct-identities.md` — the identity flip, Phase 1 decision 1's one-step follow-up (Strict). Drafted 2026-11-15; approved 2026-11-15 (rev `f7593c9`); tracker #146, step #147. Runs before Phase 2. The three App identities exist and mint tokens (policy commit `8b1b249`). It switches this repo to `distinct-account` and retires `single-operator-review`. Decision 4's required-review test is deferred, because the private repo cannot have branch protection. Phase 2 requires this pass first.
+- [ ] `docs/inprogress/feature-line-controller.md` — Phase 2 (Strict). Drafted 2026-11-15; approved 2026-11-15 after five review rounds (rev `4a8e46d`); tracker #138, steps #139–#145. Covers R-7 to R-11, R-20 and R-21. Execution waits for the identity flip.
+- [ ] `docs/inprogress/feature-role-signing.md` — role-signed commits, part 1 of the signing follow-up (Strict). Drafted 2026-11-15; awaiting review. Runs after Phase 2. Part 2 is R-22 in Phase 3.
 - [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 3 (Strict; R-14 is a public compatibility change)
 
 ## Sources
