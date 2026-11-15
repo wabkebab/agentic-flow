@@ -100,6 +100,13 @@ Second round:
 | A run stayed open until a completing handoff, but a recovery launch started another run without closing the first, so the original could keep being picked, oldest first | High | Runs form chains. A retry or recovery launch's intent names the run it `replaces`, and that one line closes the old run. Recovery sees chain heads only, and the writer refuses a second open run in a chain. Scenario 22 restarts repeatedly, including right after the replacement line. |
 | Retry limits were per run, and every launch is a new run, so each resume reset them; the fix path had no cross-run count at all | Medium | Limits are per chain and recounted from the ledger on every pass: one resume-valid, one fix and three recovery launches. A new chain starts only on a new journal position or after a cleared hold. Scenario 23 hits each limit across a restart. |
 
+Third round:
+
+| Finding | Severity | Correction |
+|---|---|---|
+| A clean tree was required before every launch, so an executor killed after editing and before committing could never be resumed | Medium | The owner chose to recover the edits. Reconcile first salvages the uncommitted state (staged, unstaged and untracked) to `refs/agentic-flow/salvage/<run>` without touching it. An executor head's edits stay in place for a "resume-dirty" or "fresh-dirty" launch. A reviewer's edits are restored away after salvage. Unexplained edits become a hold. Scenario 24. |
+| Recovery read only the last 10,000 lines of a ledger shared by all plans, so other plans could push an unfinished chain out of the window | Medium | One ledger file per plan, read whole. A file over the size cap raises a hold rather than being read partially. Scenario 25. |
+
 ## Interface (before the implementation)
 
 ```
@@ -149,13 +156,17 @@ config/stations/result.schema.json   one schema, both stations
     for a valid result per chain; a second invalid result in the chain → andon
     "malformed station result" (see chains and limits under the run ledger)
 
-run ledger   $(git rev-parse --git-common-dir)/agentic-flow/ledger.jsonl   (append-only)
+run ledger   $(git rev-parse --git-common-dir)/agentic-flow/ledger/<plan>.jsonl
+  append-only, one file per plan, so no plan's records can crowd out another's.
+  Recovery reads the plan's whole file and never stops at a line window. A file over
+  50,000 lines or 32 MB raises a hold "ledger too large"; it is never read partially.
+  `metrics` reads every file under ledger/.
   one run = one station launch. Records in the order written; each kind at most once
   per run, except `handoff`, which is one record per attempt. Nothing is rewritten,
   and the writer refuses a second record of a once-only kind.
   intent   {v:1, kind:"intent", run, chain, replaces (run id | null),
             reason: initial|relaunch|resume-result|resume-packet|fresh-result|
-                    resume-valid|fix,
+                    resume-valid|fix|resume-dirty|fresh-dirty,
             plan, issue, step, station, cli, model,
             resume_of (session id | null), session (preassigned id | null),
             seq_before, base_head, packet_sha256, started, host}
@@ -182,6 +193,10 @@ run ledger   $(git rev-parse --git-common-dir)/agentic-flow/ledger.jsonl   (appe
             one per attempt. The run completes at the first attempt that exits
             0 (posted, retry no-op or superseded), 3 (illegal → hold), 4 (lost race →
             re-reconcile) or 7 (plan effect pending → hold). Exit 5 leaves it open.
+  salvage  {v:1, kind:"salvage", run, chain, ref, head, index_tree, worktree_tree,
+            paths:[{path, status}], at}
+            the uncommitted state a run left in the plan worktree (see worktree
+            recovery under `run`). Written after the salvage commit exists.
   end      {v:1, kind:"end", chain, how: dropped|held, hold | null, at}
             ends a chain without a handoff: rule 1g (superseded) or a hold
   hold     {v:1, kind:"hold", plan, hold, issue, reason, run | null,
@@ -210,9 +225,9 @@ chains   one unit of station work for (issue, station, seq_before) is a chain of
                   invalid_reason; a second → escalate "malformed station result"
     fix           allowed while the chain has no run with reason=fix; a red `verify`
                   in a chain that already has one → escalate "gate still red after fix"
-    recovery      relaunch, resume-result, resume-packet and fresh-result together:
-                  at most 3 per chain; a 4th would be needed → escalate "station
-                  keeps failing to finish"
+    recovery      relaunch, resume-result, resume-packet, fresh-result, resume-dirty
+                  and fresh-dirty together: at most 3 per chain; a 4th would be
+                  needed → escalate "station keeps failing to finish"
     escalate = the andon rules: a `decision` with action ask on the head run when
       the issue replays executing or reviewing (its handoff record completes the
       chain); otherwise a hold, which writes `end{how:held}`
@@ -322,8 +337,10 @@ agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
               base_head carrying `Fixes #<issue>`: "fresh-result" (a new session
               told which commit exists); otherwise "relaunch"
             intent + session (preassigned or recorded), no station → executor
-              with such a commit: "resume-result"; without one: "resume-packet";
-              reviewer: "relaunch"
+              with such a commit and a clean tree: "resume-result"; with a dirty
+              tree: "resume-dirty" (after salvage, see worktree recovery); with
+              neither: "resume-packet"; reviewer: "relaunch" (after the restore)
+            intent, no session, no station, dirty tree → executor: "fresh-dirty"
             station with invalid_reason → "resume-valid" while the chain allows
               it; otherwise "decide" an escalation
             station `submitted`, no verify → "verify"
@@ -360,7 +377,42 @@ agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
   3. station run (C-5):
        worktree: ${AGENTIC_WORKTREE_ROOT:-<git-common-dir>/agentic-flow/worktrees}/<plan>
          on the plan block's branch; created on first use; refused if the branch is
-         checked out in another worktree; its index and tree must be clean at start
+         checked out in another worktree
+       worktree state before every launch (`git status --porcelain=v2
+         --untracked-files=all`; ignored files are not state):
+         clean → launch
+         dirty with a `salvage` record for the chain head whose index tree and
+           worktree tree equal the current ones → launch the head's recovery item,
+           leaving the edits in place
+         dirty, anything else → salvage (below), then rule 1f decides
+       worktree recovery (C-4), run by reconcile before any launch:
+         salvage = durable copy of the uncommitted state, made without changing it:
+           index_tree    = `git write-tree` of the worktree's own index
+           worktree_tree = `git write-tree` of a temporary index (GIT_INDEX_FILE)
+                           after `git add -A` there, so staged, unstaged and
+                           untracked-but-not-ignored files are all captured
+           a commit of worktree_tree with parent HEAD and index_tree recorded in
+           its message, stored at refs/agentic-flow/salvage/<run>; then the
+           `salvage` ledger record. The worktree and the real index are not touched.
+         ownership:
+           the head of an executor chain whose run has no `station` record (killed
+             mid-station) → the edits are its work in progress: "resume-dirty" when
+             the head has a session, else "fresh-dirty" (a new session told which
+             paths are uncommitted). The edits stay in the worktree and index.
+           the head of a reviewer chain → a reviewer must not edit; after salvage the
+             worktree is restored to HEAD (`git reset --hard`, then `git clean -fd`
+             of non-ignored paths) and the reviewer is relaunched. A second time in
+             the chain → escalate "reviewer edited the worktree".
+           no open head, or a head with a `station` record → unexplained changes:
+             salvage, then a hold "unexplained worktree changes" naming the ref and
+             paths. Nothing is restored; the human decides.
+         a launch never happens on a dirty tree whose trees differ from the head's
+           salvage record (someone changed it after the salvage): hold "worktree
+           changed after salvage".
+         salvage refs are kept until the plan replays closed; `ship`'s last phase
+           deletes them and prints how many.
+       after a run: a `submitted` result with a dirty tree counts as an invalid
+         result (the resume-valid limit applies): a submit must cover all the work
        prompt = `packet <issue> --station <s>` + the result contract (schema, and for
          the executor: commit with `Fixes #<issue>`, never amend, never push)
        session: the pending item's session; otherwise the latest session of
@@ -405,7 +457,8 @@ agentic-flow ship <doc>                          run by the human; agents are bl
                      --verify-evidence` on the head and that run's attempt:
                      READY (an attested bookkeeping-only delta, or a final-head
                        approval for this head and attempt) → `close-out finish`, then
-                       `--phase pre-merge`, and print the merge command for the human
+                       `--phase pre-merge`; delete the plan's salvage refs and print
+                       how many; print the merge command for the human
                      NEEDS-REVIEW → print the uncovered paths, head, run URL and attempt,
                        and "final-head approval needed: the reviewer runs
                        `agentic-flow final-approve <doc>`"; exit 11. A marker for
@@ -441,13 +494,14 @@ New in this pass: an LLM process runs with auto-approved permissions and no pers
 | `handoff reconcile --check` | exit 5 → the controller stops before any station runs | exit 5 | n/a (read-only) |
 | issue timeline read (C-4 rule c) | 20 s via `bounded_gh` → stop, exit 5 | stop, exit 5 | more than 100 events → stop, exit 5, name the issue |
 | `git worktree add` | n/a | n/a | failure → exit 1, no ledger intent, no station |
+| salvage (`git write-tree`, commit, update-ref) | n/a (local) | n/a | any failure → no launch, exit 1, and the worktree is left untouched; the next run salvages again. The ledger record is written only after the ref exists |
 | desktop notification | 5 s, ignored | ignored | ignored; the @-mention is the notification of record |
 | `ship`: `git push` | git's own; exit 1, nothing else done | n/a | pushed, PR create failed → the re-run sees a pushed branch with no PR and creates it |
 | `ship`: CI wait | 30 min → exit 1, "CI still running: <url>"; re-run resumes waiting | missing run → "no run for <head> yet", exit 1 | failed run → exit 1 with the URL; never `finish` |
 | `ship`: final-head approval | `--wait-review` 60 min → exit 11 | marker for another head or attempt → reported stale, exit 11 | CI green, lifecycle NEEDS-REVIEW → exit 11; never `finish` |
 | `final-approve` | 20 s per `gh` call → exit 5, nothing posted | no PR, or no successful run on the head → refuse, exit 3 | n/a |
 
-Bounds: one station run per loop turn; per chain, at most one resume-valid run, one fix run and three recovery launches, all counted from the ledger; at most 50 loop turns per `run` invocation; the plan's stamped issues are read in one `gh issue list --state all` page of 100; a packet stays at Phase 1's 3,000 words; the ledger is never read past its last 10,000 lines for recovery (older runs cannot have a pending intent).
+Bounds: one station run per loop turn; per chain, at most one resume-valid run, one fix run and three recovery launches, all counted from the ledger; at most 50 loop turns per `run` invocation; the plan's stamped issues are read in one `gh issue list --state all` page of 100; a packet stays at Phase 1's 3,000 words; the plan's ledger is read whole for recovery, and a plan ledger over 50,000 lines or 32 MB raises a hold instead of being read partially.
 
 ## Out of scope / What NOT to build in this pass
 
@@ -512,7 +566,7 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
 ## Definition of done (whole brief)
 - Every step's DoD is met.
 - `make check`, `make test`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
-- All 23 acceptance scenarios below pass as tests.
+- All 25 acceptance scenarios below pass as tests.
 - C-6 and C-7 were executed and reviewed through `agentic-flow run --once` (decision 8). Their ledger entries are quoted in the close-out, or the fallback is recorded as a finding.
 - On a fixture Standard plan with fake CLIs, the human's touches are exactly: approve, `ship` (twice), merge. `metrics` reports them.
 
@@ -571,6 +625,15 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
     - **Red gate.** A red verify leads to one fix run. The controller is killed, then restarted. A second red verify in the chain escalates "gate still red after fix" with no second fix run.
     - **After escalation.** Once the human resumes the step (a new seq_before), the next run starts a new chain with fresh limits.
     - **After a hold.** A hold that is cleared without any journal change starts the next chain at generation g+1.
+24. **Crash before commit.** A codex executor fake stages one file, edits a second without staging it, creates an untracked third, and is killed before committing.
+    - The next `run` salvages first: `refs/agentic-flow/salvage/<run>` exists, its tree holds all three changes, `index_tree` equals the staged state, and the worktree and index are byte-for-byte unchanged.
+    - It then launches "resume-dirty" on the recorded session. The fake sees all three files with the same staged/unstaged split, commits, and returns `submitted`, and verify and submit proceed.
+    - Without a session record, "fresh-dirty" starts a new session that is told the three paths.
+    - Editing a file between the salvage and the launch raises a hold "worktree changed after salvage", with no launch.
+    - Dirt after a reviewer run is salvaged, restored to HEAD and relaunched once; a second time escalates.
+    - Dirt with no open executor head raises a hold "unexplained worktree changes" naming the ref, and nothing is restored.
+    - A `submitted` result that leaves the tree dirty counts as invalid.
+25. **Ledger isolation.** Plan A has an open chain head. Plan B then appends 20,000 records to its own ledger, and plan A appends 15,000 records of completed chains after its head. Plan A's next `run` still finds the head and recovers it. A plan ledger over the size cap raises a hold "ledger too large" and is not read partially.
 
 ## Verification commands
 ```bash
@@ -613,7 +676,7 @@ scripts/doctor.sh --check
 **DoD:** metrics over a fixture ledger match hand-computed values. Missing usage prints `n/a`. A torn last line does not break recovery or metrics. A second `station` or `decision` record for one run is refused, and so is an intent whose `replaces` is not the chain head. A table test maps every record prefix of a chain to its head, its pending item and its remaining limits: the functions rule 1f uses. A replaced run is closed in every case.
 **Verify:** `make test-one F=controller`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
-**Risks:** counting a re-run as a second bounce; time zone in lead time (use UTC epoch); a ledger shared by several worktrees (it lives in the common dir by design).
+**Risks:** counting a re-run as a second bounce; time zone in lead time (use UTC epoch); several worktrees writing one plan's ledger (it lives in the common dir by design, and the controller lock serializes writers per plan); a recovery path that reads only the tail of a ledger (scenario 25).
 **Commit:** `Record each station run and report line metrics from the ledger`
 
 ---
@@ -645,10 +708,11 @@ scripts/doctor.sh --check
 1. The controller lock, host id, lease check and `--take-over` per the Interface.
 2. Reconciliation rules a–g, in that order, each one a function with its own test. Rule c reads the issue timeline through `bounded_gh`. Rule f uses C-2's mapping. Only "decide" and "handoff" items run here.
 3. Raise holds per the Interface for every trigger that has no legal `ask`.
-4. `run --reconcile-only` stops after step 1 and prints the repairs, holds and pending list. It never invokes a station CLI or `verify-step`.
-5. Exit codes per the Interface.
+4. Worktree recovery per the Interface: salvage before anything else, decide ownership, and leave an executor's edits in place for its resume. Salvage never changes the worktree or the index.
+5. `run --reconcile-only` stops after step 1 and prints the repairs, holds and pending list. It may salvage, which changes nothing in the worktree, but it never restores a worktree, invokes a station CLI or runs `verify-step`.
+6. Exit codes per the Interface.
 
-**DoD:** scenarios 1, 2, 4, 5, 7, 20 and 21 pass. Scenario 3's "decide" and "handoff" boundaries pass; the others pass for the pending item they produce.
+**DoD:** scenarios 1, 2, 4, 5, 7, 20, 21 and 25 pass, and so does scenario 24's salvage and ownership part. Scenario 3's "decide" and "handoff" boundaries pass; the others pass for the pending item they produce.
 **Verify:** `make test-one F=controller`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
 **Risks:** repairing a person's deliberate reopen (rule c must look at the timeline, not guess); taking over a lock while its pid is alive under another name (compare the pid's start time); a closed tracker with stale labels (labels only, repair); a plan with more than 100 stamped issues (refuse).
@@ -666,7 +730,7 @@ scripts/doctor.sh --check
 4. The entry gate runs before the default loop (decision 2). `--once` skips it.
 5. SIGINT and SIGTERM release the lock and never leave a half-written ledger line.
 
-**DoD:** scenarios 3 (every boundary), 6, 8, 11, 12, 13, 14, 16, 19, 22 and 23 pass. On a fixture Standard plan with fake CLIs, a plain `run` goes from `executing` to "ready to ship" with zero human input and stops there without launching another station.
+**DoD:** scenarios 3 (every boundary), 6, 8, 11, 12, 13, 14, 16, 19, 22, 23 and 24 (full) pass. On a fixture Standard plan with fake CLIs, a plain `run` goes from `executing` to "ready to ship" with zero human input and stops there without launching another station.
 **Verify:** `make test-one F=controller`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
 **Risks:** a retry or recovery launch that opens a new chain instead of replacing the head, which resets its limits; a resume that carries the old packet (always build a new one); verifying the working tree instead of the claimed SHA (`verify-step` takes the SHA); a station that checks out another branch in the worktree (check the branch after every run); a loop that never ends (50-turn cap).
