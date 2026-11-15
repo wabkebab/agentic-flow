@@ -80,7 +80,16 @@ git remote get-url --push origin > "$out/pushurl"
 git remote get-url --push second > "$out/second-pushurl"
 if git push --dry-run origin HEAD > "$out/push.out" 2>&1; then exit 33; fi
 case "$behavior" in
-  timeout) sleep 30 & child=$!; echo "$child" > "$out/child"; wait "$child" ;;
+  timeout|callback-failure|normal-child)
+    : > "$out/heartbeat"
+    (for ((tick=0; tick<300; tick++)); do printf . >> "$out/heartbeat"; sleep 0.1; done) &
+    child=$!; echo "$child" > "$out/child"
+    case "$behavior" in
+      timeout) wait "$child" ;;
+      callback-failure)
+        printf '%s\n' '{"type":"thread.started","thread_id":"codex-session"}'
+        wait "$child"; exit 0 ;;
+    esac ;;
   malformed) printf 'not-json\n'; exit 0 ;;
   failure) exit 17 ;;
 esac
@@ -200,10 +209,10 @@ controller_tests() (
   launch_station executor "$C1/project" "$C1/packet with spaces.md" "$C1/result" > "$C1/launch.json" || status=$?
   [ "$status" = 124 ] || fail 'station timeout not enforced'
   jq -e '.exit==124' "$C1/launch.json" >/dev/null || fail 'timeout metadata missing'
-  child=$(cat "$C1/observed/child")
-  # A killed child can briefly remain a zombie; it must not remain running.
-  state=$(ps -o stat= -p "$child" 2>/dev/null || true)
-  case "$state" in ''|*Z*) ;; *) fail 'timeout left a live descendant' ;; esac
+  before=$(wc -c < "$C1/observed/heartbeat")
+  sleep 0.4
+  after=$(wc -c < "$C1/observed/heartbeat")
+  [ "$before" = "$after" ] || fail 'timeout left a live descendant'
   rm "$C1/behavior"
   roles_cmd set executor codex --timeout-s 12 --scope project >/dev/null 2>&1 || fail 'Codex resume assignment failed'
   launch_session_record() { printf '%s\n' "$1" > "$C1/session-record"; }
@@ -213,6 +222,28 @@ controller_tests() (
   grep -Fxq 'mcp_servers."fixture".enabled=false' "$C1/observed/argv" || fail 'configured Codex connector was not disabled'
   grep -Fxq features.apps=false "$C1/observed/argv" || fail 'built-in Codex Apps were not disabled'
   grep -Fxq -- --output-schema "$C1/observed/argv" || fail 'resume schema not passed'
+  echo callback-failure > "$C1/behavior"
+  launch_session_record() { return 1; }
+  rm -f "$C1/observed/child"
+  status=0
+  launch_station executor "$C1/project" "$C1/packet with spaces.md" "$C1/result" > "$C1/launch.json" || status=$?
+  [ "$status" = 2 ] || fail 'failed session callback did not fail the launch'
+  [ -s "$C1/observed/child" ] || fail 'callback failure did not exercise a live station child'
+  before=$(wc -c < "$C1/observed/heartbeat")
+  sleep 0.4
+  after=$(wc -c < "$C1/observed/heartbeat")
+  [ "$before" = "$after" ] || fail 'failed session callback left the station group running'
+  unset -f launch_session_record
+  echo normal-child > "$C1/behavior"
+  rm -f "$C1/observed/child"
+  launch_station executor "$C1/project" "$C1/packet with spaces.md" "$C1/result" > "$C1/launch.json" || fail 'station with background child failed normally'
+  jq -e '.exit==0' "$C1/launch.json" >/dev/null || fail 'normal station exit was changed by cleanup'
+  [ -s "$C1/observed/child" ] || fail 'normal-exit test did not launch a background child'
+  before=$(wc -c < "$C1/observed/heartbeat")
+  sleep 0.4
+  after=$(wc -c < "$C1/observed/heartbeat")
+  [ "$before" = "$after" ] || fail 'normal station exit left a background child running'
+  rm "$C1/behavior"
   roles_cmd set executor claude --scope project >/dev/null 2>&1 || fail 'Claude sandbox assignment failed'
   launch_assignment executor "$C1/project" || fail 'Claude sandbox assignment missing'
   jq 'del(.sandbox)' "$LAUNCH_PROFILE" > "$C1/claude-unsafe.json"

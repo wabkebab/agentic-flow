@@ -23,8 +23,11 @@ preamble and preassigned session. A resume also requires the creating intent's
 Codex's `launch_session_record` callback receives the first `thread.started` id;
 C-2/C-5 own ledger persistence. Launch metadata includes raw reported usage and
 whether turn/budget limits are advisory. A `-` timeout still gets a 2,700-second
-controller watchdog; explicit timeouts override it. Timed-out process groups are
-terminated, and each output file is capped at 32–64 MiB by the platform's file limit.
+controller watchdog; explicit timeouts override it. Every process group is reaped
+on completion, timeout or a failed session callback. `ulimit -f 65536` caps each
+file written by the CLI at 64 MiB (Bash uses 1,024-byte blocks), including capture
+files and session/database files under HOME. A larger existing CLI database may
+therefore reject writes; this is a per-file process limit, not a capture-only cap.
 
 Executor bundles read the live AGENTS.md, including its render-shared engineering
 standards; reviewer bundles read the live review-execution skill. The preamble

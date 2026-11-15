@@ -42,19 +42,41 @@ launch_environment() { # worktree scratch; array used with env -i for the CLI it
   LAUNCH_ENV+=("GIT_CONFIG_COUNT=$count")
 }
 
-launch_timed() { # seconds command...; kill the process group even if descendants ignore TERM
-  local seconds=$1
-  shift
+launch_timed() { # seconds pgid-file|- command...; reap the whole group on every exit
+  local seconds=$1 pgid_file=$2
+  shift 2
   # Perl ships on the supported macOS/Linux operator environments. setsid is used
   # in the child so a timeout cannot kill the controller's process group.
   perl -MPOSIX=setsid,WNOHANG -e '
-    my $limit=shift; my $pid=fork(); defined $pid or die "fork: $!";
-    if (!$pid) { setsid() or die "setsid: $!"; exec @ARGV; die "exec: $!"; }
+    my $limit=shift; my $pgid_file=shift;
+    my $pid=fork(); defined $pid or die "fork: $!";
+    if (!$pid) {
+      setsid() or die "setsid: $!";
+      if ($pgid_file ne "-") {
+        open my $fh, ">", $pgid_file or die "pgid file: $!";
+        print $fh "$$\n"; close $fh or die "pgid close: $!";
+      }
+      exec @ARGV; die "exec: $!";
+    }
     $SIG{ALRM}=sub { kill "TERM", -$pid; select undef,undef,undef,0.2; kill "KILL", -$pid; waitpid($pid,0); exit 124; };
     $SIG{INT}=$SIG{TERM}=sub { kill "KILL", -$pid; waitpid($pid,0); exit 130; };
     alarm $limit; waitpid($pid,0); my $status=$?; alarm 0;
+    kill "KILL", -$pid;
     exit(($status & 127) ? 128+($status & 127) : $status >> 8);
-  ' "$seconds" "$@"
+  ' "$seconds" "$pgid_file" "$@"
+}
+
+
+launch_abort() { # background wrapper pid, child-created pgid file
+  local wrapper=$1 file=$2 pgid=''
+  if [ -f "$file" ]; then IFS= read -r pgid < "$file" || true; fi
+  # The child writes this before exec, so a session event implies a ready pgid.
+  if [[ "$pgid" =~ ^[1-9][0-9]*$ ]] && [ "$pgid" -gt 1 ]; then
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    sleep 0.2
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+  fi
+  wait "$wrapper" 2>/dev/null || true
 }
 
 launch_profile_check() { # called after assignment; reject gaps by name
@@ -90,12 +112,12 @@ launch_codex_config() { # worktree scratch; exact overrides shared by inspect an
   LAUNCH_CODEX_ARGS=(-c 'approval_policy="never"' -c 'sandbox_mode="workspace-write"' -c 'web_search="disabled"' -c features.apps=false -c sandbox_workspace_write.network_access=false -c 'shell_environment_policy.inherit="core"' -c shell_environment_policy.experimental_use_profile=false -c shell_environment_policy.ignore_default_excludes=false)
   # Inspect before launching, then explicitly disable every configured connector.
   # Empty map overrides merge with TOML maps and do NOT reliably remove servers.
-  (cd "$worktree" && launch_timed 20 env -i "${LAUNCH_ENV[@]}" perl "$LAUNCH_ROOT/scripts/lib/station-config.pl" "$worktree" "${LAUNCH_CODEX_ARGS[@]}") > "$scratch/config.json" 2> "$scratch/config.err" \
+  (cd "$worktree" && launch_timed 20 - env -i "${LAUNCH_ENV[@]}" perl "$LAUNCH_ROOT/scripts/lib/station-config.pl" "$worktree" "${LAUNCH_CODEX_ARGS[@]}") > "$scratch/config.json" 2> "$scratch/config.err" \
     || { launch_error 'Codex effective config could not be read'; return 6; }
   while IFS= read -r name; do
     LAUNCH_CODEX_ARGS+=(-c "mcp_servers.$name.enabled=false")
   done < <(jq -r '(.mcp_servers // {}) | keys[] | @json' "$scratch/config.json")
-  (cd "$worktree" && launch_timed 20 env -i "${LAUNCH_ENV[@]}" perl "$LAUNCH_ROOT/scripts/lib/station-config.pl" "$worktree" "${LAUNCH_CODEX_ARGS[@]}") > "$scratch/effective.json" 2> "$scratch/config.err" \
+  (cd "$worktree" && launch_timed 20 - env -i "${LAUNCH_ENV[@]}" perl "$LAUNCH_ROOT/scripts/lib/station-config.pl" "$worktree" "${LAUNCH_CODEX_ARGS[@]}") > "$scratch/effective.json" 2> "$scratch/config.err" \
     || { launch_error 'Codex effective isolation config could not be read'; return 6; }
   jq -e '.approval_policy=="never" and .sandbox_mode=="workspace-write" and .web_search=="disabled" and .features.apps==false and .sandbox_workspace_write.network_access==false and all((.mcp_servers // {})[]; .enabled==false)' "$scratch/effective.json" >/dev/null \
     || { launch_error 'Codex effective sandbox/network/connector settings are unsafe'; return 6; }
@@ -103,7 +125,7 @@ launch_codex_config() { # worktree scratch; exact overrides shared by inspect an
 
 launch_opencode_config() { # worktree scratch; deny additions must survive config layering
   local worktree=$1 scratch=$2
-  (cd "$worktree" && launch_timed 20 env -i "${LAUNCH_ENV[@]}" "OPENCODE_CONFIG=$LAUNCH_PROFILE" opencode --standalone debug config) > "$scratch/effective.json" 2> "$scratch/config.err" \
+  (cd "$worktree" && launch_timed 20 - env -i "${LAUNCH_ENV[@]}" "OPENCODE_CONFIG=$LAUNCH_PROFILE" opencode --standalone debug config) > "$scratch/effective.json" 2> "$scratch/config.err" \
     || { launch_error 'OpenCode effective config could not be read'; return 6; }
   # v2 exposes ordered sources, not a flat config. Reject shell/webfetch allows
   # conservatively; project settings must not weaken the selected deny profile.
@@ -138,7 +160,7 @@ launch_preflight() { # station [worktree=$PWD]; unattended checks, no model invo
   # shellcheck disable=SC2016 # Probe code expands only in the scrubbed child.
   if ! command -v gh >/dev/null 2>&1; then
     launch_error 'missing gh credential probe'; status=6
-  elif (cd "$worktree" && launch_timed 15 env -i "${LAUNCH_ENV[@]}" bash --noprofile --norc -c '
+  elif (cd "$worktree" && launch_timed 15 - env -i "${LAUNCH_ENV[@]}" bash --noprofile --norc -c '
     for var in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; do
       if env | grep -q "^${var}="; then exit 1; fi
     done
@@ -220,7 +242,7 @@ launch_station() { # station worktree packet result [--resume session]
   # Codex stdout is consumed as it arrives. The callback lets C-2 persist the first
   # thread.started session before the CLI exits; no ledger is invented here.
   if [ "$LAUNCH_CLI" = codex ]; then
-    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" &
+    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" "$scratch/pgid" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" &
     local pid=$! session notified=false
     # Use a FIFO-free append reader: tailing is bounded by the launch timeout.
     while kill -0 "$pid" 2>/dev/null; do
@@ -228,7 +250,7 @@ launch_station() { # station worktree packet result [--resume session]
         session=$(jq -Rr 'fromjson? | select(.type=="thread.started") | .thread_id // empty' "$scratch/events" | head -n 1)
         if [ -n "$session" ]; then
           notified=true
-          if declare -F launch_session_record >/dev/null; then launch_session_record "$session" || { kill "$pid" 2>/dev/null || true; wait "$pid" || true; rm -rf "$scratch"; return 2; }; fi
+          if declare -F launch_session_record >/dev/null; then launch_session_record "$session" || { launch_abort "$pid" "$scratch/pgid"; rm -rf "$scratch"; return 2; }; fi
         fi
       fi
       sleep 0.1
@@ -241,7 +263,7 @@ launch_station() { # station worktree packet result [--resume session]
       fi
     fi
   else
-    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" || status=$?
+    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" "$scratch/pgid" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" || status=$?
   fi
   ended=$(date +%s)
   local parsed
