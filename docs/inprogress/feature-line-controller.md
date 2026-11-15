@@ -118,6 +118,12 @@ Fourth round:
 | The staged snapshot was kept only as a tree id in a commit message, which `git gc` does not treat as a reference | Medium | Salvage writes two commits shaped like `git stash`: an index commit, and a worktree commit whose second parent is the index commit. The ref points at the worktree commit, so both stay reachable. Scenario 24 restores after `gc --prune=now`. |
 | Ownership held every dirty tree after an executor `station` record, while a dirty `submitted` result was promised a resume-valid retry | Medium | Ownership rules are ordered, and the first match wins. A dirty submit is recorded as invalid in its `station` record, so rule 2 (resume-valid on the dirty tree) applies before the unexplained-changes hold. An executor `ask` keeps its edits for the next run. Scenario 26 retries across a restart. |
 
+Fifth round:
+
+| Finding | Severity | Correction |
+|---|---|---|
+| Session selection ignored the cli, so after a reassignment the next run, or a pending recovery item, could pass one CLI's session id to another | Medium | A session is resumable only by the cli (and profile) that created it, and only the latest session of (issue, station) is a candidate. On a mismatch, a fresh session in the new cli gets a new packet, and the item's content is carried as text. Chain limits and salvaged edits carry over unchanged, and `launch_station` refuses a mismatched `--resume`. Scenario 27 covers reassignment after a session and during crash recovery. |
+
 ## Interface (before the implementation)
 
 ```
@@ -252,6 +258,7 @@ run ledger   $(git rev-parse --git-common-dir)/agentic-flow/ledger/<plan>.jsonl
                     resume-valid|fix|resume-dirty|fresh-dirty,
             plan, issue, step, station, cli, model,
             resume_of (session id | null), session (preassigned id | null),
+            session_mode: new|resume|fresh-reassigned, reassigned_from (cli | null),
             seq_before, base_head, packet_sha256, started, host}
             written before launch. For claude (--session-id) and opencode
             (--session, which creates the session) the controller picks the id and
@@ -315,7 +322,33 @@ chains   one unit of station work for (issue, station, seq_before) is a chain of
       the issue replays executing or reviewing (its handoff record completes the
       chain); otherwise a hold, which writes `end{how:held}`
   a new chain (and fresh limits) starts only on a new seq_before, that is, after a
-  journal transition such as a bounce or a resume, or after a hold is cleared
+  journal transition such as a bounce or a resume, or after a hold is cleared.
+  Reassigning a station starts no new chain and resets no limit: a fresh launch
+  caused by reassignment counts against the same limit as the item it carries out.
+
+session compatibility (C-1, C-5)
+  a session belongs to the cli recorded in the intent of the run that created it.
+  It is resumable only by that same cli and the same station profile. C-1 also
+  confirms whether each cli accepts a different --model on resume; where it does
+  not, the model must match too.
+  candidate session = the pending item's session, or else the session of the latest
+    run of (issue, station). Only the latest is considered; an older session from
+    before an intervening reassignment is never revived, because its context is stale.
+  compatible → resume (session_mode=resume)
+  incompatible (the station was reassigned since) → no resume. A new session in
+    the current cli (session_mode=fresh-reassigned, reassigned_from=<old cli>) gets
+    a new packet, and the item's own content is carried as text, never as a session:
+      resume-result → the commit that exists, as in fresh-result
+      resume-packet → the packet only, as in relaunch
+      resume-dirty  → the uncommitted paths, as in fresh-dirty; the salvaged edits
+                      stay in the worktree and index, and ownership is unchanged
+                      (it follows the chain head, not the cli)
+      resume-valid  → the invalid_reason of the last result and the result contract
+      fix           → the red verify record's tail
+      bounce resume → the packet, which already holds the findings since the last
+                      submit
+  launch_station refuses --resume with a session whose recorded cli differs from the
+    station's effective cli (exit 2): a programming error, never a fallback
 agentic-flow metrics [--plan <id>] [--since <date>] [--json]
   per plan and per station: lead time (first intent → tracker closed), first-pass
   yield (steps approved with zero bounces), bounce rate, andon count by reason,
@@ -435,6 +468,8 @@ agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
               now from the body file, with --after seq_before
           a relaunch or resume item past the chain's recovery limit becomes
           "decide" an escalation instead.
+          every item that names a session is subject to session compatibility
+          when step 3 launches it.
           step 1 carries out only "decide" and "handoff". Every other item goes on
           the pending list for step 3, and its launch is a new run in the same chain
           with `replaces` = the head. The list is recomputed on every run and never
@@ -520,9 +555,12 @@ agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
        prompt = station preamble + the station's role bundle (decision 11) +
          `packet <issue> --station <s>` + the result contract (schema, and for
          the executor: commit with `Fixes #<issue>`, never amend, never push)
-       session: the pending item's session; otherwise the latest session of
-         (issue, station) from intent and session records → resume; otherwise new,
-         preassigned where the CLI allows
+       session: the candidate session under session compatibility → resume when
+         compatible; a fresh-reassigned launch when the station was reassigned; a
+         new session, preassigned where the CLI allows, when there is none.
+         The effective assignment is read once at the start of each `run`
+         invocation and recorded in every intent, so a reassignment takes effect at
+         the next launch.
        ledger intent → launch_station (codex: a session record on its first event)
          → ledger station
   4. act on the result. `verify` and `decision` are written before handoff is
@@ -754,6 +792,8 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
     - With no project or operator file, `roles` shows the harness defaults, each marked `harness`.
     - `roles set reviewer claude --scope project` writes and stages `.agentic-flow-roles`. `roles` then shows reviewer=claude from `project`, with model and effort reset to `-` and the claude station profile, and the next `run` launches the fake claude for the reviewer.
     - An operator file that sets reviewer=codex wins over the project for that operator only. `roles unset reviewer` (operator scope) falls back to the project's claude.
+    - **Reassigned after a session exists.** The reviewer runs on opencode and bounces. The reviewer is then set to claude. After the executor resubmits, the reviewer launch is a new claude session, the fake claude never receives the opencode session id, the intent records `session_mode=fresh-reassigned, reassigned_from=opencode`, and the packet holds the new submit. Setting the reviewer back to opencode does not revive the old opencode session: the claude session is now the latest, so the launch is fresh again.
+    - **Reassigned during crash recovery.** A codex executor is killed mid-station with staged and unstaged edits. Before the restart, the executor is set to claude. Reconcile salvages and keeps the edits in place, and the "resume-dirty" item launches a fresh claude session that is told the uncommitted paths. The codex session id is never passed. The chain's recovery count goes from 1 to 2, not back to 1. The same holds for "resume-valid" (the invalid_reason is carried as text, and a second invalid result still escalates) and for "fix" (the red tail is carried, and a second red still escalates).
     - After `roles manual reviewer`, a step reaching `reviewing` makes `run` print the interactive commands and exit 12 with no CLI launched, and the entry gate does not check the reviewer. After an interactive `handoff approve`, the next `run` continues.
     - `agentic-flow upgrade` in a fixture replaces `config/roles.tsv` and leaves `.agentic-flow-roles` byte-identical.
     - `roles set` refuses an unknown cli or a missing profile. A hand-edited bad project row fails `make check`, and a bad operator row fails `run` and `roles` with the line named.
@@ -796,7 +836,7 @@ scripts/doctor.sh --check
 **DoD:** scenarios 15 and 28 pass, and so do the preflight parts of scenarios 16 and 29 and every part of scenario 27 that does not run the loop. An unknown CLI or a missing profile fails `make check`. The preflight names the gap for a deleted Codex profile and for an OpenCode station without the accepted-risk entry.
 **Verify:** `make test-one F=controller` and `make check`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
-**Risks:** a role bundle that drifts from the interactive contract (select the same render-shared region, never a copy); `--bare` silently changing auth, so detect API-key auth before choosing it; a same-model check that compares only the cli (model strings decide); the same underlying model reached through two different CLIs, which this check does not catch (state it in the ADOPTION text); an upgrade that rewrites `.agentic-flow-roles`; an operator layer that silently overrides a project choice (`roles` must show the layer); inheriting `GH_TOKEN` through a wrapper's environment; a CLI reading credentials from `$HOME` that `env -i` does not cover; a parser that silently returns 0 for missing usage (must be null); quoting a prompt file path with spaces.
+**Risks:** passing one cli's session id to another (launch_station refuses it); a role bundle that drifts from the interactive contract (select the same render-shared region, never a copy); `--bare` silently changing auth, so detect API-key auth before choosing it; a same-model check that compares only the cli (model strings decide); the same underlying model reached through two different CLIs, which this check does not catch (state it in the ADOPTION text); an upgrade that rewrites `.agentic-flow-roles`; an operator layer that silently overrides a project choice (`roles` must show the layer); inheriting `GH_TOKEN` through a wrapper's environment; a CLI reading credentials from `$HOME` that `env -i` does not cover; a parser that silently returns 0 for missing usage (must be null); quoting a prompt file path with spaces.
 **Commit:** `Assign stations in layers and launch them without GitHub credentials`
 
 ---
@@ -866,7 +906,7 @@ scripts/doctor.sh --check
 4. The entry gate runs before the default loop (decision 2). `--once` skips it.
 5. SIGINT and SIGTERM release the lock and never leave a half-written ledger line.
 
-**DoD:** scenarios 3 (every boundary), 6, 8, 11, 12, 13, 14, 16, 19, 22, 23, 24 (full), 26 (full) and 27's loop parts (a reassigned reviewer launches; a manual station exits 12) pass. On a fixture Standard plan with fake CLIs, a plain `run` goes from `executing` to "ready to ship" with zero human input and stops there without launching another station.
+**DoD:** scenarios 3 (every boundary), 6, 8, 11, 12, 13, 14, 16, 19, 22, 23, 24 (full), 26 (full) and 27's loop parts (a reassigned reviewer launches; reassignment after a session and during crash recovery; a manual station exits 12) pass. On a fixture Standard plan with fake CLIs, a plain `run` goes from `executing` to "ready to ship" with zero human input and stops there without launching another station.
 **Verify:** `make test-one F=controller`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
 **Risks:** a retry or recovery launch that opens a new chain instead of replacing the head, which resets its limits; a resume that carries the old packet (always build a new one); verifying the working tree instead of the claimed SHA (`verify-step` takes the SHA); a station that checks out another branch in the worktree (check the branch after every run); a loop that never ends (50-turn cap).
