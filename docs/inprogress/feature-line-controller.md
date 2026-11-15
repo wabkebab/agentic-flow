@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-15) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict
-> Phase 2 of `product-harness-factory-optimization.md` (R-7–R-11, R-20, R-21): a local controller that drives the Phase 1 stations headless, so the human approves the plan, ships and merges, and answers andon calls. Draft for approval; nothing is executed. Next: the identity-flip pass (decision 1), human review of this brief, then `plan-to-issues --doc`.
+> Phase 2 of `product-harness-factory-optimization.md` (R-7–R-11, R-20, R-21): a local controller that drives the Phase 1 stations headless, so the human approves the plan, ships and merges, and answers andon calls. Draft for approval; nothing is executed. The identity-flip pass (decision 1) has merged (PR #148). Next: `plan-to-issues --doc`.
 
 # Feature — Line controller
 
@@ -41,7 +41,7 @@ Success, in the analysis's terms:
 | R-1 | A journaled, idempotent `handoff` with a plan lock, `--after` CAS, plan-effect reconcile and exit codes 0/2/3/4/5/7. Labels are a projection of the journal. | `scripts/lib/handoff.sh`, `scripts/lib/journal.sh`, `scripts/lib/journal.jq` |
 | R-2 | `config/workflow.tsv` defines states and transitions. `escalated` is reachable only through the third bounce. `resume` always goes back to `executing`. | `config/workflow.tsv` |
 | R-19 | `packet` builds trusted station input. Three station launch profiles exist, and nothing loads them yet. The D-9 accepted risk says a headless station needs controller-enforced credential removal and activated profiles. | `scripts/lib/packet.sh`, `config/stations/`, `docs/accepted_risks.md` (D-9) |
-| R-18 | App identities and per-role tokens (`agentic-flow token`) are supported. This repo is still `identity-mode=single-operator`, with one login in every role. The identity-flip follow-up that Phase 1 decision 1 promised has not run. | `.agentic-flow-review-policy`, `scripts/lib/identity.sh` |
+| R-18 | App identities and per-role tokens (`agentic-flow token`) are supported. This repo now runs `identity-mode=distinct-account` (identity flip, PR #148, merged 2026-11-15): one App per role, plus the owner as a second `approver=` for issue creation. | `.agentic-flow-review-policy`, `scripts/lib/identity.sh` |
 | F-4 | Roles are fixed: Codex executes, OpenCode reviews. The model, effort and budget are whatever each CLI defaults to. | `CLAUDE.md` Roles |
 | C-1, C-3 | Only the static bundle size is measured (`measure-harness.sh`). No per-run tokens, time or bounce counts. | `scripts/measure-harness.sh` |
 | A-1 (ship) | After the last approval, the human pushes and opens the PR. Then `close-out prep`, a commit, a second push, CI and `close-out finish` follow, all started by hand. | `docs/memory/close-out-needs-pr-first.md` |
@@ -74,7 +74,7 @@ A Go or Python service could watch the queue continuously and run stations in pa
 
 Owner's review, 2026-11-15: decisions 1, 6 and 8 accepted. Decision 2 was changed so unattended runs are the default, and the text below is the changed version. Decision 9 records the owner's answer to open question 1, accepting the risk, and decision 10 their request that stations be easy to reassign per project and per person. Decisions 11 and 12 follow from that: any CLI may run either station, so the station's role must override the CLI's own instruction file, and two stations running the same model need an accepted risk. Decisions 3, 4, 5 and 7 have not been commented on yet.
 
-1. **The identity flip runs first, as its own pass.** Phase 1 decision 1 deferred it to a one-step follow-up, and it has not run. That pass switches this repo to `distinct-account` with the three App identities. It retires `single-operator-review` and proves on a test PR whether an App's approving review satisfies a required review. This brief's `plan-to-issues --doc --apply` runs after that merges, so every Phase 2 transition is posted by the role's own identity. Until then, R-9's @-mention cannot notify anyone, because GitHub does not notify an account about its own comments.
+1. **The identity flip ran first, as its own pass, and has merged (PR #148, 2026-11-15).** It switched this repo to `distinct-account` with the three App identities and retired `single-operator-review`. Its required-review experiment was deferred, because the private repo cannot have branch protection; it moves to the publish step (R-0f) or Phase 3's R-13. This brief's `plan-to-issues --doc --apply` runs after that merge, so every Phase 2 transition is posted by the role's own identity, and R-9's @-mention can notify the owner, because the comment author is no longer the owner's own account.
 2. **Unattended is the default, behind an entry gate** (owner's decision, 2026-11-15). `run` loops until andon, ready-to-ship or the turn cap. `run --once` does one station run and exits, for supervised use and debugging. Before the first station starts, the loop checks that the policy is `distinct-account`, that `token <role> --check` passes for executor, reviewer and approver, and that C-5's isolation preflight passes for every station whose effective assignment is not manual. If any check fails, `run` exits 6 and names the gap. It never falls back to `--once` on its own. `--once` skips the gate, because a person is watching. The analysis's six failure-path tests are acceptance scenarios 1–6 below.
 3. **One step in flight per plan.** Strict steps run in plan order on the plan branch. Step k+1 starts only after step k replays `approved`. Pipelining steps is out of scope.
 4. **The station never touches GitHub.** It returns JSON, and the controller calls `handoff` with the role's minted token. The station process gets no GitHub token, an empty `GH_CONFIG_DIR`, a disabled push URL and git credential helper, and the station profile. Whatever the CLI cannot isolate is recorded as an accepted risk and blocks unattended runs for that station (see Open questions).
@@ -651,7 +651,7 @@ Bounds: one station run per loop turn; per chain, at most one resume-valid run, 
 - Running in GitHub Actions or with the laptop closed (analysis Option 3).
 - Parallel steps within a plan, or two plans in one worktree. Two plans in two worktrees under one controller per plan works, but nothing schedules across plans.
 - Controllers on two machines for one plan: refused or andon, never coordinated.
-- The identity flip and the required-review experiment (decision 1's own pass).
+- The required-review experiment, deferred from the identity flip (R-0f or R-13). The identity flip itself has shipped.
 - A planner station. Writing the brief stays an interactive, human-approved session.
 - An LLM closer. Close-out is `prep`/`finish`. A non-bookkeeping delta still goes to a reviewer, interactively, until Phase 3's R-13.
 - Retiring the word ceilings and the roadmap status (decision 6 → Phase 3).
@@ -683,7 +683,7 @@ steps: c-1 c-2 c-3 c-4 c-5 c-6 c-7
 
 ## Prerequisite
 
-The identity-flip pass (decision 1) is merged: `.agentic-flow-review-policy` says `identity-mode=distinct-account`, and `agentic-flow token <role> --check` passes for executor, reviewer and approver on the operator's machine. `plan-to-issues.sh` still creates issues with the ambient `gh` login, and `packet` admits only issues created by an approver login. So the policy keeps the owner's login as a second `approver=` line next to the approver App, unless the flip pass makes `plan-to-issues` post as the approver App. If it has not merged, stop and tell the human. Do not run this brief under `single-operator`.
+The identity-flip pass (decision 1) is merged (PR #148): `.agentic-flow-review-policy` says `identity-mode=distinct-account`, and `agentic-flow token <role> --check` passes for executor, reviewer and approver on the operator's machine. `plan-to-issues.sh` still creates issues with the ambient `gh` login, and `packet` admits only issues created by an approver login. So the policy keeps the owner's login as a second `approver=` line next to the approver App (the flip pass chose Option A and did not change `plan-to-issues`). If the policy has been changed since, stop and tell the human. Do not run this brief under `single-operator`.
 
 ## Branch
 Base: `main`. One branch and one PR for the whole brief: `phase-2`. Each step is one commit with `Fixes #N`. Review fixes land as new commits; never amend after a handoff. From C-6 on, the controller's worktree owns the branch (decision 8). Do not also check `phase-2` out in another worktree.
