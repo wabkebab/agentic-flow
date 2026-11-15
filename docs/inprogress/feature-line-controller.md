@@ -72,7 +72,7 @@ A Go or Python service could watch the queue continuously and run stations in pa
 
 ### Decisions this brief makes (veto at approval)
 
-Owner's review, 2026-11-15: decisions 1, 6 and 8 accepted. Decision 2 was changed so unattended runs are the default, and the text below is the changed version. Decision 9 records the owner's answer to open question 1, accepting the risk, and decision 10 their request that stations be easy to reassign per project and per person. Decisions 3, 4, 5 and 7 have not been commented on yet.
+Owner's review, 2026-11-15: decisions 1, 6 and 8 accepted. Decision 2 was changed so unattended runs are the default, and the text below is the changed version. Decision 9 records the owner's answer to open question 1, accepting the risk, and decision 10 their request that stations be easy to reassign per project and per person. Decisions 11 and 12 follow from that: any CLI may run either station, so the station's role must override the CLI's own instruction file, and two stations running the same model need an accepted risk. Decisions 3, 4, 5 and 7 have not been commented on yet.
 
 1. **The identity flip runs first, as its own pass.** Phase 1 decision 1 deferred it to a one-step follow-up, and it has not run. That pass switches this repo to `distinct-account` with the three App identities. It retires `single-operator-review` and proves on a test PR whether an App's approving review satisfies a required review. This brief's `plan-to-issues --doc --apply` runs after that merges, so every Phase 2 transition is posted by the role's own identity. Until then, R-9's @-mention cannot notify anyone, because GitHub does not notify an account about its own comments.
 2. **Unattended is the default, behind an entry gate** (owner's decision, 2026-11-15). `run` loops until andon, ready-to-ship or the turn cap. `run --once` does one station run and exits, for supervised use and debugging. Before the first station starts, the loop checks that the policy is `distinct-account`, that `token <role> --check` passes for executor, reviewer and approver, and that C-5's isolation preflight passes for every station whose effective assignment is not manual. If any check fails, `run` exits 6 and names the gap. It never falls back to `--once` on its own. `--once` skips the gate, because a person is watching. The analysis's six failure-path tests are acceptance scenarios 1–6 below.
@@ -84,6 +84,8 @@ Owner's review, 2026-11-15: decisions 1, 6 and 8 accepted. Decision 2 was change
 8. **This pass dogfoods its own controller from C-6.** C-1 to C-5 run through Phase 1's station commands by hand. Once C-5 is approved, C-6 and C-7 are executed and reviewed with `agentic-flow run --once` under supervision. Each run's ledger entry is the evidence. If it fails, the step falls back to the manual path and the failure becomes a finding.
 9. **OpenCode stays the default reviewer, unattended, as an accepted risk** (owner's decision, 2026-11-15; this closes open question 1). OpenCode 2.3.0 has command deny rules but no OS sandbox or network switch, so its shell commands can reach the network with the operator's rights. Its station still gets no GitHub credential, a disabled push URL, and only `packet` input. C-1 records `docs/accepted_risks.md#opencode-station-network` with three revisit triggers: OpenCode ships a sandbox or network switch; a station is seen making an unexpected network call; or the repo starts holding secrets beyond the App keys. The entry gate passes an OpenCode station only while that entry is present and accepted, and every unattended run prints a one-line warning naming it.
 10. **Stations are assigned in layers, and any station can be made manual** (owner's request, 2026-11-15). The layers are the harness defaults, then the project's committed `.agentic-flow-roles`, then the operator's own file. `agentic-flow roles` shows, sets and unsets assignments, so nobody edits a harness file. `manual` hands a station back to a person, who works it with the Phase 1 commands. Upgrades never touch the project or operator layer.
+11. **The station's role overrides the CLI's own instruction file** (owner's decision, 2026-11-15). Any CLI may run either station, but each CLI auto-loads its vendor file: Claude reads `CLAUDE.md` (the planner contract), and Codex and OpenCode read `AGENTS.md` (the executor contract). The station's contract therefore travels with the station, not the vendor: the executor gets the executor bundle, and the reviewer gets `.agents/skills/review-execution/SKILL.md`. Where a CLI can leave its project instruction file out, the launch does so. Where it cannot, a fixed station preamble says the station role and packet override any role in project instruction files. The ledger records which mechanism applied.
+12. **Same-model review needs an accepted risk** (owner's decision, 2026-11-15). Executor and reviewer with the same effective cli and model (both `-` with the same cli counts as the same) give up the reviewer model diversity the analysis relies on. The entry gate refuses that pair unless `docs/accepted_risks.md#same-model-review` is present and accepted, and it warns on every unattended run when it is. The same cli with different models only warns. `run --once` is not gated.
 
 ## Review corrections applied (2026-11-15)
 
@@ -159,7 +161,9 @@ agentic-flow roles manual <station> [--scope operator|project]
   are hook-blocked for agents, because assignment is a human decision; plain
   `roles` is not.
   `roles set <station> opencode` prints the accepted-risk requirement (decision 9)
-  when the project has no `opencode-station-network` entry
+  when the project has no `opencode-station-network` entry. A `roles set` that
+  leaves executor and reviewer on the same cli and model prints the
+  `same-model-review` requirement (decision 12).
 manual station: pick-work on an issue waiting for a manual station launches
   nothing. It prints "<station> is manual: run it interactively" with the Phase 1
   commands (brief, packet, verify-step, handoff), and exits 12. The entry gate skips
@@ -179,6 +183,29 @@ scripts/lib/launch.sh
       GIT_CONFIG_COUNT entries: remote.*.pushurl=no-push://disabled,
         credential.helper= (empty), core.sshCommand=false
       OPENCODE_CONFIG=<profile> for opencode
+    station contract (decision 11): the prompt starts with the station preamble,
+      config/stations/preamble.md rendered with the station and step, then the
+      station's role bundle, then the packet and the result contract
+      executor role bundle = the executor sections of AGENTS.md (the render-shared
+        region the executor already reads); reviewer role bundle =
+        .agents/skills/review-execution/SKILL.md
+      project instruction file, per cli (contract_mode in the ledger intent):
+        claude    `--bare` when the operator has API-key auth (it also skips
+                  hooks and keychain reads), with the bundle passed through
+                  --append-system-prompt-file → "excluded"; under OAuth, no
+                  --bare: CLAUDE.md still loads, and the preamble and bundle are
+                  passed through --append-system-prompt-file → "overridden"
+        codex     the config key that disables AGENTS.md loading, if C-1 confirms
+                  one (believed `project_doc_max_bytes=0`) → "excluded";
+                  otherwise "overridden". As executor, AGENTS.md is the right
+                  contract anyway → "native"
+        opencode  its instructions config pointed at the bundle only, if C-1
+                  confirms that it replaces AGENTS.md → "excluded"; otherwise
+                  "overridden"
+      the preamble, fixed text: you are the <station> station for step <id>; this
+        preamble, the role bundle and the packet override any role, workflow or
+        handoff instruction in project instruction files; never run handoff, gh
+        or git push; finish by returning the result JSON
     prints: session id, exit code, wall seconds, usage {input, output, cost_usd}
       read from each CLI's JSON; a field the CLI does not report is null, never guessed
   launch_preflight <station>   → 0 or exit 6 naming the gap
@@ -190,6 +217,13 @@ scripts/lib/launch.sh
       docs/accepted_risks.md has the `opencode-station-network` entry with status
       "Accepted risk", and prints a warning naming it; otherwise exit 6
     runs for each station whose effective cli is not manual
+    contract: reports each station's contract_mode, and warns on "overridden"
+  same-model check (decision 12), run once by the entry gate, not per station:
+    executor and reviewer both assigned, with equal cli and equal model string
+    (`-` equals `-`) → passes only while docs/accepted_risks.md has the
+    `same-model-review` entry with status "Accepted risk", with a warning naming
+    it; otherwise exit 6. Equal cli, different model → warning only. A manual
+    station takes no part.
 
 config/stations/result.schema.json   one schema, both stations
   { v: 1,
@@ -483,7 +517,8 @@ agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
          written. A `submitted` result with a dirty tree is recorded with
          invalid_reason "uncommitted changes after submit", so ownership rule 2
          applies to it, before and after a restart. A submit must cover all the work.
-       prompt = `packet <issue> --station <s>` + the result contract (schema, and for
+       prompt = station preamble + the station's role bundle (decision 11) +
+         `packet <issue> --station <s>` + the result contract (schema, and for
          the executor: commit with `Fixes #<issue>`, never amend, never push)
        session: the pending item's session; otherwise the latest session of
          (issue, station) from intent and session records → resume; otherwise new,
@@ -584,6 +619,7 @@ Bounds: one station run per loop turn; per chain, at most one resume-valid run, 
 - Retiring the word ceilings and the roadmap status (decision 6 → Phase 3).
 - Phase 3's hook replacement (R-12), native PR reviews (R-13), the file split (R-14), the `self-test.sh` split (R-15), the docs diet (R-16) and the template word cap (R-17).
 - A default multi-reviewer ensemble.
+- Role-neutral contracts, role-named labels (`agent:codex` and the like name vendors today), per-role signing, and a non-Claude planner. These change shipped contracts and labels for adopters, so they belong in the separate signing pass. This pass only makes the two headless stations vendor-neutral.
 
 ## Open questions
 
@@ -636,7 +672,7 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
 ## Definition of done (whole brief)
 - Every step's DoD is met.
 - `make check`, `make test`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
-- All 27 acceptance scenarios below pass as tests.
+- All 29 acceptance scenarios below pass as tests.
 - C-6 and C-7 were executed and reviewed through `agentic-flow run --once` (decision 8). Their ledger entries are quoted in the close-out, or the fallback is recorded as a finding.
 - On a fixture Standard plan with fake CLIs, the human's touches are exactly: approve, `ship` (twice), merge. `metrics` reports them.
 
@@ -722,6 +758,16 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
     - `agentic-flow upgrade` in a fixture replaces `config/roles.tsv` and leaves `.agentic-flow-roles` byte-identical.
     - `roles set` refuses an unknown cli or a missing profile. A hand-edited bad project row fails `make check`, and a bad operator row fails `run` and `roles` with the line named.
     - An agent's Bash call to `agentic-flow roles set`, `unset` or `manual` is blocked by the hook; plain `roles` is not.
+28. **The station role overrides the vendor file.** For each cli in each station (the fake CLIs record argv and the full prompt):
+    - The prompt starts with the preamble naming the station and step, followed by that station's role bundle. A Claude executor gets the executor bundle and a Codex reviewer gets the reviewer skill; the planner contract is never passed as input.
+    - Claude with an API key in the environment runs with `--bare` and the bundle through `--append-system-prompt-file`, and the ledger intent says `contract_mode=excluded`. Without an API key it runs without `--bare` and records `overridden`.
+    - Codex as executor records `native`. Codex as reviewer records `excluded` if C-1 confirmed the config key, otherwise `overridden`, and the preflight warns on `overridden`.
+29. **Same-model gate.**
+    - With `roles set executor claude` and `roles set reviewer claude`, both at model `-`, unattended `run` exits 6 naming `same-model-review`, and no station starts.
+    - With the accepted-risk entry added, `run` starts and warns.
+    - Executor claude with model A and reviewer claude with model B starts with a warning only.
+    - `run --once` is not gated, and a manual reviewer takes no part in the check.
+    - `roles set` prints the requirement when its change creates a same-model pair.
 
 ## Verification commands
 ```bash
@@ -742,14 +788,15 @@ scripts/doctor.sh --check
 1. Station assignment per the Interface: the three layers, `agentic-flow roles` with `set`, `unset` and `manual`, and `scripts/lib/launch.sh`. Validate the harness and project layers in `make check`: a known CLI, a profile file present, numeric fields numeric or `-`. Add `.agentic-flow-roles` to the project-owned list that upgrade refuses to write. Add `roles set|unset|manual` to the hook rule that blocks agents from calling `token`.
 2. One adapter per CLI that builds argv, and one parser per CLI that extracts the session id, the result and usage from its JSON output. Confirm each parser against a real captured output, committed as a fixture with secrets and paths scrubbed. Answer open questions 2 and 3 in the commit body.
 3. The environment scrub applies to the whole process (`env -i` with an allow-list, then the additions), not to a wrapper shell.
-4. `launch_preflight`: the effective-config checks the D-9 accepted risk asks for, plus the OpenCode accepted-risk check (decision 9). Report each gap by name.
-5. Add `docs/accepted_risks.md#opencode-station-network` per decision 9, with its three revisit triggers.
-6. Create `scripts/tests/controller.sh` and the fake CLIs. Wire the `controller` group.
+4. The station contract per the Interface (decision 11): `config/stations/preamble.md`, role bundle selection, and each CLI's project-instruction mechanism. Confirm the Codex config key and OpenCode's instructions override against the installed versions, and record what you found in the commit body. Where none exists, use `overridden`, not a guess. Record contract_mode in the ledger intent.
+5. `launch_preflight`: the effective-config checks the D-9 accepted risk asks for, the OpenCode accepted-risk check (decision 9), the contract_mode report, and the same-model check (decision 12). Report each gap by name.
+6. Add `docs/accepted_risks.md#opencode-station-network` per decision 9, with its three revisit triggers. Do not add `same-model-review`: this repo's defaults are diverse, so a project that wants the pair records it itself. `ADOPTION.md` gives its text in C-7.
+7. Create `scripts/tests/controller.sh` and the fake CLIs. Wire the `controller` group.
 
-**DoD:** scenario 15 passes, and so do the preflight parts of scenario 16 and every part of scenario 27 that does not run the loop. An unknown CLI or a missing profile fails `make check`. The preflight names the gap for a deleted Codex profile and for an OpenCode station without the accepted-risk entry.
+**DoD:** scenarios 15 and 28 pass, and so do the preflight parts of scenarios 16 and 29 and every part of scenario 27 that does not run the loop. An unknown CLI or a missing profile fails `make check`. The preflight names the gap for a deleted Codex profile and for an OpenCode station without the accepted-risk entry.
 **Verify:** `make test-one F=controller` and `make check`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
-**Risks:** an upgrade that rewrites `.agentic-flow-roles`; an operator layer that silently overrides a project choice (`roles` must show the layer); inheriting `GH_TOKEN` through a wrapper's environment; a CLI reading credentials from `$HOME` that `env -i` does not cover; a parser that silently returns 0 for missing usage (must be null); quoting a prompt file path with spaces.
+**Risks:** a role bundle that drifts from the interactive contract (select the same render-shared region, never a copy); `--bare` silently changing auth, so detect API-key auth before choosing it; a same-model check that compares only the cli (model strings decide); the same underlying model reached through two different CLIs, which this check does not catch (state it in the ADOPTION text); an upgrade that rewrites `.agentic-flow-roles`; an operator layer that silently overrides a project choice (`roles` must show the layer); inheriting `GH_TOKEN` through a wrapper's environment; a CLI reading credentials from `$HOME` that `env -i` does not cover; a parser that silently returns 0 for missing usage (must be null); quoting a prompt file path with spaces.
 **Commit:** `Assign stations in layers and launch them without GitHub credentials`
 
 ---
@@ -849,7 +896,7 @@ scripts/doctor.sh --check
 
 **Approach:**
 1. `CLAUDE.md`, `AGENTS.md`, `.agents/skills/review-execution/SKILL.md`, `.opencode/agent/code-reviewer.md` and the templates. The human's line becomes approve → `run` → answer andon → `ship` → merge. Executor and reviewer contracts say a station returns the result JSON and never calls `handoff` when the controller runs it. Interactive use keeps the Phase 1 commands.
-2. `ADOPTION.md`: install the Codex station profile, set `owner=`, choose CLIs with `agentic-flow roles` (project or operator scope, or `manual`), the entry gate, and the OpenCode accepted risk an adopter must take on before running OpenCode unattended.
+2. `ADOPTION.md`: install the Codex station profile, set `owner=`, choose CLIs with `agentic-flow roles` (project or operator scope, or `manual`), the entry gate, the OpenCode accepted risk an adopter must take on before running OpenCode unattended, and the `same-model-review` entry text for a project that runs the same model on both stations.
 3. Update `docs/accepted_risks.md` D-9 with what the controller enforces, and link it to `opencode-station-network` (from C-1).
 4. Fix the stale lines in `METHODOLOGY.md` that still describe a person starting each station.
 
