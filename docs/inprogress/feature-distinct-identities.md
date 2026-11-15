@@ -189,7 +189,7 @@ The close-out delta must stay bookkeeping-only, so `close-out finish` can attest
 
 ## Status / Implementation status
 - **Evidence schema:** v2
-- **Tracking issue:** pending
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/146
 - **Approval:** status=approved; by=wabkebab; at=2026-11-15; rev=f7593c9498faa44600d73422003a47863c18602c
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
