@@ -961,7 +961,7 @@ Claude, on `phase-2`, after the last approval:
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-15; rev=4a8e46da86fb8ede142f60bd5c3466f6cff14e58
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
