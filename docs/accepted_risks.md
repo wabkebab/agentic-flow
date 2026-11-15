@@ -167,7 +167,7 @@ The human can clean up the named branch and its worktree.
 <a id="single-operator-review"></a>
 ## F-3 — One GitHub account can attest to multiple agent roles
 
-**Status:** Accepted risk
+**Status:** Retired 2026-11-15 — the repo runs distinct-account (tracker #146)
 **Decision date:** 2026-09-25
 **Decided by:** Human approval of the harness optimization brief, tracker #93
 **Tracking:** issue #96

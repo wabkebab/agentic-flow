@@ -4578,6 +4578,32 @@ jq --arg head "$LIFE_HEAD" '
 LIFE_STEP_COMMENTS_JSON="$TMP/journal-approved.json"
 review_case 'accepted approval with losing bounce' READY 'review by reviewer'
 grep -q 'journal skipped 1' "$TMP/lifecycle-review.out" || fail 'lifecycle did not count racing loser'
+# This installation-specific check does not apply to generic exported policies.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Exercise the repository policy: the owner may approve plans, but cannot review.
+  cp "$ROOT/.agentic-flow-review-policy" "$V2FIX/.agentic-flow-review-policy"
+  jq '.data.repository.issue.comments.nodes[0].author.login="agentic-flow-reviewer[bot]"' \
+    "$TMP/lifecycle-comments.json" > "$TMP/journal-app-review.json"
+  LIFE_COMMENTS_JSON="$TMP/journal-app-review.json"
+  jq '.data.repository.issue.comments.nodes |= [.[0],.[1]] |
+    .data.repository.issue.comments.nodes[0].author.login="flow-implementer[bot]" |
+    .data.repository.issue.comments.nodes[1].author.login="wabkebab"' \
+    "$TMP/journal-approved.json" > "$TMP/journal-owner-review.json"
+  LIFE_STEP_COMMENTS_JSON="$TMP/journal-owner-review.json"
+  review_case 'repository policy rejects owner review' BLOCKED 'journal state reviewing'
+  (
+    . "$ROOT/scripts/lib/workflow.sh"
+    . "$ROOT/scripts/lib/review-policy.sh"
+    . "$ROOT/scripts/lib/journal.sh"
+    workflow_load "$ROOT" && read_review_policy "$V2FIX" || exit 1
+    journal_context "$(jq -r '.data.repository.issue.body' "$TMP/journal-owner-review.json")" || exit 1
+    owner_comments=$(jq '.data.repository.issue.comments.nodes' "$TMP/journal-owner-review.json" | journal_normalize) || exit 1
+    journal_replay "$owner_comments" step-strict | jq -e \
+      '.state=="reviewing" and .seq==1 and .skipped==1' >/dev/null
+  ) || fail 'repository policy did not count owner review as skipped'
+  cp "$TMP/lifecycle-policy-valid" "$V2FIX/.agentic-flow-review-policy"
+  LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"
+fi
 jq '.data.repository.issue.comments.nodes |= [.[0],.[2],.[1]]' \
   "$TMP/journal-approved.json" > "$TMP/journal-bounced.json"
 LIFE_STEP_COMMENTS_JSON="$TMP/journal-bounced.json"

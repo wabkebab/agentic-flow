@@ -1,6 +1,6 @@
 <!-- TRIAGE (first pass · 2026-11-11) -->
 > **Type:** Product Analysis · **Status:** ✅ Decided
-> Audit of the harness at `0.13.3` (`757d299`) against current model and CLI capabilities, with a phased remediation plan that turns the human from relay into supervisor. Decided 2026-11-11; the four Feature briefs it lists are not written yet and nothing is executed.
+> Audit of the harness at `0.13.3` (`757d299`) against current model and CLI capabilities, with a phased remediation plan that turns the human from relay into supervisor. Decided 2026-11-11. Phase 0 shipped as `0.14.0` (PR #121) and Phase 1 as `0.15.0` (PR #135, merged 2026-11-15). Next: the identity-flip pass, then Phase 2 (`feature-line-controller.md`, drafted 2026-11-15).
 
 # Product Analysis — Harness optimization and the software-factory step
 
@@ -330,8 +330,9 @@ One cost follows from the R-4 correction: a clean worktree has no installed depe
 ## If approved → next docs
 
 - [x] `docs/done/feature-gate-and-handoff-fixes.md` — Phase 0 (Strict, because it changes gates and review provenance). Drafted 2026-11-11; shipped as `0.14.0` in PR #121, tracker #114. R-0b was replaced by G-5: #113's 89.5 s was measured at `0.13.1`, before F-12, and a fresh `0.13.3` export runs `make check` in 5.5 s.
-- [ ] `docs/inprogress/feature-deterministic-stations.md` — Phase 1 (Strict). Drafted 2026-11-12; awaiting approval. Defers flipping this repo to `distinct-account` to a one-step follow-up pass, so this pass's own evidence stays valid.
-- [ ] `docs/inprogress/feature-line-controller.md` — Phase 2 (Strict)
+- [x] `docs/done/feature-deterministic-stations.md` — Phase 1 (Strict). Drafted 2026-11-12; shipped as `0.15.0` in PR #135 (merged 2026-11-15), tracker #124, steps #125–#133 all approved, with two bounces (s-3, s-5). Delivered R-1 to R-6 and R-19, plus R-18's App-identity support. This repo stays `single-operator` until the follow-up below.
+- [ ] `docs/inprogress/feature-distinct-identities.md` — the identity flip, Phase 1 decision 1's one-step follow-up (Strict). Drafted 2026-11-15; awaiting approval. The three App identities exist and mint tokens (policy commit `8b1b249`). It switches this repo to `distinct-account` and retires `single-operator-review`. Decision 4's required-review test is deferred, because the private repo cannot have branch protection. Phase 2 requires this pass first.
+- [ ] `docs/inprogress/feature-line-controller.md` — Phase 2 (Strict). Drafted 2026-11-15; awaiting approval. Covers R-7 to R-11, R-20 and R-21.
 - [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 3 (Strict; R-14 is a public compatibility change)
 
 ## Sources
