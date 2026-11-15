@@ -5,3 +5,6 @@ accepted-risk=docs/accepted_risks.md#single-operator-review
 reviewer=wabkebab
 executor=wabkebab
 approver=wabkebab
+reviewer=agentic-flow-reviewer[bot]
+executor=flow-implementer[bot]
+approver=flow-approver[bot]
