@@ -93,6 +93,13 @@ Owner's review, 2026-11-15: decisions 1, 6 and 8 accepted. Decision 2 was change
 | `--reconcile-only` resumed executors and re-ran reviewers, although C-4 promises recovery without stations | Medium | Reconciliation makes only deterministic repairs and replays recorded decisions. Station work becomes a recomputed pending list that C-5 carries out. Scenario 20. |
 | `ship` went from green CI straight to `finish`, skipping the final-head approval a non-bookkeeping delta needs | Medium | `ship` checks lifecycle after CI and exits 11 while approval is missing or stale. The new `final-approve` posts the marker as the reviewer identity, which `distinct-account` requires. Scenario 18. |
 
+Second round:
+
+| Finding | Severity | Correction |
+|---|---|---|
+| A run stayed open until a completing handoff, but a recovery launch started another run without closing the first, so the original could keep being picked, oldest first | High | Runs form chains. A retry or recovery launch's intent names the run it `replaces`, and that one line closes the old run. Recovery sees chain heads only, and the writer refuses a second open run in a chain. Scenario 22 restarts repeatedly, including right after the replacement line. |
+| Retry limits were per run, and every launch is a new run, so each resume reset them; the fix path had no cross-run count at all | Medium | Limits are per chain and recounted from the ledger on every pass: one resume-valid, one fix and three recovery launches. A new chain starts only on a new journal position or after a cleared hold. Scenario 23 hits each limit across a restart. |
+
 ## Interface (before the implementation)
 
 ```
@@ -139,13 +146,17 @@ config/stations/result.schema.json   one schema, both stations
     question: string ≤ 1,200 chars                         required for ask }
   validation: jq against the schema's required/enum rules (also for claude and codex,
     whose CLI checks are not trusted as the only check). Invalid → one resume asking
-    for a valid result; invalid again → andon "malformed station result"
+    for a valid result per chain; a second invalid result in the chain → andon
+    "malformed station result" (see chains and limits under the run ledger)
 
 run ledger   $(git rev-parse --git-common-dir)/agentic-flow/ledger.jsonl   (append-only)
   one run = one station launch. Records in the order written; each kind at most once
   per run, except `handoff`, which is one record per attempt. Nothing is rewritten,
   and the writer refuses a second record of a once-only kind.
-  intent   {v:1, kind:"intent", run, plan, issue, step, station, cli, model,
+  intent   {v:1, kind:"intent", run, chain, replaces (run id | null),
+            reason: initial|relaunch|resume-result|resume-packet|fresh-result|
+                    resume-valid|fix,
+            plan, issue, step, station, cli, model,
             resume_of (session id | null), session (preassigned id | null),
             seq_before, base_head, packet_sha256, started, host}
             written before launch. For claude (--session-id) and opencode
@@ -171,13 +182,42 @@ run ledger   $(git rev-parse --git-common-dir)/agentic-flow/ledger.jsonl   (appe
             one per attempt. The run completes at the first attempt that exits
             0 (posted, retry no-op or superseded), 3 (illegal → hold), 4 (lost race →
             re-reconcile) or 7 (plan effect pending → hold). Exit 5 leaves it open.
+  end      {v:1, kind:"end", chain, how: dropped|held, hold | null, at}
+            ends a chain without a handoff: rule 1g (superseded) or a hold
   hold     {v:1, kind:"hold", plan, hold, issue, reason, run | null,
             comment_id | null, at}
   clear    {v:1, kind:"clear", plan, hold, by, note, at}
-  `run` = <plan>/<issue>/<seq_before>/<station>/<n>. Appends are single write() calls
-  of one line under the controller lock. A run is open until a completing `handoff`
-  record; recovery reads only `station` for what a station returned, never the
-  worktree or a guess.
+  Appends are single write() calls of one line under the controller lock. Recovery
+  reads only `station` for what a station returned, never the worktree or a guess.
+
+chains   one unit of station work for (issue, station, seq_before) is a chain of runs
+  chain = <plan>/<issue>/<seq_before>/<station>/<g>, where g = 1 + the number of
+    ended chains with the same prefix (a cleared hold starts a new generation)
+  run   = <chain>/<n>, n from 1. The first run's reason is `initial`.
+  replacement: a retry or recovery launch is a new run in the same chain whose
+    intent names the run it continues in `replaces`. That one appended line is the
+    durable replacement record, so there is no moment when both runs look open, and
+    a crash right after it leaves the new run as the one to recover.
+  a run is closed when any of these exist: a completing `handoff` record for it, a
+    later intent with `replaces` = it, or an `end` record for its chain. A chain is
+    complete when its head run has a completing `handoff` record.
+  head  = the one open run of a chain. A writer that would open a second open run in
+    a chain (an intent whose `replaces` is not the current head) is refused.
+    Recovery and pick-work see heads only, so a replaced run is never selected again.
+  limits, recounted from the chain's records on every pass. Nothing is stored as a
+    counter, so a restart cannot reset them:
+    resume-valid  allowed while the chain has exactly one `station` record with
+                  invalid_reason; a second → escalate "malformed station result"
+    fix           allowed while the chain has no run with reason=fix; a red `verify`
+                  in a chain that already has one → escalate "gate still red after fix"
+    recovery      relaunch, resume-result, resume-packet and fresh-result together:
+                  at most 3 per chain; a 4th would be needed → escalate "station
+                  keeps failing to finish"
+    escalate = the andon rules: a `decision` with action ask on the head run when
+      the issue replays executing or reviewing (its handoff record completes the
+      chain); otherwise a hold, which writes `end{how:held}`
+  a new chain (and fresh limits) starts only on a new seq_before, that is, after a
+  journal transition such as a bounce or a resume, or after a hold is cleared
 agentic-flow metrics [--plan <id>] [--since <date>] [--json]
   per plan and per station: lead time (first intent → tracker closed), first-pass
   yield (steps approved with zero bounces), bounce rate, andon count by reason,
@@ -275,27 +315,33 @@ agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
        d. plan-effect drift → `handoff <tracker> reconcile` (posts notify once);
           exit 7 → hold
        e. unjournaled → hold
-       f. open ledger runs, oldest first, each mapped from its latest record to
-          one pending item:
+       f. chain heads (open runs only, never a replaced run), oldest chain first,
+          each mapped from its latest record to one pending item, subject to the
+          chain's limits:
             intent, no session, no station → executor with a commit after
               base_head carrying `Fixes #<issue>`: "fresh-result" (a new session
               told which commit exists); otherwise "relaunch"
             intent + session (preassigned or recorded), no station → executor
               with such a commit: "resume-result"; without one: "resume-packet";
               reviewer: "relaunch"
-            station with invalid_reason → "resume-valid" (once per run), then hold
+            station with invalid_reason → "resume-valid" while the chain allows
+              it; otherwise "decide" an escalation
             station `submitted`, no verify → "verify"
-            verify red, no decision → "fix" (one resume with the record's tail)
+            verify red, no decision → "fix" (a resume with the record's tail) while
+              the chain allows it; otherwise "decide" an escalation
             station or verify complete, no decision → "decide": render the
               decision now (deterministic, no CLI)
             decision with no handoff attempt, or only exit 5 → "handoff": replay it
               now from the body file, with --after seq_before
+          a relaunch or resume item past the chain's recovery limit becomes
+          "decide" an escalation instead.
           step 1 carries out only "decide" and "handoff". Every other item goes on
-          the pending list for step 3. The list is recomputed on every run and
-          never stored.
+          the pending list for step 3, and its launch is a new run in the same chain
+          with `replaces` = the head. The list is recomputed on every run and never
+          stored.
        g. a station item (not "decide" or "handoff") whose issue no longer replays
           the state seq_before saw (a person resumed, or a later transition landed)
-          is dropped as superseded. Recorded decisions always replay: handoff's
+          is dropped as superseded, and its chain gets `end{how:dropped}`. Recorded decisions always replay: handoff's
           --after check reports them superseded or lost, and posts nothing.
   --reconcile-only: stop after step 1, print the repairs, holds and pending list,
      and exit 0 (or 10 when a hold is open)
@@ -388,8 +434,8 @@ New in this pass: an LLM process runs with auto-approved permissions and no pers
 
 | External call | On timeout | On malformed response | On partial success |
 |---|---|---|---|
-| station CLI (`launch_station`) | `timeout-s` from roles.tsv: SIGTERM, 10 s, SIGKILL; ledger `station` record with `exit=124`; andon "station timed out" | non-JSON or schema-invalid: one resume asking for a valid result, then andon | exits after committing and before returning JSON: intent (and session) with no `station` record; C-4's rule f maps it to "resume-result", and C-5 resumes for the result only |
-| `verify-step` | its own `AGENTIC_VERIFY_TIMEOUT`, recorded; counts as red | n/a | red once → one resume with the tail; red twice → andon |
+| station CLI (`launch_station`) | `timeout-s` from roles.tsv: SIGTERM, 10 s, SIGKILL; ledger `station` record with `exit=124`; andon "station timed out" | non-JSON or schema-invalid: one resume-valid run per chain, counted from the ledger; a second invalid result → andon | exits after committing and before returning JSON: intent (and session) with no `station` record; C-4's rule f maps it to "resume-result", and C-5 resumes for the result only |
+| `verify-step` | its own `AGENTIC_VERIFY_TIMEOUT`, recorded; counts as red | n/a | red once → one fix run per chain; red again in that chain → andon |
 | `handoff` (any event) | its own bounds (20 s per `gh` call, 30 s lock) → exit 5; a `handoff` record with exit 5 leaves the run open; the next reconcile replays the decision's body file with `--after` | n/a | exit 4: re-reconcile, never re-run the station · exit 3 or 7: hold |
 | hold or clear comment | 20 s → exit 5; the ledger `hold` record still stops launches on this machine | n/a | posted, ledger line missing: the next reconcile reads the open hold from the tracking issue |
 | `handoff reconcile --check` | exit 5 → the controller stops before any station runs | exit 5 | n/a (read-only) |
@@ -401,7 +447,7 @@ New in this pass: an LLM process runs with auto-approved permissions and no pers
 | `ship`: final-head approval | `--wait-review` 60 min → exit 11 | marker for another head or attempt → reported stale, exit 11 | CI green, lifecycle NEEDS-REVIEW → exit 11; never `finish` |
 | `final-approve` | 20 s per `gh` call → exit 5, nothing posted | no PR, or no successful run on the head → refuse, exit 3 | n/a |
 
-Bounds: one station run per loop turn; at most one fix resume per red verify and one resume per malformed result; at most 50 loop turns per `run` invocation; the plan's stamped issues are read in one `gh issue list --state all` page of 100; a packet stays at Phase 1's 3,000 words; the ledger is never read past its last 10,000 lines for recovery (older runs cannot have a pending intent).
+Bounds: one station run per loop turn; per chain, at most one resume-valid run, one fix run and three recovery launches, all counted from the ledger; at most 50 loop turns per `run` invocation; the plan's stamped issues are read in one `gh issue list --state all` page of 100; a packet stays at Phase 1's 3,000 words; the ledger is never read past its last 10,000 lines for recovery (older runs cannot have a pending intent).
 
 ## Out of scope / What NOT to build in this pass
 
@@ -466,7 +512,7 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
 ## Definition of done (whole brief)
 - Every step's DoD is met.
 - `make check`, `make test`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
-- All 21 acceptance scenarios below pass as tests.
+- All 23 acceptance scenarios below pass as tests.
 - C-6 and C-7 were executed and reviewed through `agentic-flow run --once` (decision 8). Their ledger entries are quoted in the close-out, or the fallback is recorded as a finding.
 - On a fixture Standard plan with fake CLIs, the human's touches are exactly: approve, `ship` (twice), merge. `metrics` reports them.
 
@@ -515,6 +561,16 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
 19. **Completion per topology.** A Standard work issue that the reviewer approves replays `closing`. `run` prints "ready to ship", exits 0 and launches no CLI. A closed work issue prints "plan closed" and exits 0. In the Strict counterpart, every step approved and the tracker `closing` give "ready to ship"; the tracker still `open` gets one notify first.
 20. **Reconcile-only launches nothing.** The ledger holds open runs ending at each record kind. `run --reconcile-only` invokes no station CLI and no `verify-step` (their logs stay empty), prints each pending item, and carries out only "decide" and "handoff" items. A following `run --once` carries out exactly the oldest pending item.
 21. **Hold on a tracker plan effect.** With the reviewer identity removed, the notify after the last Strict approval exits 7. The controller posts a hold on the tracker as the approver identity, with the owner mention and `needs-human`, and exits 10. With the reviewer identity restored and the hold cleared, the next `run` posts notify once and prints "ready to ship". With the approver identity also absent, no comment is posted, the ledger `hold` has comment_id null, and the exit message names the command.
+22. **Replacement across repeated restarts.**
+    - A codex executor head is killed at `after-session` three times, with a controller restart after each. Each restart launches exactly one new run whose intent `replaces` the previous head. The fake CLI log shows one invocation per restart, and no replaced run is ever pending again.
+    - With `AGENTIC_CONTROLLER_FAULT=after-replacement-intent` (killed right after the new intent line), the next restart recovers the new run, not the replaced one.
+    - When a fourth recovery launch would be needed, the controller escalates "station keeps failing to finish" through `ask` and launches nothing.
+    - An intent whose `replaces` is not the chain head is refused by the writer.
+23. **Retry limits survive restarts.**
+    - **Malformed result.** An invalid result leads to one resume-valid run. The controller is killed, then restarted. A second invalid result escalates "malformed station result" with no third launch.
+    - **Red gate.** A red verify leads to one fix run. The controller is killed, then restarted. A second red verify in the chain escalates "gate still red after fix" with no second fix run.
+    - **After escalation.** Once the human resumes the step (a new seq_before), the next run starts a new chain with fresh limits.
+    - **After a hold.** A hold that is cleared without any journal change starts the next chain at generation g+1.
 
 ## Verification commands
 ```bash
@@ -554,7 +610,7 @@ scripts/doctor.sh --check
 2. `agentic-flow metrics` computes the KPIs from the ledger plus the state cache. Human touches count resumes and approvals from the journal (via the cache) and `ship` runs from the ledger.
 3. A torn last line (crash mid-append) is ignored with a warning, never fatal.
 
-**DoD:** metrics over a fixture ledger match hand-computed values. Missing usage prints `n/a`. A torn last line does not break recovery or metrics. A second `station` or `decision` record for one run is refused. A table test maps every record prefix of a run to its pending item, the function rule 1f uses.
+**DoD:** metrics over a fixture ledger match hand-computed values. Missing usage prints `n/a`. A torn last line does not break recovery or metrics. A second `station` or `decision` record for one run is refused, and so is an intent whose `replaces` is not the chain head. A table test maps every record prefix of a chain to its head, its pending item and its remaining limits: the functions rule 1f uses. A replaced run is closed in every case.
 **Verify:** `make test-one F=controller`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
 **Risks:** counting a re-run as a second bounce; time zone in lead time (use UTC epoch); a ledger shared by several worktrees (it lives in the common dir by design).
@@ -610,10 +666,10 @@ scripts/doctor.sh --check
 4. The entry gate runs before the default loop (decision 2). `--once` skips it.
 5. SIGINT and SIGTERM release the lock and never leave a half-written ledger line.
 
-**DoD:** scenarios 3 (every boundary), 6, 8, 11, 12, 13, 14, 16 and 19 pass. On a fixture Standard plan with fake CLIs, a plain `run` goes from `executing` to "ready to ship" with zero human input and stops there without launching another station.
+**DoD:** scenarios 3 (every boundary), 6, 8, 11, 12, 13, 14, 16, 19, 22 and 23 pass. On a fixture Standard plan with fake CLIs, a plain `run` goes from `executing` to "ready to ship" with zero human input and stops there without launching another station.
 **Verify:** `make test-one F=controller`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
-**Risks:** a resume that carries the old packet (always build a new one); verifying the working tree instead of the claimed SHA (`verify-step` takes the SHA); a station that checks out another branch in the worktree (check the branch after every run); a loop that never ends (50-turn cap).
+**Risks:** a retry or recovery launch that opens a new chain instead of replacing the head, which resets its limits; a resume that carries the old packet (always build a new one); verifying the working tree instead of the claimed SHA (`verify-step` takes the SHA); a station that checks out another branch in the worktree (check the branch after every run); a loop that never ends (50-turn cap).
 **Commit:** `Drive the executor and reviewer stations headless from the journal`
 
 ---
