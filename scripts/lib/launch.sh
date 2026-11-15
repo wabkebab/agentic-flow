@@ -87,7 +87,7 @@ launch_profile_check() { # called after assignment; reject gaps by name
 
 launch_codex_config() { # worktree scratch; exact overrides shared by inspect and exec
   local worktree=$1 scratch=$2 name
-  LAUNCH_CODEX_ARGS=(-c 'approval_policy="never"' -c 'sandbox_mode="workspace-write"' -c 'web_search="disabled"' -c sandbox_workspace_write.network_access=false -c 'shell_environment_policy.inherit="core"' -c shell_environment_policy.experimental_use_profile=false -c shell_environment_policy.ignore_default_excludes=false)
+  LAUNCH_CODEX_ARGS=(-c 'approval_policy="never"' -c 'sandbox_mode="workspace-write"' -c 'web_search="disabled"' -c features.apps=false -c sandbox_workspace_write.network_access=false -c 'shell_environment_policy.inherit="core"' -c shell_environment_policy.experimental_use_profile=false -c shell_environment_policy.ignore_default_excludes=false)
   # Inspect before launching, then explicitly disable every configured connector.
   # Empty map overrides merge with TOML maps and do NOT reliably remove servers.
   (cd "$worktree" && launch_timed 20 env -i "${LAUNCH_ENV[@]}" perl "$LAUNCH_ROOT/scripts/lib/station-config.pl" "$worktree" "${LAUNCH_CODEX_ARGS[@]}") > "$scratch/config.json" 2> "$scratch/config.err" \
@@ -97,7 +97,7 @@ launch_codex_config() { # worktree scratch; exact overrides shared by inspect an
   done < <(jq -r '(.mcp_servers // {}) | keys[] | @json' "$scratch/config.json")
   (cd "$worktree" && launch_timed 20 env -i "${LAUNCH_ENV[@]}" perl "$LAUNCH_ROOT/scripts/lib/station-config.pl" "$worktree" "${LAUNCH_CODEX_ARGS[@]}") > "$scratch/effective.json" 2> "$scratch/config.err" \
     || { launch_error 'Codex effective isolation config could not be read'; return 6; }
-  jq -e '.approval_policy=="never" and .sandbox_mode=="workspace-write" and .web_search=="disabled" and .sandbox_workspace_write.network_access==false and all((.mcp_servers // {})[]; .enabled==false)' "$scratch/effective.json" >/dev/null \
+  jq -e '.approval_policy=="never" and .sandbox_mode=="workspace-write" and .web_search=="disabled" and .features.apps==false and .sandbox_workspace_write.network_access==false and all((.mcp_servers // {})[]; .enabled==false)' "$scratch/effective.json" >/dev/null \
     || { launch_error 'Codex effective sandbox/network/connector settings are unsafe'; return 6; }
 }
 

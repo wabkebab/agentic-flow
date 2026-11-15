@@ -44,12 +44,18 @@ if [ "$cli" = codex ] && [ "${1:-}" = app-server ]; then
     done
     exit 0
   fi
+  if [ "$behavior" = unsafe-apps ]; then
+    while IFS= read -r request; do
+      case "$request" in *config/read*) printf '%s\n' '{"id":2,"result":{"config":{"approval_policy":"never","sandbox_mode":"workspace-write","web_search":"disabled","sandbox_workspace_write":{"network_access":false},"features":{"apps":true},"mcp_servers":{}}}}' ;; esac
+    done
+    exit 0
+  fi
   # The config RPC is headless and never invokes the model fake.
   while IFS= read -r request; do
     case "$request" in *config/read*)
       enabled=true
       case "$*" in *'mcp_servers."fixture".enabled=false'*) enabled=false ;; esac
-      printf '{"id":2,"result":{"config":{"approval_policy":"never","sandbox_mode":"workspace-write","web_search":"disabled","sandbox_workspace_write":{"network_access":false},"mcp_servers":{"fixture":{"enabled":%s}}}}}\n' "$enabled"
+      printf '{"id":2,"result":{"config":{"approval_policy":"never","sandbox_mode":"workspace-write","web_search":"disabled","sandbox_workspace_write":{"network_access":false},"features":{"apps":false},"mcp_servers":{"fixture":{"enabled":%s}}}}}\n' "$enabled"
       ;; esac
   done
   exit 0
@@ -138,6 +144,9 @@ controller_tests() (
   echo unsafe-config > "$C1/behavior"
   launch_preflight executor "$C1/project" > "$C1/preflight" 2>&1 && fail 'unsafe merged Codex settings passed'
   grep -q 'effective sandbox/network/connector' "$C1/preflight" || fail 'unsafe Codex gap unnamed'
+  echo unsafe-apps > "$C1/behavior"
+  launch_preflight executor "$C1/project" > "$C1/preflight" 2>&1 && fail 'Codex built-in Apps remained enabled'
+  grep -q 'effective sandbox/network/connector' "$C1/preflight" || fail 'unsafe Codex Apps gap unnamed'
   echo weak-opencode > "$C1/behavior"
   launch_preflight reviewer "$C1/project" > "$C1/preflight" 2>&1 && fail 'weakened OpenCode settings passed'
   grep -q 'effective deny settings' "$C1/preflight" || fail 'unsafe OpenCode gap unnamed'
@@ -201,6 +210,7 @@ controller_tests() (
   grep -Fxq codex-session "$C1/session-record" || fail 'Codex session callback missing'
   grep -Fxq resume "$C1/observed/argv" || fail 'compatible resume not passed'
   grep -Fxq 'mcp_servers."fixture".enabled=false' "$C1/observed/argv" || fail 'configured Codex connector was not disabled'
+  grep -Fxq features.apps=false "$C1/observed/argv" || fail 'built-in Codex Apps were not disabled'
   grep -Fxq -- --output-schema "$C1/observed/argv" || fail 'resume schema not passed'
   roles_cmd set executor claude --scope project >/dev/null 2>&1 || fail 'Claude sandbox assignment failed'
   launch_assignment executor "$C1/project" || fail 'Claude sandbox assignment missing'
