@@ -559,8 +559,8 @@ agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
          compatible; a fresh-reassigned launch when the station was reassigned; a
          new session, preassigned where the CLI allows, when there is none.
          The effective assignment is read once at the start of each `run`
-         invocation and recorded in every intent, so a reassignment takes effect at
-         the next launch.
+         invocation and recorded in every intent, so a reassignment takes effect on
+         the next `run` invocation, never in the middle of one.
        ledger intent → launch_station (codex: a session record on its first event)
          → ledger station
   4. act on the result. `verify` and `decision` are written before handoff is
