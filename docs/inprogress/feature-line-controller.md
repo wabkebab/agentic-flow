@@ -107,6 +107,13 @@ Third round:
 | A clean tree was required before every launch, so an executor killed after editing and before committing could never be resumed | Medium | The owner chose to recover the edits. Reconcile first salvages the uncommitted state (staged, unstaged and untracked) to `refs/agentic-flow/salvage/<run>` without touching it. An executor head's edits stay in place for a "resume-dirty" or "fresh-dirty" launch. A reviewer's edits are restored away after salvage. Unexplained edits become a hold. Scenario 24. |
 | Recovery read only the last 10,000 lines of a ledger shared by all plans, so other plans could push an unfinished chain out of the window | Medium | One ledger file per plan, read whole. A file over the size cap raises a hold rather than being read partially. Scenario 25. |
 
+Fourth round:
+
+| Finding | Severity | Correction |
+|---|---|---|
+| The staged snapshot was kept only as a tree id in a commit message, which `git gc` does not treat as a reference | Medium | Salvage writes two commits shaped like `git stash`: an index commit, and a worktree commit whose second parent is the index commit. The ref points at the worktree commit, so both stay reachable. Scenario 24 restores after `gc --prune=now`. |
+| Ownership held every dirty tree after an executor `station` record, while a dirty `submitted` result was promised a resume-valid retry | Medium | Ownership rules are ordered, and the first match wins. A dirty submit is recorded as invalid in its `station` record, so rule 2 (resume-valid on the dirty tree) applies before the unexplained-changes hold. An executor `ask` keeps its edits for the next run. Scenario 26 retries across a restart. |
+
 ## Interface (before the implementation)
 
 ```
@@ -193,8 +200,8 @@ run ledger   $(git rev-parse --git-common-dir)/agentic-flow/ledger/<plan>.jsonl
             one per attempt. The run completes at the first attempt that exits
             0 (posted, retry no-op or superseded), 3 (illegal → hold), 4 (lost race →
             re-reconcile) or 7 (plan effect pending → hold). Exit 5 leaves it open.
-  salvage  {v:1, kind:"salvage", run, chain, ref, head, index_tree, worktree_tree,
-            paths:[{path, status}], at}
+  salvage  {v:1, kind:"salvage", run, chain, ref, head, index_commit,
+            worktree_commit, index_tree, worktree_tree, paths:[{path, status}], at}
             the uncommitted state a run left in the plan worktree (see worktree
             recovery under `run`). Written after the salvage commit exists.
   end      {v:1, kind:"end", chain, how: dropped|held, hold | null, at}
@@ -381,9 +388,9 @@ agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
        worktree state before every launch (`git status --porcelain=v2
          --untracked-files=all`; ignored files are not state):
          clean → launch
-         dirty with a `salvage` record for the chain head whose index tree and
-           worktree tree equal the current ones → launch the head's recovery item,
-           leaving the edits in place
+         dirty with a `salvage` record for the owning run (ownership, below) whose
+           index tree and worktree tree equal the current ones → launch the owner's
+           recovery item, leaving the edits in place
          dirty, anything else → salvage (below), then rule 1f decides
        worktree recovery (C-4), run by reconcile before any launch:
          salvage = durable copy of the uncommitted state, made without changing it:
@@ -391,28 +398,47 @@ agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
            worktree_tree = `git write-tree` of a temporary index (GIT_INDEX_FILE)
                            after `git add -A` there, so staged, unstaged and
                            untracked-but-not-ignored files are all captured
-           a commit of worktree_tree with parent HEAD and index_tree recorded in
-           its message, stored at refs/agentic-flow/salvage/<run>; then the
-           `salvage` ledger record. The worktree and the real index are not touched.
-         ownership:
-           the head of an executor chain whose run has no `station` record (killed
-             mid-station) → the edits are its work in progress: "resume-dirty" when
-             the head has a session, else "fresh-dirty" (a new session told which
-             paths are uncommitted). The edits stay in the worktree and index.
-           the head of a reviewer chain → a reviewer must not edit; after salvage the
-             worktree is restored to HEAD (`git reset --hard`, then `git clean -fd`
-             of non-ignored paths) and the reviewer is relaunched. A second time in
-             the chain → escalate "reviewer edited the worktree".
-           no open head, or a head with a `station` record → unexplained changes:
-             salvage, then a hold "unexplained worktree changes" naming the ref and
-             paths. Nothing is restored; the human decides.
+           two commits, shaped like `git stash`, so Git itself keeps both reachable:
+             index_commit    = commit-tree index_tree, parent HEAD
+             worktree_commit = commit-tree worktree_tree, parents HEAD and
+                               index_commit
+           refs/agentic-flow/salvage/<run> → worktree_commit. The staged snapshot is
+           reachable as its second parent, so `git gc` keeps it; nothing depends on
+           text in a commit message. Then the `salvage` ledger record. The worktree
+           and the real index are not touched.
+         restore (used by tests, and by the human from a hold): `git read-tree
+           <ref>^2` restores the index, then the worktree is checked out from <ref>'s
+           tree for the paths salvage listed, untracked ones included
+         ownership, first matching rule wins:
+           1. an executor head with no `station` record (killed mid-station) → its
+              work in progress: "resume-dirty" when the head has a session, else
+              "fresh-dirty" (a new session told which paths are uncommitted)
+           2. an executor head whose `station` record has an invalid_reason, which
+              includes "uncommitted changes after submit" (see after a run) → its
+              work in progress: "resume-valid" on the dirty tree while the chain
+              allows it, otherwise escalate "malformed station result" through `ask`
+           3. an executor head whose `station` result is `ask` → its work in
+              progress: the ask proceeds, and the edits stay salvaged and in place.
+              The next executor run on that issue, in the chain that begins after the
+              human's resume, owns them and is told the paths.
+           4. a reviewer head → a reviewer must not edit; after salvage the worktree
+              is restored to HEAD (`git reset --hard`, then `git clean -fd` of
+              non-ignored paths) and the reviewer is relaunched. A second time in
+              the chain → escalate "reviewer edited the worktree".
+           5. anything else (no open head, a completed chain, or an executor result
+              recorded as `submitted` with a clean tree) → unexplained changes: a
+              hold "unexplained worktree changes" naming the ref and paths. Nothing
+              is restored; the human decides.
+           In rules 1–3 the edits stay in the worktree and index.
          a launch never happens on a dirty tree whose trees differ from the head's
            salvage record (someone changed it after the salvage): hold "worktree
            changed after salvage".
          salvage refs are kept until the plan replays closed; `ship`'s last phase
            deletes them and prints how many.
-       after a run: a `submitted` result with a dirty tree counts as an invalid
-         result (the resume-valid limit applies): a submit must cover all the work
+       after a run: the worktree is checked before the `station` record is
+         written. A `submitted` result with a dirty tree is recorded with
+         invalid_reason "uncommitted changes after submit", so ownership rule 2
+         applies to it, before and after a restart. A submit must cover all the work.
        prompt = `packet <issue> --station <s>` + the result contract (schema, and for
          the executor: commit with `Fixes #<issue>`, never amend, never push)
        session: the pending item's session; otherwise the latest session of
@@ -566,7 +592,7 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
 ## Definition of done (whole brief)
 - Every step's DoD is met.
 - `make check`, `make test`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
-- All 25 acceptance scenarios below pass as tests.
+- All 26 acceptance scenarios below pass as tests.
 - C-6 and C-7 were executed and reviewed through `agentic-flow run --once` (decision 8). Their ledger entries are quoted in the close-out, or the fallback is recorded as a finding.
 - On a fixture Standard plan with fake CLIs, the human's touches are exactly: approve, `ship` (twice), merge. `metrics` reports them.
 
@@ -626,14 +652,20 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
     - **After escalation.** Once the human resumes the step (a new seq_before), the next run starts a new chain with fresh limits.
     - **After a hold.** A hold that is cleared without any journal change starts the next chain at generation g+1.
 24. **Crash before commit.** A codex executor fake stages one file, edits a second without staging it, creates an untracked third, and is killed before committing.
-    - The next `run` salvages first: `refs/agentic-flow/salvage/<run>` exists, its tree holds all three changes, `index_tree` equals the staged state, and the worktree and index are byte-for-byte unchanged.
+    - The next `run` salvages first: `refs/agentic-flow/salvage/<run>` exists, its tree holds all three changes, its second parent's tree equals the staged state, and the worktree and index are byte-for-byte unchanged.
+    - After `git gc --prune=now` and `git reflog expire --expire=now --all`, restoring from the ref in a scratch clone of the worktree reproduces the same staged and unstaged split and the untracked file.
     - It then launches "resume-dirty" on the recorded session. The fake sees all three files with the same staged/unstaged split, commits, and returns `submitted`, and verify and submit proceed.
     - Without a session record, "fresh-dirty" starts a new session that is told the three paths.
     - Editing a file between the salvage and the launch raises a hold "worktree changed after salvage", with no launch.
     - Dirt after a reviewer run is salvaged, restored to HEAD and relaunched once; a second time escalates.
     - Dirt with no open executor head raises a hold "unexplained worktree changes" naming the ref, and nothing is restored.
-    - A `submitted` result that leaves the tree dirty counts as invalid.
+    - A `submitted` result that leaves the tree dirty is recorded as invalid (scenario 26 covers the retry).
 25. **Ledger isolation.** Plan A has an open chain head. Plan B then appends 20,000 records to its own ledger, and plan A appends 15,000 records of completed chains after its head. Plan A's next `run` still finds the head and recovers it. A plan ledger over the size cap raises a hold "ledger too large" and is not read partially.
+26. **Dirty submit, retried across a restart.**
+    - The executor fake commits one file but leaves a second modified, and returns `submitted`. The `station` record carries invalid_reason "uncommitted changes after submit", and no verify or submit follows.
+    - The controller is killed (`AGENTIC_CONTROLLER_FAULT=after-station`) and restarted. Reconcile salvages, ownership rule 2 matches (no "unexplained" hold), and one "resume-valid" run launches on the dirty tree with the edits intact.
+    - The fake commits the rest and returns `submitted` with a clean tree, so verify and submit proceed. A second dirty submit in the chain escalates "malformed station result" through `ask`, launches nothing, and keeps the edits salvaged and in place.
+    - **Executor ask.** An executor that asks with uncommitted edits keeps them in place. After the human resumes, the next executor run is told the paths and is not held as "unexplained".
 
 ## Verification commands
 ```bash
@@ -712,7 +744,7 @@ scripts/doctor.sh --check
 5. `run --reconcile-only` stops after step 1 and prints the repairs, holds and pending list. It may salvage, which changes nothing in the worktree, but it never restores a worktree, invokes a station CLI or runs `verify-step`.
 6. Exit codes per the Interface.
 
-**DoD:** scenarios 1, 2, 4, 5, 7, 20, 21 and 25 pass, and so does scenario 24's salvage and ownership part. Scenario 3's "decide" and "handoff" boundaries pass; the others pass for the pending item they produce.
+**DoD:** scenarios 1, 2, 4, 5, 7, 20, 21 and 25 pass, and so do the salvage, garbage-collection and ownership parts of scenarios 24 and 26. Scenario 3's "decide" and "handoff" boundaries pass; the others pass for the pending item they produce.
 **Verify:** `make test-one F=controller`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
 **Risks:** repairing a person's deliberate reopen (rule c must look at the timeline, not guess); taking over a lock while its pid is alive under another name (compare the pid's start time); a closed tracker with stale labels (labels only, repair); a plan with more than 100 stamped issues (refuse).
@@ -730,7 +762,7 @@ scripts/doctor.sh --check
 4. The entry gate runs before the default loop (decision 2). `--once` skips it.
 5. SIGINT and SIGTERM release the lock and never leave a half-written ledger line.
 
-**DoD:** scenarios 3 (every boundary), 6, 8, 11, 12, 13, 14, 16, 19, 22, 23 and 24 (full) pass. On a fixture Standard plan with fake CLIs, a plain `run` goes from `executing` to "ready to ship" with zero human input and stops there without launching another station.
+**DoD:** scenarios 3 (every boundary), 6, 8, 11, 12, 13, 14, 16, 19, 22, 23, 24 (full) and 26 (full) pass. On a fixture Standard plan with fake CLIs, a plain `run` goes from `executing` to "ready to ship" with zero human input and stops there without launching another station.
 **Verify:** `make test-one F=controller`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
 **Risks:** a retry or recovery launch that opens a new chain instead of replacing the head, which resets its limits; a resume that carries the old packet (always build a new one); verifying the working tree instead of the claimed SHA (`verify-step` takes the SHA); a station that checks out another branch in the worktree (check the branch after every run); a loop that never ends (50-turn cap).
