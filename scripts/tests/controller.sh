@@ -10,8 +10,10 @@ ln "$ROOT/config/roles.tsv" "$C1/project/config/roles.tsv"
 ln "$ROOT/config/stations/codex.config.toml" "$C1/home/.codex/agentic-station.config.toml"
 mkdir -p "$C1/project/.agents/skills/review-execution" "$C1/project/scripts/lib" "$C1/project/docs"
 ln "$ROOT/AGENTS.md" "$C1/project/AGENTS.md"
+# Protected source inodes cannot be hard-linked; a read-only fixture reference
+# needs no byte copy in that case either. Neither path is mutated by the tests.
 ln "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md" 2>/dev/null \
-  || cp "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md"
+  || ln -s "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md"
 ln "$ROOT/scripts/lib/station-output.jq" "$ROOT/scripts/lib/station-config.pl" "$ROOT/scripts/lib/roles.sh" "$C1/project/scripts/lib/"
 printf 'PLANNER_MUST_NOT_BE_THE_STATION_CONTRACT\n' > "$C1/project/CLAUDE.md"
 printf '0.15.0\n' > "$C1/project/.agentic-flow-version"
