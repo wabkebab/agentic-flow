@@ -7,17 +7,41 @@ not quoted; policy authors remain trusted. Packets are limited to 3,000 words.
 Reviewer packets include the latest accepted submit and a SHA/tree/implementation-
 matched verification record, preserving its provenance, or a request to regenerate it.
 
-These files are launch inputs, not automatically active project settings. Phase 2's
-controller must load them, remove GitHub credentials (including on-disk credential
-stores and connected tools), and enforce network isolation. Do not launch an agent
-with a prompt sourced directly from a raw issue thread.
+`agentic-flow roles [--json]` shows each effective assignment and its layer.
+Defaults in `config/roles.tsv` are overridden by a whole project row in
+`.agentic-flow-roles`, then by the operator file under
+`$XDG_CONFIG_HOME/agentic-flow/roles/<owner>/<repo>.tsv` (default `~/.config`).
+Only the human sets, unsets or makes a station manual. Project changes are staged;
+upgrades replace harness defaults and preserve project/operator choices.
+
+`scripts/lib/launch.sh` activates these profiles in a whole-process `env -i`
+environment. Its preflight probes gh authentication and every remote push URL,
+checks effective settings, and reports contract mode and accepted-risk gaps.
+The controller caller uses `LAUNCH_STEP` and optionally `LAUNCH_SESSION` for the
+preamble and preassigned session. A resume also requires the creating intent's
+`LAUNCH_RESUME_CLI` and `LAUNCH_RESUME_PROFILE` (project-relative profile path).
+Codex's `launch_session_record` callback receives the first `thread.started` id;
+C-2/C-5 own ledger persistence. Launch metadata includes raw reported usage and
+whether turn/budget limits are advisory. A `-` timeout still gets a 2,700-second
+controller watchdog; explicit timeouts override it. Timed-out process groups are
+terminated, and each output file is capped at 32–64 MiB by the platform's file limit.
+
+Executor bundles read the live AGENTS.md, including its render-shared engineering
+standards; reviewer bundles read the live review-execution skill. The preamble
+wins over vendor instruction roles. Codex reviewer launches exclude AGENTS.md;
+Claude excludes vendor instructions only under API-key authentication with `--bare`.
+OAuth Claude and OpenCode report `overridden`. OpenCode has no OS network boundary; its unattended use requires the accepted risk
+`opencode-station-network`. An identical CLI/model pair requires `same-model-review`.
 
 ## Claude
 
 Load `claude.settings.json` using Claude Code's `--settings` option. Its deny rules
 block direct `gh` calls and GitHub WebFetch domains. Tests parse the file and assert
-the deny entries. Shell tool permissions do not block arbitrary alternate programs
-or replace OS network isolation. Do not use a permission-bypass launch mode.
+the deny entries. Shell tool permissions do not block arbitrary alternate programs. The station profile
+also requires the Bash sandbox, refuses unsandboxed retries and unavailable sandbox
+runtimes, and uses a strict empty outbound domain allow-list. Preflight checks these
+settings and the platform sandbox dependencies. Do not use a permission-bypass launch mode.
+See [sandbox configuration](https://code.claude.com/docs/en/sandboxing).
 
 Reference: [Claude permissions](https://code.claude.com/docs/en/permissions).
 

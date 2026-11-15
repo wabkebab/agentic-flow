@@ -12,6 +12,7 @@ usage:
   agentic-flow packet <issue> --station executor|reviewer [--json]
   agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--json]
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
+  agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
   agentic-flow token <executor|reviewer|approver> [--check]
   agentic-flow status [--json]
   agentic-flow diff [--ref <ref>] [--json]
@@ -38,8 +39,8 @@ load_payload_lib() { # <root>
 check_project_owned_state() {
   local dest
   for dest in "${DESTS[@]}"; do
-    case "$dest" in .agentic-flow-assurance|.agentic-flow-assurance-audit)
-      die "assurance state is project-owned and cannot be a payload destination" ;;
+    case "$dest" in .agentic-flow-assurance|.agentic-flow-assurance-audit|.agentic-flow-roles)
+      die "assignment/assurance state is project-owned and cannot be a payload destination" ;;
     esac
   done
 }
@@ -487,6 +488,11 @@ subcommand="${1:-}"
       # shellcheck disable=SC1091 # Installed alongside the CLI.
       . "$(dirname "$0")/lib/brief.sh"
       brief_cmd "$@" ;;
+    roles)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/roles.sh"
+      roles_cmd "$@" ;;
     token) shift; token_cmd "$@" ;;
     status) shift; status_cmd "$@" ;;
     diff) shift; diff_cmd "$@" ;;

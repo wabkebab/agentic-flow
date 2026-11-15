@@ -37,7 +37,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations]" >&2
+      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller]" >&2
       exit 0
       ;;
     *)
@@ -47,7 +47,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 # The one list both the flag parser and every `should_run` call site are checked against.
-SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade stations"
+SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade stations controller"
 GROUPS_RAN=" "
 case " $SELF_TEST_GROUPS " in
   *" $ONLY_GROUP "*) ;;
@@ -371,6 +371,9 @@ fast_check_group() { # <group>; fast mode only
     plan-to-issues)
       [ -x "$ROOT/scripts/plan-to-issues.sh" ] || fail 'plan driver is missing'
       bash -n "$ROOT/scripts/plan-to-issues.sh" || fail 'plan driver has invalid syntax'
+      ;;
+    controller)
+      ( . "$ROOT/scripts/lib/roles.sh"; roles_load "$ROOT" false ) || fail 'invalid station assignments'
       ;;
     stations)
       [ -f "$ROOT/scripts/lib/journal.sh" ] || fail "journal library is missing"
@@ -2242,7 +2245,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail 'nested fast dispatch failed'
   actual_fast_groups=$(awk -F: '$1 == "group" { print $2 }' \
     "$MEASURE_FIX/dispatch.events" | sort -u | tr '\n' ' ')
-  [ "$actual_fast_groups" = 'contracts hooks lifecycle plan-to-issues stations ' ] \
+  [ "$actual_fast_groups" = 'contracts controller hooks lifecycle plan-to-issues stations ' ] \
     || fail "fast dispatch included an unexpected group: $actual_fast_groups"
   assert_cost_budget "$MEASURE_FIX/dispatch.events" fast
 fi
@@ -4836,6 +4839,11 @@ if should_run stations; then
   . "$ROOT/scripts/tests/stations.sh"
 fi
 
+if should_run controller; then
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/tests/controller.sh"
+fi
+
 # --- the run did what the mode promised --------------------------------------------------
 # Without this, deleting or mis-guarding a group's `if should_run` block still prints
 # "self-test passed." A pass has to mean the groups for this mode actually executed.
@@ -4844,7 +4852,7 @@ if [ -n "$ONLY_GROUP" ]; then
 elif [ "$SELF_TEST_MODE" = full ]; then
   EXPECTED_GROUPS="$SELF_TEST_GROUPS"
 else
-  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle stations'
+  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle stations controller'
 fi
 for group in $EXPECTED_GROUPS; do
   case "$GROUPS_RAN" in

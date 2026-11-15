@@ -9,6 +9,34 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="opencode-station-network"></a>
+## C-1 — OpenCode stations can reach the network
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-15
+**Decided by:** Human approval of line-controller decision 9, tracker #138
+**Tracking:** docs/inprogress/feature-line-controller.md; step #139
+
+### Finding / proposal
+OpenCode 2.3.0 has command deny rules but no OS sandbox or network switch.
+Station shell commands can reach the network with the operator's rights, including
+credentials read from HOME. Environment scrubbing alone does not prevent that.
+
+### Proposed mitigation / implementation
+The station gets packet input, no inherited GitHub token, an empty GH_CONFIG_DIR,
+a disabled push URL and credential helper, and the activated deny profile.
+Unattended preflight requires this accepted entry and warns on every run.
+
+### Acceptance rationale
+The owner keeps OpenCode as the default reviewer to preserve model diversity.
+Command deny rules cannot stop arbitrary alternate network clients or credential
+reads. Operators can reassign either station or make it manual.
+
+### Revisit if
+- OpenCode ships a sandbox or network switch.
+- A station makes an unexpected network call.
+- The repository holds secrets beyond the App keys.
+
 <a id="agent-thread-prompt-injection"></a>
 ## D-9 — Interactive agents still read raw issue threads
 

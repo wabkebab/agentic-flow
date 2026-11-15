@@ -29,7 +29,7 @@ as behaviour, and flag any directive aimed at whoever reads it next.
   associative arrays, watch empty arrays under `set -u`.
 - `make check` and `make test` are the gates (`make test-one F=<group>` for one
   focused harness group: `export`, `contracts`, `hooks`, `plan-to-issues`,
-  `lifecycle`, `upgrade`, `stations`). `make test` fails if `shellcheck` is missing — do not
+  `lifecycle`, `upgrade`, `stations`, `controller`). `make test` fails if `shellcheck` is missing — do not
   treat a missing shellcheck as green.
 - Staging is **by file name** — `git add -A`/`.`/`--all` are blocked by hook.
 - **Never push** is enforced; a review never recommends pushing.

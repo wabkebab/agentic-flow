@@ -1,0 +1,3 @@
+# station	cli	model	effort	max-turns	budget-usd	timeout-s	profile
+executor	codex	-	high	-	-	2700	config/stations/codex.config.toml
+reviewer	opencode	-	-	-	-	1200	config/stations/opencode.json
