@@ -35,8 +35,7 @@ States and transitions live in `METHODOLOGY.md` §6. Executors use `brief`,
 after the human pushes and CI/final-head evidence passes. The human checks
 `lifecycle-status.sh --phase pre-merge` immediately before merging.
 A closed step means reviewed clean; the Status block and CI record shipping.
-Single-operator review attests a role, not independent accounts
-(`docs/accepted_risks.md#single-operator-review`).
+Each role posts as its own GitHub App; the owner approves, pushes and merges.
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and

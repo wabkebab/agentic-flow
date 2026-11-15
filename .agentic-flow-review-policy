@@ -1,10 +1,7 @@
 version=1
 workflow=.github/workflows/ci.yml
-identity-mode=single-operator
-accepted-risk=docs/accepted_risks.md#single-operator-review
-reviewer=wabkebab
-executor=wabkebab
-approver=wabkebab
+identity-mode=distinct-account
 reviewer=agentic-flow-reviewer[bot]
 executor=flow-implementer[bot]
 approver=flow-approver[bot]
+approver=wabkebab

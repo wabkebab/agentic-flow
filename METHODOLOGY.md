@@ -139,8 +139,8 @@ repository-specific identity TSV; add the logins to the review policy.
 [ADOPTION.md](ADOPTION.md#github-app-role-identities-optional) gives the setup and
 file location. `agentic-flow token <role> --check` mints a repository-scoped token
 and validates permissions without printing it. Configured identity failures never
-fall back to ambient credentials. This pass retains single-operator mode;
-changing the policy to distinct-account is a separate adoption decision.
+fall back to ambient credentials. Switching to distinct-account is an adoption
+decision that removes the accepted-risk= line from the policy.
 
 ### Assurance profiles
 

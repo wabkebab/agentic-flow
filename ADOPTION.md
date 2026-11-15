@@ -167,7 +167,8 @@ three policy role lines with GitHub logins before running doctor or the gates.
 
 The `executor` implements steps and the `reviewer` reviews them. The `approver` is
 the planner/closer identity, distinct from `--approved-by`, which names the human
-who approved the plan. This repository retains single-operator mode for this pass.
+who approved the plan. Switching to `distinct-account` is an adoption decision
+that removes the `accepted-risk=` line from the policy.
 
 1. Register three GitHub Apps, one per role. Disable webhooks if unused. Give each
    only repository permissions **Issues: write**, **Pull requests: write**,
