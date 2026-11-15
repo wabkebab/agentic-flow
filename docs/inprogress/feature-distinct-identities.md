@@ -54,6 +54,12 @@ Removes the owner from every role. It changes `plan-to-issues.sh` and its tests,
 2. **The required-review experiment is deferred.** Analysis decision 4 asks whether an App's approving review satisfies a required review. That needs branch protection, which this private repo on a free plan cannot have. It moves to the publish step (R-0f) or Phase 3's R-13, whichever comes first.
 3. **F-3 is retired, not deleted.** Its anchor stays, because done docs and older policies cite it. Its status becomes "Retired" with the date and this tracker.
 
+## Review corrections applied (2026-11-15)
+
+| Finding | Severity | Correction |
+|---|---|---|
+| The close-out added a `CHANGELOG.md` entry and edited two other docs on the branch, which makes the delta more than bookkeeping. Close-out would then need a final-head approval from the reviewer App, and nothing can post one before Phase 2's `final-approve`. | Medium | No CHANGELOG entry. `close-out prep` is the only close-out commit, and the roadmap and Phase 2 updates move to a commit on `main` after the merge. |
+
 ## Interface (before the implementation)
 
 ```
@@ -173,9 +179,11 @@ scripts/doctor.sh --check
 
 Claude, on `identity-flip`, after the step is approved and the tracker is notified:
 
-1. Close-out commits: a `CHANGELOG.md` entry under an `Unreleased` heading saying this repo now runs `distinct-account`, with no adopter migration. Do not bump `VERSION`; no shipped payload changed except prose.
-2. `agentic-flow close-out prep`, then the human pushes. CI runs, and `close-out finish` closes the tracker as `flow-approver[bot]`.
-3. Update `product-harness-factory-optimization.md`'s next-docs list. Note in `feature-line-controller.md`'s Prerequisite that it is met.
+The close-out delta must stay bookkeeping-only, so `close-out finish` can attest it without a final-head approval. Under `distinct-account` that approval would have to be posted by the reviewer App, and no command can do that before Phase 2's `final-approve`. So:
+
+1. No `CHANGELOG.md` entry and no `VERSION` bump. No shipped payload changed except prose, and the step commit carries every real change.
+2. `agentic-flow close-out prep` is the only close-out commit. The human pushes, CI runs, and `close-out finish` attests the delta and closes the tracker as `flow-approver[bot]`. If lifecycle reports NEEDS-REVIEW, stop and report the uncovered paths. Do not hand-post a final-head marker; it would not count.
+3. After the human merges, in a separate commit on `main`: update `product-harness-factory-optimization.md`'s next-docs list, and note in `feature-line-controller.md`'s Prerequisite that the flip is done.
 
 ---
 
