@@ -109,6 +109,7 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-opencode-reviewer-role | Feature | ✅ Done | done |
 | feature-progressive-assurance-profiles | Feature | 🕰️ Superseded | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
+| feature-distinct-identities | Feature | 🟦 Proposal | inprogress |
 | feature-line-controller | Feature | 🟦 Proposal | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |
 <!-- END: generated index -->
