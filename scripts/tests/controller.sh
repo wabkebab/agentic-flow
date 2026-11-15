@@ -10,7 +10,8 @@ ln "$ROOT/config/roles.tsv" "$C1/project/config/roles.tsv"
 ln "$ROOT/config/stations/codex.config.toml" "$C1/home/.codex/agentic-station.config.toml"
 mkdir -p "$C1/project/.agents/skills/review-execution" "$C1/project/scripts/lib" "$C1/project/docs"
 ln "$ROOT/AGENTS.md" "$C1/project/AGENTS.md"
-cp "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md"
+ln "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md" 2>/dev/null \
+  || cp "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md"
 ln "$ROOT/scripts/lib/station-output.jq" "$ROOT/scripts/lib/station-config.pl" "$ROOT/scripts/lib/roles.sh" "$C1/project/scripts/lib/"
 printf 'PLANNER_MUST_NOT_BE_THE_STATION_CONTRACT\n' > "$C1/project/CLAUDE.md"
 printf '0.15.0\n' > "$C1/project/.agentic-flow-version"
@@ -253,8 +254,8 @@ controller_upgrade_test() (
   mkdir -p "$source/config" "$source/scripts/lib" "$target/config" "$target/scripts/lib"
   printf '10.0.0\n' > "$source/VERSION"
   printf 'config/roles.tsv\tconfig/roles.tsv\tcore\tpreserve\texport\nconfig/payload.tsv\tconfig/payload.tsv\tcore\tpreserve\texport\n' > "$source/config/payload.tsv"
-  cp "$ROOT/config/roles.tsv" "$source/config/roles.tsv"
-  cp "$ROOT/scripts/lib/payload-apply.sh" "$source/scripts/lib/"
+  ln "$ROOT/config/roles.tsv" "$source/config/roles.tsv"
+  ln "$ROOT/scripts/lib/payload-apply.sh" "$source/scripts/lib/"
   git -C "$source" init -q
   git -C "$source" config user.email fixture@example.invalid
   git -C "$source" config user.name Fixture
@@ -266,8 +267,8 @@ controller_upgrade_test() (
   printf 'origin file://%s\nref main\n' "$source" > "$target/.agentic-flow-source"
   printf '# old harness defaults\n' > "$target/config/roles.tsv"
   printf 'project-owned choice\n' > "$target/.agentic-flow-roles"
-  cp "$source/config/payload.tsv" "$target/config/"
-  cp "$ROOT/scripts/lib/payload-apply.sh" "$target/scripts/lib/"
+  printf 'config/roles.tsv\tconfig/roles.tsv\tcore\tpreserve\texport\nconfig/payload.tsv\tconfig/payload.tsv\tcore\tpreserve\texport\n' > "$target/config/payload.tsv"
+  ln "$ROOT/scripts/lib/payload-apply.sh" "$target/scripts/lib/"
   (cd "$target" && "$ROOT/scripts/agentic-flow" upgrade --force --yes) > "$C1/upgrade.out" 2>&1 || fail 'role defaults upgrade failed'
   cmp -s "$source/config/roles.tsv" "$target/config/roles.tsv" || fail 'upgrade did not replace harness defaults'
   grep -Fxq 'project-owned choice' "$target/.agentic-flow-roles" || fail 'upgrade touched project roles'
