@@ -72,10 +72,12 @@ A Go or Python service could watch the queue continuously and run stations in pa
 
 ### Decisions this brief makes (veto at approval)
 
+Owner's review, 2026-11-15: decisions 1, 6 and 8 accepted. Decision 2 was changed so unattended runs are the default, and the text below is the changed version. Decisions 3, 4, 5 and 7 have not been commented on yet.
+
 1. **The identity flip runs first, as its own pass.** Phase 1 decision 1 deferred it to a one-step follow-up, and it has not run. That pass switches this repo to `distinct-account` with the three App identities. It retires `single-operator-review` and proves on a test PR whether an App's approving review satisfies a required review. This brief's `plan-to-issues --doc --apply` runs after that merges, so every Phase 2 transition is posted by the role's own identity. Until then, R-9's @-mention cannot notify anyone, because GitHub does not notify an account about its own comments.
-2. **Unattended runs stay behind an entry gate.** `run` defaults to `--once` (one station run, then exit). `run --until-andon` loops, and it refuses to start unless all of these hold: the policy is `distinct-account`, `token <role> --check` passes for executor, reviewer and approver, and C-5's isolation preflight passes for every station `roles.tsv` names. The analysis's six failure-path tests are acceptance scenarios 1–6 below.
+2. **Unattended is the default, behind an entry gate** (owner's decision, 2026-11-15). `run` loops until andon, ready-to-ship or the turn cap. `run --once` does one station run and exits, for supervised use and debugging. Before the first station starts, the loop checks that the policy is `distinct-account`, that `token <role> --check` passes for executor, reviewer and approver, and that C-5's isolation preflight passes for every station in `roles.tsv`. If any check fails, `run` exits 6 and names the gap. It never falls back to `--once` on its own. `--once` skips the gate, because a person is watching. The analysis's six failure-path tests are acceptance scenarios 1–6 below.
 3. **One step in flight per plan.** Strict steps run in plan order on the plan branch. Step k+1 starts only after step k replays `approved`. Pipelining steps is out of scope.
-4. **The station never touches GitHub.** It returns JSON, and the controller calls `handoff` with the role's minted token. The station process gets no GitHub token, an empty `GH_CONFIG_DIR`, a disabled push URL and git credential helper, and the station profile. Whatever the CLI cannot isolate is recorded as an accepted risk and blocks `--until-andon` for that station (see Open questions).
+4. **The station never touches GitHub.** It returns JSON, and the controller calls `handoff` with the role's minted token. The station process gets no GitHub token, an empty `GH_CONFIG_DIR`, a disabled push URL and git credential helper, and the station profile. Whatever the CLI cannot isolate is recorded as an accepted risk and blocks unattended runs for that station (see Open questions).
 5. **The ledger is local and advisory, like the `verify-step` record.** It decides only what C-4 inspects after a crash. The journal stays the only authority on state.
 6. **R-10's command is `agentic-flow metrics`, not `status`.** `status` already reports upgrade state. Retiring the word ceilings (part of R-10) moves to Phase 3 (R-16), after three passes of ledger data show what to measure instead.
 7. **`ship` never merges and never commits on the agent's behalf.** It pushes, opens the PR, runs `close-out prep`, and stops so the closer can commit. Run again, it pushes, waits for CI, runs `close-out finish` and prints the pre-merge check. Agents are blocked from calling it, as they are from `token`.
@@ -194,7 +196,8 @@ foreign host: if the latest accepted transition on any of the plan's issues carr
   another host id and is younger than AGENTIC_CONTROLLER_LEASE (default 6 h), refuse
   to start (exit 9) unless --take-over; seen during a run → andon, stop
 
-agentic-flow run <doc> [--once | --until-andon] [--reconcile-only] [--take-over] [--json]
+agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
+  default: loop (unattended), after the entry gate (decision 2); --once skips the gate
   0. take the controller lock; read the plan block at the approved rev
   1. reconcile (C-4), every issue carrying the plan stamp, open or closed:
        a. `handoff <n> reconcile --check` (new, read-only) reports drift as one of
@@ -235,8 +238,9 @@ agentic-flow run <doc> [--once | --until-andon] [--reconcile-only] [--take-over]
        reviewer ask      → handoff ask --as reviewer --after
        handoff exit 4 (lost race) → re-reconcile, no retry of the station
        handoff exit 7 → andon "plan effect pending: <command>"
-  5. --once: exit after one station run. --until-andon: loop from 1 until andon,
-     ready-to-ship, or SIGINT (finish the current append, release the lock, exit 130)
+  5. --once: exit after one station run. Default: loop from 1 until andon,
+     ready-to-ship, the turn cap, or SIGINT (finish the current append, release the
+     lock, exit 130)
   never: push, merge, edit the brief, read a raw thread, run a station without a packet
   exit: 0 done/ready · 2 usage · 3 refused admission · 5 GitHub/identity · 6 isolation
         preflight · 9 ownership · 10 andon raised or pending
@@ -259,7 +263,7 @@ agentic-flow ship <doc>                          run by the human; agents are bl
 
 ## Threat model (one paragraph)
 
-New in this pass: an LLM process runs with auto-approved permissions and no person watching. The assets are the same as Phase 1: the journal, the brief at its approved revision, the App keys, and now the plan branch and the operator's machine. Stranger text reaches no station, because the prompt is only `packet` output, which drops non-policy authors, and a resumed session gets a new packet, never the thread. A station holds no GitHub credential: token variables are removed from the whole process, `gh` sees an empty config directory, git's push URL and credential helper are disabled, and the station profile denies `gh` and GitHub fetches. A station that is compromised or confused can therefore damage only the worktree and the plan branch locally. The controller checks every claimed head (new, descendant, on the branch, `Fixes #N`) and runs `verify-step` before it submits anything, and a reviewer's approval must name the journal's submitted head. A station's `ask` is a question to the owner, never an instruction the controller follows. The controller never pushes, so nothing reaches GitHub's code without the human running `ship`. Residual risks: (a) the station runs as the operator's user, so it can read files that user can read, including the App keys in the keychain if it asks for them interactively. The keychain prompt is the boundary, and `--until-andon` assumes nobody is at the keyboard to approve it. (b) OpenCode has no OS sandbox, so its shell commands can reach the network (open question 1). (c) A station could write a commit that weakens tests. That is the same risk as today, and the reviewer station and CI are the controls. (d) The ledger is a local file a station could edit. It is advisory, and every decision re-reads the journal.
+New in this pass: an LLM process runs with auto-approved permissions and no person watching. The assets are the same as Phase 1: the journal, the brief at its approved revision, the App keys, and now the plan branch and the operator's machine. Stranger text reaches no station, because the prompt is only `packet` output, which drops non-policy authors, and a resumed session gets a new packet, never the thread. A station holds no GitHub credential: token variables are removed from the whole process, `gh` sees an empty config directory, git's push URL and credential helper are disabled, and the station profile denies `gh` and GitHub fetches. A station that is compromised or confused can therefore damage only the worktree and the plan branch locally. The controller checks every claimed head (new, descendant, on the branch, `Fixes #N`) and runs `verify-step` before it submits anything, and a reviewer's approval must name the journal's submitted head. A station's `ask` is a question to the owner, never an instruction the controller follows. The controller never pushes, so nothing reaches GitHub's code without the human running `ship`. Residual risks: (a) the station runs as the operator's user, so it can read files that user can read, including the App keys in the keychain if it asks for them interactively. The keychain prompt is the boundary, and unattended mode assumes nobody is at the keyboard to approve it. (b) OpenCode has no OS sandbox, so its shell commands can reach the network (open question 1). (c) A station could write a commit that weakens tests. That is the same risk as today, and the reviewer station and CI are the controls. (d) The ledger is a local file a station could edit. It is advisory, and every decision re-reads the journal.
 
 ## Failure behavior
 
@@ -275,7 +279,7 @@ New in this pass: an LLM process runs with auto-approved permissions and no pers
 | `ship`: `git push` | git's own; exit 1, nothing else done | n/a | pushed, PR create failed → the re-run sees a pushed branch with no PR and creates it |
 | `ship`: CI wait | 30 min → exit 1, "CI still running: <url>"; re-run resumes waiting | missing run → "no run for <head> yet", exit 1 | failed run → exit 1 with the URL; never `finish` |
 
-Bounds: one station run per loop turn; at most one fix resume per red verify and one resume per malformed result; at most 50 loop turns per `--until-andon` invocation; the plan's stamped issues are read in one `gh issue list --state all` page of 100; a packet stays at Phase 1's 3,000 words; the ledger is never read past its last 10,000 lines for recovery (older runs cannot have a pending intent).
+Bounds: one station run per loop turn; at most one fix resume per red verify and one resume per malformed result; at most 50 loop turns per `run` invocation; the plan's stamped issues are read in one `gh issue list --state all` page of 100; a packet stays at Phase 1's 3,000 words; the ledger is never read past its last 10,000 lines for recovery (older runs cannot have a pending intent).
 
 ## Out of scope / What NOT to build in this pass
 
@@ -291,7 +295,7 @@ Bounds: one station run per loop turn; at most one fix resume per red verify and
 
 ## Open questions
 
-1. **[BLOCKING for `--until-andon` with OpenCode]** OpenCode 2.3.0 has command deny rules but no OS sandbox or network switch. Options: run the reviewer station under Claude or Codex in unattended mode, wrap OpenCode in `sandbox-exec` on macOS, or accept the risk with a named revisit trigger. The brief assumes the first: `roles.tsv` can move the reviewer to another CLI without code changes, and the preflight blocks `--until-andon` for an OpenCode station until one of the others is decided.
+1. **[BLOCKING: unattended mode with OpenCode]** OpenCode 2.3.0 has command deny rules but no OS sandbox or network switch. Unattended is now the default (decision 2), so a shipped `roles.tsv` with an OpenCode reviewer would fail the entry gate out of the box. Options: ship Claude as the default reviewer (Codex executes, so the reviewer is still a different model), wrap OpenCode in `sandbox-exec` on macOS, or accept the risk with a named revisit trigger. Whichever is chosen sets the shipped `roles.tsv` default. The preflight blocks unattended runs for an OpenCode station until one of these is decided, and `--once` with OpenCode keeps working.
 2. Which usage fields does each CLI report in JSON? Claude's `-p --output-format json` result carries usage and cost. Codex's `--json` event stream and OpenCode's `--format json` were not checked for token counts. C-1 confirms each one against a real run and records null where a CLI reports nothing.
 3. Does `codex exec resume <id>` accept `--output-schema` and `--profile` on resume? If not, a resumed executor result is validated only by the controller's jq check, which is already mandatory.
 4. Is the 6-hour foreign-host lease right? It only needs to outlast one station run. The ledger will show real run lengths after the first pass.
@@ -313,7 +317,7 @@ steps: c-1 c-2 c-3 c-4 c-5 c-6 c-7
 
 ## Prerequisite
 
-The identity-flip pass (decision 1) is merged: `.agentic-flow-review-policy` says `identity-mode=distinct-account`, and `agentic-flow token <role> --check` passes for executor, reviewer and approver on the operator's machine. If it has not merged, stop and tell the human. Do not run this brief under `single-operator`.
+The identity-flip pass (decision 1) is merged: `.agentic-flow-review-policy` says `identity-mode=distinct-account`, and `agentic-flow token <role> --check` passes for executor, reviewer and approver on the operator's machine. `plan-to-issues.sh` still creates issues with the ambient `gh` login, and `packet` admits only issues created by an approver login. So the policy keeps the owner's login as a second `approver=` line next to the approver App, unless the flip pass makes `plan-to-issues` post as the approver App. If it has not merged, stop and tell the human. Do not run this brief under `single-operator`.
 
 ## Branch
 Base: `main`. One branch and one PR for the whole brief: `phase-2`. Each step is one commit with `Fixes #N`. Review fixes land as new commits; never amend after a handoff. From C-6 on, the controller's worktree owns the branch (decision 8). Do not also check `phase-2` out in another worktree.
@@ -363,7 +367,7 @@ Do not raise a ceiling. Only C-7 edits contracts. Contract edits to `CLAUDE.md` 
 13. **Gate red after retry.** The `verify-step` record is red, one fix resume follows, and it is still red. Andon fires and no submit is posted.
 14. **Bad claimed head.** An executor result whose head is not a descendant of `base_head`, is the same as the last bounced head, or lacks `Fixes #N` raises andon and posts nothing. A reviewer approve whose head differs from the submitted head raises andon.
 15. **No credentials in the station.** The fake CLI dumps its environment and runs `gh auth status` and `git push --dry-run` from the worktree. No token variable is present, `gh` is unauthenticated, and the push URL is `no-push://disabled`.
-16. **Entry gate.** `run --until-andon` exits 6 under `single-operator`, with a failing `token --check`, or with an OpenCode station before open question 1 is decided. `run --once` still works in each case.
+16. **Entry gate.** `run` (the default loop) exits 6 under `single-operator`, with a failing `token --check`, or with an OpenCode station before open question 1 is decided. No station starts and no ledger intent is written. `run --once` still works in each case.
 17. **Clarification re-approval.** After an `ask`, the brief's Approach for a later step changes. `approve --by <owner>` prints the normalized diff, writes `rev=<HEAD>` and stages only the doc. After the commit, `plan-to-issues --doc --apply` restamps, the already approved step keeps its verdict, and the next packet reads the new revision. Removing a step makes `approve` refuse with "re-plan".
 18. **Ship.** On a fixture with fake `git push`, fake `gh pr create` and a fake CI run:
     - The first `ship` pushes, opens the PR, runs `prep` and stops.
@@ -454,17 +458,17 @@ scripts/doctor.sh --check
 
 ---
 
-## C-5 — Drive the stations: `agentic-flow run --once | --until-andon`
+## C-5 — Drive the stations unattended: `agentic-flow run [--once]`
 **Why fifth:** it composes C-1 to C-4 and is the user-visible change.
 
 **Approach:**
 1. Steps 2 to 5 of `run` per the Interface. The worktree is created on first use and never deleted by `run`.
 2. The result contract text sent with the packet is a fixed template rendered from `result.schema.json`, not prose written per call.
 3. Every claimed-head check runs before `verify-step`. `verify-step` runs before `handoff submit`.
-4. The entry gate for `--until-andon` (decision 2).
+4. The entry gate runs before the default loop (decision 2). `--once` skips it.
 5. SIGINT and SIGTERM release the lock and never leave a half-written ledger line.
 
-**DoD:** scenarios 3 (full), 6, 8, 11, 12, 13, 14 and 16 pass. On a fixture Standard plan with fake CLIs, `run --until-andon` goes from `executing` to "ready to ship" with zero human input.
+**DoD:** scenarios 3 (full), 6, 8, 11, 12, 13, 14 and 16 pass. On a fixture Standard plan with fake CLIs, a plain `run` goes from `executing` to "ready to ship" with zero human input.
 **Verify:** `make test-one F=controller`
 **Red-first:** `scripts/self-test.sh --only controller` — scripts/self-test.sh scripts/tests/controller.sh
 **Risks:** a resume that carries the old packet (always build a new one); verifying the working tree instead of the claimed SHA (`verify-step` takes the SHA); a station that checks out another branch in the worktree (check the branch after every run); a loop that never ends (50-turn cap).
@@ -500,7 +504,7 @@ scripts/doctor.sh --check
 **DoD:** all three role bundles are at or below their pre-pass word counts. `check-harness-sync.sh` and `render-shared.sh --check` pass here and in a fresh export. Executed through `run --once`.
 **Verify:** `make test-one F=contracts`
 **Red-first:** none
-**Risks:** root and template copies drifting; describing `--until-andon` as available before the entry gate passes on the adopter's machine.
+**Risks:** root and template copies drifting; implying unattended runs work before the adopter has App identities and installed station profiles. Name the gate and `--once` as the fallback.
 **Commit:** `Route the role contracts to the controller, ship and andon`
 
 ---
