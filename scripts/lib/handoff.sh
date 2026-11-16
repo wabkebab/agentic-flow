@@ -83,12 +83,12 @@ handoff_post() { # number event role head body; replay MUST have just been read
   from=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .state)
   id="$JOURNAL_PLAN/$JOURNAL_STEP/$seq/$event"
   file="$HANDOFF_TMP/comment"
-  printf 'agentic-flow-transition: v=1; id=%s; event=%s; from=%s; role=%s; head=%s\n' \
-    "$id" "$event" "$from" "$role" "$head" > "$file"
+  local return_suffix=''
   if [ "$event" = resume ]; then
-    printf 'agentic-flow-transition: v=1; id=%s; event=%s; from=%s; role=%s; head=%s; return=%s\n' \
-      "$id" "$event" "$from" "$role" "$head" "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)" > "$file"
+    return_suffix="; return=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)"
   fi
+  printf 'agentic-flow-transition: v=1; id=%s; event=%s; from=%s; role=%s; head=%s%s\n' \
+    "$id" "$event" "$from" "$role" "$head" "$return_suffix" > "$file"
   local compat_marker=''
   case "$event" in
     submit) printf 'Implemented in %s\n' "$head" >> "$file" ;;
@@ -382,9 +382,8 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
       elif [ "$status" -ne 0 ]; then return 5
       else handoff_post "$tracker" notify reviewer none 'All steps approved.' || { status=$?; [ "$status" -eq 4 ] || return "$status"; result=4; }; fi
     fi
-    # An unavailable effect still permits the requested projection to converge.
-    handoff_project "$tracker" || return $?
   fi
+  # An unavailable effect still permits the requested projection to converge.
   if [ -n "$tracker" ]; then handoff_project "$tracker" || return $?; fi
   # Re-read every written issue after plan effects, detecting out-of-lock writers.
   handoff_project "$number" || return $?
