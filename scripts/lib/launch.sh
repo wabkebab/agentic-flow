@@ -117,7 +117,8 @@ launch_codex_config() { # worktree scratch; exact overrides shared by inspect an
   gitdir=$(cd "$worktree" && git rev-parse --absolute-git-dir 2>/dev/null) || gitdir=
   common=$(cd "$worktree" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
   if [ -n "$gitdir" ] && [ -n "$common" ]; then
-    roots=$(jq -cn --arg g "$gitdir" --arg c "$common" '[$g, $c+"/objects", $c+"/refs/heads", $c+"/logs"]')
+    # Codex marks .agents read-only under a root; as a root of its own it is writable.
+    roots=$(jq -cn --arg g "$gitdir" --arg c "$common" --arg a "$worktree/.agents" '[$g, $c+"/objects", $c+"/refs/heads", $c+"/logs", $a]')
     LAUNCH_CODEX_ARGS+=(-c "sandbox_workspace_write.writable_roots=$roots")
   fi
   # Inspect before launching, then explicitly disable every configured connector.
