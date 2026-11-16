@@ -111,6 +111,15 @@ launch_profile_check() { # called after assignment; reject gaps by name
 launch_codex_config() { # worktree scratch; exact overrides shared by inspect and exec
   local worktree=$1 scratch=$2 name
   LAUNCH_CODEX_ARGS=(-c 'approval_policy="never"' -c 'sandbox_mode="workspace-write"' -c 'web_search="disabled"' -c features.apps=false -c sandbox_workspace_write.network_access=false -c 'shell_environment_policy.inherit="core"' -c shell_environment_policy.experimental_use_profile=false -c shell_environment_policy.ignore_default_excludes=false)
+  # A linked worktree keeps its index and the shared objects/refs outside the workspace,
+  # so a station could never commit. Grant only what a commit writes, not all of .git.
+  local gitdir common roots
+  gitdir=$(cd "$worktree" && git rev-parse --absolute-git-dir 2>/dev/null) || gitdir=
+  common=$(cd "$worktree" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
+  if [ -n "$gitdir" ] && [ -n "$common" ]; then
+    roots=$(jq -cn --arg g "$gitdir" --arg c "$common" '[$g, $c+"/objects", $c+"/refs/heads", $c+"/logs"]')
+    LAUNCH_CODEX_ARGS+=(-c "sandbox_workspace_write.writable_roots=$roots")
+  fi
   # Inspect before launching, then explicitly disable every configured connector.
   # Empty map overrides merge with TOML maps and do NOT reliably remove servers.
   (cd "$worktree" && launch_timed 20 - env -i "${LAUNCH_ENV[@]}" perl "$LAUNCH_ROOT/scripts/lib/station-config.pl" "$worktree" "${LAUNCH_CODEX_ARGS[@]}") > "$scratch/config.json" 2> "$scratch/config.err" \
