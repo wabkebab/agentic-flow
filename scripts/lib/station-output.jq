@@ -18,4 +18,11 @@ elif $cli == "opencode" then
           output:(map(select(.type == "step_finish") | .part.tokens.output | numbers) | sum_reported),
           cost_usd:(map(select(.type == "step_finish") | .part.cost | numbers) | sum_reported)}}
 else error("unknown station CLI") end
-| .result |= (if type == "string" then (. as $raw | try fromjson catch $raw) else . end)
+# A station that cannot enforce a schema (OpenCode) often explains first and ends with the JSON,
+# sometimes fenced. Take the last line-leading object that parses; anything else stays a string.
+| .result |= (if type == "string" then
+    (. as $raw | try fromjson catch (
+      ([$raw | match("(^|\n)\\{"; "g").offset] | reverse) as $starts
+      | first($starts[] as $o | $raw[$o:] | sub("\\s*```\\s*$"; "") | try fromjson catch empty | select(type == "object"))
+      // $raw))
+  else . end)

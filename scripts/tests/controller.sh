@@ -569,6 +569,11 @@ controller_tests() (
   for cli in claude codex opencode; do
     printf '{}\n' | jq -s --arg cli "$cli" -f "$ROOT/scripts/lib/station-output.jq" | jq -e '.usage=={input:null,output:null,cost_usd:null}' >/dev/null || fail "missing usage guessed: $cli"
   done
+  # OpenCode cannot enforce a schema, so its verdict may follow prose or sit in a fence.
+  for text in '{"v":1,"outcome":"approve"}' "$(printf 'Reviewed.\n```json\n{"v":1,"outcome":"approve"}\n```')" "$(printf 'Notes first\n{"v":1,\n "outcome":"approve"}')"; do
+    jq -nc --arg t "$text" '{type:"text",sessionID:"ses_x",part:{messageID:"m1",text:$t}}' | jq -s --arg cli opencode -f "$ROOT/scripts/lib/station-output.jq" | jq -e '.result.outcome=="approve"' >/dev/null || fail 'OpenCode verdict after prose was not extracted'
+  done
+  jq -nc '{type:"text",sessionID:"ses_x",part:{messageID:"m1",text:"prose only"}}' | jq -s --arg cli opencode -f "$ROOT/scripts/lib/station-output.jq" | jq -e '.result=="prose only"' >/dev/null || fail 'OpenCode prose was turned into a verdict'
   printf '<a id="same-model-review"></a>\n## Model diversity\n**Status:** Accepted risk\n' >> "$C1/project/docs/accepted_risks.md"
   roles_cmd set executor claude --scope project >/dev/null 2>&1 || fail 'same pair executor set failed'
   roles_cmd set reviewer claude --scope project >/dev/null 2>&1 || fail 'same pair set failed'
