@@ -6,7 +6,7 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   agentic-flow handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]
-  agentic-flow handoff <issue> reconcile [--json]
+  agentic-flow handoff <issue> reconcile [--json] [--check]
   agentic-flow close-out prep <doc> --pr <url> [--dry-run]
   agentic-flow close-out finish <doc>
   agentic-flow packet <issue> --station executor|reviewer [--json]
@@ -14,6 +14,8 @@ usage:
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
   agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]
+  agentic-flow approve <doc> --by <login>
+  agentic-flow hold clear <doc> <hold-id> [--note <text>]
   agentic-flow token <executor|reviewer|approver> [--check]
   agentic-flow status [--json]
   agentic-flow diff [--ref <ref>] [--json]
@@ -499,6 +501,13 @@ subcommand="${1:-}"
       # shellcheck disable=SC1091
       . "$(dirname "$0")/lib/ledger.sh"
       metrics_cmd "$@" ;;
+    approve|hold)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/handoff.sh"
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/approve.sh"
+      if [ "$subcommand" = approve ]; then approve_cmd "$@"; else hold_cmd "$@"; fi ;;
     token) shift; token_cmd "$@" ;;
     status) shift; status_cmd "$@" ;;
     diff) shift; diff_cmd "$@" ;;

@@ -1,8 +1,111 @@
 #!/usr/bin/env bash
 # Sourced by self-test.sh; no network and no real model invocations.
-# shellcheck disable=SC1091,SC2030,SC2031,SC2016,SC2329 # Shared harness helpers and child programs.
+# shellcheck disable=SC1091,SC2030,SC2031,SC2034,SC2016,SC2329 # Shared harness helpers and child programs.
 [ -f "$ROOT/scripts/lib/launch.sh" ] || fail 'station launcher is missing'
 [ -f "$ROOT/scripts/lib/ledger.sh" ] || fail 'run ledger is missing'
+# C-3: malformed and out-of-role questions cannot change the journal.
+. "$ROOT/scripts/lib/workflow.sh"
+. "$ROOT/scripts/lib/review-policy.sh"
+. "$ROOT/scripts/lib/journal.sh"
+workflow_load "$ROOT" || fail 'cannot load C-3 workflow'
+REVIEW_EXECUTORS=' exec ' REVIEW_REVIEWERS=' review ' REVIEW_APPROVERS=' plan '
+JOURNAL_PLAN=questions JOURNAL_STEP=alpha JOURNAL_LEGACY=false
+c3_comments=$(jq -nc '[{id:"q",dbid:"1",author:"review",last_edited_at:null,
+ body:"agentic-flow-transition: v=1; id=questions/alpha/1/ask; event=ask; from=executing; role=reviewer; head=none\nQuestion"}]')
+c3_replay=$(journal_replay "$c3_comments" step-strict)
+printf '%s' "$c3_replay" | jq -e '.seq==0' >/dev/null || fail 'out-of-role ask accepted'
+c3_comments=$(printf '%s' "$c3_comments" | jq '.[0].author="exec" | .[0].body|=sub("role=reviewer";"role=executor")')
+c3_replay=$(journal_replay "$c3_comments" step-strict)
+printf '%s' "$c3_replay" | jq -e '.state=="escalated" and .return_to=="executing" and .bounces==0' >/dev/null || fail 'executor ask did not record return state'
+# Same return semantics apply to Standard work issues, and replay rejects forged returns.
+for c3_topology in step-strict work-standard; do
+  c3_comments=$(jq -nc '[
+    {event:"submit",from:"executing",role:"executor",author:"exec",head:("a"*40)},
+    {event:"ask",from:"reviewing",role:"reviewer",author:"review",head:"none"},
+    {event:"resume",from:"escalated",role:"approver",author:"plan",head:"none",wrong:true},
+    {event:"resume",from:"escalated",role:"approver",author:"plan",head:"none"}
+  ]|to_entries|map(.key as $i|.value|. + {id:($i|tostring),dbid:($i|tostring),last_edited_at:null,
+    body:("agentic-flow-transition: v=1; id=questions/alpha/"+(if $i==3 then "3" else ($i+1|tostring) end)+"/"+.event+"; event="+.event+"; from="+.from+"; role="+.role+"; head="+.head+
+      (if .event=="resume" then "; return="+(if .wrong then "executing" else "reviewing" end) else "" end)+"\nEvidence")})')
+  c3_replay=$(journal_replay "$c3_comments" "$c3_topology") || fail 'question replay failed'
+  printf '%s' "$c3_replay" | jq -e '.state=="reviewing" and .seq==3 and .skipped==1 and .bounces==0' >/dev/null || fail 'reviewer resume accepted wrong return'
+done
+# Hold admission is independent from journal admission, including typed Bot authors.
+. "$ROOT/scripts/lib/andon.sh"
+c3_holds=$(jq -nc '[
+ {author:"stranger",body:"agentic-flow-hold: v=1; id=questions/hold/1; issue=#1; reason=reopened; run=none"},
+ {author:"plan",body:"agentic-flow-hold: v=1; id=questions/hold/2; issue=#1; reason=reopened; run=none"},
+ {author:"stranger",body:"agentic-flow-hold-clear: id=questions/hold/2"}
+]')
+printf '%s' "$c3_holds" | hold_replay questions | jq -e 'length==1 and .[0].id=="questions/hold/2"' >/dev/null || fail 'hold author boundary failed'
+
+# Clarification approval uses committed content and stages only the document.
+C3="$TMP/clarification"
+mkdir -p "$C3/docs/inprogress"
+git -C "$C3" init -q
+git -C "$C3" config user.email fixture@example.invalid
+git -C "$C3" config user.name Fixture
+git -C "$C3" config commit.gpgsign false
+printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=owner owner=owner > "$C3/.agentic-flow-review-policy"
+cat > "$C3/docs/inprogress/plan.md" <<'CLARIFICATION'
+# Feature — Questions
+# Part B — Implementation brief
+```agentic-flow-plan
+id: questions
+profile: strict
+tracking: Questions
+branch: topic
+steps: first later
+```
+## First — First step
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** none
+## Later — Later step
+Original approach
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** none
+## Status
+- **Approval:** pending
+CLARIFICATION
+git -C "$C3" add .agentic-flow-review-policy docs/inprogress/plan.md
+git -C "$C3" commit -qm 'Original plan'
+C3_REV=$(git -C "$C3" rev-parse HEAD)
+sed "s/Approval:\*\* pending/Approval:** status=approved; by=owner; at=2026-01-01; rev=$C3_REV/" "$C3/docs/inprogress/plan.md" > "$C3/approval"
+cat "$C3/approval" > "$C3/docs/inprogress/plan.md"
+git -C "$C3" add docs/inprogress/plan.md
+git -C "$C3" commit -qm 'Record original approval'
+c3_approve() { (cd "$C3" && "$ROOT/scripts/agentic-flow" approve docs/inprogress/plan.md --by "$1") > "$TMP/clarification.out" 2>&1; }
+printf '\nDirty edit\n' >> "$C3/docs/inprogress/plan.md"
+c3_approve owner && fail 'dirty clarification accepted'
+grep -q 'dirty doc' "$TMP/clarification.out" || fail 'dirty refusal not diagnosed'
+git -C "$C3" checkout -- docs/inprogress/plan.md
+printf '\nStaged edit\n' >> "$C3/docs/inprogress/plan.md"
+git -C "$C3" add docs/inprogress/plan.md
+git -C "$C3" show HEAD:docs/inprogress/plan.md > "$C3/docs/inprogress/plan.md"
+c3_approve owner && fail 'staged clarification overwritten when working bytes matched HEAD'
+git -C "$C3" reset -q HEAD -- docs/inprogress/plan.md
+sed 's/steps: first later/steps: first/; /## Later /,/## Status/{ /## Status/!d; }' "$C3/docs/inprogress/plan.md" > "$C3/removed"
+cat "$C3/removed" > "$C3/docs/inprogress/plan.md"
+git -C "$C3" add docs/inprogress/plan.md
+git -C "$C3" commit -qm 'Remove a step'
+c3_approve owner && fail 'removed step reapproved'
+grep -q 're-plan' "$TMP/clarification.out" || fail 'removed step did not require re-plan'
+git -C "$C3" checkout HEAD^ -- docs/inprogress/plan.md
+sed 's/Original approach/Clarified approach/' "$C3/docs/inprogress/plan.md" > "$C3/clarified"
+cat "$C3/clarified" > "$C3/docs/inprogress/plan.md"
+git -C "$C3" add docs/inprogress/plan.md
+git -C "$C3" commit -qm 'Clarify later approach'
+C3_HEAD=$(git -C "$C3" rev-parse HEAD)
+c3_approve stranger && fail 'non-approver named in approval'
+printf 'other dirty bytes\n' > "$C3/other"
+c3_approve owner || fail "clarification refused: $(cat "$TMP/clarification.out")"
+grep -q '^+Clarified approach' "$TMP/clarification.out" || fail 'normalized approval diff missing'
+grep -q "rev=$C3_HEAD" "$C3/docs/inprogress/plan.md" || fail 'approval bound to wrong revision'
+[ "$(git -C "$C3" diff --cached --name-only)" = docs/inprogress/plan.md ] || fail 'approval staged unrelated paths'
 C1="$TMP/controller"
 mkdir -p "$C1/project/config" "$C1/bin" "$C1/home/.codex" "$C1/operator"
 mkdir -p "$C1/project/config/stations"

@@ -82,7 +82,7 @@ packet_cmd() (
   submit_index=$(printf '%s' "$comments" | jq --arg id "$submit_id" 'map(.id)|index($id)// -1')
   findings='[]' submit=null verification=null
   if [ "$station" = executor ]; then
-    findings=$(printf '%s' "$comments" | jq --arg reviewers "$REVIEW_REVIEWERS" --argjson since "$submit_index" '[to_entries[]|select(.key>$since)|.value|select(.author as $a|($reviewers|split(" ")|index($a))!=null)]') || return 3
+    findings=$(printf '%s' "$comments" | jq --arg reviewers "$REVIEW_REVIEWERS" --argjson since "$submit_index" '[to_entries[]|select(.key>$since)|.value|select(.author as $a|($reviewers|split(" ")|index($a))!=null)|select((.body|startswith("agentic-flow-hold:")) or (.body|startswith("agentic-flow-hold-clear:"))|not)]') || return 3
   else
     submit=$(printf '%s' "$comments" | jq --arg id "$submit_id" '[.[]|select(.id==$id)]|first // null')
     verification='"no record; run verify-step"'

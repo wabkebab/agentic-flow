@@ -150,13 +150,32 @@ brief_approved_at_head() { # repository-relative doc path, revision
   return 1
 }
 
+brief_alerts() { # root plan; advisory offline cache only, never raw comment text
+  local common cache
+  common=$(git -C "$1" rev-parse --git-common-dir 2>/dev/null) || return 0
+  case "$common" in /*) ;; *) common="$1/$common" ;; esac
+  cache="$common/agentic-flow/state/$2.holds.json"
+  if [ -f "$cache" ] && [ "$(wc -c < "$cache")" -le 65536 ]; then
+    jq -r 'if type=="array" and length<=100 then .[] |
+      select((.id|test("^[a-z0-9][a-z0-9._-]*/hold/[0-9]+$")) and
+        (.reason|test("^[a-z0-9-]{1,80}$")) and (.issue|type)=="number") |
+      "Open hold: \(.id) #\(.issue) \(.reason) (cached)" else empty end' "$cache" 2>/dev/null || true
+  fi
+  cache="$common/agentic-flow/state/$2.tsv"
+  if [ -f "$cache" ] && [ "$(wc -c < "$cache")" -le 65536 ]; then
+    awk -F '\t' 'NF==6 && $1~/^[0-9]+$/ && $2~/^[a-z0-9._-]+$/ && $3=="escalated" {print "Escalated: #" $1 " " $2 " (cached)"}' "$cache"
+  fi
+  return 0
+}
+
 brief_cmd() ( # <doc> <step-id> [--at <sha>] [--analysis]
   [ "$#" -ge 2 ] || { echo 'usage: agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]' >&2; return 2; }
+  local show_alerts=true
   local doc=$1 step=$2 rev='' analysis=false root tmp approval spec heading
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --at) [ "$#" -ge 2 ] || return 2; rev=$2; shift 2 ;;
+      --at) show_alerts=false; [ "$#" -ge 2 ] || return 2; rev=$2; shift 2 ;;
       --analysis) analysis=true; shift ;;
       *) echo "unknown brief flag: $1" >&2; return 2 ;;
     esac
@@ -176,6 +195,7 @@ brief_cmd() ( # <doc> <step-id> [--at <sha>] [--analysis]
   spec=$(brief_parse "$tmp/doc" "$doc" "$rev") || return 2
   heading=$(printf '%s' "$spec" | jq -er --arg step "$step" '.steps[] | select(.id==$step) | .title') \
     || { echo "unknown step: $step" >&2; return 2; }
+  [ "$show_alerts" = false ] || brief_alerts "$root" "$(printf '%s' "$spec" | jq -r .id)"
   BRIEF_SLICE_HEADING="$heading" awk -v analysis="$analysis" '
     BEGIN {heading=ENVIRON["BRIEF_SLICE_HEADING"]}
     /^# / {

@@ -26,6 +26,7 @@ sub number { defined($_[0]) && !ref($_[0]) && $json->encode($_[0]) =~ /^-?\d+(?:
 sub integer { number($_[0]) && $_[0]>=($_[1]//0) && $_[0]<=4_000_000_000_000 && int($_[0])==$_[0] }
 sub string { text($_[0]) && length($_[0])<=($_[1]//4096) }
 sub identifier { string($_[0],128) && $_[0] =~ /^[a-z0-9][a-z0-9._-]*$/ }
+sub hold_id { identifier($_[0]) || (string($_[0],256) && $_[0] =~ m{^[a-z0-9][a-z0-9._-]*/hold/[1-9][0-9]{0,5}$}) }
 sub plan_id { identifier($_[0]) or fail('invalid plan id'); return $_[0]; }
 sub sha { string($_[0],64) && $_[0] =~ /^[a-f0-9]{$_[1]}$/ }
 sub member { my ($x,@values)=@_; return defined($x) && !ref($x) && scalar grep { $_ eq $x } @values; }
@@ -156,9 +157,9 @@ sub validate {
     for (@{$r->{paths}}) { object($_) && string($_->{path}) && string($_->{status},16) or fail('invalid salvage path'); }
   } elsif ($k eq 'end') {
     required($r,qw(chain how hold));
-    string($r->{chain},512) && member($r->{how},qw(dropped held)) && (!defined($r->{hold}) || identifier($r->{hold})) or fail('invalid chain end');
+    string($r->{chain},512) && member($r->{how},qw(dropped held)) && (!defined($r->{hold}) || hold_id($r->{hold})) or fail('invalid chain end');
   } elsif ($k eq 'hold' || $k eq 'clear') {
-    required($r,qw(plan hold)); identifier($r->{hold}) or fail('invalid hold id');
+    required($r,qw(plan hold)); hold_id($r->{hold}) or fail('invalid hold id');
     if ($k eq 'hold') {
       required($r,qw(issue reason run comment_id)); integer($r->{issue},1) && string($r->{reason},1200) && (!defined($r->{comment_id}) || integer($r->{comment_id},1)) or fail('invalid hold');
       run_parts($r->{run},$plan) if defined($r->{run});

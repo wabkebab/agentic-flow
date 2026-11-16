@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091,SC2153 # ROOT comes from the sourcing test runner.
+# shellcheck disable=SC1091,SC2153,SC2034 # ROOT comes from the sourcing test runner.
 # Sourced by self-test.sh. All credentials, GitHub state and faults are fixtures.
 grep -q "brief)" "$ROOT/scripts/agentic-flow" || fail 'brief command is missing'
 grep -q "close-out)" "$ROOT/scripts/agentic-flow" || fail 'close-out command is missing'
@@ -179,7 +179,7 @@ must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'gh issue edit 1 --add-
 must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'cd /tmp; gh issue close 1'
 must_allow "$ROOT/scripts/hooks/require-step-comment.sh" 'cd /tmp; gh issue view 1'
 
-# shellcheck disable=SC1091,SC2153 # ROOT comes from the sourcing test runner.
+# shellcheck disable=SC1091,SC2153,SC2034 # ROOT comes from the sourcing test runner.
 . "$ROOT/scripts/lib/workflow.sh"
 . "$ROOT/scripts/lib/review-policy.sh"
 . "$ROOT/scripts/lib/journal.sh"
@@ -347,6 +347,88 @@ station_count() { jq '.comments.nodes|length' "$STATION_STATE/$1.json"; }
 station_issue 1 step:alpha
 station_issue 2 tracker
 STATION_LOGIN=review; export STATION_LOGIN
+must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow approve docs/inprogress/plan.md --by owner'
+must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow hold clear docs/inprogress/plan.md fixture/hold/1'
+must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow handoff 1 hold-clear --as approver --hold-id fixture/hold/1'
+must_allow "$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow handoff 1 ask --as executor --body-file question'
+# C-3: failures first, return-state binding, and hold projection through real CLI.
+printf 'owner=owner\n' >> "$STATION_FIX/project/.agentic-flow-review-policy"
+cat > "$STATION_FIX/bin/osascript" <<'NOTIFY'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STATION_STATE/notifications"
+exit 1
+NOTIFY
+chmod +x "$STATION_FIX/bin/osascript"
+printf 'Question for owner\n' > "$TMP/c3-question"
+printf '  \n' > "$TMP/c3-empty"
+STATION_LOGIN="exec" station_run 3 1 ask --as reviewer --body-file "$TMP/c3-question"
+STATION_LOGIN="exec" station_run 3 1 ask --as executor --body-file "$TMP/c3-empty"
+[ "$(station_count 1)" = 0 ] || fail 'invalid ask posted'
+STATION_LOGIN="exec" station_run 0 1 submit --as executor --head "$STATION_A"
+STATION_LOGIN=review station_run 0 1 ask --as reviewer --body-file "$TMP/c3-question"
+jq -e '.comments.nodes[-1].body|endswith("@owner needs a decision: Question for owner")' "$STATION_STATE/1.json" >/dev/null || fail 'ask omitted owner mention'
+[ -s "$STATION_STATE/notifications" ] || fail 'ask did not notify desktop'
+STATION_LOGIN=plan station_run 3 1 resume --as approver --return executing --body-file "$TMP/c3-question"
+STATION_LOGIN=plan station_run 0 1 resume --as approver --return reviewing --body-file "$TMP/c3-question"
+station_run 0 1 reconcile --json
+jq -e '."1"|.state=="reviewing" and .bounces==0 and .return_to=="reviewing"' "$TMP/station.out" >/dev/null || fail 'reviewer ask resumed wrong station'
+# Two bounces followed by executor ask preserve the count until resume resets it.
+STATION_LOGIN=review station_run 0 1 bounce --as reviewer --body-file "$TMP/c3-question"
+STATION_LOGIN="exec" station_run 0 1 submit --as executor --head "$STATION_B"
+STATION_LOGIN=review station_run 0 1 bounce --as reviewer --body-file "$TMP/c3-question"
+STATION_LOGIN="exec" station_run 0 1 ask --as executor --body-file "$TMP/c3-question"
+station_run 0 1 reconcile --json
+jq -e '."1"|.state=="escalated" and .bounces==2 and .return_to=="executing"' "$TMP/station.out" >/dev/null || fail 'ask counted as bounce'
+STATION_LOGIN=plan station_run 3 1 resume --as approver --return reviewing --body-file "$TMP/c3-question"
+STATION_LOGIN=plan station_run 0 1 resume --as approver --body-file "$TMP/c3-question"
+station_run 0 1 reconcile --json
+jq -e '."1"|.state=="executing" and .bounces==0' "$TMP/station.out" >/dev/null || fail 'executor resume did not reset bounces'
+# Check reports drift without posting, changing labels, or updating any cache.
+jq '.labels.nodes=[{name:"needs-review"}]' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+C3_REMOTE=$(shasum "$STATION_STATE/1.json")
+C3_CACHE=$(shasum "$STATION_FIX/project/.git/agentic-flow/state/fixture.tsv")
+station_run 0 1 reconcile --check
+grep -q 'drift #1' "$TMP/station.out" || fail 'check omitted drift'
+[ "$C3_REMOTE" = "$(shasum "$STATION_STATE/1.json")" ] && [ "$C3_CACHE" = "$(shasum "$STATION_FIX/project/.git/agentic-flow/state/fixture.tsv")" ] || fail 'check mutated projection/cache'
+# Unauthorized hold and clear markers are ignored; authorized holds project on tracker.
+jq '.comments.nodes += [{id:"stranger",fullDatabaseId:90,author:{login:"stranger",__typename:"User"},body:"agentic-flow-hold: v=1; id=fixture/hold/90; issue=#1; reason=reopened; run=none",createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' "$STATION_STATE/2.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/2.json"
+station_run 0 2 reconcile
+jq -e 'all(.labels.nodes[];.name!="needs-human")' "$STATION_STATE/2.json" >/dev/null || fail 'foreign hold projected'
+STATION_LOGIN=plan station_run 0 1 hold --as approver --reason reopened --body-file "$TMP/c3-question"
+C3_HOLD_COUNT=$(station_count 2)
+STATION_LOGIN=plan station_run 0 1 hold --as approver --reason reopened --body-file "$TMP/c3-question"
+[ "$C3_HOLD_COUNT" = "$(station_count 2)" ] || fail 'duplicate hold posted'
+jq -e 'any(.labels.nodes[];.name=="needs-human") and (.comments.nodes[-1].body|endswith("@owner needs a decision: reopened"))' "$STATION_STATE/2.json" >/dev/null || fail 'hold omitted projection/mention'
+C3_HOLD_ID=$(jq -r '.comments.nodes[-1].body|split("; ")[1]|ltrimstr("id=")' "$STATION_STATE/2.json")
+jq --arg id "$C3_HOLD_ID" '.comments.nodes += [{id:"fake-clear",fullDatabaseId:91,author:{login:"stranger",__typename:"User"},body:("agentic-flow-hold-clear: id="+$id),createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' "$STATION_STATE/2.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/2.json"
+station_run 0 2 reconcile
+jq -e 'any(.labels.nodes[];.name=="needs-human")' "$STATION_STATE/2.json" >/dev/null || fail 'foreign clear accepted'
+STATION_LOGIN=plan station_run 0 2 hold-clear --as approver --hold-id "$C3_HOLD_ID" --body-file "$TMP/c3-question"
+jq -e 'all(.labels.nodes[];.name!="needs-human")' "$STATION_STATE/2.json" >/dev/null || fail 'clear left needs-human'
+[ "$(jq length "$STATION_FIX/project/.git/agentic-flow/state/fixture.holds.json")" = 0 ] || fail 'clear left cached hold'
+# A clear interrupted after posting is replayable and does not post twice.
+C3_CLEAR_COUNT=$(station_count 2)
+STATION_LOGIN=plan station_run 0 2 hold-clear --as approver --hold-id "$C3_HOLD_ID"
+[ "$C3_CLEAR_COUNT" = "$(station_count 2)" ] || fail 'clear retry posted twice'
+# Missing approver keeps one local-only hold across retries and makes it visible offline.
+STATION_LOGIN="exec" station_run 10 1 hold --as approver --reason identity-missing
+STATION_LOGIN="exec" station_run 10 1 hold --as approver --reason identity-missing
+[ "$(jq -s '[.[]|select(.kind=="hold" and .reason=="identity-missing")]|length' "$STATION_FIX/project/.git/agentic-flow/ledger/fixture.jsonl")" = 1 ] || fail 'local hold duplicated'
+(cd "$STATION_FIX/project" && . "$ROOT/scripts/lib/brief.sh" && brief_alerts "$STATION_FIX/project" fixture) > "$TMP/c3-alerts"
+grep -q 'Open hold: .*identity-missing' "$TMP/c3-alerts" || fail 'local hold missing from alerts'
+# Restoring identity publishes that same hold id and supports an empty clear note.
+STATION_LOGIN=plan station_run 0 1 hold --as approver --reason identity-missing
+C3_LOCAL_HOLD=$(jq -r '.comments.nodes[-1].body|split("; ")[1]|ltrimstr("id=")' "$STATION_STATE/2.json")
+STATION_LOGIN=plan station_run 0 2 hold-clear --as approver --hold-id "$C3_LOCAL_HOLD"
+[ "$(jq length "$STATION_FIX/project/.git/agentic-flow/state/fixture.holds.json")" = 0 ] || fail 'local hold did not clear'
+# Reset only C-3 fixtures; the original Phase 1 assertions below run unchanged.
+station_issue 1 step:alpha
+station_issue 2 tracker
+STATION_LOGIN=review
+
 # Public search hits are untrusted until author and exact plan stamp match.
 station_issue 3 step:foreign
 jq '.author={login:"stranger",is_bot:false} | .body="Someone mentioned agentic-flow:plan:fixture"' "$STATION_STATE/3.json" > "$STATION_STATE/next"

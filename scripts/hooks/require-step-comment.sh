@@ -24,8 +24,9 @@ check_handoff_write() {
     word=${HOOK_WORDS[i]}
     if [ "${word##*/}" = agentic-flow ]; then
       case "${HOOK_WORDS[i+1]:-}:${HOOK_WORDS[i+2]:-}" in
-        token:*|roles:set|roles:unset|roles:manual) block_handoff; return 2 ;;
+        token:*|roles:set|roles:unset|roles:manual|approve:*|hold:clear) block_handoff; return 2 ;;
       esac
+      if [ "${HOOK_WORDS[i+1]:-}" = handoff ] && [ "${HOOK_WORDS[i+3]:-}" = hold-clear ]; then block_handoff; return 2; fi
     fi
     case "${word##*/}" in
       bash|sh|zsh)

@@ -27,6 +27,7 @@ review_bounded() {
 read_review_policy() {
   local root=$1 line key value seen_version=false seen_workflow=false \
     seen_identity_mode=false seen_accepted_risk=false login role seen_login
+  REVIEW_OWNER=""
   REVIEW_WORKFLOW="" REVIEW_IDENTITY_MODE="" REVIEW_ACCEPTED_RISK=""
   REVIEW_REVIEWERS=" " REVIEW_EXECUTORS=" " REVIEW_APPROVERS=" "
   [ -f "$root/.agentic-flow-review-policy" ] || {
@@ -59,6 +60,9 @@ read_review_policy() {
         seen_accepted_risk=true
         [[ "$value" =~ ^docs/accepted_risks\.md#[A-Za-z0-9_-]+$ ]] || return 1
         REVIEW_ACCEPTED_RISK=$value ;;
+      owner)
+        [ -z "$REVIEW_OWNER" ] && review_valid_login "$value" && [[ "$value" != *"[bot]" ]] || { echo "review policy invalid or duplicate owner" >&2; return 1; }
+        REVIEW_OWNER=$value ;;
       reviewer|executor|approver)
         review_valid_login "$value" || {
           echo "review policy invalid $key login: $value; set a GitHub login in $root/.agentic-flow-review-policy" >&2
