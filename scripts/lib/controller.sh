@@ -593,7 +593,9 @@ controller_dispatch() {
   controller_worktree || return $?
   [ "$CT_RAISED" = false ] || return 10
   run="$chain/$nth"; CT_ACTIVE_RUN=$run
-  if [ -z "$resume" ] && [ "$LAUNCH_CLI" != codex ]; then session=$(perl -e 'printf "%08x-%04x-4%03x-8%03x-%012x",time,int(rand(65536)),int(rand(4096)),int(rand(4096)),int(rand(2**48))'); fi
+  # Codex and OpenCode create their own session; a caller-chosen OpenCode id is created
+  # without the user's provider and hits the free-tier limit. Record theirs from the events.
+  if [ -z "$resume" ] && [ "$LAUNCH_CLI" = claude ]; then session=$(perl -e 'printf "%08x-%04x-4%03x-8%03x-%012x",time,int(rand(65536)),int(rand(4096)),int(rand(4096)),int(rand(2**48))'); fi
   hash=$(shasum -a 256 "$CT_TMP/packet"); hash=${hash%% *}
   jq -n --arg run "$run" --arg chain "$chain" --arg replaces "$replaces" --arg reason "$pending" --arg plan "$CT_PLAN" --argjson number "$number" --arg step "$step" --arg station "$station" \
     --arg cli "$LAUNCH_CLI" --arg model "$LAUNCH_MODEL" --arg profile "${LAUNCH_PROFILE#"$LAUNCH_ROOT"/}" --arg contract "$LAUNCH_CONTRACT_MODE" --arg resume "$resume" --arg session "$session" --arg mode "$mode" --arg from "$from" --argjson seq "$seq" --arg base "$base" --arg hash "$hash" --arg host "$CT_HOST" \

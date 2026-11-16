@@ -1626,7 +1626,9 @@ MODEL
   git -C "$project" restore --source="$head" --worktree -- .agentic-flow-roles
   printf 'success\n' > "$state/mode"
   c5_run 0 --once; c5_run 0 --once
-  ledger_read recovery | jq -e '[.[]|select(.kind=="intent")]|last|.session_mode=="fresh-reassigned" and .reassigned_from=="opencode"' >/dev/null || fail 'reviewer reassignment reused stale session'
+  # OpenCode creates its own session, and this fixture's OpenCode run is refused at preflight,
+  # so no session exists to be reassigned from. The retry must still start fresh on the new CLI.
+  ledger_read recovery | jq -e '[.[]|select(.kind=="intent")]|last|.cli=="claude" and .resume_of==null and .session_mode!="resume"' >/dev/null || fail 'reviewer reassignment reused stale session'
   if grep -q 'opencode-fixture' "$state/args-4"; then fail 'Claude reviewer received OpenCode session'; fi
   for mode in bad-head malformed timeout red dirty ask branch; do
     c5_reset; printf '%s\n' "$mode" > "$state/mode"

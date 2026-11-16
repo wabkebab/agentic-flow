@@ -285,6 +285,11 @@ launch_station() { # station worktree packet result [--resume session]
   ended=$(date +%s)
   local parsed
   parsed=$(jq -s --arg cli "$LAUNCH_CLI" -f "$LAUNCH_ROOT/scripts/lib/station-output.jq" "$scratch/events" 2>/dev/null) || parsed='{"session":null,"result":null,"usage":{"input":null,"output":null,"cost_usd":null}}'
+  # OpenCode creates its own session, so its id only exists in the events. Codex recorded its own live.
+  if [ "$LAUNCH_CLI" = opencode ] && [ -z "${LAUNCH_SESSION:-}" ] && declare -F launch_session_record >/dev/null; then
+    session=$(printf '%s' "$parsed" | jq -r '.session // empty')
+    if [ -n "$session" ]; then launch_session_record "$session" || { rm -rf "$scratch"; return 2; }; fi
+  fi
   # The -o file is authoritative for Codex, including a resumed final result.
   if [ "$LAUNCH_CLI" = codex ] && [ -s "$result" ]; then
     parsed=$(printf '%s' "$parsed" | jq --rawfile r "$result" '.result=($r|try fromjson catch null)')
