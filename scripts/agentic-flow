@@ -13,6 +13,7 @@ usage:
   agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--json]
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
+  agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]
   agentic-flow token <executor|reviewer|approver> [--check]
   agentic-flow status [--json]
   agentic-flow diff [--ref <ref>] [--json]
@@ -493,6 +494,11 @@ subcommand="${1:-}"
       # shellcheck disable=SC1091
       . "$(dirname "$0")/lib/roles.sh"
       roles_cmd "$@" ;;
+    metrics)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/ledger.sh"
+      metrics_cmd "$@" ;;
     token) shift; token_cmd "$@" ;;
     status) shift; status_cmd "$@" ;;
     diff) shift; diff_cmd "$@" ;;

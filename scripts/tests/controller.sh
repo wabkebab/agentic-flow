@@ -2,6 +2,7 @@
 # Sourced by self-test.sh; no network and no real model invocations.
 # shellcheck disable=SC1091,SC2030,SC2031,SC2016,SC2329 # Shared harness helpers and child programs.
 [ -f "$ROOT/scripts/lib/launch.sh" ] || fail 'station launcher is missing'
+[ -f "$ROOT/scripts/lib/ledger.sh" ] || fail 'run ledger is missing'
 C1="$TMP/controller"
 mkdir -p "$C1/project/config" "$C1/bin" "$C1/home/.codex" "$C1/operator"
 mkdir -p "$C1/project/config/stations"
@@ -326,3 +327,353 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     exit 0
   ) || fail 'station contract export regression failed'
 fi
+
+# --- C-2 durable local ledger and offline metrics -----------------------------------------
+ledger_tests() (
+  . "$ROOT/scripts/lib/ledger.sh"
+  ledger_init "$C1/project" || fail 'ledger common-dir initialization failed'
+  local c2="$TMP/ledger-c2" before after stored digest run
+  mkdir -p "$c2"
+  printf 'findings\nlínea two ☃\n' > "$c2/body"
+  # Worktrees must resolve the same physical common directory, not private .git files.
+  before=$LEDGER_DIR
+  git -C "$C1/project" worktree add --quiet --detach "$c2/worktree" HEAD || fail 'ledger worktree fixture failed'
+  ledger_init "$c2/worktree" || fail 'linked worktree ledger initialization failed'
+  [ "$LEDGER_DIR" = "$before" ] || fail 'worktree got a private ledger'
+  git -C "$C1/project" worktree remove "$c2/worktree" || fail 'ledger worktree fixture cleanup failed'
+  ledger_init "$C1/project" || fail 'ledger initialization restore failed'
+  c2_send() { # kind plan; JSON on stdin
+    cat > "$c2/record.json"
+    ledger_append "$1" "$2" "$c2/record.json" > "$c2/last.json"
+  }
+  c2_intent() { # run [reason] [replaces] [preassigned-session]
+    local id=$1 reason=${2:-initial} replaces=${3:-} session=${4:-}
+    jq -n --arg run "$id" --arg reason "$reason" --arg replaces "$replaces" --arg session "$session" '
+      ($run|split("/")) as $p |
+      {v:1,kind:"intent",run:$run,chain:($p[0:5]|join("/")),replaces:(if $replaces=="" then null else $replaces end),
+       reason:$reason,plan:$p[0],issue:($p[1]|tonumber),step:("c-"+$p[1]),station:$p[3],cli:"codex",model:"fixture",
+       resume_of:null,session:(if $session=="" then null else $session end),session_mode:"new",reassigned_from:null,
+       seq_before:($p[2]|tonumber),base_head:("a"*40),packet_sha256:("b"*64),started:100,host:"fixture"}' |
+      c2_send intent "${id%%/*}"
+  }
+  c2_station() { # run outcome [invalid reason] [usage JSON]
+    local id=$1 outcome=$2 invalid=${3:-} usage=${4:-'{"input":10,"output":5,"cost_usd":0.5}'}
+    jq -n --arg run "$id" --arg outcome "$outcome" --arg invalid "$invalid" --argjson usage "$usage" '
+      ($run|split("/")[3]) as $station |
+      {v:1,kind:"station",run:$run,exit:0,seconds:10,usage:$usage,ended:200,
+       invalid_reason:(if $invalid=="" then null else $invalid end),
+       result:(if $invalid!="" then null else
+         {v:1,station:$station,outcome:$outcome,head:(if $outcome=="ask" then null else "a"*40 end),
+          summary:"fixture",question:(if $outcome=="ask" then "Which approach?" else null end),
+          findings:(if $outcome=="bounce" then [{severity:"P2",file:"fixture",line:1,text:"fix it"}] else [] end)} end)}' |
+      c2_send station "${id%%/*}"
+  }
+  c2_verify() {
+    jq -n --arg run "$1" --arg status "$2" '{v:1,kind:"verify",run:$run,head:("a"*40),record:"fixture.json",status:$status,at:250}' |
+      c2_send verify "${1%%/*}"
+  }
+  c2_decision() {
+    local sum
+    sum=$(shasum -a 256 "$c2/body"); sum=${sum%% *}
+    jq -n --arg run "$1" --arg action "$2" --arg file "$c2/body" --arg sum "$sum" '
+      {v:1,kind:"decision",run:$run,action:$action,event:$action,head:("a"*40),body_file:$file,body_sha256:$sum,at:300}' |
+      c2_send decision "${1%%/*}"
+  }
+  c2_handoff() {
+    jq -n --arg run "$1" --argjson attempt "$2" --argjson exit "$3" --arg event "${4:-ask}" '
+      {v:1,kind:"handoff",run:$run,attempt:$attempt,event:$event,after:($run|split("/")[2]|tonumber),
+       exit:$exit,seq_after:(if $exit==0 then 1 else null end),at:400}' |
+      c2_send handoff "${1%%/*}"
+  }
+  c2_expect() {
+    ledger_chains "$1" > "$c2/chains.json" || fail 'chain derivation failed'
+    jq -e "$2" "$c2/chains.json" >/dev/null || fail "ledger chain expectation: $2"
+  }
+  # Literal prefix table: each durable boundary maps to its head, pending item
+  # and complete allowance vector. A replaced run never becomes open again.
+  ledger_chains table | jq -e 'length==0' >/dev/null || fail 'empty prefix has chain heads'
+  while IFS='|' read -r operation expected_run pending invalid_left fix_left recovery_left closed_count; do
+    case "$operation" in
+      intent1) c2_intent 'table/1/0/executor/1/1' || fail 'prefix intent failed' ;;
+      session1|session2)
+        run="table/1/0/executor/1/${operation#session}"
+        jq -n --arg run "$run" '{v:1,kind:"session",run:$run,session:"fixture-session",at:110}' |
+          c2_send session table || fail 'prefix session failed' ;;
+      station1|station2)
+        c2_station "table/1/0/executor/1/${operation#station}" submitted || fail 'prefix station failed' ;;
+      red) c2_verify 'table/1/0/executor/1/1' red || fail 'prefix red gate failed' ;;
+      intent2) c2_intent 'table/1/0/executor/1/2' fix 'table/1/0/executor/1/1' || fail 'prefix replacement failed' ;;
+      green) c2_verify 'table/1/0/executor/1/2' green || fail 'prefix green gate failed' ;;
+      decision) c2_decision 'table/1/0/executor/1/2' submit || fail 'prefix decision failed' ;;
+      retry) c2_handoff 'table/1/0/executor/1/2' 1 5 submit || fail 'prefix handoff retry failed' ;;
+      success) c2_handoff 'table/1/0/executor/1/2' 2 0 submit || fail 'prefix handoff completion failed' ;;
+      *) fail 'unknown prefix-table operation' ;;
+    esac
+    ledger_chains table | jq -e --arg n "$expected_run" --arg pending "$pending" \
+      --argjson invalid "$invalid_left" --argjson fix "$fix_left" --argjson recovery "$recovery_left" --argjson closed "$closed_count" '
+      .[0] | .head==(if $n=="none" then null else "table/1/0/executor/1/"+$n end)
+      and .pending==(if $pending=="none" then null else $pending end)
+      and .remaining=={resume_valid:$invalid,fix:$fix,recovery:$recovery}
+      and (.closed_runs|length)==$closed' >/dev/null || fail "incorrect chain prefix: $operation"
+  done <<'PREFIXES'
+intent1|1|relaunch|1|1|3|0
+session1|1|resume-packet|1|1|3|0
+station1|1|verify|1|1|3|0
+red|1|fix|1|1|3|0
+intent2|2|relaunch|1|0|3|1
+session2|2|resume-packet|1|0|3|1
+station2|2|verify|1|0|3|1
+green|2|decide|1|0|3|1
+decision|2|handoff|1|0|3|1
+retry|2|handoff|1|0|3|1
+success|none|none|1|0|3|2
+PREFIXES
+  printf '{"v":1,"kind":"unknown"}\n' | c2_send station demo > "$c2/error" 2>&1 && fail 'malformed record accepted'
+  [ ! -e "$LEDGER_DIR/demo.jsonl" ] || fail 'rejected record created ledger'
+  mkfifo "$c2/fifo" || fail 'record FIFO fixture failed'
+  ledger_append station demo "$c2/fifo" > "$c2/error" 2>&1 && fail 'record writer accepted a blocking FIFO'
+  c2_intent 'demo/1/0/executor/1/1' || fail 'initial intent failed'
+  mkfifo "$LEDGER_DIR/pipe.jsonl" || fail 'ledger FIFO fixture failed'
+  ledger_read pipe > "$c2/error" 2>&1 && fail 'reader accepted a blocking ledger FIFO'
+  rm "$LEDGER_DIR/pipe.jsonl"
+  c2_expect demo '.[0]|.head=="demo/1/0/executor/1/1" and .pending=="relaunch" and .remaining=={resume_valid:1,fix:1,recovery:3}'
+  printf '{"demo/1/0/executor/1/1":{"commit":true}}\n' > "$c2/context"
+  ledger_chains demo "$c2/context" | jq -e '.[0].pending=="fresh-result"' >/dev/null || fail 'commit recovery without session wrong'
+  printf '{"demo/1/0/executor/1/1":{"dirty":true}}\n' > "$c2/context"
+  ledger_chains demo "$c2/context" | jq -e '.[0].pending=="fresh-dirty"' >/dev/null || fail 'dirty recovery without session wrong'
+  jq -n '{v:1,kind:"session",run:"demo/1/0/executor/1/1",session:"codex-session",at:110}' |
+    c2_send session demo || fail 'session record failed'
+  ledger_session demo "$c2/record.json" > "$c2/error" 2>&1 && fail 'duplicate session accepted'
+  c2_expect demo '.[0]|.pending=="resume-packet" and .session=="codex-session"'
+  printf '{"demo/1/0/executor/1/1":{"commit":true}}\n' > "$c2/context"
+  ledger_chains demo "$c2/context" | jq -e '.[0].pending=="resume-result"' >/dev/null || fail 'commit recovery with session wrong'
+  printf '{"demo/1/0/executor/1/1":{"dirty":true}}\n' > "$c2/context"
+  ledger_chains demo "$c2/context" | jq -e '.[0].pending=="resume-dirty"' >/dev/null || fail 'dirty recovery with session wrong'
+  c2_station 'demo/1/0/executor/1/1' submitted || fail 'station record failed'
+  c2_expect demo '.[0].pending=="verify"'
+  before=$(wc -c < "$LEDGER_DIR/demo.jsonl")
+  c2_station 'demo/1/0/executor/1/1' submitted > "$c2/error" 2>&1 && fail 'duplicate station accepted'
+  [ "$(wc -c < "$LEDGER_DIR/demo.jsonl")" = "$before" ] || fail 'rejected station changed ledger'
+  c2_verify 'demo/1/0/executor/1/1' red || fail 'red verification failed'
+  c2_expect demo '.[0]|.pending=="fix" and .remaining.fix==1'
+  c2_intent 'demo/1/0/executor/1/2' fix 'demo/1/0/executor/1/1' || fail 'fix replacement failed'
+  c2_expect demo '.[0]|.head=="demo/1/0/executor/1/2" and .remaining.fix==0 and .closed_runs==["demo/1/0/executor/1/1"]'
+  c2_intent 'demo/1/0/executor/1/3' relaunch 'demo/1/0/executor/1/1' > "$c2/error" 2>&1 && fail 'stale replaces accepted'
+  grep -q 'not the open chain head' "$c2/error" || fail 'stale replacement gap unnamed'
+  c2_station 'demo/1/0/executor/1/2' ask malformed || fail 'first invalid station failed'
+  c2_expect demo '.[0]|.pending=="resume-valid" and .counts.invalid_results==1 and .remaining.resume_valid==1'
+  c2_intent 'demo/1/0/executor/1/3' resume-valid 'demo/1/0/executor/1/2' || fail 'validity retry failed'
+  c2_station 'demo/1/0/executor/1/3' ask malformed || fail 'second invalid station failed'
+  c2_expect demo '.[0]|.pending=="decide" and .escalation=="malformed station result" and .remaining.resume_valid==0 and (.closed_runs|length)==2'
+  c2_intent 'demo/2/0/executor/1/1' || fail 'red-chain intent failed'
+  c2_station 'demo/2/0/executor/1/1' submitted || fail 'red-chain station failed'
+  c2_verify 'demo/2/0/executor/1/1' red || fail 'red-chain verify failed'
+  c2_intent 'demo/2/0/executor/1/2' fix 'demo/2/0/executor/1/1' || fail 'red-chain fix failed'
+  c2_station 'demo/2/0/executor/1/2' submitted || fail 'red-chain fixed station failed'
+  c2_verify 'demo/2/0/executor/1/2' red || fail 'second red gate failed'
+  c2_expect demo '.[]|select(.chain=="demo/2/0/executor/1")|.pending=="decide" and .escalation=="gate still red after fix" and .remaining.fix==0'
+  c2_intent 'demo/3/0/executor/1/1' || fail 'recovery intent failed'
+  for n in 2 3 4; do
+    c2_intent "demo/3/0/executor/1/$n" relaunch "demo/3/0/executor/1/$((n-1))" || fail 'recovery replacement failed'
+    c2_expect demo ".[]|select(.chain==\"demo/3/0/executor/1\")|.remaining.recovery==$((4-n)) and (.closed_runs|length)==$((n-1))"
+  done
+  c2_expect demo '.[]|select(.chain=="demo/3/0/executor/1")|.pending=="decide" and .escalation=="station keeps failing to finish"'
+  c2_intent 'demo/4/0/reviewer/1/1' initial '' preassigned || fail 'reviewer intent failed'
+  c2_expect demo '.[]|select(.chain=="demo/4/0/reviewer/1")|.pending=="relaunch"'
+  c2_station 'demo/4/0/reviewer/1/1' ask || fail 'reviewer ask failed'
+  c2_expect demo '.[]|select(.chain=="demo/4/0/reviewer/1")|.pending=="decide"'
+  c2_decision 'demo/4/0/reviewer/1/1' ask || fail 'decision failed'
+  c2_expect demo '.[]|select(.chain=="demo/4/0/reviewer/1")|.pending=="handoff"'
+  c2_decision 'demo/4/0/reviewer/1/1' ask > "$c2/error" 2>&1 && fail 'duplicate decision accepted'
+  ledger_body demo 'demo/4/0/reviewer/1/1' > "$c2/body-copy" || fail 'stored body unavailable'
+  cmp -s "$c2/body" "$c2/body-copy" || fail 'stored body changed bytes'
+  stored=$(ledger_read demo | jq -r '.[]|select(.kind=="decision")|.body_file')
+  printf 'tamper' >> "$stored"
+  ledger_body demo 'demo/4/0/reviewer/1/1' > "$c2/body-copy" 2> "$c2/error" && fail 'tampered decision body accepted'
+  [ ! -s "$c2/body-copy" ] || fail 'tampered body leaked to replay'
+  printf 'findings\nlínea two ☃\n' > "$stored"
+  c2_handoff 'demo/4/0/reviewer/1/1' 1 5 || fail 'retryable handoff failed'
+  c2_expect demo '.[]|select(.chain=="demo/4/0/reviewer/1")|.pending=="handoff"'
+  c2_handoff 'demo/4/0/reviewer/1/1' 2 0 || fail 'successful handoff failed'
+  c2_expect demo '.[]|select(.chain=="demo/4/0/reviewer/1")|.head==null and .pending==null and (.closed_runs|length)==1'
+  for exit in 3 4 7; do
+    run="demo/$((10+exit))/0/reviewer/1/1"
+    c2_intent "$run" || fail 'terminal intent failed'
+    c2_station "$run" ask || fail 'terminal station failed'
+    c2_decision "$run" ask || fail 'terminal decision failed'
+    c2_handoff "$run" 1 "$exit" || fail 'terminal handoff failed'
+    c2_expect demo ".[]|select(.latest==\"$run\")|.head==null and .pending==null"
+  done
+  c2_intent 'demo/5/0/executor/1/1' || fail 'end intent failed'
+  jq -n '{v:1,kind:"end",chain:"demo/5/0/executor/1",how:"held",hold:"fixture",at:410}' |
+    c2_send end demo || fail 'chain end failed'
+  [ "$(ledger_generation demo 5 0 executor)" = 2 ] || fail 'ended generation not advanced'
+  c2_intent 'demo/5/0/executor/2/1' || fail 'new generation failed'
+  c2_expect demo '.[]|select(.chain=="demo/5/0/executor/2")|.remaining=={resume_valid:1,fix:1,recovery:3}'
+  c2_intent 'green/1/0/executor/1/1' || fail 'green intent failed'
+  c2_station 'green/1/0/executor/1/1' submitted || fail 'green station failed'
+  c2_decision 'green/1/0/executor/1/1' submit > "$c2/error" 2>&1 && fail 'unverified submit decision accepted'
+  c2_verify 'green/1/0/executor/1/1' green || fail 'green verify failed'
+  c2_verify 'green/1/0/executor/1/1' green > "$c2/error" 2>&1 && fail 'duplicate verification accepted'
+  c2_expect green '.[0].pending=="decide"'
+  c2_decision 'green/1/0/executor/1/1' submit || fail 'verified submit decision failed'
+  c2_handoff 'green/1/0/executor/1/1' 1 0 submit || fail 'green handoff failed'
+  c2_expect green '.[0].head==null and .[0].closed_runs==["green/1/0/executor/1/1"]'
+  jq -n '{v:1,kind:"salvage",run:"green/1/0/executor/1/1",chain:"green/1/0/executor/1",
+    ref:"refs/agentic-flow/salvage/green/1/0/executor/1/1",head:("a"*40),index_commit:("a"*40),
+    worktree_commit:("a"*40),index_tree:("a"*40),worktree_tree:("a"*40),paths:[],at:410}' |
+    c2_send salvage green || fail 'post-completion salvage failed'
+  c2_expect green '.[0].head==null and .[0].pending==null'
+  c2_intent 'salvage/1/0/executor/1/1' || fail 'salvage intent failed'
+  jq -n '{v:1,kind:"salvage",run:"salvage/1/0/executor/1/1",chain:"salvage/1/0/executor/1",
+    ref:"refs/agentic-flow/salvage/salvage/1/0/executor/1/1",head:("a"*40),index_commit:("a"*40),
+    worktree_commit:("a"*40),index_tree:("a"*40),worktree_tree:("a"*40),paths:[{path:"dirty.txt",status:"M"}],at:200}' |
+    c2_send salvage salvage || fail 'salvage record failed'
+  ledger_salvage salvage "$c2/record.json" > "$c2/error" 2>&1 && fail 'duplicate salvage accepted'
+  c2_expect salvage '.[0].pending=="relaunch"'
+  # Competing callers serialize validation and the single O_APPEND write.
+  c2_intent 'race/1/0/executor/1/1' || fail 'concurrent writer intent failed'
+  jq -n '{v:1,kind:"station",run:"race/1/0/executor/1/1",exit:1,seconds:1,
+    usage:{input:null,output:null,cost_usd:null},result:null,invalid_reason:"fixture",ended:200}' > "$c2/race-record"
+  (rc=0; ledger_station race "$c2/race-record" > "$c2/race-a.out" 2> "$c2/race-a.err" || rc=$?; echo "$rc" > "$c2/race-a.status") &
+  pid_a=$!
+  (rc=0; ledger_station race "$c2/race-record" > "$c2/race-b.out" 2> "$c2/race-b.err" || rc=$?; echo "$rc" > "$c2/race-b.status") &
+  pid_b=$!
+  wait "$pid_a" || fail 'first writer test process failed'
+  wait "$pid_b" || fail 'second writer test process failed'
+  case "$(cat "$c2/race-a.status"):$(cat "$c2/race-b.status")" in 0:2|2:0) ;; *) fail 'concurrent writers admitted duplicate station' ;; esac
+  ledger_read race | jq -e 'length==2' >/dev/null || fail 'concurrent append interleaved records'
+  mkdir -p "$c2/café project"
+  git -C "$c2/café project" init -q || fail 'Unicode path fixture failed'
+  ledger_init "$c2/café project" || fail 'Unicode common-dir initialization failed'
+  c2_intent 'unicode/1/0/executor/1/1' || fail 'Unicode intent failed'
+  c2_station 'unicode/1/0/executor/1/1' ask || fail 'Unicode station failed'
+  c2_decision 'unicode/1/0/executor/1/1' ask || fail 'Unicode decision failed'
+  ledger_body unicode 'unicode/1/0/executor/1/1' > "$c2/unicode-body" || fail 'Unicode body path was serialized incorrectly'
+  cmp -s "$c2/body" "$c2/unicode-body" || fail 'Unicode body bytes were changed'
+  ledger_init "$C1/project" || fail 'ledger restore after Unicode fixture failed'
+
+  c2_intent 'torn/1/0/executor/1/1' || fail 'torn intent failed'
+  printf '{"v":1,"kind":' >> "$LEDGER_DIR/torn.jsonl"
+  digest=$(shasum -a 256 "$LEDGER_DIR/torn.jsonl"); digest=${digest%% *}
+  before=$(wc -c < "$LEDGER_DIR/torn.jsonl")
+  ledger_read torn > "$c2/torn.json" 2> "$c2/warning" || fail 'torn tail broke read'
+  jq -e 'length==1' "$c2/torn.json" >/dev/null || fail 'torn tail was treated as committed'
+  grep -q 'torn last line' "$c2/warning" || fail 'torn tail warning absent'
+  c2_station 'torn/1/0/executor/1/1' ask > /dev/null 2> "$c2/warning" || fail 'append after torn tail failed'
+  after=$(head -c "$before" "$LEDGER_DIR/torn.jsonl" | shasum -a 256); after=${after%% *}
+  [ "$after" = "$digest" ] || fail 'torn recovery rewrote existing bytes'
+  ledger_read torn | jq -e 'length==2' >/dev/null || fail 'sealed fragment broke subsequent read'
+  # Simulate another crash after the repair's separator and partial new record.
+  c2_intent 'twice/1/0/executor/1/1' || fail 'double-crash fixture intent failed'
+  printf '{"first":\n{"second":' >> "$LEDGER_DIR/twice.jsonl"
+  ledger_read twice > "$c2/torn.json" 2> "$c2/warning" || fail 'double torn suffix broke read'
+  jq -e 'length==1' "$c2/torn.json" >/dev/null || fail 'double torn suffix became a record'
+  c2_station 'twice/1/0/executor/1/1' ask > /dev/null 2> "$c2/warning" || fail 'double torn suffix could not be sealed'
+  ledger_read twice | jq -e 'length==2' >/dev/null || fail 'double repair lost records'
+  c2_intent 'no-lf/1/0/executor/1/1' || fail 'complete-no-LF intent failed'
+  before=$(cat "$LEDGER_DIR/no-lf.jsonl")
+  printf '%s' "$before" > "$LEDGER_DIR/no-lf.jsonl"
+  ledger_read no-lf | jq -e 'length==1' >/dev/null || fail 'complete JSON without LF was discarded'
+  c2_station 'no-lf/1/0/executor/1/1' ask || fail 'missing LF separator was not completed'
+  ledger_read no-lf | jq -e 'length==2' >/dev/null || fail 'append joined two JSON objects'
+  c2_intent 'bad/1/0/executor/1/1' || fail 'bad fixture intent failed'
+  before=$(cat "$LEDGER_DIR/bad.jsonl")
+  printf 'broken interior\n%s\n' "$before" > "$LEDGER_DIR/bad.jsonl"
+  ledger_read bad > "$c2/invalid" 2>&1 && fail 'malformed interior record silently ignored'
+  rm "$LEDGER_DIR/bad.jsonl"
+  c2_intent 'old/1/0/executor/1/1' || fail 'old pending intent failed'
+  perl -MJSON::PP -MDigest::SHA=sha256_hex -e '
+    my ($dir,$template_file)=@ARGV; my $json=JSON::PP->new;
+    open my $input,"<",$template_file or die $!;
+    my $template=$json->decode(do {local $/; <$input>}); close $input;
+    for my $plan (qw(old other)) {
+      open my $fh,">>","$dir/$plan.jsonl" or die $!;
+      for my $i (1001..4750) {
+        my $run="$plan/$i/0/executor/1/1";
+        my @records=(
+          {%$template,plan=>$plan,issue=>$i,step=>"c-$i",run=>$run,chain=>"$plan/$i/0/executor/1",started=>101},
+          {v=>1,kind=>"station",run=>$run,exit=>0,seconds=>1,usage=>{input=>1,output=>1,cost_usd=>0},ended=>200,invalid_reason=>undef,
+            result=>{v=>1,station=>"executor",outcome=>"ask",summary=>"fixture",question=>"fixture?",findings=>[],head=>undef}},
+          {v=>1,kind=>"decision",run=>$run,action=>"ask",event=>"ask",head=>undef,body_file=>"$dir/runs/$run/decision.md",body_sha256=>sha256_hex("fixture"),at=>210},
+          {v=>1,kind=>"handoff",run=>$run,event=>"ask",attempt=>1,after=>0,exit=>0,seq_after=>1,at=>220});
+        print $fh $json->encode($_),"\n" for @records;
+      }
+      close $fh;
+    }' "$LEDGER_DIR" "$c2/record.json" || fail 'large-ledger fixture failed'
+  c2_expect old '.[0]|.head=="old/1/0/executor/1/1" and .pending=="relaunch"'
+  perl -e 'open my $f,">",$ARGV[0] or die $!; truncate($f,33554433) or die $!' "$LEDGER_DIR/oversize.jsonl"
+  ledger_read oversize > "$c2/error" 2>&1 && fail 'oversize ledger was partially read'
+  rm "$LEDGER_DIR/oversize.jsonl"
+  perl -e 'open my $f,">",$ARGV[0] or die $!; print $f "{}\n" for 1..50001' "$LEDGER_DIR/too-many.jsonl"
+  ledger_read too-many > "$c2/error" 2>&1 && fail 'ledger line cap absent'
+  rm "$LEDGER_DIR/too-many.jsonl"
+
+  c2_intent 'measured/1/0/executor/1/1' || fail 'metric executor intent failed'
+  c2_station 'measured/1/0/executor/1/1' submitted '' '{"input":10,"output":4,"cost_usd":0.1}' || fail 'metric executor failed'
+  c2_intent 'measured/1/1/reviewer/1/1' || fail 'metric reviewer intent failed'
+  c2_station 'measured/1/1/reviewer/1/1' approve '' '{"input":5,"output":2,"cost_usd":null}' || fail 'metric reviewer failed'
+  c2_intent 'measured/2/0/executor/1/1' || fail 'metric second intent failed'
+  c2_station 'measured/2/0/executor/1/1' ask '' '{"input":null,"output":3,"cost_usd":0.2}' || fail 'metric second station failed'
+  jq -c 'if .kind=="intent" and .station=="reviewer" then .started=210
+    elif .kind=="intent" and .issue==2 then .started=300
+    elif .kind=="station" and (.run|contains("/reviewer/")) then .ended=230|.seconds=20
+    elif .kind=="station" and (.run|contains("/2/")) then .ended=350|.seconds=30
+    else . end' "$LEDGER_DIR/measured.jsonl" > "$c2/adjusted"
+  mv "$c2/adjusted" "$LEDGER_DIR/measured.jsonl"
+  c2_decision 'measured/2/0/executor/1/1' ask || fail 'metric ask decision failed'
+  c2_handoff 'measured/2/0/executor/1/1' 1 5 || fail 'metric handoff retry failed'
+  c2_handoff 'measured/2/0/executor/1/1' 2 5 || fail 'metric repeated handoff failed'
+  c2_handoff 'measured/2/0/executor/1/1' 3 0 || fail 'metric final handoff failed'
+  jq -n '{v:1,kind:"hold",plan:"measured",hold:"network",issue:2,reason:"network gap",run:null,comment_id:null,at:400}' |
+    c2_send hold measured || fail 'metric hold failed'
+  ledger_hold measured "$c2/record.json" > "$c2/error" 2>&1 && fail 'duplicate hold accepted'
+  jq -n '{v:1,kind:"clear",plan:"measured",hold:"network",by:"fixture",note:"resolved",at:410}' |
+    c2_send clear measured || fail 'metric clear failed'
+  ledger_clear measured "$c2/record.json" > "$c2/error" 2>&1 && fail 'duplicate clear accepted'
+  for n in 1 2; do
+    jq -n --arg id "ship-$n" --argjson at "$((550+20*n))" '{v:1,kind:"ship",plan:"measured",ship:$id,at:$at}' |
+      c2_send ship measured || fail 'metric ship failed'
+  done
+  ledger_ship measured "$c2/record.json" > "$c2/error" 2>&1 && fail 'duplicate ship accepted'
+  mkdir -p "$LEDGER_STATE_DIR"
+  jq -n 'def e($step;$seq;$event;$role;$at):
+    {id:("measured/"+$step+"/"+($seq|tostring)+"/"+$event),event:$event,role:$role,at:$at};
+    {v:1,plan:"measured",rows:[
+      {issue:1,step:"c-1",state:"approved",topology:"step-strict",events:[e("c-1";1;"submit";"executor";150),e("c-1";2;"approve";"reviewer";500)]},
+      {issue:2,step:"c-2",state:"approved",topology:"step-strict",events:[
+        e("c-2";1;"submit";"executor";310),e("c-2";2;"bounce";"reviewer";320),
+        e("c-2";3;"submit";"executor";330),e("c-2";4;"bounce";"reviewer";340),
+        e("c-2";5;"submit";"executor";350),e("c-2";6;"bounce";"reviewer";360),
+        e("c-2";7;"resume";"approver";450),e("c-2";8;"submit";"executor";460),e("c-2";9;"approve";"reviewer";550)]},
+      {issue:3,step:"tracker",state:"closed",topology:"tracker",events:[e("tracker";1;"notify";"reviewer";560),e("tracker";2;"close";"approver";600)]}]}' \
+    > "$LEDGER_STATE_DIR/measured.metrics.json"
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" metrics --plan measured --json) > "$c2/metrics.json" || fail 'metrics command failed'
+  jq -e '.plans[0]|.runs==3 and .completed==3 and .wall_seconds==60 and .usage=={input:null,output:9,cost_usd:null}
+    and .lead_seconds==500 and .first_pass_yield==0.5 and .bounce_rate==0.6 and .human_touches=={resumes:1,approvals:2,ships:2,total:5}
+    and .andon=={"ask":1,"network gap":1} and .stations.executor.wall_seconds==40 and .stations.reviewer.wall_seconds==20
+    and .stations.reviewer.lead_seconds==390 and .stations.reviewer.first_pass_yield==1
+    and .stations.reviewer.bounce_rate==0 and .stations.executor.first_pass_yield==0.5' "$c2/metrics.json" >/dev/null || fail 'metrics differ from hand-computed fixture'
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" metrics --plan measured --since 1970-01-01T00:04:00Z --json) > "$c2/metrics.json" || fail 'filtered metrics failed'
+  jq -e '.plans[0]|.runs==1 and .usage=={input:null,output:3,cost_usd:0.2}' "$c2/metrics.json" >/dev/null || fail 'since filter used local time or wrong record'
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" metrics --plan measured) > "$c2/text" || fail 'text metrics failed'
+  grep -q 'n/a' "$c2/text" || fail 'missing usage was not n/a'
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" metrics --plan '../escape' --json) > "$c2/error" 2>&1 && fail 'unsafe plan filter accepted'
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" metrics --since 2026-02-30 --json) > "$c2/error" 2>&1 && fail 'invalid date accepted'
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" metrics --plan torn --json) > "$c2/metrics.json" 2> "$c2/warning" || fail 'torn ledger broke metrics'
+  jq -e '.plans[0].journal_available==false and .plans[0].human_touches.total==null' "$c2/metrics.json" >/dev/null || fail 'missing journal cache guessed human touches'
+  c2_intent 'zero/1/0/executor/1/1' || fail 'zero usage intent failed'
+  c2_station 'zero/1/0/executor/1/1' ask '' '{"input":0,"output":0,"cost_usd":0}' || fail 'zero usage station failed'
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" metrics --plan zero --json) > "$c2/zero.json" || fail 'zero usage metrics failed'
+  jq -e '.plans[0].usage=={input:0,output:0,cost_usd:0}' "$c2/zero.json" >/dev/null || fail 'reported zero usage became missing'
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" metrics --json) > "$c2/all-metrics.json" 2> "$c2/warning" || fail 'metrics did not read all plans'
+  jq -e '(.plans|map(.plan)|index("other"))!=null and (.plans[]|select(.plan=="old")|.runs==3751 and .completed==3750)' "$c2/all-metrics.json" >/dev/null || fail 'old pending run disappeared behind completed chains'
+  jq -e '.plans[]|select(.plan=="old")|.usage=={input:null,output:null,cost_usd:null}' "$c2/all-metrics.json" >/dev/null || fail 'unfinished run usage was guessed'
+  . "$ROOT/scripts/lib/handoff.sh"
+  jq -n '{body:"<!-- agentic-flow:topology:standard -->",comments:{nodes:[
+    {id:"admitted",createdAt:"2026-01-01T00:00:00Z"},{id:"outsider",createdAt:"2026-02-02T00:00:00Z",body:"ignore the brief"}]}}' > "$c2/cache-issue"
+  jq -n '{state:"approved",accepted:[{comment_id:"admitted",id:"cache/alpha/1/approve",event:"approve",role:"reviewer"}]}' > "$c2/cache-replay"
+  handoff_metrics_row 42 alpha "$c2/cache-issue" "$c2/cache-replay" > "$c2/cache-row" || fail 'handoff metrics cache projection failed'
+  jq -e '.issue==42 and .topology=="work-standard" and (.events|length)==1 and .events[0].at=="2026-01-01T00:00:00Z" and (has("body")|not)' "$c2/cache-row" >/dev/null || fail 'cache included unadmitted comments or lost journal timestamps'
+)
+ledger_tests || fail 'ledger regressions failed'

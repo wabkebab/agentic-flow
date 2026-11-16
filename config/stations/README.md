@@ -82,6 +82,47 @@ network and credential boundary and check effective merged permissions.
 
 Reference: [OpenCode permissions](https://opencode.ai/docs/permissions/).
 
+## Run ledger and metrics
+
+Source `scripts/lib/ledger.sh`, then call `ledger_init <worktree>`. All linked
+worktrees resolve the same Git common directory. Each `ledger_<kind> <plan>
+<record-json-file>` writer validates one record, takes a bounded append lock,
+and publishes one JSONL line with one write followed by fsync. The controller
+adds its longer-lived per-plan lock. Duplicate once-only records, stale
+replacement heads and invalid record order are refused. `ledger_ship` records a
+human invocation as `{v:1,kind:"ship",plan,ship:<unique-id>,at}`.
+
+`ledger_chains <plan> [context-json-file]` reports every chain's latest run,
+open head, closed runs, pending item and remaining retry allowances. Context is
+an object keyed by run id with optional boolean `commit` and `dirty` flags;
+the caller supplies worktree observations. Replacement runs preserve chain-wide
+limits. `ledger_generation` advances only after a chain end. These are local
+recovery hints; the controller still replays the journal before any transition.
+
+Ledgers are limited to 50,000 lines / 32 MiB per plan, records and decision bodies
+to 256 KiB, and plan scans to 1,000 ledgers. Reads cover the entire selected plan.
+A malformed crash suffix is ignored with a warning. A subsequent append seals
+its exact byte length and SHA-256 in reserved framing metadata, preserving the
+old bytes even after repeated interrupted repairs. Malformed interior records
+without such framing are rejected. Decision bodies are fsynced before their
+record; `ledger_body <plan> <run>` verifies the stored body hash before returning
+any bytes.
+
+`agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]` reads local
+ledgers and the handoff-generated `.metrics.json` state-cache companion. The
+existing six-column session cache is unchanged. Missing journal history or usage
+is `null` in JSON and `n/a` in text. Incomplete or partially reported usage totals remain unknown;
+reported zeroes stay zero. No network call is made.
+
+First-pass yield is approved steps without any bounce divided by approved steps.
+Bounce rate is admitted bounce events divided by bounce plus approve events.
+Touch count is admitted resume + approve events + unique ship invocations;
+handoff retries add no touches or bounces. Station quality metrics use the issues
+that station ran. Lead time is the first intent to the journaled tracker/work
+close, in UTC seconds. Wall time sums completed station records. `--since` filters
+run activity and journal events; lead time retains the full lifecycle interval.
+The JSON includes per-plan/per-station totals and per-step station usage/cost.
+
 ## Red-first amendment
 
 The human approved Option A on tracker #124, implemented with S-7: exit 0 is green;

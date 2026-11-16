@@ -5,6 +5,14 @@
 . "$(dirname "${BASH_SOURCE[0]}")/workflow.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/journal.sh"
 
+handoff_metrics_row() { # number step issue-file replay-file; admitted events only
+  jq -c --argjson n "$1" --arg step "$2" --slurpfile source "$3" '
+    ($source[0].comments.nodes | map({key:(.id|tostring),value:(.createdAt//.created_at//null)}) | from_entries) as $times |
+    {issue:$n,step:$step,state,topology:(if $step=="tracker" then "tracker"
+      elif ($source[0].body|split("\n")|index("<!-- agentic-flow:topology:standard -->"))!=null then "work-standard" else "step-strict" end),
+     events:[.accepted[]|{id,event,role,at:($times[.comment_id|tostring]//null)}]}' "$4"
+}
+
 handoff_error() { echo "handoff: $*" >&2; }
 handoff_gh() { # Never persist credentials or print them in diagnostics.
   if [ -n "${HANDOFF_TOKEN:-}" ]; then
@@ -330,13 +338,22 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   fi
   # Re-read every written issue after plan effects, detecting out-of-lock writers.
   handoff_project "$number" || return $?
-  local cache="$HANDOFF_TMP/cache"
+  local cache="$HANDOFF_TMP/cache" metrics_rows="$HANDOFF_TMP/metrics-rows" metrics_cache="$HANDOFF_TMP/metrics-cache"
   : > "$cache"
+  : > "$metrics_rows"
   for n in $issues; do
     [ -f "$HANDOFF_TMP/$n.replay" ] || continue
     jq -r --arg n "$n" --arg step "$(jq -r .body "$HANDOFF_TMP/$n.issue" | journal_stamp | jq -r .step)" \
       '[$n,$step,.state,(.latest.id//"none"),.submitted_head,(now|todateiso8601)]|@tsv' "$HANDOFF_TMP/$n.replay" >> "$cache"
+    # Preserve the six-column session cache. Metrics get a separate, bounded
+    # snapshot of admitted journal events, never raw comment bodies or labels.
+    handoff_metrics_row "$n" "$(jq -r .body "$HANDOFF_TMP/$n.issue" | journal_stamp | jq -r .step)" \
+      "$HANDOFF_TMP/$n.issue" "$HANDOFF_TMP/$n.replay" >> "$metrics_rows" || return 5
   done
+  jq -cs --arg plan "$HANDOFF_PLAN" '{v:1,plan:$plan,rows:.,refreshed_at:(now|todateiso8601)}' \
+    "$metrics_rows" > "$metrics_cache" || return 5
+  [ "$(wc -c < "$metrics_cache")" -le 4194304 ] || { handoff_error 'metrics cache too large'; return 5; }
+  mv "$metrics_cache" "$common/agentic-flow/state/$HANDOFF_PLAN.metrics.json" || return 5
   mv "$cache" "$common/agentic-flow/state/$HANDOFF_PLAN.tsv" || return 5
   if [ "$json" = true ]; then
     jq -s 'to_entries|map({key:(.value.number|tostring),value:.value.replay})|from_entries' \
