@@ -250,7 +250,9 @@ launch_station() { # station worktree packet result [--resume session]
       LAUNCH_ENV+=("OPENCODE_CONFIG=$LAUNCH_PROFILE" "OPENCODE_CONFIG_CONTENT=$(jq -cn --arg s "$station" --rawfile p "$scratch/bundle.md" --slurpfile profile "$LAUNCH_PROFILE" '{mcp:{},agent:{($s):{mode:"primary",prompt:$p,permissions:$profile[0].permissions}}}')")
       argv=(opencode --standalone run --format json --agent "$station")
       [ "$LAUNCH_MODEL" = - ] || argv+=(--model "$LAUNCH_MODEL")
-      if [ -n "$resume" ]; then argv+=(--session "$resume"); elif [ -n "${LAUNCH_SESSION:-}" ]; then argv+=(--session "$LAUNCH_SESSION"); fi ;;
+      # OpenCode only resumes ids it issued (ses_…); a ledger id from an earlier controller is skipped.
+      case "$resume" in ses*) argv+=(--session "$resume") ;; esac
+      if [ -n "$resume" ]; then :; elif [ -n "${LAUNCH_SESSION:-}" ]; then argv+=(--session "$LAUNCH_SESSION"); fi ;;
   esac
   : > "$result" || { rm -rf "$scratch"; return 2; }
   started=$(date +%s)
