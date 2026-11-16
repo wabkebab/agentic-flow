@@ -86,6 +86,48 @@ referenced section, not by default.
 States live in `METHODOLOGY.md` §6: executors use `brief`, `verify-step`, `handoff submit`;
 reviewers use `packet`, `verify-step`, `handoff approve|bounce`; closers use `close-out prep|finish`.
 
+## Controller setup
+
+Set `owner=<human GitHub login>` in `.agentic-flow-review-policy` for andon.
+Install the Codex station profile when Codex is assigned:
+
+```bash
+mkdir -p ~/.codex
+cp config/stations/codex.config.toml ~/.codex/agentic-station.config.toml
+```
+
+Use `scripts/agentic-flow roles` to inspect effective assignments and their layers.
+For example, `scripts/agentic-flow roles set reviewer claude --scope project` stages
+that project choice; omit `--scope` for the operator layer, which overrides the project.
+Use `roles manual reviewer` to work that station interactively with the Phase 1 commands;
+`roles unset reviewer` removes the selected layer's override.
+
+Before unattended `scripts/agentic-flow run <doc>`, the entry gate requires
+`distinct-account`, working GitHub App tokens for executor, reviewer and approver,
+and isolation preflight for each non-manual station. Install the profiles and configure
+App identities below first. The gate also requires accepted risks for OpenCode and an
+identical CLI/model pair. OpenCode has no OS network boundary: before using it unattended,
+accept [opencode-station-network](docs/accepted_risks.md#opencode-station-network)
+in the adopting project's risk register, or assign another CLI. Use supervised
+`run <doc> --once` when the gate is not satisfied; it skips the entry gate and runs
+one station. Answer andon, then run `ship <doc>` when ready; commit the staged close-out
+when prompted, run `ship` again, and merge after its gates pass.
+
+For an identical effective CLI and model on both stations, add and approve this entry
+in the project's `docs/accepted_risks.md` before unattended use:
+
+```markdown
+<a id="same-model-review"></a>
+## Same-model review
+**Status:** Accepted risk
+
+Executor and reviewer use the same CLI and model, reducing independent model diversity.
+Revisit when a suitable independent reviewer is available or review misses a defect.
+```
+
+The check compares CLI and model strings, not underlying models across different CLIs;
+using different CLI/model strings does not prove independence.
+
 ## Versioning
 
 `.agentic-flow-version` in the target holds `<semver>+<sha>` — e.g. `0.9.0+661d9da`. The

@@ -70,13 +70,14 @@ Interactive agents can still read raw threads. Policy-authored text is trusted b
 identity, not screened for instructions. Claude/OpenCode command permissions do
 not provide an OS network boundary or stop every alternate program from reaching
 GitHub. Codex environment filtering does not remove on-disk credentials or inherited
-connectors. Headless deployment still needs a controller-enforced credential-free,
-network-isolated environment and must actually activate the station profiles.
-The packet narrows thread exposure; it is not proof of complete process isolation.
+connectors. The controller clears inherited credentials, supplies an empty GH_CONFIG_DIR, disables
+push and credential helpers, and activates station profiles; unattended entry checks their
+effective isolation. OpenCode lacks an OS network boundary, accepted separately under
+[opencode-station-network](#opencode-station-network). On-disk credentials and connected
+tools remain a risk. The packet is not proof of complete process isolation.
 
 ### Revisit if
-- Any station runs headless or unattended: verify the controller's isolation and
-  profile activation before launch; packet-only admission is not sufficient.
+- Controller isolation or station profile activation changes; packet-only admission is not sufficient.
 - A hostile comment is observed steering an interactive agent or a policy identity.
 
 <a id="codex-guard-fail-open"></a>

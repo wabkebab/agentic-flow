@@ -20,22 +20,20 @@
   Tracker/Status, step issue states, the reviewer's verdict comments, CI evidence, and
   lifecycle output — then close the named issue. Commit with `git-claude`.
 - **Execute — Codex.** Implements the issues. Commits with `git-codex`. See `AGENTS.md`.
-- **Review — OpenCode.** Human-operated today, or via `/review`
-  (`.opencode/agent/code-reviewer.md`) / the `review-execution` skill when OpenCode is
-  available as an agent. Reviews each Codex step against the brief; the state machine below
-  is the contract. Commits review notes with `git-opencode`.
-- **Own / merge / deploy — the human.** Approves plans, merges PRs, controls all pushes.
+- **Review — OpenCode.** Reviews each step against the brief using the
+  `review-execution` skill or `.opencode/agent/code-reviewer.md`.
+- **Own / merge / deploy — the human.** Approves the plan, runs `agentic-flow run`,
+  answers andon, runs `agentic-flow ship`, and merges. Use supervised `run --once`
+  until the unattended entry gate is satisfied (see `ADOPTION.md`).
 
 ### Station commands
 
-States and transitions live in `METHODOLOGY.md` §6. Executors use `brief`,
-`verify-step`, and `handoff submit`; reviewers use `packet`, `verify-step`, and
-`handoff approve|bounce`. Closers run `scripts/agentic-flow close-out prep <doc>
---pr <url>`, commit the staged candidate, then run `close-out finish <moved-doc>`
-after the human pushes and CI/final-head evidence passes. The human checks
-`lifecycle-status.sh --phase pre-merge` immediately before merging.
+Controller stations return result JSON and never call `handoff`; the controller verifies
+and journals their results. Interactive executors use `brief`, `verify-step`, and
+`handoff submit`; reviewers use `packet`, `verify-step`, and `handoff approve|bounce`.
+States live in `METHODOLOGY.md` §6. `ship` handles push, PR and close-out gates;
+the human commits the staged close-out when prompted and runs `ship` again.
 A closed step means reviewed clean; the Status block and CI record shipping.
-Each role posts as its own GitHub App; the owner approves, pushes and merges.
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and

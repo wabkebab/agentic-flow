@@ -65,14 +65,11 @@ opt-out reassigns the review, it never leaves it to both.
         │
         ▼
   Execute (Codex)                   one branch + PR per pass; one commit + "Fixes #N"
-        │                            per step; git-codex; runs handoff submit with sha
-        │                            and verification on the step issue, projecting it
-        │                            with handoff (see §6)
+        │                           per step; returns result JSON to controller
         ▼
-  Review (OpenCode)                 reads the commented commit against the brief
-        │                           ├─ findings ─▶ handoff bounce (§6)
-        │                           └─ approved ─▶ Strict: closes the sub-issue;
-        ▼                                          Standard: routes to close-out (§6)
+  Review (OpenCode)                 reviews the submitted commit against the brief;
+        │                           returns findings or approval to controller
+        ▼
   Close-out (Claude)                tick the Tracker, update Status, verify evidence,
         │                           move the doc, then close the named issue
         ▼
@@ -84,7 +81,9 @@ opt-out reassigns the review, it never leaves it to both.
                                     risks/features recorded in docs/accepted_risks.md
 ```
 
-Use the station commands in §6 for every role handoff.
+The human approves, runs `agentic-flow run`, answers andon, runs `ship`, and merges.
+The controller verifies station results and performs handoffs; supervised `run --once`
+skips the unattended entry gate. Interactive stations use the commands in §6.
 
 **A closed Strict sub-issue means "reviewed clean", not "shipped."** The reviewer closes it before
 the PR merges, so GitHub issue state is deliberately *not* the shipping signal. What shipped
@@ -266,11 +265,13 @@ Use one finding scale for Security reviews, step reviews, and ordinary diffs:
 - **Low** (`sev:low`) — concrete, limited correctness or operability risk worth fixing before closure. Does not block.
 - **Nit** (`sev:nit`) — wording, clarity, or tiny hygiene issue. Does not block.
 
-Accepted/by-design is a disposition, not a severity. Record the acceptance against the finding and move material accepted risk to `docs/accepted_risks.md`.
+Accepted/by-design is a disposition. Record acceptance and move material risk to `docs/accepted_risks.md`.
 
-The only verdicts are `approved`, `changes requested`, and `pending`. Use `approved` when no required findings remain and evidence covers the brief; use `changes requested` when code or tests need a fix; use `pending` when missing scope or evidence prevents a decision. Structured review comments encode `changes requested` as `status=changes-requested`.
+Verdicts: `approved` when no required findings remain and evidence covers the brief; `changes requested` when fixes are needed; `pending` when missing scope or evidence prevents a decision. Structured review comments encode `changes requested` as `status=changes-requested`.
 
-Use `packet <issue> --station reviewer`, `verify-step <head> --doc <doc> --step <id>`,
+Controller reviewers return the station result JSON and never call `handoff`; the controller
+verifies and journals the verdict. Interactively, use `packet <issue> --station reviewer`,
+`verify-step <head> --doc <doc> --step <id>`,
 and `handoff <issue> approve --as reviewer --head <sha40> --body-file <review-file>`
 or `handoff <issue> bounce --as reviewer --body-file <findings-file>`; states live
 in `METHODOLOGY.md` §6. Pending leaves state unchanged. Never edit accepted verdicts.
@@ -360,7 +361,8 @@ Rules:
   plan ships as **one branch and one PR** — a Feature/Security pass is the review unit, not
   each step. Split a pass across multiple PRs only when the brief says so explicitly (e.g. a
   pass too large or long-running to hold on one branch); don't default to a branch per step.
-- **Every handoff carries its evidence in a journal comment.** Run `agentic-flow handoff`
+- **Every handoff carries its evidence in a journal comment.** The controller writes it
+  for its stations. Interactively, run `agentic-flow handoff`
   with `submit --as executor --head <sha40>`, `approve --as reviewer --head <sha40>`, or
   `bounce --as reviewer`, and `--body-file <evidence-file>`. Retry the same request after
   failure. Use `reconcile` to repair projections and pending tracker notifications.
