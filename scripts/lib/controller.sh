@@ -545,7 +545,11 @@ controller_dispatch() {
   step=$(printf '%s' "$row" | jq -r .step); seq=$(printf '%s' "$row" | jq .replay.seq)
   launch_assignment "$station" "$CT_ROOT" || return 6
   if [ "$LAUNCH_CLI" = manual ]; then
-    controller_error "$station is manual: scripts/agentic-flow packet $number --station $station; scripts/agentic-flow handoff $number <submit|approve|bounce|ask> --as $station"
+    controller_error "$station is manual: run it interactively"
+    printf '  scripts/agentic-flow brief %s %s\n' "$CT_DOC" "$step" >&2
+    printf '  scripts/agentic-flow packet %s --station %s\n' "$number" "$station" >&2
+    printf '  scripts/agentic-flow verify-step <sha> --doc %s --step %s --red-base <base-sha>\n' "$CT_DOC" "$step" >&2
+    printf '  scripts/agentic-flow handoff %s <submit|approve|bounce|ask> --as %s --head <sha>\n' "$number" "$station" >&2
     return 12
   fi
   if [ ! -d "$CT_WORKTREE" ]; then

@@ -92,6 +92,13 @@ adds its longer-lived per-plan lock. Duplicate once-only records, stale
 replacement heads and invalid record order are refused. `ledger_ship` records a
 human invocation as `{v:1,kind:"ship",plan,ship:<unique-id>,at}`.
 
+Executor verification records use
+`{v:1,kind:"verify",run,head,record,status:"green"|"red",tail?,at}`.
+`record` is the verify-step record path. The optional `tail` contains the final
+16,384 bytes at most of verify-step stderr, bounded before the ledger append.
+Fix-resume packets use this durable diagnostic suffix across controller restarts
+without reopening the record path. Older records without `tail` remain valid.
+
 `ledger_chains <plan> [context-json-file]` reports every chain's latest run,
 open head, closed runs, pending item and remaining retry allowances. Context is
 an object keyed by run id with optional boolean `commit` and `dirty` flags;
