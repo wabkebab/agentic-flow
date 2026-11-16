@@ -7,7 +7,8 @@ launch_root() { git -C "$1" rev-parse --show-toplevel; }
 launch_error() { printf 'preflight: %s\n' "$*" >&2; return 6; }
 launch_assignment() { # station worktree
   LAUNCH_ROOT=$(launch_root "$2") || return 6
-  roles_load "$LAUNCH_ROOT" || return 6
+  if [ -n "${CT_ASSIGNMENTS:-}" ]; then ROLES_JSON=$CT_ASSIGNMENTS
+  else roles_load "$LAUNCH_ROOT" || return 6; fi
   LAUNCH_ROW=$(printf '%s' "$ROLES_JSON" | jq -er --arg s "$1" '.[]|select(.station==$s)|[.cli,.model,.effort,.max_turns,.budget_usd,.timeout_s,.profile]|@tsv') || return 6
   IFS=$(printf '\t') read -r LAUNCH_CLI LAUNCH_MODEL LAUNCH_EFFORT LAUNCH_TURNS LAUNCH_BUDGET LAUNCH_TIMEOUT LAUNCH_PROFILE <<< "$LAUNCH_ROW"
   LAUNCH_PROFILE="$LAUNCH_ROOT/$LAUNCH_PROFILE"
@@ -187,6 +188,9 @@ launch_bundle() { # station step packet scratch
   cat "$scratch/bundle.md" "$packet" > "$scratch/prompt.md" || return 2
   printf '\nReturn only the station result JSON matching this schema:\n' >> "$scratch/prompt.md"
   cat "$LAUNCH_ROOT/config/stations/result.schema.json" >> "$scratch/prompt.md"
+  if [ "$station" = executor ]; then
+    printf '\nCommit with Fixes #%s. Never amend a commit. Never push.\n' "${LAUNCH_ISSUE:-unknown}" >> "$scratch/prompt.md"
+  fi
 }
 
 launch_station() { # station worktree packet result [--resume session]
@@ -242,7 +246,7 @@ launch_station() { # station worktree packet result [--resume session]
   # Codex stdout is consumed as it arrives. The callback lets C-2 persist the first
   # thread.started session before the CLI exits; no ledger is invented here.
   if [ "$LAUNCH_CLI" = codex ]; then
-    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" "$scratch/pgid" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" &
+    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" "${LAUNCH_PGID_FILE:-$scratch/pgid}" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" &
     local pid=$! session notified=false
     # Use a FIFO-free append reader: tailing is bounded by the launch timeout.
     while kill -0 "$pid" 2>/dev/null; do
@@ -250,7 +254,7 @@ launch_station() { # station worktree packet result [--resume session]
         session=$(jq -Rr 'fromjson? | select(.type=="thread.started") | .thread_id // empty' "$scratch/events" | head -n 1)
         if [ -n "$session" ]; then
           notified=true
-          if declare -F launch_session_record >/dev/null; then launch_session_record "$session" || { launch_abort "$pid" "$scratch/pgid"; rm -rf "$scratch"; return 2; }; fi
+          if declare -F launch_session_record >/dev/null; then launch_session_record "$session" || { launch_abort "$pid" "${LAUNCH_PGID_FILE:-$scratch/pgid}"; rm -rf "$scratch"; return 2; }; fi
         fi
       fi
       sleep 0.1
@@ -263,7 +267,7 @@ launch_station() { # station worktree packet result [--resume session]
       fi
     fi
   else
-    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" "$scratch/pgid" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" || status=$?
+    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" "${LAUNCH_PGID_FILE:-$scratch/pgid}" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" || status=$?
   fi
   ended=$(date +%s)
   local parsed

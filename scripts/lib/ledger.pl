@@ -146,6 +146,7 @@ sub validate {
     defined($r->{result}) || defined($r->{invalid_reason}) or fail('missing result needs invalid_reason');
   } elsif ($k eq 'verify') {
     required($r,qw(head record status)); sha($r->{head},40) && string($r->{record}) && member($r->{status},qw(green red)) or fail('invalid verification');
+    !exists($r->{tail}) || string($r->{tail},16384) or fail('invalid verification tail');
   } elsif ($k eq 'decision') {
     required($r,qw(action event head body_file body_sha256));
     member($r->{action},qw(submit approve bounce ask fix hold)) && (!defined($r->{event}) || member($r->{event},qw(submit approve bounce ask fix hold))) or fail('invalid decision');
@@ -297,6 +298,9 @@ sub store_body {
   $r->{body_file}=$path;
 }
 sub append_record {
+  # The controller handles interruption after its synchronous append completes.
+  # A terminal process-group signal must not interrupt publication or fsync.
+  local $SIG{INT}='IGNORE'; local $SIG{TERM}='IGNORE';
   my ($kind,$plan,$file)=@_; plan_id($plan);
   my $r=parse_json(read_path($file,$MAX_LINE)); object($r) && ($r->{kind}//'') eq $kind or fail('writer/record kind mismatch');
   !exists($r->{discarded_tail_sha256}) && !exists($r->{discarded_tail_bytes}) or fail('reserved recovery framing field');
@@ -332,6 +336,7 @@ sub summaries {
     if (!$closed) {
       if ($r->{decision}) { $pending='handoff'; }
       elsif ($r->{station} && $r->{station}{exit}==124) { $pending='decide'; $escalation='station timed out'; }
+      elsif ($r->{station} && ($r->{station}{invalid_reason}//'') eq 'bad claimed head') { $pending='decide'; $escalation='bad claimed head'; }
       elsif ($r->{station} && defined($r->{station}{invalid_reason})) { $pending=$invalid<2 ? 'resume-valid' : 'decide'; $escalation='malformed station result' if $invalid>=2; }
       elsif ($r->{verify}) { $pending=$r->{verify}{status} eq 'red' && !$fixes ? 'fix' : 'decide'; $escalation='gate still red after fix' if $r->{verify}{status} eq 'red' && $fixes; }
       elsif ($r->{station}) { $pending=($r->{station}{result}{outcome}//'') eq 'submitted' ? 'verify' : 'decide'; }

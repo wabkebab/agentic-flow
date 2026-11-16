@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# C-4: recovery only. No station launch, verification, checkout, reset or clean.
+# Journal-driven recovery and bounded station dispatch.
 # shellcheck disable=SC1091,SC2034 # Shared adapters consume the context globals.
 . "$(dirname "${BASH_SOURCE[0]}")/handoff.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/packet.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/launch.sh"
 CONTROLLER_RECOVERY=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/recovery.pl
 
 controller_error() { printf 'controller: %s\n' "$*" >&2; }
@@ -443,15 +445,204 @@ controller_fault() {
   return 5
 }
 
+controller_gate() {
+  local role
+  [ "$REVIEW_IDENTITY_MODE" = distinct-account ] || { controller_error 'unattended run requires distinct-account'; return 6; }
+  for role in executor reviewer approver; do
+    identity_token "$CT_ROOT" "$role" --check >/dev/null || { controller_error "token $role --check failed"; return 6; }
+  done
+  ROLES_JSON=$CT_ASSIGNMENTS
+  roles_same_model "$CT_ROOT" || return 6
+  for role in executor reviewer; do launch_preflight "$role" "$CT_ROOT" || return 6; done
+}
+controller_finished() {
+  printf '%s' "$CT_REPORT" | jq -e '
+    any(.issues[];(.topology=="tracker" or .topology=="work-standard") and .state=="closed") or
+    all(.issues[];if .topology=="step-strict" then .state=="approved" else .state=="closing" end)' >/dev/null
+}
+controller_head_valid() {
+  local intent=$1 result=$2 row=$3 head base number
+  head=$(printf '%s' "$result" | jq -r .head)
+  case "$(printf '%s' "$result" | jq -r .outcome)" in
+    ask) return 0 ;;
+    approve|bounce) [ "$head" = "$(printf '%s' "$row" | jq -r .replay.submitted_head)" ]; return $? ;;
+  esac
+  base=$(printf '%s' "$intent" | jq -r .base_head); number=$(printf '%s' "$intent" | jq .issue)
+  [ "$head" != "$base" ] && git merge-base --is-ancestor "$base" "$head" &&
+    git merge-base --is-ancestor "$head" "refs/heads/$CT_BRANCH" &&
+    [ "$head" != "$(printf '%s' "$row" | jq -r .replay.last_bounced_head)" ] &&
+    git show -s --format=%B "$head" | grep -Eiq "(^|[[:space:]])Fixes #$number([^0-9]|$)"
+}
+controller_verify() {
+  local run=$1 intent result row head status=green rc=0
+  intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
+  result=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="station" and .run==$run)|.result')
+  row=$(printf '%s' "$CT_REPORT" | jq -c --argjson n "$(printf '%s' "$intent" | jq .issue)" '.issues[]|select(.number==$n)')
+  if ! controller_head_valid "$intent" "$result" "$row"; then
+    controller_decide "$(jq -nc --arg run "$run" '{head:$run,escalation:"bad claimed head"}')"; return $?
+  fi
+  head=$(printf '%s' "$result" | jq -r .head)
+  CT_CHILD_KIND=verify
+  (cd "$CT_WORKTREE" && exec scripts/agentic-flow verify-step "$head" --doc "$CT_DOC" --step "$(printf '%s' "$intent" | jq -r .step)" --red-base "$(printf '%s' "$intent" | jq -r .base_head)" --json) > "$CT_TMP/verify-output" 2> "$CT_TMP/verify-tail" &
+  CT_CHILD=$!
+  wait "$CT_CHILD" || rc=$?
+  CT_CHILD=''
+  [ "$rc" -eq 0 ] || status=red
+  tail -c 16384 "$CT_TMP/verify-tail" > "$CT_TMP/tail"
+  jq -n --arg run "$run" --arg head "$head" --arg status "$status" --arg record "$CT_COMMON/agentic-flow/verify/$head.json" --rawfile tail "$CT_TMP/tail" \
+    '{v:1,kind:"verify",run:$run,head:$head,status:$status,record:$record,tail:$tail,at:(now|floor)}' > "$CT_TMP/record"
+  controller_record verify || return 5
+  controller_fault after-verify
+}
+launch_session_record() {
+  jq -n --arg run "$CT_ACTIVE_RUN" --arg session "$1" '{v:1,kind:"session",run:$run,session:$session,at:(now|floor)}' > "$CT_TMP/record"
+  controller_record session || return 5
+  controller_fault after-session
+}
+controller_interrupt() {
+  if [ -n "$CT_CHILD" ]; then
+    if [ "$CT_CHILD_KIND" = verify ]; then
+      kill -TERM "$CT_CHILD" 2>/dev/null || true
+      wait "$CT_CHILD" 2>/dev/null || true
+    else launch_abort "$CT_CHILD" "$CT_TMP/station-pgid"; fi
+  fi
+  exit "$1"
+}
+controller_result_valid() {
+  jq -e --arg station "$1" '
+    type=="object" and (keys|sort)==(["v","station","outcome","head","summary","findings","question"]|sort) and
+    .v==1 and .station==$station and (.summary|type=="string" and length<=1200) and
+    (.question==null or (.question|type=="string" and length<=1200)) and
+    (.head==null or (.head|type=="string" and test("^[a-f0-9]{40}$"))) and
+    (.findings|type=="array" and length<=100 and all(.[];
+      type=="object" and (keys|sort)==(["severity","file","line","text"]|sort) and
+      (.severity=="P1" or .severity=="P2" or .severity=="P3") and
+      (.file|type=="string" and length<=4096) and (.text|type=="string" and length<=1200) and
+      (.line==null or (.line|type=="number" and floor==. and .>=1)))) and
+    (if .outcome=="ask" then (.question|type=="string" and length>0)
+     elif $station=="executor" then .outcome=="submitted" and .head!=null
+     else (.outcome=="approve" or (.outcome=="bounce" and (.findings|length)>0)) and .head!=null end)' "$2" >/dev/null 2>&1
+}
+controller_dispatch() {
+  local item row station number step pending=initial replaces='' chain run seq gen nth=1 old=null candidate='' resume='' mode=new from='' base hash session='' rc=0 invalid='' result=null metadata snapshot intent
+  item=$(printf '%s' "$CT_PENDING" | jq -c '.[0]//null')
+  if [ "$item" != null ]; then
+    replaces=$(printf '%s' "$item" | jq -r .head); pending=$(printf '%s' "$item" | jq -r .pending)
+    if [ "$pending" = verify ]; then
+      controller_verify "$replaces" || return $?
+      CT_STATIONS=$((CT_STATIONS+1))
+      return 0
+    fi
+    old=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$replaces" '.[]|select(.kind=="intent" and .run==$run)')
+    number=$(printf '%s' "$old" | jq .issue)
+    row=$(printf '%s' "$CT_REPORT" | jq -c --argjson n "$number" '.issues[]|select(.number==$n)')
+  else
+    row=$(printf '%s' "$CT_SPEC" | jq -c --argjson report "$CT_REPORT" '[.steps[].id as $id|$report.issues[]|select(.step==$id and .state!="approved")]|.[0]//null')
+    [ "$row" != null ] || return 3
+    number=$(printf '%s' "$row" | jq .number)
+  fi
+  station=executor; [ "$(printf '%s' "$row" | jq -r .state)" != reviewing ] || station=reviewer
+  step=$(printf '%s' "$row" | jq -r .step); seq=$(printf '%s' "$row" | jq .replay.seq)
+  launch_assignment "$station" "$CT_ROOT" || return 6
+  if [ "$LAUNCH_CLI" = manual ]; then
+    controller_error "$station is manual: scripts/agentic-flow packet $number --station $station; scripts/agentic-flow handoff $number <submit|approve|bounce|ask> --as $station"
+    return 12
+  fi
+  if [ ! -d "$CT_WORKTREE" ]; then
+    mkdir -p "${CT_WORKTREE%/*}" || return 9
+    if git show-ref --verify --quiet "refs/heads/$CT_BRANCH"; then git worktree add "$CT_WORKTREE" "$CT_BRANCH" >&2 || return 9
+    else git worktree add -b "$CT_BRANCH" "$CT_WORKTREE" HEAD >&2 || return 9; fi
+  fi
+  if [ "$(printf '%s' "$CT_OWNERSHIP" | jq -r '.restore_required//false')" = true ]; then
+    git -C "$CT_WORKTREE" reset --hard HEAD >&2 && git -C "$CT_WORKTREE" clean -fd >&2 || return 9
+  fi
+  # Profiles and effective project config belong to the plan checkout. They may
+  # differ from the caller's checkout or have changed during an earlier station.
+  if [ "$CT_UNATTENDED" = true ]; then launch_preflight "$station" "$CT_WORKTREE" || return 6; fi
+  (cd "$CT_WORKTREE" && scripts/agentic-flow packet "$number" --station "$station") > "$CT_TMP/packet" || return $?
+  if [ "$old" = null ]; then
+    old=$(printf '%s' "$CT_RECORDS" | jq -c --argjson n "$number" --arg station "$station" '[.[]|select(.kind=="intent" and .issue==$n and .station==$station)]|last//null')
+  fi
+  if [ "$old" != null ]; then
+    candidate=$(printf '%s' "$CT_RECORDS" | jq -r --arg run "$(printf '%s' "$old" | jq -r .run)" --argjson old "$old" '([.[]|select(.kind=="session" and .run==$run)]|last|.session)//$old.session//$old.resume_of//""')
+    if [ -n "$candidate" ]; then
+      if [ "$(printf '%s' "$old" | jq -r .cli)" = "$LAUNCH_CLI" ] && [ "$(printf '%s' "$old" | jq -r '.profile//""')" = "${LAUNCH_PROFILE#"$LAUNCH_ROOT"/}" ]; then resume=$candidate; mode=resume
+      else mode=fresh-reassigned; from=$(printf '%s' "$old" | jq -r .cli); fi
+    fi
+  fi
+  if [ -n "$replaces" ]; then
+    chain=$(printf '%s' "$item" | jq -r .chain)
+    nth=$(printf '%s' "$CT_RECORDS" | jq --arg chain "$chain" '[.[]|select(.kind=="intent" and .chain==$chain)]|length+1')
+    base=$(printf '%s' "$old" | jq -r .base_head)
+    printf '\nRecovery: %s\n' "$pending" >> "$CT_TMP/packet"
+    printf '%s\n' "$CT_RECORDS" | jq --arg run "$replaces" '
+      [.[]|select(.run==$run and (.kind=="station" or .kind=="verify"))|
+        if .kind=="station" then {invalid_reason,result:(.result|{outcome,head,summary})}
+        else {status,tail} end]' >> "$CT_TMP/packet"
+  else
+    gen=$(ledger_generation "$CT_PLAN" "$number" "$seq" "$station") || return 5
+    chain="$CT_PLAN/$number/$seq/$station/$gen"
+    base=$(git -C "$CT_WORKTREE" rev-parse HEAD) || return 9
+  fi
+  printf '\nExisting HEAD: %s\nSalvaged edits: %s\n' "$(git -C "$CT_WORKTREE" rev-parse HEAD)" "$CT_OWNERSHIP" >> "$CT_TMP/packet"
+  controller_fault before-launch || return $?
+  controller_worktree || return $?
+  [ "$CT_RAISED" = false ] || return 10
+  run="$chain/$nth"; CT_ACTIVE_RUN=$run
+  if [ -z "$resume" ] && [ "$LAUNCH_CLI" != codex ]; then session=$(perl -e 'printf "%08x-%04x-4%03x-8%03x-%012x",time,int(rand(65536)),int(rand(4096)),int(rand(4096)),int(rand(2**48))'); fi
+  hash=$(shasum -a 256 "$CT_TMP/packet"); hash=${hash%% *}
+  jq -n --arg run "$run" --arg chain "$chain" --arg replaces "$replaces" --arg reason "$pending" --arg plan "$CT_PLAN" --argjson number "$number" --arg step "$step" --arg station "$station" \
+    --arg cli "$LAUNCH_CLI" --arg model "$LAUNCH_MODEL" --arg profile "${LAUNCH_PROFILE#"$LAUNCH_ROOT"/}" --arg contract "$LAUNCH_CONTRACT_MODE" --arg resume "$resume" --arg session "$session" --arg mode "$mode" --arg from "$from" --argjson seq "$seq" --arg base "$base" --arg hash "$hash" --arg host "$CT_HOST" \
+    '{v:1,kind:"intent",run:$run,chain:$chain,replaces:(if $replaces=="" then null else $replaces end),reason:$reason,plan:$plan,issue:$number,step:$step,station:$station,cli:$cli,model:$model,profile:$profile,contract_mode:$contract,resume_of:(if $resume=="" then null else $resume end),session:(if $session=="" then null else $session end),session_mode:$mode,reassigned_from:(if $from=="" then null else $from end),seq_before:$seq,base_head:$base,packet_sha256:$hash,host:$host,started:(now|floor)}' > "$CT_TMP/record"
+  intent=$(cat "$CT_TMP/record")
+  controller_record intent || return 5
+  if [ -n "$replaces" ]; then controller_fault after-replacement-intent || return $?; fi
+  controller_fault after-intent || return $?
+  LAUNCH_STEP=$step LAUNCH_ISSUE=$number LAUNCH_SESSION=$session
+  LAUNCH_RESUME_CLI=$LAUNCH_CLI LAUNCH_RESUME_PROFILE="${LAUNCH_PROFILE#"$LAUNCH_ROOT"/}"
+  LAUNCH_PGID_FILE="$CT_TMP/station-pgid"
+  CT_CHILD_KIND=station
+  rm -f "$LAUNCH_PGID_FILE"
+  : > "$CT_TMP/result"
+  if [ -n "$resume" ]; then launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" --resume "$resume" > "$CT_TMP/launched" &
+  else launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" > "$CT_TMP/launched" & fi
+  CT_CHILD=$!
+  wait "$CT_CHILD" || rc=$?
+  CT_CHILD=''
+  CT_STATIONS=$((CT_STATIONS+1))
+  [ "$rc" -ne 6 ] || return 6
+  # A failed session callback aborts before any station record is published.
+  if [ "${AGENTIC_CONTROLLER_TESTING:-}" = 1 ] && [ "${AGENTIC_CONTROLLER_FAULT:-}" = after-session ] && [ "$rc" -ne 0 ]; then return 5; fi
+  controller_fault after-launch || return $?
+  [ "$(git -C "$CT_WORKTREE" symbolic-ref --quiet --short HEAD)" = "$CT_BRANCH" ] || { controller_hold "$number" station-changed-branch 'Station changed the plan worktree branch.' "$run"; return 10; }
+  metadata=$(cat "$CT_TMP/launched")
+  if ! printf '%s' "$metadata" | jq -e 'type=="object" and (.seconds|type)=="number" and (.usage|type)=="object"' >/dev/null 2>&1; then
+    metadata='{"seconds":0,"usage":{"input":null,"output":null,"cost_usd":null}}'
+  fi
+  if controller_result_valid "$station" "$CT_TMP/result"; then result=$(cat "$CT_TMP/result")
+  else invalid='malformed station result'; fi
+  [ "$rc" -eq 0 ] || invalid="station exit $rc"
+  snapshot=$(perl "$CONTROLLER_RECOVERY" snapshot "$CT_WORKTREE") || return 9
+  if [ "$result" != null ] && [ "$(printf '%s' "$result" | jq -r .outcome)" = submitted ] && [ "$(printf '%s' "$snapshot" | jq .dirty)" = true ]; then invalid='uncommitted changes after submit'; fi
+  if [ "$result" != null ] && [ -z "$invalid" ] && ! controller_head_valid "$intent" "$result" "$row"; then
+    invalid='bad claimed head'
+  fi
+  jq -n --arg run "$run" --argjson exit "$rc" --argjson meta "$metadata" --argjson result "$result" --arg invalid "$invalid" \
+    '{v:1,kind:"station",run:$run,exit:$exit,seconds:$meta.seconds,usage:$meta.usage,result:$result,invalid_reason:(if $invalid=="" then null else $invalid end),ended:(now|floor)}' > "$CT_TMP/record"
+  controller_record station || return 5
+  controller_fault after-station
+}
+
 controller_cmd() (
   set +x
-  local doc=${1:-} reconcile=false CT_TAKE_OVER=false CT_JSON=false
+  local doc=${1:-} reconcile=false once=false CT_TAKE_OVER=false CT_JSON=false
   [ "$#" -ge 1 ] || return 2; shift
   while [ "$#" -gt 0 ]; do
-    case "$1" in --reconcile-only) reconcile=true ;; --take-over) CT_TAKE_OVER=true ;; --json) CT_JSON=true ;; *) return 2 ;; esac
+    case "$1" in --once) once=true ;; --reconcile-only) reconcile=true ;; --take-over) CT_TAKE_OVER=true ;; --json) CT_JSON=true ;; *) return 2 ;; esac
     shift
   done
-  [ "$reconcile" = true ] || { controller_error 'this step implements run --reconcile-only'; return 2; }
+  local CT_DOC=$doc CT_ASSIGNMENTS='' CT_STATIONS=0 CT_ACTIVE_RUN='' CT_TURNS=0 CT_CHILD='' CT_CHILD_KIND=station CT_UNATTENDED=false
+  [ "$once" = true ] || CT_UNATTENDED=true
   local CT_ROOT CT_COMMON CT_TMP CT_PLAN CT_BRANCH CT_SPEC CT_REPORT CT_TRACKER CT_RECORDS CT_CHAINS CT_CONTEXT='{}' CT_PENDING='[]'
   local CT_LOCK='' CT_LOCK_OWNED=false CT_RECOVER_CLAIM=false CT_PREVIOUS_HOST='' CT_STARTED=false CT_FOREIGN_ALLOWED='[]' CT_FOREIGN_SEEN=false
   local CT_HOLDS='[]' CT_HOLD_REASONS='[]' CT_REPAIRS='[]' CT_RAISED=false CT_OWNERSHIP=null CT_REVIEWER_ESCALATE='' CT_REVIEWER_RELAUNCH='' CT_SNAPSHOT='{}' CT_SALVAGE_ONLY=false
@@ -463,8 +654,8 @@ controller_cmd() (
   case "$doc" in *'/../'*|*'/./'*|*[!A-Za-z0-9_./-]*) return 2 ;; esac
   CT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentic-controller.XXXXXX") || return 5
   trap controller_unlock EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  trap 'controller_interrupt 130' INT
+  trap 'controller_interrupt 143' TERM
   git show "HEAD:$doc" > "$CT_TMP/head-doc" || return 3
   [ "$(wc -c < "$CT_TMP/head-doc")" -le 1048576 ] || return 3
   approval=$(brief_approval "$CT_TMP/head-doc") || return 3; rev=${approval%%$'\t'*}
@@ -491,6 +682,13 @@ controller_cmd() (
   controller_check || return $?
   controller_foreign || return $?
   CT_STARTED=true
+  if [ "$reconcile" = false ]; then
+    roles_load "$CT_ROOT" || return 6
+    CT_ASSIGNMENTS=$ROLES_JSON
+    if [ "$once" = false ]; then controller_gate || return 6; fi
+  fi
+  while :; do
+  CT_RAISED=false CT_HOLD_REASONS='[]' CT_REVIEWER_ESCALATE='' CT_REVIEWER_RELAUNCH=''
   if ! CT_RECORDS=$(ledger_read "$CT_PLAN" 2> "$CT_TMP/ledger-error"); then
     HANDOFF_LEDGER_UNAVAILABLE=true
     CT_RECORDS='[]' CT_CHAINS='[]' CT_SALVAGE_ONLY=true
@@ -503,6 +701,12 @@ controller_cmd() (
     controller_holds || return $?
     CT_CHAINS=$(ledger_chains "$CT_PLAN") || return 5
     controller_worktree || return $?
+    if [ "$reconcile" = false ] && [ -n "$CT_REVIEWER_ESCALATE" ]; then
+      # Preserve the second reviewer violation in salvage, then remove its edits
+      # before escalating so a human resume can return to a clean review tree.
+      git -C "$CT_WORKTREE" reset --hard HEAD >&2 && git -C "$CT_WORKTREE" clean -fd >&2 || return 9
+      CT_OWNERSHIP=$(printf '%s' "$CT_OWNERSHIP" | jq '.restore_required=false')
+    fi
     controller_labels || return $?
     controller_open_state || return $?
     controller_plan_effect || return $?
@@ -525,8 +729,22 @@ controller_cmd() (
     if [ "$CT_PREVIOUS_HOST" != '' ] && [ "$result" -eq 0 ]; then
       jq -n --arg plan "$CT_PLAN" --arg host "$CT_HOST" --arg previous "$CT_PREVIOUS_HOST" --arg run "$CT_RUN" '{v:1,kind:"takeover",plan:$plan,host:$host,previous_host:$previous,run:$run,at:(now|floor)}' > "$CT_TMP/record"
       controller_record takeover || return 5
+      CT_PREVIOUS_HOST=''
     fi
   fi
+  [ "$result" -eq 0 ] && [ "$reconcile" = false ] || break
+  if [ "$once" = true ] && [ "$CT_STATIONS" -ge 1 ]; then
+    # Finish deterministic result processing, including verification, before exit.
+    if ! printf '%s' "$CT_PENDING" | jq -e 'any(.[];.pending=="verify")' >/dev/null; then break; fi
+  fi
+  if controller_finished; then break; fi
+  CT_TURNS=$((CT_TURNS+1))
+  if [ "$CT_TURNS" -gt 50 ]; then
+    controller_hold "$CT_TRACKER" turn-cap 'Controller reached the 50-turn cap.' || return $?
+    result=10; break
+  fi
+  controller_dispatch || { result=$?; break; }
+  done
   local output
   printf '%s\n' "$CT_PENDING" > "$CT_TMP/pending"
   printf '%s\n' "$CT_OWNERSHIP" > "$CT_TMP/ownership"
