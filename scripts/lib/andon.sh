@@ -37,8 +37,9 @@ hold_snapshot() { # remote issue JSON -> remote and local-only open holds
   remote=$(printf '%s' "$issue" | jq .comments.nodes | journal_normalize | hold_replay "$HANDOFF_PLAN") || return 5
   history=$(printf '%s' "$issue" | jq .comments.nodes | journal_normalize | hold_replay "$HANDOFF_PLAN" all) || return 5
   ledger_init "$HANDOFF_ROOT" || return 5
-  records=$(ledger_read "$HANDOFF_PLAN") || return 5
-  jq -n --argjson history "$history" --argjson remote "$remote" --argjson records "$records" '
+  if [ "${HANDOFF_LEDGER_UNAVAILABLE:-false}" = true ]; then records='[]'; else records=$(ledger_read "$HANDOFF_PLAN") || return 5; fi
+  printf '%s' "$records" | jq --argjson history "$history" --argjson remote "$remote" '
+    . as $records |
     ([ $records[]|select(.kind=="clear")|.hold] + [$history[]|select(.cleared)|.id]) as $cleared |
     $remote + [$records[]|select(.kind=="hold" and .comment_id==null) |
       select(.hold as $id|($cleared|index($id))==null and all($remote[];.id!=$id)) |
@@ -62,6 +63,7 @@ handoff_comment() { # number body-file; post, then verify returned comment and a
 
 hold_record() { # plan id issue reason run comment_id; imports journal holds before clear
   local plan=$1 id=$2 records file="$HANDOFF_TMP/hold-record"
+  [ "${HANDOFF_LEDGER_UNAVAILABLE:-false}" != true ] || return 0
   ledger_init "$HANDOFF_ROOT" || return 5
   records=$(ledger_read "$plan") || return 5
   if ! printf '%s' "$records" | jq -e --arg id "$id" 'any(.[];.kind=="hold" and .hold==$id)' >/dev/null; then
@@ -95,9 +97,9 @@ hold_transition() { # affected issue event reason run hold-id note
       printf 'hold %s already open\n' "$(printf '%s' "$match" | jq -r .id)"; return 0
     fi
     ledger_init "$HANDOFF_ROOT" || return 5
-    records=$(ledger_read "$HANDOFF_PLAN") || return 5
-    n=$(jq -n --argjson records "$records" --argjson comments "$(printf '%s' "$HANDOFF_ISSUE" | jq .comments.nodes)" --arg p "$HANDOFF_PLAN" '
-      [($records[]|select(.kind=="hold")|.hold),($comments[].body|split("\n")[0]|try capture("^agentic-flow-hold: v=1; id=(?<id>[^;]+);").id)] |
+    if [ "${HANDOFF_LEDGER_UNAVAILABLE:-false}" = true ]; then records='[]'; else records=$(ledger_read "$HANDOFF_PLAN") || return 5; fi
+    n=$(printf '%s' "$records" | jq --argjson comments "$(printf '%s' "$HANDOFF_ISSUE" | jq .comments.nodes)" --arg p "$HANDOFF_PLAN" '
+      . as $records | [($records[]|select(.kind=="hold")|.hold),($comments[].body|split("\n")[0]|try capture("^agentic-flow-hold: v=1; id=(?<id>[^;]+);").id)] |
       [.[]|select(startswith($p+"/hold/"))|split("/")[-1]|try tonumber] | (max//0)+1') || return 5
     [ "$n" -le 999999 ] || return 5
     id="$HANDOFF_PLAN/hold/$n"
@@ -119,7 +121,7 @@ hold_transition() { # affected issue event reason run hold-id note
     if [ -z "$match" ]; then
       match=$(printf '%s' "$HANDOFF_ISSUE" | jq .comments.nodes | journal_normalize | hold_replay "$HANDOFF_PLAN" all | jq -c --arg id "$id" '[.[]|select(.id==$id)]|first//empty') || return 5
       if [ -z "$match" ]; then
-        records=$(ledger_read "$HANDOFF_PLAN") || return 5
+        if [ "${HANDOFF_LEDGER_UNAVAILABLE:-false}" = true ]; then records='[]'; else records=$(ledger_read "$HANDOFF_PLAN") || return 5; fi
         printf '%s' "$records" | jq -e --arg id "$id" 'any(.[];.kind=="clear" and .hold==$id)' >/dev/null && return 0
         handoff_error "unknown hold: $id"; return 3
       fi
@@ -128,7 +130,7 @@ hold_transition() { # affected issue event reason run hold-id note
     printf 'agentic-flow-hold-clear: id=%s\n%s\n' "$id" "$note" > "$file"
     if [ "$(printf '%s' "$match" | jq -r '.cleared//false')" = false ]; then handoff_comment "$tracker" "$file" || return $?; fi
     hold_record "$HANDOFF_PLAN" "$id" "$(printf '%s' "$match" | jq .issue)" "$(printf '%s' "$match" | jq -r .reason)" "$(printf '%s' "$match" | jq -r .run)" "$(printf '%s' "$match" | jq -r .comment_id)" || return 5
-    records=$(ledger_read "$HANDOFF_PLAN") || return 5
+    if [ "${HANDOFF_LEDGER_UNAVAILABLE:-false}" = true ]; then records='[]'; else records=$(ledger_read "$HANDOFF_PLAN") || return 5; fi
     if ! printf '%s' "$records" | jq -e --arg id "$id" 'any(.[];.kind=="clear" and .hold==$id)' >/dev/null; then
       jq -n --arg plan "$HANDOFF_PLAN" --arg id "$id" --arg by "$HANDOFF_LOGIN" --arg note "$note" '
         {v:1,kind:"clear",plan:$plan,hold:$id,by:$by,note:$note,at:(now|floor)}' > "$HANDOFF_TMP/clear-record"
@@ -152,8 +154,8 @@ hold_cache() { # common dir; all reads were bounded by handoff_read
   mv "$HANDOFF_TMP/holds-cache" "$1/agentic-flow/state/$HANDOFF_PLAN.holds.json"
 }
 
-handoff_drift() { # read only: compare full projections for all plan issues
-  local n state labels actual expected status drift=false
+handoff_drift() { # read-only, bounded plan snapshot; structured report for the controller
+  local n state labels actual expected status drift='[]' rows='[]' row
   handoff_plan_read || return $?
   for n in $HANDOFF_ISSUES; do
     handoff_read "$n" || return $?
@@ -172,9 +174,23 @@ handoff_drift() { # read only: compare full projections for all plan issues
       printf '%s\n' "$labels" | tr ',' '\n' | sed '/^-$/d'
     } | sed '/^$/d' | LC_ALL=C sort -u)
     status=$(printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' -v t="$JOURNAL_TOPOLOGY" -v s="$state" '$1=="state"&&$2==t&&$3==s{print $5}')
-    if [ "$actual" != "$expected" ] || [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r '.state|ascii_downcase')" != "$status" ]; then
-      printf 'drift #%s: journal=%s labels=%s status=%s\n' "$n" "$state" "$labels" "$status"; drift=true
+    drift='[]'
+    [ "$actual" = "$expected" ] || drift=$(printf '%s' "$drift" | jq '.+["labels"]')
+    [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r '.state|ascii_downcase')" = "$status" ] || drift=$(printf '%s' "$drift" | jq '.+["open-state"]')
+    if [ "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .unjournaled)" != null ]; then drift=$(printf '%s' "$drift" | jq '.+["unjournaled"]'); fi
+    if [ "$n" = "$HANDOFF_TRACKER" ] && [ "$state" = open ] && [ "$HANDOFF_FOUND" -gt 0 ] && [ "$HANDOFF_ALL_APPROVED" = true ]; then
+      drift=$(printf '%s' "$drift" | jq '.+["plan-effect"]')
     fi
+    row=$(printf '%s' "$HANDOFF_ISSUE" | jq -c --argjson replay "$HANDOFF_REPLAY" --argjson drift "$drift" \
+      --arg topology "$JOURNAL_TOPOLOGY" --arg step "$JOURNAL_STEP" --arg status "$status" '
+      ([.comments.nodes[]|select(.id==$replay.latest.comment_id)]|first//null) as $latest |
+      ([($latest.body//""|split("\n")[])|try capture("^agentic-flow-run: run=(?<run>[a-zA-Z0-9/._-]+); host=(?<host>[a-f0-9]{12})$")]|last//{}) as $host |
+      {number,step:$step,topology:$topology,state:$replay.state,observed_status:(.state|ascii_downcase),
+       expected_status:$status,replay:$replay,drift:$drift,latest_at:($latest.createdAt//null),host:($host.host//null),run:($host.run//null)}') || return 5
+    rows=$(printf '%s' "$rows" | jq --argjson row "$row" '.+[$row]') || return 5
   done
-  [ "$drift" = true ] || echo 'projection clean'
+  printf '%s\n' "$rows" > "$HANDOFF_TMP/drift-rows"
+  HANDOFF_DRIFT=$(jq -n --arg plan "$HANDOFF_PLAN" --arg tracker "$HANDOFF_TRACKER" --slurpfile rows "$HANDOFF_TMP/drift-rows" '{plan:$plan,tracker:(if $tracker=="" then null else ($tracker|tonumber) end),issues:$rows[0]}') || return 5
+  if [ "${json:-false}" = true ]; then printf '%s\n' "$HANDOFF_DRIFT"
+  else printf '%s' "$HANDOFF_DRIFT" | jq -r 'if all(.issues[];.drift|length==0) then "projection clean" else .issues[]|select(.drift|length>0)|"drift #\(.number): \(.drift|join(",")) journal=\(.state)" end'; fi
 }

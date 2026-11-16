@@ -111,9 +111,12 @@ sub validate {
   my ($r,$plan)=@_;
   object($r) && integer($r->{v},1) && $r->{v}==1 or fail('invalid record version/object');
   my $k=$r->{kind}//'';
-  member($k,qw(intent session station verify decision handoff salvage end hold clear ship)) or fail('unknown record kind');
+  member($k,qw(intent session station verify decision handoff salvage end hold clear ship takeover)) or fail('unknown record kind');
   exists($r->{plan}) && ($r->{plan}//'') ne $plan and fail('record belongs to another plan');
-  run_parts($r->{run},$plan) if $k =~ /^(intent|session|station|verify|decision|handoff|salvage)$/;
+  !exists($r->{orphan}) || JSON::PP::is_bool($r->{orphan}) or fail('invalid unowned salvage flag');
+  my $orphan=$k eq 'salvage' && $r->{orphan};
+  if ($orphan) { ($r->{run}//'') =~ m{^\Q$plan\E/unowned/[a-f0-9]{24}$} && !defined($r->{chain}) or fail('invalid unowned salvage'); }
+  run_parts($r->{run},$plan) if !$orphan && $k =~ /^(intent|session|station|verify|decision|handoff|salvage)$/;
   my $time_key=$k eq 'intent' ? 'started' : $k eq 'station' ? 'ended' : 'at';
   required($r,$time_key); epoch($r->{$time_key});
   !exists($r->{reason}) || string($r->{reason},1200) or fail('invalid record reason');
@@ -152,7 +155,7 @@ sub validate {
     integer($r->{attempt},1) && member($r->{event},qw(submit approve bounce ask hold)) && integer($r->{after}) && integer($r->{exit}) && $r->{exit}<=255 && (!defined($r->{seq_after}) || integer($r->{seq_after})) or fail('invalid handoff');
   } elsif ($k eq 'salvage') {
     required($r,qw(chain ref head index_commit worktree_commit index_tree worktree_tree paths));
-    string($r->{chain},512) && string($r->{ref},1024) && ref($r->{paths}) eq 'ARRAY' && @{$r->{paths}}<=10000 or fail('invalid salvage');
+    ($orphan || string($r->{chain},512)) && string($r->{ref},1024) && ref($r->{paths}) eq 'ARRAY' && @{$r->{paths}}<=10000 or fail('invalid salvage');
     for (qw(head index_commit worktree_commit index_tree worktree_tree)) { sha($r->{$_},40) or fail('invalid salvage hash'); }
     for (@{$r->{paths}}) { object($_) && string($_->{path}) && string($_->{status},16) or fail('invalid salvage path'); }
   } elsif ($k eq 'end') {
@@ -164,6 +167,8 @@ sub validate {
       required($r,qw(issue reason run comment_id)); integer($r->{issue},1) && string($r->{reason},1200) && (!defined($r->{comment_id}) || integer($r->{comment_id},1)) or fail('invalid hold');
       run_parts($r->{run},$plan) if defined($r->{run});
     } else { required($r,qw(by note)); string($r->{by},256) && string($r->{note},1200) or fail('invalid clear'); }
+  } elsif ($k eq 'takeover') {
+    required($r,qw(plan host previous_host run)); string($r->{host},256) && $r->{host}=~/^[a-f0-9]{12}$/ && string($r->{previous_host},256) && $r->{previous_host}=~/^[a-f0-9]{12}$/ && string($r->{run},512) && $r->{run}=~m{^\Q$plan\E/controller/[1-9][0-9]*-[0-9]+$} or fail('invalid takeover');
   } else {
     required($r,qw(plan ship)); identifier($r->{ship}) or fail('invalid ship id');
   }
@@ -196,6 +201,8 @@ sub apply_record {
     !exists($state->{holds}{$r->{hold}}) or fail('duplicate hold'); $state->{holds}{$r->{hold}}={hold=>$r};
   } elsif ($k eq 'clear') {
     my $h=$state->{holds}{$r->{hold}}; $h && !$h->{clear} or fail('unknown or already cleared hold'); $h->{clear}=$r;
+  } elsif ($k eq 'takeover' || ($k eq 'salvage' && $r->{orphan})) {
+    # Ownership audit and unowned salvage never create a station run.
   } elsif ($k eq 'ship') {
     !exists($state->{ships}{$r->{ship}}) or fail('duplicate ship'); $state->{ships}{$r->{ship}}=$r;
   } else {
@@ -213,7 +220,7 @@ sub apply_record {
       if ($k eq 'station' && defined($r->{result})) { result_valid($r->{result},$run->{intent}{station}); }
       if ($k eq 'verify') { !$run->{decision} && $run->{station} && !defined($run->{station}{invalid_reason}) && ($run->{station}{result}{outcome}//'') eq 'submitted' && $r->{head} eq $run->{station}{result}{head} or fail('verify requires submitted station/head before decision'); }
       if ($k eq 'decision') {
-        $run->{station} or fail('decision requires station');
+        $run->{station} || member($r->{action},qw(ask hold)) or fail('decision requires station');
         if ($r->{action} eq 'submit') { $run->{verify} && $run->{verify}{status} eq 'green' && $r->{head} eq $run->{verify}{head} or fail('submit decision requires green verification/head'); }
       }
       if ($k eq 'salvage') { $r->{chain} eq $run->{intent}{chain} or fail('salvage chain mismatch'); }
@@ -324,6 +331,7 @@ sub summaries {
     my $ctx=$context->{$id}//{};
     if (!$closed) {
       if ($r->{decision}) { $pending='handoff'; }
+      elsif ($r->{station} && $r->{station}{exit}==124) { $pending='decide'; $escalation='station timed out'; }
       elsif ($r->{station} && defined($r->{station}{invalid_reason})) { $pending=$invalid<2 ? 'resume-valid' : 'decide'; $escalation='malformed station result' if $invalid>=2; }
       elsif ($r->{verify}) { $pending=$r->{verify}{status} eq 'red' && !$fixes ? 'fix' : 'decide'; $escalation='gate still red after fix' if $r->{verify}{status} eq 'red' && $fixes; }
       elsif ($r->{station}) { $pending=($r->{station}{result}{outcome}//'') eq 'submitted' ? 'verify' : 'decide'; }

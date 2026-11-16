@@ -3,6 +3,7 @@
 # shellcheck disable=SC1091,SC2030,SC2031,SC2034,SC2016,SC2329 # Shared harness helpers and child programs.
 [ -f "$ROOT/scripts/lib/launch.sh" ] || fail 'station launcher is missing'
 [ -f "$ROOT/scripts/lib/ledger.sh" ] || fail 'run ledger is missing'
+[ -f "$ROOT/scripts/lib/controller.sh" ] || fail 'controller recovery is missing'
 # C-3: malformed and out-of-role questions cannot change the journal.
 . "$ROOT/scripts/lib/workflow.sh"
 . "$ROOT/scripts/lib/review-policy.sh"
@@ -780,3 +781,448 @@ PREFIXES
   jq -e '.issue==42 and .topology=="work-standard" and (.events|length)==1 and .events[0].at=="2026-01-01T00:00:00Z" and (has("body")|not)' "$c2/cache-row" >/dev/null || fail 'cache included unadmitted comments or lost journal timestamps'
 )
 ledger_tests || fail 'ledger regressions failed'
+
+# C-4: stateful GitHub, real Git worktrees, no model or verifier invocations.
+controller_tests() (
+  set -euo pipefail
+  local c4="$TMP/controller-recovery" project state bin rc head base run chain before index ref snapshot count
+  project="$c4/project with spaces"; state="$c4/state"; bin="$c4/bin"
+  mkdir -p "$project/scripts/lib" "$project/config" "$project/docs/inprogress" "$state" "$bin"
+  for file in "$ROOT/scripts/lib/"*; do ln "$file" "$project/scripts/lib/${file##*/}"; done
+  # This one mutable adapter supplies role identities without workstation credentials.
+  rm "$project/scripts/lib/identity.sh"
+  cat "$ROOT/scripts/lib/identity.sh" > "$project/scripts/lib/identity.sh"
+  cat >> "$project/scripts/lib/identity.sh" <<'IDENTITIES'
+identity_load() {
+  if [ "$2" = reviewer ] && [ -f "$C4_STATE/no-reviewer" ]; then return 6; fi
+  if [ "$2" = approver ] && [ -f "$C4_STATE/no-approver" ]; then return 6; fi
+  case "$2" in executor) IDENTITY_LOGIN=exec ;; reviewer) IDENTITY_LOGIN=review ;; approver) IDENTITY_LOGIN=plan ;; esac
+}
+identity_token() { printf 'fixture-%s\n' "$2"; }
+IDENTITIES
+  ln "$ROOT/scripts/agentic-flow" "$project/scripts/agentic-flow"
+  ln "$ROOT/config/workflow.tsv" "$project/config/workflow.tsv"
+  printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=plan owner=owner > "$project/.agentic-flow-review-policy"
+  printf 'ignored\n' > "$project/.gitignore"
+  printf 'a\n' > "$project/a"; printf 'b\n' > "$project/b"
+  cat > "$project/docs/inprogress/plan.md" <<'PLAN'
+# Feature — Recovery
+# Part B — Implementation brief
+```agentic-flow-plan
+id: recovery
+profile: strict
+tracking: Recovery
+branch: topic
+steps: alpha beta
+```
+## alpha — First
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** failure
+## beta — Second
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** failure
+## Status
+- **Approval:** pending
+PLAN
+  git -C "$project" init -q
+  git -C "$project" checkout -qb main
+  git -C "$project" config user.name Fixture
+  git -C "$project" config user.email fixture@example.invalid
+  git -C "$project" config commit.gpgsign false
+  git -C "$project" remote add origin https://github.com/owner/repo.git
+  git -C "$project" add scripts config docs .agentic-flow-review-policy .gitignore a b
+  git -C "$project" commit -qm 'Recovery plan'
+  base=$(git -C "$project" rev-parse HEAD)
+  sed "s/Approval:\*\* pending/Approval:** status=approved; by=owner; at=2026-01-01; rev=$base/" "$project/docs/inprogress/plan.md" > "$c4/doc"
+  cat "$c4/doc" > "$project/docs/inprogress/plan.md"
+  git -C "$project" add docs/inprogress/plan.md
+  git -C "$project" commit -qm 'Record recovery approval'
+  head=$(git -C "$project" rev-parse HEAD)
+  cat > "$bin/gh" <<'GITHUB'
+#!/usr/bin/env bash
+set -euo pipefail
+state=${C4_STATE:?}
+printf '%s\n' "$*" >> "$state/calls"
+case "${GH_TOKEN:-}" in fixture-approver) login=plan ;; fixture-reviewer) login=review ;; *) login=exec ;; esac
+case "$1 $2" in
+  'api user') printf '%s\n' exec ;;
+  'api graphql')
+    n=''; for arg in "$@"; do case "$arg" in number=*) n=${arg#number=} ;; esac; done
+    if [[ "$*" = *timelineItems* ]]; then
+      jq --argjson more "$(if [ -f "$state/truncated-timeline" ]; then echo true; else echo false; fi)" '{data:{repository:{issue:{timelineItems:{pageInfo:{hasNextPage:$more},nodes:.}}}}}' "$state/$n.timeline"
+    else jq '{data:{repository:{issue:.}}}' "$state/issue-$n.json"; fi ;;
+  'issue list') jq -s 'map({number,body,author:{login:"plan",is_bot:false}})' "$state/issue-"*.json ;;
+  'issue view') jq '{body}' "$state/issue-$3.json" ;;
+  'issue comment')
+    n=$3; shift 3; file=''
+    while [ "$#" -gt 0 ]; do case "$1" in --body-file) file=$2; shift 2 ;; *) shift ;; esac; done
+    jq --arg body "$(cat "$file")" --arg author "$login" '
+      (.comments.nodes|length+1) as $id |
+      .comments.nodes += [{id:("C"+($id|tostring)),fullDatabaseId:$id,body:$body,author:{login:$author,__typename:"User"},createdAt:(now|todateiso8601),lastEditedAt:null}]' "$state/issue-$n.json" > "$state/next"
+    mv "$state/next" "$state/issue-$n.json"
+    printf 'https://github.com/owner/repo/issues/%s#issuecomment-%s\n' "$n" "$(jq '.comments.nodes|length' "$state/issue-$n.json")" ;;
+  'issue edit')
+    n=$3; shift 3; add='' remove=''
+    while [ "$#" -gt 0 ]; do case "$1" in --add-label) add=$2; shift 2 ;; --remove-label) remove=$2; shift 2 ;; *) shift ;; esac; done
+    jq --arg add "$add" --arg remove "$remove" '.labels.nodes=([.labels.nodes[].name|select(. as $n|($remove|split(",")|index($n))==null)]+($add|split(",")|map(select(length>0)))|unique|map({name:.}))' "$state/issue-$n.json" > "$state/next"
+    mv "$state/next" "$state/issue-$n.json" ;;
+  'issue close'|'issue reopen')
+    target=CLOSED; [ "$2" != reopen ] || target=OPEN
+    jq --arg status "$target" '.state=$status' "$state/issue-$3.json" > "$state/next"; mv "$state/next" "$state/issue-$3.json" ;;
+  *) exit 2 ;;
+esac
+GITHUB
+  cat > "$bin/osascript" <<'NOTIFY'
+#!/usr/bin/env bash
+printf 'notify\n' >> "$C4_STATE/notifications"
+NOTIFY
+  for cli in codex claude opencode; do
+    printf '#!/usr/bin/env bash\nprintf "station launched\\n" >> "$C4_STATE/forbidden"\nexit 99\n' > "$bin/$cli"
+  done
+  chmod +x "$bin/"*
+  export C4_STATE="$state"
+  local wt="$c4/worktrees/recovery"
+  c4_issue() {
+    jq -n --argjson n "$1" --arg identity "$2" '{number:$n,body:("<!-- agentic-flow:plan:recovery "+$identity+" spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa journal=v1 -->\n<!-- agentic-flow:topology:strict -->"),state:"OPEN",labels:{pageInfo:{hasNextPage:false},nodes:[{name:"user-label"}]},comments:{pageInfo:{hasNextPage:false},nodes:[]}}' > "$state/issue-$1.json"
+    printf '[]\n' > "$state/$1.timeline"
+  }
+  c4_reset() {
+    rm -f "$state/issue-"*.json
+    c4_issue 1 step:alpha; c4_issue 2 tracker; c4_issue 3 step:beta
+    rm -rf "$project/.git/agentic-flow"
+    rm -f "$state/no-reviewer" "$state/no-approver" "$state/truncated-timeline" "$state/calls"
+    if [ -d "$wt" ]; then
+      git -C "$wt" reset --hard -q "$head"
+      git -C "$wt" clean -fdq
+      while IFS= read -r ref; do git -C "$project" update-ref -d "$ref"; done < <(git -C "$project" for-each-ref --format='%(refname)' refs/agentic-flow/salvage/)
+    fi
+  }
+  c4_run() {
+    local expected=$1 status=0; shift
+    (cd "$project" && PATH="$bin:$PATH" XDG_CONFIG_HOME="$c4/operator" AGENTIC_WORKTREE_ROOT="$c4/worktrees" \
+      scripts/agentic-flow run docs/inprogress/plan.md --reconcile-only --json "$@") > "$c4/out" 2> "$c4/err" || status=$?
+    [ "$status" = "$expected" ] || fail "controller returned $status expected $expected: $(cat "$c4/err") $(cat "$c4/out")"
+  }
+  c4_handoff() {
+    (cd "$project" && PATH="$bin:$PATH" XDG_CONFIG_HOME="$c4/operator" scripts/agentic-flow handoff "$@") > "$c4/handoff" 2>&1
+  }
+  c4_count() { jq '.comments.nodes|length' "$state/issue-$1.json"; }
+  c4_send() { cat > "$c4/record"; ledger_append "$1" recovery "$c4/record" >/dev/null || fail "C-4 ledger $1 failed"; }
+  . "$ROOT/scripts/lib/ledger.sh"
+  ledger_init "$project"
+  c4_intent() { # station seq run-number reason [replaces] [session]
+    run="recovery/1/$2/$1/1/$3"; chain="recovery/1/$2/$1/1"
+    jq -n --arg run "$run" --arg chain "$chain" --arg station "$1" --argjson seq "$2" --arg reason "$4" --arg replaces "${5:-}" --arg session "${6:-}" --arg base "$head" \
+      '{v:1,kind:"intent",plan:"recovery",run:$run,chain:$chain,replaces:(if $replaces=="" then null else $replaces end),reason:$reason,issue:1,step:"alpha",station:$station,cli:"codex",model:"-",resume_of:null,session:(if $session=="" then null else $session end),session_mode:"new",reassigned_from:null,seq_before:$seq,base_head:$base,packet_sha256:("a"*64),started:(now|floor),host:"fixture"}' | c4_send intent
+  }
+  c4_station() { # outcome invalid_reason [exit]
+    jq -n --arg run "$run" --arg outcome "$1" --arg invalid "$2" --arg head "$head" --argjson exit "${3:-0}" --arg station "$(printf '%s' "$run" | cut -d/ -f4)" \
+      '{v:1,kind:"station",run:$run,exit:$exit,seconds:1,usage:{input:null,output:null,cost_usd:null},result:(if $invalid!="" then null else {v:1,station:$station,outcome:$outcome,head:(if $outcome=="ask" then null else $head end),summary:"Recovery result",question:(if $outcome=="ask" then "Original question?" else null end),findings:[]} end),invalid_reason:(if $invalid=="" then null else $invalid end),ended:(now|floor)}' | c4_send station
+  }
+  c4_reset
+  for n in {4..101}; do c4_issue "$n" "step:extra-$n"; done
+  c4_run 5
+  [ "$(c4_count 1)" = 0 ] || fail 'over-limit plan mutated issues'
+  c4_reset
+  c4_run 0
+  jq -e '.status=="reconciled" and .pending==[] and (.repairs|length)>0' "$c4/out" >/dev/null || fail 'label repair not reported'
+  # a/b: a crash after posting changes labels only, without posting a second submit.
+  AGENTIC_HANDOFF_TESTING=1 AGENTIC_HANDOFF_FAULT=after-post c4_handoff 1 submit --as executor --head "$head" && fail 'handoff crash did not fire'
+  c4_run 0
+  [ "$(c4_count 1)" = 1 ] || fail 'label repair posted another submit'
+  jq -e 'any(.labels.nodes[];.name=="needs-review")' "$state/issue-1.json" >/dev/null || fail 'submit projection not repaired'
+  awk -F '\t' '$1==1 && $3=="reviewing" {found=1} END {exit !found}' "$project/.git/agentic-flow/state/recovery.tsv" || fail 'controller did not refresh session cache'
+  # f/g: incomplete intents remain pending; superseded station work is ended.
+  c4_intent executor 0 1 initial
+  c4_run 0
+  jq -e '.pending==[]' "$c4/out" >/dev/null || fail 'superseded intent still pending'
+  ledger_read recovery | jq -e 'any(.[];.kind=="end" and .how=="dropped")' >/dev/null || fail 'superseded chain not ended'
+  c4_reset
+  c4_intent executor 0 1 initial
+  c4_run 0
+  jq -e '.pending[0].pending=="relaunch"' "$c4/out" >/dev/null || fail 'intent without session did not relaunch'
+  c4_reset; c4_intent executor 0 1 initial '' preassigned-session
+  c4_run 0
+  jq -e '.pending[0].pending=="resume-packet" and .pending[0].session=="preassigned-session"' "$c4/out" >/dev/null || fail 'preassigned session lost before launch'
+  c4_reset; c4_intent executor 0 1 initial; c4_station submitted ''
+  c4_run 0
+  jq -e '.pending[0].pending=="verify"' "$c4/out" >/dev/null || fail 'recorded submit was verified during reconcile'
+  jq -n --arg run "$run" --arg head "$head" --arg file "$c4/verify" '{v:1,kind:"verify",run:$run,head:$head,record:$file,status:"red",at:(now|floor)}' | c4_send verify
+  c4_run 0
+  jq -e '.pending[0].pending=="fix"' "$c4/out" >/dev/null || fail 'red verify did not remain pending'
+  # A green recorded verification produces a submit without invoking a verifier.
+  c4_reset; c4_intent executor 0 1 initial
+  local original_head=$head committed
+  committed=$(printf 'Implement alpha\n\nFixes #1\n' | git -C "$project" commit-tree "$head^{tree}" -p "$head")
+  git -C "$project" update-ref refs/heads/topic "$committed"
+  head=$committed; c4_station submitted ''; head=$original_head
+  jq -n --arg run "$run" --arg head "$committed" --arg file "$c4/verify" '{v:1,kind:"verify",run:$run,head:$head,record:$file,status:"green",at:(now|floor)}' | c4_send verify
+  c4_run 0
+  [ "$(c4_count 1)" = 1 ] || fail 'green verification did not submit exactly once'
+  c4_run 0
+  [ "$(c4_count 1)" = 1 ] || fail 'completed chain was replayed'
+  git -C "$project" branch -D topic >/dev/null
+  c4_reset; c4_intent executor 0 1 initial
+  # f: deterministic decision and byte-exact retry after a crash before handoff.
+  c4_station ask ''
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-decision c4_run 5
+  [ "$(c4_count 1)" = 0 ] || fail 'after-decision fault posted'
+  ledger_body recovery "$run" > "$c4/decision-body"
+  c4_handoff 1 ask --as executor --after 0 --body-file "$c4/decision-body"
+  c4_run 10
+  [ "$(c4_count 1)" = 1 ] || fail 'handoff retry duplicated ask'
+  ledger_read recovery | jq -e 'any(.[];.kind=="handoff" and .exit==0)' >/dev/null || fail 'handoff retry not completed'
+  jq -e '.comments.nodes[0].body|contains("Original question?")' "$state/issue-1.json" >/dev/null || fail 'question was rewritten'
+  # A saved decision is replayed through CAS even after a human resume and submit.
+  c4_reset; c4_intent executor 0 1 initial; c4_station ask ''
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-decision c4_run 5
+  ledger_body recovery "$run" > "$c4/decision-body"
+  c4_handoff 1 ask --as executor --after 0 --body-file "$c4/decision-body"
+  printf 'Resolved\n' > "$c4/answer"
+  c4_handoff 1 resume --as approver --body-file "$c4/answer"
+  c4_handoff 1 submit --as executor --head "$head"
+  c4_run 0
+  [ "$(c4_count 1)" = 3 ] || fail 'superseded decision posted again'
+  jq -e 'any(.labels.nodes[];.name=="needs-review")' "$state/issue-1.json" >/dev/null || fail 'superseded decision projected old state'
+  # f: timeout bypasses resume-valid, and body tampering raises a hold.
+  c4_reset; c4_intent executor 0 1 initial; c4_station ask 'process timed out' 124
+  c4_run 10
+  jq -e '.comments.nodes[0].body|contains("station timed out")' "$state/issue-1.json" >/dev/null || fail 'exit 124 retried as malformed JSON'
+  c4_reset; c4_intent executor 0 1 initial
+  for n in 2 3 4; do before=$run; c4_intent executor 0 "$n" relaunch "$before"; done
+  c4_run 10
+  jq -e '.comments.nodes[0].body|contains("station keeps failing to finish")' "$state/issue-1.json" >/dev/null || fail 'recovery limit did not escalate without station record'
+  c4_reset; c4_intent executor 0 1 initial; c4_station ask ''
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-decision c4_run 5
+  printf 'tampered\n' > "$LEDGER_DIR/runs/$run/decision.md"
+  c4_run 10
+  [ "$(c4_count 1)" = 0 ] || fail 'tampered body was posted'
+  jq -e '.raised|any(.reason=="ledger-body-hash-mismatch")' "$c4/out" >/dev/null || fail 'body mismatch not held'
+  # e: legacy unjournaled history is held, not silently repaired or executed.
+  c4_reset
+  jq --arg head "$head" '.body|=sub(" journal=v1";"") |
+    .comments.nodes=[{id:"legacy-submit",fullDatabaseId:1,author:{login:"exec",__typename:"User"},createdAt:(now|todateiso8601),lastEditedAt:null,body:("Implemented in "+$head)},
+      {id:"legacy-bad-approval",fullDatabaseId:2,author:{login:"review",__typename:"User"},createdAt:(now|todateiso8601),lastEditedAt:null,body:("agentic-flow-review: status=approved; step=alpha; head="+("f"*40)+"; role=reviewer")}]' "$state/issue-1.json" > "$state/next"
+  mv "$state/next" "$state/issue-1.json"
+  c4_run 10
+  jq -e '.raised|any(.reason=="unjournaled")' "$c4/out" >/dev/null || fail 'unjournaled history not held'
+  # c: an explicit human close of executing work is not undone.
+  c4_reset
+  jq '.state="CLOSED"' "$state/issue-1.json" > "$state/next"; mv "$state/next" "$state/issue-1.json"
+  jq -n '[{__typename:"ClosedEvent",createdAt:(now|todateiso8601),actor:{login:"human",__typename:"User"}}]' > "$state/1.timeline"
+  c4_run 10
+  [ "$(jq -r .state "$state/issue-1.json")" = CLOSED ] || fail 'human close was undone'
+  jq -e '.raised|any(.reason=="closed")' "$c4/out" >/dev/null || fail 'human close not held'
+  # d: final step close before tracker notify, then unavailable identity recovery.
+  c4_reset
+  for n in 1 3; do
+    c4_handoff "$n" submit --as executor --head "$head"
+    if [ "$n" = 1 ]; then c4_handoff "$n" approve --as reviewer --head "$head"
+    else AGENTIC_HANDOFF_TESTING=1 AGENTIC_HANDOFF_FAULT=before-notify c4_handoff "$n" approve --as reviewer --head "$head" && fail 'before-notify fault did not fire'; fi
+  done
+  : > "$state/no-reviewer"
+  : > "$state/no-approver"
+  c4_run 10
+  [ "$(c4_count 2)" = 0 ] || fail 'hold posted without approver identity'
+  jq -e '.holds|any(.comment_id==null and .reason=="plan-effect-pending")' "$c4/out" >/dev/null || fail 'missing approver lost local hold'
+  grep -q 'where the approver identity exists' "$c4/err" || fail 'local hold omitted recovery command'
+  rm "$state/no-approver"
+  ref=$(ledger_read recovery | jq -r '[.[]|select(.kind=="hold")]|last|.hold')
+  c4_handoff 2 hold-clear --as approver --hold-id "$ref"
+  c4_run 10
+  jq -e '.raised|any(.reason=="plan-effect-pending")' "$c4/out" >/dev/null || fail 'missing notify identity not held'
+  rm "$state/no-reviewer"
+  ref=$(jq -r '.comments.nodes[-1].body|split("; ")[1]|ltrimstr("id=")' "$state/issue-2.json")
+  c4_handoff 2 hold-clear --as approver --hold-id "$ref"
+  c4_run 0
+  jq -e '.status=="ready to ship"' "$c4/out" >/dev/null || fail 'final close was not recovered'
+  count=$(c4_count 2); c4_run 0
+  [ "$count" = "$(c4_count 2)" ] || fail 'tracker notify duplicated'
+  # c: reopening by a human is held; a crash before close is repaired.
+  jq '.state="OPEN"' "$state/issue-1.json" > "$state/next"; mv "$state/next" "$state/issue-1.json"
+  jq -n '[{__typename:"ReopenedEvent",createdAt:((now+5)|todateiso8601),actor:{login:"human",__typename:"User"}}]' > "$state/1.timeline"
+  c4_run 10
+  [ "$(jq -r .state "$state/issue-1.json")" = OPEN ] || fail 'human reopen was repaired'
+  count=$(c4_count 2); c4_run 10
+  [ "$count" = "$(c4_count 2)" ] || fail 'reopened hold duplicated'
+  : > "$state/truncated-timeline"; c4_run 5; rm "$state/truncated-timeline"
+  printf '[]\n' > "$state/1.timeline"
+  c4_run 10
+  [ "$(jq -r .state "$state/issue-1.json")" = CLOSED ] || fail 'crash before close not repaired'
+  ref=$(jq -r '[.comments.nodes[].body|select(startswith("agentic-flow-hold: "))]|last|split("; ")[1]|ltrimstr("id=")' "$state/issue-2.json")
+  c4_handoff 2 hold-clear --as approver --hold-id "$ref"
+  c4_run 0
+  jq -e 'all(.labels.nodes[];.name!="needs-human")' "$state/issue-2.json" >/dev/null || fail 'resolved reopen retained needs-human'
+  # Foreign leases and explicit takeover are journal based, not cached-label based.
+  c4_reset; c4_handoff 1 submit --as executor --head "$head"
+  jq '.comments.nodes[-1].body+="\nagentic-flow-run: run=foreign/1; host=123456789abc"' "$state/issue-1.json" > "$state/next"; mv "$state/next" "$state/issue-1.json"
+  c4_run 9; c4_run 0 --take-over
+  ledger_read recovery | jq -e 'any(.[];.kind=="takeover" and .previous_host=="123456789abc")' >/dev/null || fail 'foreign takeover not recorded'
+  # Atomic lock, dead-owner recovery and PID reuse use a real process start time.
+  c4_reset
+  (cd "$project" && PATH="$bin:$PATH" XDG_CONFIG_HOME="$c4/operator" AGENTIC_WORKTREE_ROOT="$c4/worktrees" \
+    AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-lock AGENTIC_CONTROLLER_PAUSE="$c4/pause" \
+    scripts/agentic-flow run docs/inprogress/plan.md --reconcile-only --json) > "$c4/owner.out" 2> "$c4/owner.err" &
+  local launcher=$! waited=0 owner_pid host_id lock="$project/.git/agentic-flow/locks/controller-recovery"
+  while [ ! -f "$c4/pause.ready" ] && [ "$waited" -lt 100 ]; do sleep 0.1; waited=$((waited+1)); done
+  [ -f "$c4/pause.ready" ] || fail "controller never acquired lock: $(cat "$c4/owner.err")"
+  c4_run 9
+  owner_pid=$(jq .pid "$lock/owner.json")
+  kill -KILL "$owner_pid"; wait "$launcher" 2>/dev/null || true
+  c4_run 0
+  [ ! -e "$lock" ] || fail 'dead controller lock not released after clean reconcile'
+  mkdir -p "$lock"
+  host_id=$(perl "$ROOT/scripts/lib/recovery.pl" host "$(cd "$project/.git" && pwd -P)")
+  jq -n --argjson pid "$$" --arg host "$host_id" '{pid:$pid,start:"old process start",host:$host,run:"dead"}' > "$lock/owner.json"
+  # An unknown/truncated timeline makes recovery fail; it must retain the old owner.
+  jq '.state="CLOSED"' "$state/issue-1.json" > "$state/next"; mv "$state/next" "$state/issue-1.json"
+  : > "$state/truncated-timeline"; c4_run 5
+  [ "$(jq -r .start "$lock/owner.json")" = 'old process start' ] || fail 'stale lock claimed before clean reconciliation'
+  rm "$state/truncated-timeline"
+  c4_run 0
+  [ ! -e "$lock" ] || fail 'reused pid prevented stale recovery'
+  # Whole-history recovery: other plans and 15,000 later records cannot hide a head.
+  c4_reset; c4_intent executor 0 1 initial
+  perl -MJSON::PP -MDigest::SHA=sha256_hex -e '
+    my ($dir,$template)=@ARGV; my $json=JSON::PP->new;
+    open my $in,"<",$template or die $!; my $i=$json->decode(do {local $/; <$in>}); close $in;
+    open my $a,">>","$dir/recovery.jsonl" or die $!;
+    for my $seq (1..3750) {
+      my $chain="recovery/3/$seq/executor/1"; my $run="$chain/1";
+      my @records=(
+        {%$i,issue=>3,step=>"beta",seq_before=>$seq,run=>$run,chain=>$chain},
+        {v=>1,kind=>"station",run=>$run,exit=>0,seconds=>1,usage=>{input=>0,output=>0,cost_usd=>0},result=>{v=>1,station=>"executor",outcome=>"ask",head=>undef,summary=>"history",findings=>[],question=>"history?"},invalid_reason=>undef,ended=>1},
+        {v=>1,kind=>"decision",run=>$run,action=>"ask",event=>"ask",head=>"none",body_file=>"$dir/runs/$run/decision.md",body_sha256=>sha256_hex("history"),at=>1},
+        {v=>1,kind=>"handoff",run=>$run,event=>"ask",after=>$seq,attempt=>1,exit=>0,seq_after=>$seq+1,at=>1});
+      print $a $json->encode($_),"\n" for @records;
+    }
+    close $a;
+    open my $b,">", "$dir/other-plan.jsonl" or die $!;
+    for (1..20000) {print $b $json->encode({v=>1,kind=>"ship",plan=>"other-plan",ship=>"touch-$_",at=>1}),"\n";}
+    close $b;' "$LEDGER_DIR" "$c4/record" || fail 'history fixture failed'
+  c4_run 0
+  jq -e '.pending|length==1 and .[0].head=="recovery/1/0/executor/1/1"' "$c4/out" >/dev/null || fail 'old open chain disappeared'
+  # Real worktree snapshots preserve the index bytes and all three edit classes.
+  c4_reset
+  mkdir -p "$c4/worktrees"
+  git -C "$project" worktree add -qb topic "$wt"
+  printf 'staged\n' > "$wt/a"; git -C "$wt" add a
+  printf 'unstaged\n' > "$wt/b"; printf 'untracked\n' > "$wt/c"
+  printf 'ignored\n' > "$wt/ignored"
+  c4_intent executor 0 1 initial '' session-1
+  index=$(git -C "$wt" rev-parse --git-path index)
+  before=$(shasum "$index")
+  perl "$ROOT/scripts/lib/recovery.pl" snapshot "$wt" > "$c4/pre-salvage"
+  perl "$ROOT/scripts/lib/recovery.pl" salvage "$wt" "$run" "$c4/pre-salvage" > "$c4/pre-salvaged"
+  local pre_ref_commit
+  pre_ref_commit=$(jq -r .worktree_commit "$c4/pre-salvaged")
+  c4_run 0
+  [ "$before" = "$(shasum "$index")" ] || fail 'salvage changed real index bytes'
+  [ "$(cat "$wt/a")/$(cat "$wt/b")/$(cat "$wt/c")" = staged/unstaged/untracked ] || fail 'salvage changed worktree bytes'
+  jq -e '.pending[0].pending=="resume-dirty" and .ownership.restore_required==false' "$c4/out" >/dev/null || fail 'executor dirty ownership lost'
+  ref="refs/agentic-flow/salvage/$run"
+  [ "$(git -C "$project" rev-parse "$ref")" = "$pre_ref_commit" ] || fail 'crash between salvage ref and ledger append created another snapshot'
+  [ "$(git -C "$project" show "$ref:c")" = untracked ] && [ "$(git -C "$project" show "$ref^2:a")" = staged ] && [ "$(git -C "$project" show "$ref^2:b")" = b ] || fail 'salvage trees do not preserve staged split'
+  git -C "$project" reflog expire --expire=now --all
+  git -C "$project" gc --prune=now --quiet
+  git -C "$project" cat-file -e "$ref^2^{tree}" || fail 'GC collected staged salvage'
+  # Restore in a scratch clone; the real index excludes c while the worktree has it.
+  git clone -q --no-local "$project" "$c4/restored"
+  git -C "$c4/restored" fetch -q "$project" "$ref:$ref"
+  git -C "$c4/restored" read-tree "$ref^2"
+  GIT_INDEX_FILE="$c4/restore-index" git -C "$c4/restored" read-tree "$ref"
+  GIT_INDEX_FILE="$c4/restore-index" git -C "$c4/restored" checkout-index --all --force
+  [ "$(git -C "$c4/restored" show :a)" = staged ] && [ "$(git -C "$c4/restored" show :b)" = b ] && [ "$(cat "$c4/restored/b")" = unstaged ] && [ "$(cat "$c4/restored/c")" = untracked ] || fail 'salvage restore lost staged/unstaged split'
+  git -C "$c4/restored" ls-files --error-unmatch c >/dev/null 2>&1 && fail 'untracked salvage restored to real index'
+  printf 'changed again\n' > "$wt/b"
+  c4_run 10
+  jq -e '.raised|any(.reason=="worktree-changed-after-salvage")' "$c4/out" >/dev/null || fail 'post-salvage changes not held'
+  local divergence_ref
+  divergence_ref=$(jq -r .ownership.ref "$c4/out")
+  [ "$(git -C "$project" show "$divergence_ref:b")" = 'changed again' ] || fail 'divergent edits were not durably salvaged'
+  [ "$(ledger_generation recovery 1 0 executor)" = 2 ] || fail 'held chain did not advance generation'
+  c4_reset; c4_intent executor 0 1 initial
+  jq -n --arg run "$run" '{v:1,kind:"session",run:$run,session:"recorded-codex-session",at:(now|floor)}' | c4_send session
+  printf 'committed\n' > "$wt/a"; git -C "$wt" add a; git -C "$wt" commit -qm 'Implement first part. Fixes #1'
+  c4_run 0
+  jq -e '.pending[0].pending=="resume-result" and .pending[0].session=="recorded-codex-session"' "$c4/out" >/dev/null || fail 'committed interrupted session did not request result'
+  # No session + commit + dirty uses the explicitly ordered ownership rule 1.
+  c4_reset
+  c4_intent executor 0 1 initial
+  printf 'committed\n' > "$wt/a"; git -C "$wt" add a; git -C "$wt" commit -qm 'Implement first part. Fixes #1'
+  c4_run 0
+  jq -e '.pending[0].pending=="fresh-result"' "$c4/out" >/dev/null || fail 'commit without session did not request fresh result'
+  printf 'dirty\n' > "$wt/b"
+  c4_run 0
+  jq -e '.pending[0].pending=="fresh-dirty"' "$c4/out" >/dev/null || fail 'commit discarded dirty ownership'
+  # Dirty invalid result retries once; executor ask retains work across resume.
+  c4_reset; c4_intent executor 0 1 initial; c4_station submitted 'uncommitted changes after submit'
+  printf 'remaining\n' > "$wt/b"; c4_run 0
+  jq -e '.pending[0].pending=="resume-valid" and .raised==[]' "$c4/out" >/dev/null || fail 'dirty submit became unexplained'
+  before=$run; c4_intent executor 0 2 resume-valid "$before"; c4_station submitted 'uncommitted changes after submit'
+  c4_run 10
+  jq -e '.comments.nodes[-1].body|contains("malformed station result")' "$state/issue-1.json" >/dev/null || fail 'second dirty submit did not escalate'
+  [ "$(cat "$wt/b")" = remaining ] || fail 'second dirty submit lost edits'
+  printf 'Resolved\n' > "$c4/answer"
+  c4_handoff 1 resume --as approver --body-file "$c4/answer"
+  c4_run 0
+  jq -e '.ownership!=null and .raised==[]' "$c4/out" >/dev/null || fail 'controller-generated ask lost executor ownership on resume'
+  c4_reset; c4_intent executor 0 1 initial; c4_station ask ''
+  printf 'question edits\n' > "$wt/b"; c4_run 10
+  printf 'Answer\n' > "$c4/answer"
+  c4_handoff 1 resume --as approver --body-file "$c4/answer"
+  c4_run 0
+  jq -e '.ownership!=null and .raised==[]' "$c4/out" >/dev/null || fail 'ask ownership lost after human resume'
+  # Reviewer recovery is reported but never restored by --reconcile-only.
+  c4_reset; c4_handoff 1 submit --as executor --head "$head"
+  c4_intent reviewer 1 1 initial; c4_station approve ''
+  printf 'reviewer edit\n' > "$wt/b"; c4_run 0
+  jq -e '.pending[0].pending=="relaunch" and .ownership.restore_required' "$c4/out" >/dev/null || fail 'reviewer restore not pending'
+  [ "$(c4_count 1)" = 1 ] || fail 'dirty reviewer result was approved before relaunch'
+  [ "$(cat "$wt/b")" = 'reviewer edit' ] || fail 'reconcile restored reviewer edits'
+  before=$run; c4_intent reviewer 1 2 relaunch "$before"
+  c4_run 10
+  jq -e '.comments.nodes[-1].body|contains("reviewer edited the worktree")' "$state/issue-1.json" >/dev/null || fail 'repeated reviewer edits not escalated'
+  # Unexplained changes without any run are still durably salvaged.
+  c4_reset; printf 'unowned\n' > "$wt/c"; c4_run 10
+  jq -e '.raised|any(.reason=="unexplained-worktree-changes")' "$c4/out" >/dev/null || fail 'unowned edits not held'
+  ref=$(jq -r .ownership.ref "$c4/out")
+  [ "$(git -C "$project" show "$ref:c")" = unowned ] || fail 'unowned salvage missing'
+  # A ledger above the cap is held without parsing a partial prefix.
+  c4_reset
+  mkdir -p "$LEDGER_DIR"
+  perl -e 'open my $f,">",$ARGV[0] or die $!; truncate $f,33554433 or die $!' "$LEDGER_DIR/recovery.jsonl"
+  c4_run 10
+  jq -e '.raised|any(.reason=="ledger-too-large")' "$c4/out" >/dev/null || fail 'oversize ledger not held'
+  # Standard holds and clears must preserve a human's closed work issue.
+  c4_reset
+  sed '/^tracking:/d; s/profile: strict/profile: standard/; s/steps: alpha beta/steps: alpha/; /## beta /,/## Status/{/## Status/!d;}' "$project/docs/inprogress/plan.md" > "$c4/standard"
+  cat "$c4/standard" > "$project/docs/inprogress/plan.md"
+  git -C "$project" add docs/inprogress/plan.md; git -C "$project" commit -qm 'Standard recovery fixture'
+  base=$(git -C "$project" rev-parse HEAD)
+  sed -E "s/(rev=)[a-f0-9]{40}/\\1$base/" "$project/docs/inprogress/plan.md" > "$c4/standard"
+  cat "$c4/standard" > "$project/docs/inprogress/plan.md"
+  git -C "$project" add docs/inprogress/plan.md; git -C "$project" commit -qm 'Approve Standard fixture'
+  rm "$state/issue-2.json" "$state/issue-3.json"
+  jq '.body|=sub("topology:strict";"topology:standard")|.state="CLOSED"' "$state/issue-1.json" > "$state/next"; mv "$state/next" "$state/issue-1.json"
+  jq -n '[{__typename:"ClosedEvent",createdAt:(now|todateiso8601),actor:{login:"human",__typename:"User"}}]' > "$state/1.timeline"
+  c4_run 10
+  [ "$(jq -r .state "$state/issue-1.json")" = CLOSED ] || fail 'Standard hold reopened a human-closed issue'
+  ref=$(jq -r '.comments.nodes[-1].body|split("; ")[1]|ltrimstr("id=")' "$state/issue-1.json")
+  c4_handoff 1 hold-clear --as approver --hold-id "$ref"
+  [ "$(jq -r .state "$state/issue-1.json")" = CLOSED ] || fail 'clear repaired underlying Standard cause'
+  jq --arg head "$head" '.comments.nodes += [
+    {id:"terminal-submit",fullDatabaseId:100,author:{login:"exec",__typename:"User"},createdAt:(now|todateiso8601),lastEditedAt:null,body:("agentic-flow-transition: v=1; id=recovery/alpha/1/submit; event=submit; from=executing; role=executor; head="+$head)},
+    {id:"terminal-approve",fullDatabaseId:101,author:{login:"review",__typename:"User"},createdAt:(now|todateiso8601),lastEditedAt:null,body:("agentic-flow-transition: v=1; id=recovery/alpha/2/approve; event=approve; from=reviewing; role=reviewer; head="+$head)},
+    {id:"terminal-close",fullDatabaseId:102,author:{login:"plan",__typename:"User"},createdAt:(now|todateiso8601),lastEditedAt:null,body:"agentic-flow-transition: v=1; id=recovery/alpha/3/close; event=close; from=closing; role=approver; head=none"}] | .labels.nodes=[{name:"needs-review"}]' "$state/issue-1.json" > "$state/next"
+  mv "$state/next" "$state/issue-1.json"
+  count=$(c4_count 1); c4_run 0
+  jq -e '.status=="plan closed"' "$c4/out" >/dev/null || fail 'closed plan was not recognized'
+  [ "$(c4_count 1)" = "$count" ] && [ "$(jq -r .state "$state/issue-1.json")" = CLOSED ] || fail 'closed plan was reopened or journaled again'
+  [ ! -e "$state/forbidden" ] || fail 'reconcile launched a station'
+)
+controller_tests || fail 'controller recovery regressions failed'

@@ -75,6 +75,7 @@ packet_cmd() (
   handoff_read "$number" || return 3
   [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r .body)" = "$body" ] || { packet_error 'issue changed during admission; retry'; return 3; }
   comments=$(printf '%s' "$HANDOFF_ISSUE" | jq .comments.nodes | journal_normalize) || return 3
+  comments=$(printf '%s' "$comments" | jq 'map(.body|=(split("\n")|map(select(startswith("agentic-flow-run:")|not))|join("\n")))') || return 3
   journal=$HANDOFF_REPLAY
   dropped=$(printf '%s' "$comments" | jq --arg policy "$REVIEW_EXECUTORS$REVIEW_REVIEWERS$REVIEW_APPROVERS" '[.[]|select(.author as $a|($policy|split(" ")|index($a))==null)]|length') || return 3
   accepted=$(printf '%s' "$journal" | jq -c '[.accepted[]|select(.event=="submit")]|last // null')

@@ -106,6 +106,10 @@ handoff_post() { # number event role head body; replay MUST have just been read
   else
     printf '%s\n' "$note" >> "$file"
   fi
+  if [ -n "${HANDOFF_CONTROLLER_RUN:-}" ] && [ -n "${HANDOFF_CONTROLLER_HOST:-}" ]; then
+    local run_marker="agentic-flow-run: run=$HANDOFF_CONTROLLER_RUN; host=$HANDOFF_CONTROLLER_HOST"
+    grep -q '^agentic-flow-run: ' "$file" || printf '\n%s\n' "$run_marker" >> "$file"
+  fi
   local next_state andon_reason='bounce cap reached'
   if [ "$event" = ask ]; then andon_reason=$(printf '%s\n' "$note" | awk 'NF {print substr($0,1,200); exit}'); fi
   next_state=$(workflow_successor "$JOURNAL_TOPOLOGY" "$from" "$event" "$(printf '%s' "$HANDOFF_REPLAY" | jq .bounces)" "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)") || return 3
@@ -160,7 +164,7 @@ handoff_project() { # number; always re-read immediately before projection, then
     [ -z "$remove" ] || args+=(--remove-label "$remove")
     if [ "$current" != "$expected" ] && [ "${#args[@]}" -gt 5 ]; then handoff_gh "${args[@]}" >/dev/null || return 5; fi
     issue_state=$(printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' -v t="$JOURNAL_TOPOLOGY" -v s="$state" '$1=="state"&&$2==t&&$3==s{print $5}')
-    if [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r '.state|ascii_downcase')" != "$issue_state" ]; then
+    if [ "${HANDOFF_LABELS_ONLY:-false}" = false ] && [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r '.state|ascii_downcase')" != "$issue_state" ]; then
       local verb=close
       [ "$issue_state" != open ] || verb=reopen
       handoff_gh issue "$verb" "$number" --repo "$HANDOFF_REPO" >/dev/null || return 5
@@ -172,7 +176,7 @@ handoff_project() { # number; always re-read immediately before projection, then
     new_state=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .state)
     actual=$(printf '%s' "$HANDOFF_ISSUE" | jq -r '.labels.nodes[].name' | LC_ALL=C sort)
     if [ "$new_state" = "$state" ] && [ "$actual" = "$expected" ] &&
-      [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r '.state|ascii_downcase')" = "$issue_state" ]; then return 0; fi
+      { [ "${HANDOFF_LABELS_ONLY:-false}" = true ] || [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r '.state|ascii_downcase')" = "$issue_state" ]; }; then return 0; fi
     attempt=$((attempt+1))
   done
   handoff_error 'labels did not converge'; return 5
@@ -227,10 +231,32 @@ handoff_plan_read() { # bounded exact-stamped discovery; labels are not evidence
   done
 }
 
+handoff_write_cache() { # common-dir issue-numbers; shared by handoff and controller reconciliation
+  local common=$1 issues=$2 n
+  local cache="$HANDOFF_TMP/cache" metrics_rows="$HANDOFF_TMP/metrics-rows" metrics_cache="$HANDOFF_TMP/metrics-cache"
+  : > "$cache"
+  : > "$metrics_rows"
+  for n in $issues; do
+    [ -f "$HANDOFF_TMP/$n.replay" ] || continue
+    jq -r --arg n "$n" --arg step "$(jq -r .body "$HANDOFF_TMP/$n.issue" | journal_stamp | jq -r .step)" \
+      '[$n,$step,.state,(.latest.id//"none"),.submitted_head,(now|todateiso8601)]|@tsv' "$HANDOFF_TMP/$n.replay" >> "$cache"
+    # Preserve the six-column session cache. Metrics get a separate, bounded
+    # snapshot of admitted journal events, never raw comment bodies or labels.
+    handoff_metrics_row "$n" "$(jq -r .body "$HANDOFF_TMP/$n.issue" | journal_stamp | jq -r .step)" \
+      "$HANDOFF_TMP/$n.issue" "$HANDOFF_TMP/$n.replay" >> "$metrics_rows" || return 5
+  done
+  jq -cs --arg plan "$HANDOFF_PLAN" '{v:1,plan:$plan,rows:.,refreshed_at:(now|todateiso8601)}' \
+    "$metrics_rows" > "$metrics_cache" || return 5
+  [ "$(wc -c < "$metrics_cache")" -le 4194304 ] || { handoff_error 'metrics cache too large'; return 5; }
+  mv "$metrics_cache" "$common/agentic-flow/state/$HANDOFF_PLAN.metrics.json" || return 5
+  mv "$cache" "$common/agentic-flow/state/$HANDOFF_PLAN.tsv" || return 5
+  hold_cache "$common" || return 5
+}
+
 handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   set +x
-  local requested_return=''
-  local number=${1:-} event=${2:-} role='' head=none after='' body_file='' json=false check=false reason='' run=none hold_id=''
+  local requested_return='' HANDOFF_LABELS_ONLY=false
+  local number=${1:-} event=${2:-} role='' head=none after='' body_file='' json=false check=false project_only=false reason='' run=none hold_id=''
   [[ "$number" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$#" -ge 2 ] || { handoff_error 'usage: handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]'; return 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -240,12 +266,14 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
         case "$1" in --return) requested_return=$2 ;; --reason) reason=$2 ;; --run) run=$2 ;; --hold-id) hold_id=$2 ;; --as) role=$2 ;; --head) head=$2 ;; --after) after=$2 ;; --body-file) body_file=$2 ;; esac
         shift 2 ;;
       --check) check=true; shift ;;
+      --labels-only) HANDOFF_LABELS_ONLY=true; project_only=true; shift ;;
+      --project-only) project_only=true; shift ;;
       --json) json=true; shift ;;
       *) return 2 ;;
     esac
   done
   case "$event" in submit|bounce|resume|approve|notify|close|ask|hold|hold-clear) [ "$json" = false ] && [ -n "$role" ] || return 2 ;; reconcile) [ -z "$role" ] && [ "$head" = none ] && [ -z "$after" ] && [ -z "$body_file" ] || return 2 ;; *) return 2 ;; esac
-  [ "$check" = false ] || [ "$event" = reconcile ] || return 2
+  if [ "$check" = true ] || [ "$project_only" = true ]; then [ "$event" = reconcile ] || return 2; fi
   case "$event" in
     hold) [ "$head" = none ] && [ -z "$after$hold_id$requested_return" ] || return 2 ;;
     hold-clear) [ "$head" = none ] && [ -z "$after$reason$requested_return" ] && [ "$run" = none ] || return 2 ;;
@@ -258,6 +286,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   workflow_load "$HANDOFF_ROOT" && read_review_policy "$HANDOFF_ROOT" || return 5
   HANDOFF_TOKEN='' HANDOFF_LOGIN='' HANDOFF_ALLOW_UNJOURNALED=false
   case "$event" in hold|hold-clear) HANDOFF_ALLOW_UNJOURNALED=true ;; esac
+  if [ "$check" = true ] || [ "$project_only" = true ]; then HANDOFF_ALLOW_UNJOURNALED=true; fi
   local initial stamp lock common waited=0 locked=false note='' result=0 latest_seq status lock_pid
   initial=$(handoff_gh issue view "$number" --repo "$HANDOFF_REPO" --json body) || return 5
   stamp=$(printf '%s' "$initial" | jq -er .body | journal_stamp) || { handoff_error 'no valid plan stamp'; return 3; }
@@ -304,6 +333,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
     handoff_drift "$number"
     return $?
   fi
+  if [ "$project_only" = true ]; then handoff_project "$number"; return $?; fi
   if [ "$event" = hold ] || [ "$event" = hold-clear ]; then
     [ "$role" = approver ] || return 3
     status=0
@@ -312,6 +342,8 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
       [ "$status" -ne 10 ] || hold_cache "$common" || return 5
       return "$status"
     fi
+    # Holds project labels only; clearing a hold never repairs its underlying cause.
+    HANDOFF_LABELS_ONLY=true
     handoff_project "$HANDOFF_HOLD_TRACKER" || return $?
     hold_cache "$common" || return 5
     return 0
@@ -387,24 +419,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   if [ -n "$tracker" ]; then handoff_project "$tracker" || return $?; fi
   # Re-read every written issue after plan effects, detecting out-of-lock writers.
   handoff_project "$number" || return $?
-  local cache="$HANDOFF_TMP/cache" metrics_rows="$HANDOFF_TMP/metrics-rows" metrics_cache="$HANDOFF_TMP/metrics-cache"
-  : > "$cache"
-  : > "$metrics_rows"
-  for n in $issues; do
-    [ -f "$HANDOFF_TMP/$n.replay" ] || continue
-    jq -r --arg n "$n" --arg step "$(jq -r .body "$HANDOFF_TMP/$n.issue" | journal_stamp | jq -r .step)" \
-      '[$n,$step,.state,(.latest.id//"none"),.submitted_head,(now|todateiso8601)]|@tsv' "$HANDOFF_TMP/$n.replay" >> "$cache"
-    # Preserve the six-column session cache. Metrics get a separate, bounded
-    # snapshot of admitted journal events, never raw comment bodies or labels.
-    handoff_metrics_row "$n" "$(jq -r .body "$HANDOFF_TMP/$n.issue" | journal_stamp | jq -r .step)" \
-      "$HANDOFF_TMP/$n.issue" "$HANDOFF_TMP/$n.replay" >> "$metrics_rows" || return 5
-  done
-  jq -cs --arg plan "$HANDOFF_PLAN" '{v:1,plan:$plan,rows:.,refreshed_at:(now|todateiso8601)}' \
-    "$metrics_rows" > "$metrics_cache" || return 5
-  [ "$(wc -c < "$metrics_cache")" -le 4194304 ] || { handoff_error 'metrics cache too large'; return 5; }
-  mv "$metrics_cache" "$common/agentic-flow/state/$HANDOFF_PLAN.metrics.json" || return 5
-  mv "$cache" "$common/agentic-flow/state/$HANDOFF_PLAN.tsv" || return 5
-  hold_cache "$common" || return 5
+  handoff_write_cache "$common" "$issues" || return 5
   if [ "$json" = true ]; then
     jq -s 'to_entries|map({key:(.value.number|tostring),value:.value.replay})|from_entries' \
       <(for n in $issues; do [ ! -f "$HANDOFF_TMP/$n.replay" ] || jq --argjson n "$n" '{number:$n,replay:.}' "$HANDOFF_TMP/$n.replay"; done)
