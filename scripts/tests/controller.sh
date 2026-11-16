@@ -370,7 +370,7 @@ if [ "$cli" = codex ] && [ "${1:-}" = app-server ]; then
   while IFS= read -r request; do
     case "$request" in *config/read*)
       enabled=true
-      case "$*" in *'mcp_servers."fixture".enabled=false'*) enabled=false ;; esac
+      case "$*" in *'mcp_servers.fixture.enabled=false'*) enabled=false ;; esac
       printf '{"id":2,"result":{"config":{"approval_policy":"never","sandbox_mode":"workspace-write","web_search":"disabled","sandbox_workspace_write":{"network_access":false},"features":{"apps":false},"mcp_servers":{"fixture":{"enabled":%s}}}}}\n' "$enabled"
       ;; esac
   done
@@ -534,7 +534,7 @@ controller_tests() (
   LAUNCH_RESUME_CLI=codex LAUNCH_RESUME_PROFILE=config/stations/codex.config.toml launch_station executor "$C1/project" "$C1/packet with spaces.md" "$C1/result" --resume codex-session > "$C1/launch.json" || fail 'compatible resume failed'
   grep -Fxq codex-session "$C1/session-record" || fail 'Codex session callback missing'
   grep -Fxq resume "$C1/observed/argv" || fail 'compatible resume not passed'
-  grep -Fxq 'mcp_servers."fixture".enabled=false' "$C1/observed/argv" || fail 'configured Codex connector was not disabled'
+  grep -Fxq 'mcp_servers.fixture.enabled=false' "$C1/observed/argv" || fail 'configured Codex connector was not disabled'
   grep -Fxq features.apps=false "$C1/observed/argv" || fail 'built-in Codex Apps were not disabled'
   grep -Fxq -- --output-schema "$C1/observed/argv" || fail 'resume schema not passed'
   echo callback-failure > "$C1/behavior"

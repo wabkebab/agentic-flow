@@ -115,9 +115,10 @@ launch_codex_config() { # worktree scratch; exact overrides shared by inspect an
   # Empty map overrides merge with TOML maps and do NOT reliably remove servers.
   (cd "$worktree" && launch_timed 20 - env -i "${LAUNCH_ENV[@]}" perl "$LAUNCH_ROOT/scripts/lib/station-config.pl" "$worktree" "${LAUNCH_CODEX_ARGS[@]}") > "$scratch/config.json" 2> "$scratch/config.err" \
     || { launch_error 'Codex effective config could not be read'; return 6; }
+  # Codex takes quotes in a -c key literally, so use bare keys whenever TOML allows them.
   while IFS= read -r name; do
     LAUNCH_CODEX_ARGS+=(-c "mcp_servers.$name.enabled=false")
-  done < <(jq -r '(.mcp_servers // {}) | keys[] | @json' "$scratch/config.json")
+  done < <(jq -r '(.mcp_servers // {}) | keys[] | if test("^[A-Za-z0-9_-]+$") then . else @json end' "$scratch/config.json")
   (cd "$worktree" && launch_timed 20 - env -i "${LAUNCH_ENV[@]}" perl "$LAUNCH_ROOT/scripts/lib/station-config.pl" "$worktree" "${LAUNCH_CODEX_ARGS[@]}") > "$scratch/effective.json" 2> "$scratch/config.err" \
     || { launch_error 'Codex effective isolation config could not be read'; return 6; }
   jq -e '.approval_policy=="never" and .sandbox_mode=="workspace-write" and .web_search=="disabled" and .features.apps==false and .sandbox_workspace_write.network_access==false and all((.mcp_servers // {})[]; .enabled==false)' "$scratch/effective.json" >/dev/null \
