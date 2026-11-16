@@ -217,7 +217,8 @@ sub apply_record {
       push @{$run->{handoffs}},$r;
     } else {
       !exists($run->{$k}) or fail("duplicate $k record");
-      if ($k eq 'session') { $run->{intent}{cli} eq 'codex' && !$run->{station} or fail('session must precede Codex station'); }
+      # Codex and OpenCode issue their own session id, so it is recorded once the CLI reports it.
+      if ($k eq 'session') { $run->{intent}{cli} =~ /^(?:codex|opencode)$/ && !$run->{station} or fail('session must precede Codex or OpenCode station'); }
       if ($k eq 'station' && defined($r->{result})) { result_valid($r->{result},$run->{intent}{station}); }
       if ($k eq 'verify') { !$run->{decision} && $run->{station} && !defined($run->{station}{invalid_reason}) && ($run->{station}{result}{outcome}//'') eq 'submitted' && $r->{head} eq $run->{station}{result}{head} or fail('verify requires submitted station/head before decision'); }
       if ($k eq 'decision') {
