@@ -282,7 +282,11 @@ launch_station() { # station worktree packet result [--resume session]
       fi
     fi
   else
-    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" "${LAUNCH_PGID_FILE:-$scratch/pgid}" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" || status=$?
+    # OpenCode's own database is larger than the cap and its standalone server dies before
+    # it is ready under it, so only the other CLI keeps the file-size limit.
+    local fsize=65536
+    [ "$LAUNCH_CLI" != opencode ] || fsize=unlimited
+    (cd "$worktree" && ulimit -f "$fsize" && launch_timed "$LAUNCH_TIMEOUT" "${LAUNCH_PGID_FILE:-$scratch/pgid}" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" || status=$?
   fi
   ended=$(date +%s)
   local parsed
