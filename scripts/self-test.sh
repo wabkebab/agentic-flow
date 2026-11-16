@@ -3393,6 +3393,11 @@ for mutation in \
   'gh api repos/owner/repo/issues/1/labels -X DELETE' \
   'gh api repos/owner/repo/issues/1 --method PATCH --input file.json' \
   'gh api repos/owner/repo/issues/1 -X PATCH -f state=closed' \
+  'scripts/agentic-flow ship docs/inprogress/plan.md' \
+  'rtk proxy scripts/agentic-flow ship docs/inprogress/plan.md --wait-review' \
+  'bash -lc "scripts/agentic-flow ship docs/inprogress/plan.md"' \
+  'scripts/agentic-flow approve docs/inprogress/plan.md --by owner' \
+  'scripts/agentic-flow hold clear docs/inprogress/plan.md fixture/hold/1' \
   'scripts/agentic-flow token reviewer' \
   'rtk proxy scripts/agentic-flow token executor' \
   'bash -lc "scripts/agentic-flow token reviewer"' \
@@ -3407,6 +3412,7 @@ PATH="$STEP_HOOK_GH:$PATH" STEP_HOOK_GH_FAIL=1 must_block "$STEP_HOOK" 'gh issue
 PATH="$STEP_HOOK_GH:$PATH" STEP_HOOK_BODY='ordinary issue' must_allow "$STEP_HOOK" 'gh issue close 1'
 # shellcheck disable=SC2016 # Literal shell input for the hook lexer, never evaluated.
 for read_command in \
+  'scripts/agentic-flow final-approve docs/done/plan.md' \
   'gh issue view 1 --json body,comments' \
   'rtk gh issue view 127' \
   'bash -lc "n=$(echo 127); gh issue view 127"' \

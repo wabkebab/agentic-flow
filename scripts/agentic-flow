@@ -9,6 +9,8 @@ usage:
   agentic-flow handoff <issue> reconcile [--json] [--check]
   agentic-flow close-out prep <doc> --pr <url> [--dry-run]
   agentic-flow close-out finish <doc>
+  agentic-flow ship <doc> [--wait-review]
+  agentic-flow final-approve <doc> [--body-file <path>]
   agentic-flow packet <issue> --station executor|reviewer [--json]
   agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--json]
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
@@ -472,6 +474,11 @@ subcommand="${1:-}"
       # shellcheck disable=SC1091 # Installed alongside the CLI.
       . "$(dirname "$0")/lib/handoff.sh"
       handoff_cmd "$@" ;;
+    ship|final-approve)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/ship.sh"
+      ship_cmd "$subcommand" "$@" ;;
     close-out)
       shift
       # shellcheck disable=SC1091

@@ -40,7 +40,7 @@ brief_parse() { # file, display path, revision -> JSON spec
     block && /^```$/ {block=0; next}
     block {
       key=$0; sub(/:.*/,"",key); value=$0; sub(/^[^:]*: /,"",value)
-      if (key !~ /^(id|profile|tracking|branch|steps)$/ || value==$0 || value=="") bad("invalid plan field")
+      if (key !~ /^(id|profile|tracking|branch|base|steps)$/ || value==$0 || value=="") bad("invalid plan field")
       if (key in plan) bad("duplicate plan field " key)
       plan[key]=value; next
     }
@@ -98,6 +98,7 @@ brief_parse() { # file, display path, revision -> JSON spec
       }
       for(i=1;i<=sections;i++) if(!(order[i] in seen)) bad("section has no steps entry: " order[i])
       printf "{\"id\":%s,\"profile\":%s,\"branch\":%s,\"labels\":[\"plan\"],",quote(plan["id"]),quote(plan["profile"]),quote(plan["branch"])
+      if(plan["base"]!="") printf "\"base\":%s,",quote(plan["base"])
       if(plan["profile"]=="strict") printf "\"tracking\":{\"title\":%s},",quote(plan["tracking"])
       printf "\"steps\":["
       for(i=1;i<=count;i++) {

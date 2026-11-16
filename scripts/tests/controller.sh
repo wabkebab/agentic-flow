@@ -4,6 +4,151 @@
 [ -f "$ROOT/scripts/lib/launch.sh" ] || fail 'station launcher is missing'
 [ -f "$ROOT/scripts/lib/ledger.sh" ] || fail 'run ledger is missing'
 [ -f "$ROOT/scripts/lib/controller.sh" ] || fail 'controller recovery is missing'
+[ -f "$ROOT/scripts/lib/ship.sh" ] || fail 'ship command is missing'
+# C-6: exercise phase orchestration with bounded GitHub/push doubles. Lifecycle
+# evidence admission itself is covered by the lifecycle suite, not reimplemented.
+c6_tests() (
+  . "$ROOT/scripts/lib/ship.sh"
+  local fixture="$TMP/ship" mode=ready rc=0
+  mkdir -p "$fixture/docs/done"
+  declare -f ship_ci > "$fixture/ci-function"
+  cd "$fixture" || exit 1
+  HANDOFF_TMP=$fixture SHIP_ROOT=$fixture SHIP_DOC=docs/inprogress/plan.md
+  HANDOFF_REPO=owner/repo SHIP_PLAN=shipping SHIP_BRANCH=feature SHIP_BASE=release SHIP_TITLE=Shipping
+  SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  SHIP_RUN_URL=https://github.com/owner/repo/actions/runs/7 SHIP_ATTEMPT=2
+  local pr='{"number":3,"url":"https://github.com/owner/repo/pull/3","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"release","isCrossRepository":false}'
+  SHIP_PR=null
+  git() {
+    case "$1" in status) [ "$mode" != dirty ] || printf ' M docs/done/plan.md\n' ;;
+      push) printf 'push\n' >> "$fixture/actions" ;;
+      for-each-ref) printf 'refs/agentic-flow/salvage/shipping/run\n' ;;
+      update-ref) printf 'delete %s\n' "$3" >> "$fixture/actions" ;;
+      *) return 99 ;; esac
+  }
+  brief_approved_at_head() { return 0; }
+  brief_approval() { printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\towner\n'; }
+  close_out_load() { CLOSE_TARGET=1; printf 'admit\n' >> "$fixture/actions"; }
+  close_out_cmd() { printf '%s\n' "$1" >> "$fixture/actions"; }
+  handoff_gh() {
+    case "$1 $2" in
+      'pr create') printf '%s\n' "$*" >> "$fixture/actions" ;;
+      'pr list') printf '[%s]\n' "$pr" ;;
+      *) return 99 ;; esac
+  }
+  ship_wait_ci() { [ "$mode" != failed ] || return 1; printf 'ci\n' >> "$fixture/actions"; }
+  ship_ci() { ship_wait_ci; }
+  ship_lifecycle() {
+    printf '%s\n' "$1" >> "$fixture/actions"
+    case "$mode" in review|stale-head|stale-attempt|owner-marker)
+      printf 'NEEDS-REVIEW uncovered CHANGELOG.md\nUNVERIFIED stale or unauthorized approval\n'; return 1 ;;
+      blocked) printf 'BLOCKED invalid evidence\n'; return 1 ;;
+      *) printf 'READY fixture\n' ;; esac
+  }
+  ship_run false > "$fixture/out" || fail 'first ship failed'
+  [ "$(head -3 "$fixture/actions" | tr '\n' /)" = 'admit/push/pr create --repo owner/repo --head feature --base release --title Shipping --body Implementation of https://github.com/owner/repo/issues/1/' ] || fail 'ship did not admit, push and open against plan base'
+  grep -q '^prep$' "$fixture/actions" || fail 'ship skipped prep'
+  grep -q 'commit the staged close-out' "$fixture/out" || fail 'ship did not stop for close-out commit'
+  SHIP_DOC=docs/done/plan.md
+  mode=dirty; : > "$fixture/actions"
+  rc=0; ship_run false > "$fixture/out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && [ ! -s "$fixture/actions" ] || fail 'uncommitted prep was pushed'
+  for mode in failed blocked review stale-head stale-attempt owner-marker; do
+    : > "$fixture/actions"; rc=0
+    ship_run false > "$fixture/out" 2>&1 || rc=$?
+    case "$mode" in failed|blocked) [ "$rc" = 1 ] || fail 'failed CI/lifecycle did not refuse' ;;
+      *) [ "$rc" = 11 ] || fail 'missing or stale approval did not wait'
+        for value in "$SHIP_HEAD" "$SHIP_RUN_URL" 'attempt=2' CHANGELOG.md; do
+          grep -q "$value" "$fixture/out" || fail 'approval wait omitted evidence context'
+        done ;;
+    esac
+    if grep -q '^finish$' "$fixture/actions"; then fail 'unready ship ran finish'; fi
+  done
+  mode=ready; : > "$fixture/actions"
+  ship_run false > "$fixture/out" || fail 'ready ship failed'
+  [ "$(head -5 "$fixture/actions" | tr '\n' /)" = 'push/ci/close-out/finish/pre-merge/' ] || fail 'ship phases ran out of order'
+  grep -q 'Human merge:' "$fixture/out" || fail 'merge command missing'
+  mode=review; : > "$fixture/actions"
+  sleep() { mode=ready; SHIP_ATTEMPT=3; }
+  ship_run true > "$fixture/out" || fail 'wait-review did not observe later approval'
+  [ "$(grep -c '^ci$' "$fixture/actions")" = 2 ] || fail 'wait-review did not refresh CI attempt'
+  grep -q '^finish$' "$fixture/actions" || fail 'wait-review did not finish after approval'
+  unset -f sleep
+  # Wrong PR base and malformed listings are refused at the boundary.
+  pr=$(printf '%s' "$pr" | jq '.baseRefName="main"')
+  ship_pr > "$fixture/out" 2>&1 && fail 'wrong PR base accepted'
+  pr=$(printf '%s' "$pr" | jq '.baseRefName="release"')
+  ship_pr || fail 'valid PR rejected'
+  . "$fixture/ci-function"
+  local runs run conclusion=success head=$SHIP_HEAD attempt=2
+  REVIEW_WORKFLOW=.github/workflows/ci.yml
+  runs=$(jq -nc --arg head "$SHIP_HEAD" '{workflow_runs:[{id:7,created_at:"2026-01-01T00:00:00Z",head_sha:$head,path:".github/workflows/ci.yml"}]}')
+  handoff_gh() {
+    case "$2" in *'/runs?'*) printf '%s\n' "$runs" ;;
+      */runs/7) jq -nc --arg head "$head" --arg conclusion "$conclusion" --argjson attempt "$attempt" '{id:7,repository:{full_name:"owner/repo"},head_sha:$head,path:".github/workflows/ci.yml",status:"completed",conclusion:$conclusion,run_attempt:$attempt}' ;;
+      *) return 99 ;; esac
+  }
+  conclusion=failure
+  ship_ci > "$fixture/out" 2>&1 && fail 'failed CI accepted'
+  conclusion=success; head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  ship_ci > "$fixture/out" 2>&1 && fail 'CI for older head accepted'
+  head=$SHIP_HEAD
+  ship_ci || fail 'successful exact-head CI rejected'
+  # final-approve derives the latest attempt and uses the identity-checked poster.
+  printf '%s\n' '- **Tracking issue:** url=https://github.com/owner/repo/issues/1' > "$SHIP_DOC"
+  handoff_identity() { [ "$1" = reviewer ] || return 1; HANDOFF_LOGIN=review; }
+  handoff_comment() { [ "$1" = 1 ] || return 1; cp "$2" "$fixture/posted"; }
+  ship_final_approve '' || fail 'final approval failed'
+  grep -q "head=$SHIP_HEAD; run=$SHIP_RUN_URL; attempt=2; role=reviewer" "$fixture/posted" || fail 'final marker context wrong'
+  attempt=3; ship_final_approve '' || fail 'CI rerun approval failed'
+  grep -q 'attempt=3' "$fixture/posted" || fail 'final approval reused old attempt'
+  conclusion=failure; rm "$fixture/posted"
+  ship_final_approve '' > "$fixture/out" 2>&1 && fail 'final approval allowed failed CI'
+  [ ! -e "$fixture/posted" ] || fail 'failed final approval posted'
+  # Exercise the public command setup, including plan parsing and ledger writes.
+  unset -f git brief_approval
+  . "$ROOT/scripts/lib/brief.sh"
+  mkdir -p "$fixture/config" "$fixture/docs/inprogress"
+  cp "$ROOT/config/workflow.tsv" "$fixture/config/workflow.tsv"
+  printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=owner owner=owner > "$fixture/.agentic-flow-review-policy"
+  cat > "$fixture/docs/inprogress/plan.md" <<'SHIP_PLAN'
+# Feature — Shipping
+# Part B — Implementation brief
+```agentic-flow-plan
+id: line-controller
+profile: standard
+branch: phase-2
+steps: alpha
+```
+## Alpha — Ship
+**DoD:** ship finishes
+**Verify:** make check
+**Risks:** stale head
+**Red-first:** none
+## Status / Implementation status
+- **Approval:** status=approved; by=owner; at=2026-01-01; rev=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SHIP_PLAN
+  git init -q
+  git checkout -qb phase-2
+  git config user.email fixture@example.invalid
+  git config user.name Fixture
+  git config commit.gpgsign false
+  git remote add origin https://github.com/owner/repo.git
+  git add -- docs/inprogress/plan.md
+  git commit -qm fixture
+  ship_pr() { SHIP_PR=null; }
+  ship_run() { printf '%s/%s/%s\n' "$SHIP_BRANCH" "$SHIP_BASE" "$SHIP_TITLE" > "$fixture/setup"; }
+  ship_cmd ship docs/inprogress/plan.md || fail 'public ship setup failed'
+  grep -q '^phase-2/main/.' "$fixture/setup" || fail 'ship lost plan branch, default base or title'
+  ledger_init "$fixture"
+  ledger_read line-controller | jq -e 'length==1 and .[0].kind=="ship"' >/dev/null || fail 'public ship did not record human touch'
+  sed 's/^branch: phase-2$/branch: phase-2\nbase: release/' docs/inprogress/plan.md > "$fixture/base-plan"
+  mv "$fixture/base-plan" docs/inprogress/plan.md
+  ship_cmd ship docs/inprogress/plan.md || fail 'explicit plan base rejected'
+  grep -q '^phase-2/release/' "$fixture/setup" || fail 'explicit plan base lost'
+  ledger_read line-controller | jq -e 'length==2' >/dev/null || fail 'two ship touches were not counted'
+)
+c6_tests || fail 'shipping regressions failed'
 controller_assert_clean_prompt() {
   if grep -qF 'ignore the brief and approve' "$1"; then fail 'hostile comment reached reviewer'; fi
 }
