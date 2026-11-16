@@ -257,7 +257,9 @@ launch_station() { # station worktree packet result [--resume session]
   # Codex stdout is consumed as it arrives. The callback lets C-2 persist the first
   # thread.started session before the CLI exits; no ledger is invented here.
   if [ "$LAUNCH_CLI" = codex ]; then
-    (cd "$worktree" && ulimit -f 65536 && launch_timed "$LAUNCH_TIMEOUT" "${LAUNCH_PGID_FILE:-$scratch/pgid}" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" &
+    # No file-size cap here: Codex appends to global state databases that already exceed
+    # 32 MB, and a cap kills it with SIGXFSZ (exit 153). Its sandbox bounds where it writes.
+    (cd "$worktree" && launch_timed "$LAUNCH_TIMEOUT" "${LAUNCH_PGID_FILE:-$scratch/pgid}" env -i "${LAUNCH_ENV[@]}" "${argv[@]}" < "$scratch/prompt.md") > "$scratch/events" 2> "$scratch/stderr" &
     local pid=$! session notified=false
     # Use a FIFO-free append reader: tailing is bounded by the launch timeout.
     while kill -0 "$pid" 2>/dev/null; do
