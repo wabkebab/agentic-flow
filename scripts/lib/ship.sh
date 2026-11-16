@@ -24,14 +24,16 @@ ship_pr() {
 ship_ci() {
   local listing latest
   listing=$(handoff_gh api "repos/$HANDOFF_REPO/actions/workflows/${REVIEW_WORKFLOW##*/}/runs?head_sha=$SHIP_HEAD&per_page=100") || return 5
-  latest=$(printf '%s' "$listing" | jq -ec --arg head "$SHIP_HEAD" --arg workflow "$REVIEW_WORKFLOW" '
-    .workflow_runs | select(type=="array" and length<100) |
+  latest=$(printf '%s' "$listing" | jq -c --arg head "$SHIP_HEAD" --arg workflow "$REVIEW_WORKFLOW" '
+    .workflow_runs | if type=="array" and length<100 then . else error("invalid run listing") end |
     if all(.[];(.id|type)=="number" and .id>0 and (.id|floor)==.id and
       (.created_at|type)=="string" and (.created_at|fromdateiso8601)>0 and
       (.head_sha|type)=="string" and (.path|type)=="string") then . else error("invalid runs") end |
     map(select(.head_sha==$head and (.path|split("@")[0])==$workflow)) | sort_by(.created_at,.id) | last') || {
-      ship_error "no run for $SHIP_HEAD yet"; return 1;
+      ship_error 'invalid policy workflow run listing'; return 5;
     }
+  [ -n "$latest" ] || return 5
+  [ "$latest" != null ] || { ship_error "no run for $SHIP_HEAD yet"; return 13; }
   SHIP_RUN_ID=$(printf '%s' "$latest" | jq -r .id)
   SHIP_RUN_URL="https://github.com/$HANDOFF_REPO/actions/runs/$SHIP_RUN_ID"
   SHIP_RUN=$(handoff_gh api "repos/$HANDOFF_REPO/actions/runs/$SHIP_RUN_ID") || return 5
@@ -43,11 +45,30 @@ ship_ci() {
   [ "$(printf '%s' "$SHIP_RUN" | jq -r .status)" = completed ] || return 12
   [ "$(printf '%s' "$SHIP_RUN" | jq -r .conclusion)" = success ] || { ship_error "CI failed: $SHIP_RUN_URL attempt=$SHIP_ATTEMPT"; return 1; }
 }
+# Only the phase immediately after our push gets a registration grace period.
+# 13 means no matching run yet; malformed responses and failed runs are fatal.
+ship_wait_visibility() {
+  local start rc
+  start=$(date +%s)
+  while :; do
+    ship_pr || return $?
+    if [ "$SHIP_PR" != null ] && [ "$(printf '%s' "$SHIP_PR" | jq -r .headRefOid)" = "$SHIP_HEAD" ]; then
+      rc=0; ship_ci || rc=$?
+      case "$rc" in 0|12) return 0 ;; 13) ;; *) return "$rc" ;; esac
+    fi
+    [ "$(( $(date +%s)-start ))" -lt 120 ] || {
+      ship_error "PR head or policy CI run still not visible for $SHIP_HEAD after two minutes"; return 1;
+    }
+    sleep 10
+  done
+}
+
 ship_wait_ci() {
   local start rc
   start=$(date +%s)
   while :; do
     rc=0; ship_ci || rc=$?
+    [ "$rc" -ne 13 ] || return 1
     if [ "$rc" -ne 12 ]; then return "$rc"; fi
     [ "$(( $(date +%s)-start ))" -lt 1800 ] || { ship_error "CI still running: $SHIP_RUN_URL"; return 1; }
     sleep 10
@@ -88,8 +109,7 @@ ship_run() {
     printf 'commit the staged close-out, then run ship again\n'; return 0 ;;
   esac
   git push -- origin "refs/heads/$SHIP_BRANCH:refs/heads/$SHIP_BRANCH" || return 1
-  ship_pr || return $?
-  [ "$SHIP_PR" != null ] && [ "$(printf '%s' "$SHIP_PR" | jq -r .headRefOid)" = "$SHIP_HEAD" ] || { ship_error "PR head differs from $SHIP_HEAD"; return 1; }
+  ship_wait_visibility || return $?
   ship_wait_ci || return $?
   start=$(date +%s)
   while :; do
