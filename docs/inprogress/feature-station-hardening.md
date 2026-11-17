@@ -104,6 +104,9 @@ agentic-flow doctor --stations [--station executor|reviewer] [--json]
   per station: {station, cli, launched, exit, session_captured, result_parsed,
                 writable: {worktree, agents, commit_paths},
                 denied:   {verify_dir, ledger_dir},   # true | false | "unenforced"
+                attempts: {<operation>: {ran, exit, error}},  # evidence from the probe script's log
+                # a property passes only with an attempt entry AND the matching filesystem state;
+                # a missing entry fails as "attempt not made", and a missing file never proves denial
                 seconds, error}
   exit 0 all pass; 1 any fail; 6 a station is manual or unconfigured and was skipped
 fingerprint(station) = sha256 over: scripts/lib/launch.sh, scripts/lib/station-output.jq,
@@ -114,9 +117,14 @@ fingerprint(station) = sha256 over: scripts/lib/launch.sh, scripts/lib/station-o
 # T-1
 agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--force] [--json]
   reuse: a passing record whose sha, tree, step id, red base, ordered command list,
-         verifier implementation_sha256, signature-source Makefile blob, harness
-         version and tool versions all equal what this call would run → print it,
-         exit 0, run nothing, say "reused"
+         verifier digest, signature-source Makefile blob, harness version and tool
+         versions all equal what this call would run → print it, exit 0, run
+         nothing, say "reused"
+  verifier digest = sha256 over scripts/lib/verify-step.sh AND scripts/lib/verify-record.sh
+         (stored as verifier.implementation_sha256; packet computes it with the same function)
+  passed: the record stores `passed`, and every command entry stores `role`
+         (green | prepare | red-first). Green and prepare entries must exit 0. A red-first
+         entry is an expected failure: it must exit nonzero with status `red` in `red_first`.
   --force: always run; overwrite the record
   one shared predicate (scripts/lib/verify-record.sh) is used by verify-step and by packet
 
@@ -143,7 +151,7 @@ agentic-flow hold clear <doc> <hold-id> [--rebaseline] [--note <text>]
 
 The probe runs real CLIs with the user's provider credentials, under the same isolation as a station, with a fixed prompt and no repository content. Since `efc36e0` the Codex sandbox can write the shared `objects`, `refs/heads` and `logs`. That is what a commit needs, and none of those directories holds verify records or the ledger. P-1 makes that boundary a tested property for the CLIs that have an OS sandbox (Codex, Claude): a station that can write the verify or ledger directory could forge evidence, and T-1's reuse relies on it. **OpenCode has no OS sandbox**, so the property cannot be tested for it; the probe reports `unenforced` rather than a pass. The residual is small under the controller's ordering. A record is keyed by commit and tree, the reviewer only ever sees a head that is already verified, and the executor, whose commits are the new heads, runs in a sandbox that denies the directory. A reviewer could not know a future head's sha. Step h-3 adds this exposure to the `opencode-station-network` accepted risk so it is on record. Stored output tails can contain whatever the station printed, so they stay in the git common directory, which is never pushed, and the provider key values are redacted.
 
-T-1 turns a stored record into permission to skip a gate. The key therefore includes everything that decides the outcome (commit, tree, step, red base, command list, verifier hash, signature source, harness and tool versions), and only passing records are reused. A human can still edit a record by hand, as they can skip any local gate today. CI does not use local records and runs the full suite.
+T-1 turns a stored record into permission to skip a gate. The key therefore includes everything that decides the outcome (commit, tree, step, red base, command list, a digest of every verifier file, signature source, harness and tool versions), and only passing records are reused, where "passing" means green commands exited 0 and red-first commands failed as expected. A human can still edit a record by hand, as they can skip any local gate today. CI does not use local records and runs the full suite.
 
 ## Failure behavior
 
@@ -239,14 +247,14 @@ Do not raise a ceiling. Only h-4 edits a contract: the reviewer skill, which is 
 
 **P-1**
 5. **The probe catches the historical defects.** With strict stubs, the probe fails and names the cause for each of: a quoted `-c` key, a commit path outside the sandbox, a read-only `.agents/`, a file-size cap that makes the CLI exit 153, a caller-chosen OpenCode session id, and an OpenCode session id the ledger rejects.
-6. **Boundary property.** A stub sandbox that lets the model write the verify or ledger directory fails the probe with `denied.verify_dir` or `denied.ledger_dir` false. For OpenCode the report says `"unenforced"`, which is neither a pass nor a failure.
+6. **Boundary property, with evidence.** A stub sandbox that lets the model write the verify or ledger directory fails the probe with `denied.verify_dir` or `denied.ledger_dir` false. A stub that returns valid result JSON but skips the forbidden writes (no attempt entry, no file) fails with "attempt not made", never as a pass. An attempt entry that claims denial with exit 0, or without a permission-class error, fails. The same holds for each allowed write: an entry without the file, or a file without an entry, fails. For OpenCode the report says `"unenforced"`, which is neither a pass nor a failure.
 7. **Probe only on change.** After a pass, `run` does not probe again. Changing `launch.sh`, the profile, the roles row or the CLI's `--version` output makes the next unattended `run` probe. `doctor --stations` always probes. `run --once` never auto-probes.
-8. **The probe leaves nothing behind.** The throwaway worktree and branch are gone after a pass and after a failure. HEAD, branches, status, the verify directory and the ledger are unchanged. The checks read the filesystem, never the model's claims.
+8. **The probe leaves nothing behind.** The throwaway worktree and branch are gone after a pass and after a failure. HEAD, branches, status, the verify directory and the ledger are unchanged. Each property is decided from the attempt log together with the filesystem, never from the model's reply, and an absent file alone never proves a denial.
 9. **A failed probe in unattended `run`** raises the `station-infrastructure` hold, starts no station and exits 10.
 
 **T-1**
-10. **Reuse.** A second `verify-step <sha> --doc <doc> --step <id>` for the same head runs no command (a logging fake `make` sees none), prints the stored record, says "reused" and exits 0. `--force` runs again and overwrites.
-11. **No reuse when any key part differs:** another sha or tree, step, red base or command list; an edited `verify-step.sh`; a changed Makefile blob at the signature source; another harness version or tool version; a record that did not pass; an unreadable, oversized or hand-corrupted record. Each runs the full verification.
+10. **Reuse.** A second `verify-step <sha> --doc <doc> --step <id>` for the same head runs no command (a logging fake `make` sees none), prints the stored record, says "reused" and exits 0. This holds for a step with red-first selectors: the record contains red-first entries with nonzero exits and status `red`, and it is reused. `--force` runs again and overwrites.
+11. **No reuse when any key part differs:** another sha or tree, step, red base or command list; an edited `verify-step.sh`; an edited `verify-record.sh` alone (the helper-only change must invalidate the record, and packet must report it stale); a record whose red-first entry has status `invalid` or `green`, or whose green command exited nonzero; a changed Makefile blob at the signature source; another harness version or tool version; a record that did not pass; an unreadable, oversized or hand-corrupted record. Each runs the full verification.
 12. **No gate skipping.** A record from `verify-step <sha>` with no `--step` (which ran only `make check`) is not reused for a call with `--step`.
 13. **Controller and packet.** With a fresh record from an interactive run, `controller_verify` writes a `verify` ledger record marked reused and launches nothing. The reviewer packet carries the record through the same predicate and says "stale or invalid record; run verify-step" for a stale one.
 14. **Contract.** The reviewer skill is at most 1000 words and says: read the packet's record first; re-run only a narrower command and name it. Every group's contract and sync checks pass.
@@ -325,7 +333,7 @@ scripts/doctor.sh --check
 **Approach:**
 1. Add `agentic-flow doctor --stations` to the dispatcher in `scripts/agentic-flow`, backed by a new `scripts/lib/probe.sh`. `scripts/doctor.sh` stays an adoption report and does not gain model calls.
 2. Share the launcher's code, never copy it. Factor `launch_station`'s argv, environment, ulimit and sandbox-root construction so the probe and a real launch use the same path, with a probe mode that swaps the prompt bundle for a fixed tiny prompt. A copy would drift, and the drift is how the defects hid.
-3. The probe runs in a throwaway linked worktree of the real repository on a detached branch, so the sandbox roots and the denied directories are the real ones (`<common>/agentic-flow/verify` and `…/ledger`). The fixed prompt asks the station to create a file in the worktree and in `.agents/`, commit it, and try to create a file in each denied directory. The probe then reads the filesystem to decide each property; it never trusts the model's reply. Remove the throwaway worktree, branch and any stray file on every exit path.
+3. The probe runs in a throwaway linked worktree of the real repository on a detached branch, so the sandbox roots and the denied directories are the real ones (`<common>/agentic-flow/verify` and `…/ledger`). The probe commits a fixed probe script into that worktree, and the fixed prompt asks the station only to run it. The script itself creates a file in the worktree and in `.agents/`, commits it, and tries to create a file in each denied directory, appending one line per attempt (operation, exit status, error text) to a log in the worktree. A property passes only when the log has the attempt and the filesystem agrees: an allowed operation needs exit 0 and its effect on disk; a denied one needs a nonzero exit with a permission-class error and the target absent. A missing log line fails as "attempt not made", so a station that skips a forbidden write can never pass by leaving no file. The probe never trusts the model's reply. This is a regression canary for the launcher and sandbox, not a test against a hostile station, which could write fake log lines. Remove the throwaway worktree, branch and any stray file on every exit path.
 4. Session capture and result parsing go through `launch_session_record`, `station-output.jq` and the ledger's session record, so the probe fails for the same reasons a station would.
 5. Add `launch_fingerprint` per the Interface, and the state file under `<common>/agentic-flow/probe/`. In an unattended `run`, probe a station whose fingerprint differs from its last passing probe before its first launch; `run --once` does not. A failed probe raises the `station-infrastructure` hold (the controller's hold path) and starts no station.
 6. Report `denied` as `"unenforced"` for a CLI without an OS sandbox (OpenCode). Add one paragraph to `docs/accepted_risks.md#opencode-station-network` saying OpenCode can write the verify and ledger directories and why that is acceptable (Part A, Threat model). Add the `launch` tag to the new tests.
@@ -335,7 +343,7 @@ scripts/doctor.sh --check
 
 **DoD:** scenarios 5 to 9 pass. `agentic-flow doctor --stations --json` against the strict stubs reports every property. The accepted-risk entry carries the new paragraph.
 **Verify:** `make test-one F=controller S=launch`
-**Risks:** the probe and a real launch diverging (one code path); a probe that leaves a worktree, branch or file when killed (trap on every exit, and a leftover-detection test); a probe that touches the real verify or ledger directory (it must only attempt, and the harness removes any file it finds); trusting the model's account of what it wrote; real model calls leaking into `make test`; a fingerprint that misses the CLI version; probing before every station (change only); claiming a tested boundary for OpenCode.
+**Risks:** the probe and a real launch diverging (one code path); a probe that leaves a worktree, branch or file when killed (trap on every exit, and a leftover-detection test); a probe that touches the real verify or ledger directory (it must only attempt, and the harness removes any file it finds); trusting the model's account of what it wrote, or reading an absent file as a denial (the attempt log is the evidence); real model calls leaking into `make test`; a fingerprint that misses the CLI version; probing before every station (change only); claiming a tested boundary for OpenCode.
 **Red-first:** `scripts/self-test.sh --only controller --scenario launch` — scripts/self-test.sh scripts/tests/controller.sh
 **Commit:** `Probe each station CLI through the real launcher before it runs a plan`
 
@@ -345,17 +353,17 @@ scripts/doctor.sh --check
 **Why fourth:** from here every commit is verified once, and it needs the boundary h-3 tests. A record is permission to skip a gate, so its key must cover everything that decides the result.
 
 **Approach:**
-1. Extract one freshness predicate into `scripts/lib/verify-record.sh` and use it from both `verify-step` and `packet.sh`, so the two cannot drift. `packet.sh` today checks only version, sha, tree, verifier hash and the signature-source types (`packet.sh:99-102`).
-2. The stored record names neither the step nor the commands it ran. Add the fields reuse needs (the step id, the red base, a hash of the ordered command list including red-first selectors and paths, and the Makefile blob id at the signature source) without changing any field `packet.sh` reads, so older records stay readable and simply do not match.
-3. In `verify-step`, after the step is selected and the command list is known and before any worktree is created, look up `<common>/agentic-flow/verify/<sha>.json`. Reuse only a record whose own contents show it passed (every command exit 0, prepare exit 0, every red-first status `red`) and whose key equals the current call's. Anything else, including a read error or a record over 256 KiB, runs the full verification. `--force` skips the lookup.
+1. Extract one freshness predicate into `scripts/lib/verify-record.sh` and use it from both `verify-step` and `packet.sh`, so the two cannot drift. `packet.sh` today checks only version, sha, tree, a hash of `verify-step.sh` alone and the signature-source types (`packet.sh:97-102`). The verifier digest must now cover `verify-step.sh` and `verify-record.sh`, computed by one function both callers use, because the new helper decides what counts as fresh. Store it in the existing `verifier.implementation_sha256` field; older records then fail the comparison and re-run.
+2. The stored record names neither the step nor the commands it ran. Add the fields reuse needs (the step id, the red base, a hash of the ordered command list including red-first selectors and paths, the Makefile blob id at the signature source, a `passed` boolean, and a `role` on every command entry: `green`, `prepare` or `red-first`) without changing any field `packet.sh` reads, so older records stay readable and simply do not match. The verifier appends each red-first selector's run to `.commands` (`verify-step.sh:183`) and expects it to fail, so a rule of "every command exits 0" would reject every record that has red-first evidence.
+3. In `verify-step`, after the step is selected and the command list is known and before any worktree is created, look up `<common>/agentic-flow/verify/<sha>.json`. Reuse only a record whose own contents show it passed: `passed` is true, every `green` and `prepare` entry exited 0, and every `red-first` entry exited nonzero with its `red_first` status `red` (not `invalid`, not `green`). The key must also equal the current call's. Anything else, including a read error or a record over 256 KiB, runs the full verification. `--force` skips the lookup.
 4. `controller_verify` records reuse in its `verify` ledger record and launches nothing for a reused record.
-5. Edit `.agents/skills/review-execution/SKILL.md` (lines 46-47 and 75) so the reviewer reads the packet's record first and re-runs only a narrower command it names and records, per the 2026-11-17 decision. Stay at or below 1000 words; trim as you add. Run the contract and sync checks.
+5. Edit `.agents/skills/review-execution/SKILL.md` (lines 46-47 and 75; line 75 names `verify-step.sh` alone as the hash source and must say verifier digest) so the reviewer reads the packet's record first and re-runs only a narrower command it names and records, per the 2026-11-17 decision. Stay at or below 1000 words; trim as you add. Run the contract and sync checks.
 
 **Test:** scenarios 10 to 14, in `scripts/tests/stations.sh` (verify and packet) and the controller's verify path. Failure path first: each key part differing, a failed record, a corrupt record, an oversized one, and the record from a call without `--step`.
 
 **DoD:** scenarios 10 to 14 pass. The reviewer skill is at most 1000 words. A second `verify-step` on an unchanged head runs nothing.
 **Verify:** `make test-one F=stations`, `make test-one F=contracts`, and `make test-one F=controller S=recovery`
-**Risks:** reusing a record made for a weaker call (scenario 12 is the guard); reusing a failed record and hiding a flaky pass; a key that misses the tree and treats an amended commit as verified; the verifier editing itself without invalidating records; packet and verify-step predicates drifting (one function); a stale record that blocks forever (`--force` and the full-run fallback); the skill edit pushing the reviewer bundle over its ceiling.
+**Risks:** reusing a record made for a weaker call (scenario 12 is the guard); reusing a failed record and hiding a flaky pass; a key that misses the tree and treats an amended commit as verified; the verifier or its helper editing itself without invalidating records (the digest covers both files); rejecting a good record because red-first runs exit nonzero; packet and verify-step predicates drifting (one function); a stale record that blocks forever (`--force` and the full-run fallback); the skill edit pushing the reviewer bundle over its ceiling.
 **Red-first:** `scripts/self-test.sh --only stations` — scripts/self-test.sh scripts/tests/stations.sh
 **Commit:** `Reuse a passing verify record for the same commit, tree, step and commands`
 
