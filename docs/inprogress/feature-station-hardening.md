@@ -459,7 +459,7 @@ Claude, on `phase-2b`, after the last approval, and before the human merges:
 
 ## Status / Implementation status
 - **Evidence schema:** v2
-- **Tracking issue:** pending
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/150
 - **Approval:** status=approved; by=wabkebab; at=2026-11-17; rev=7cbe01e638d4f641b657da4b1c6de936c2b07ee0
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
