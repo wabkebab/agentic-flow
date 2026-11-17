@@ -32,7 +32,9 @@ Controller stations return result JSON and never call `handoff`; the controller 
 and journals their results. Interactive executors use `brief`, `verify-step`, and
 `handoff submit`; reviewers use `packet`, `verify-step`, and `handoff approve|bounce`.
 States live in `METHODOLOGY.md` §6. `ship` handles push, PR and close-out gates;
-the human commits the staged close-out when prompted and runs `ship` again.
+Claude, as closer, commits the staged close-out when `ship` prompts, then the human
+runs `ship` again. Closers use `close-out prep <doc> --pr <url>`, commit the candidate,
+then `close-out finish <moved-doc>` after the human pushes and final-head evidence passes.
 A closed step means reviewed clean; the Status block and CI record shipping.
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
