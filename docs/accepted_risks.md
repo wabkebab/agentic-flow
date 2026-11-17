@@ -9,6 +9,37 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="phase2-merged-before-final-approval"></a>
+## C-8 — Phase 2 merged before final-head approval
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-17
+**Decided by:** Human owner, at the Phase 2 close-out
+**Tracking:** docs/done/feature-line-controller.md; tracker #138; PR #149
+
+### Finding / proposal
+PR #149 (`3cb787d`) merged before `close-out prep` and the reviewer's `final-approve` ran.
+The PR head `4531232` therefore has no final-head approval marker, and `final-approve`
+exits 3 because no open PR remains. `lifecycle-status.sh --phase close-out` reports
+`UNVERIFIED`, and the tracker's close transition is guarded by `lifecycle-ready`.
+
+### Proposed mitigation / implementation
+Open a close-out PR from a branch off `main`, have the reviewer approve its head, and run
+`close-out finish` against it (the declined alternative). Phase 2's own head would still
+stay unattested.
+
+### Acceptance rationale
+Every step (c-1 to c-7, issues #139-#145) was reviewed and approved clean, and CI
+concluded success on the PR head (run 44075205553, attempt 1). The missing piece is the
+single final-head attestation. The close-out commits on `main` (`2a20883`, `d626a41`)
+are bookkeeping, the 0.16.0 release notes and a roadmap update. The owner closes #138
+by hand, because the gate has no bypass.
+
+### Revisit if
+- A second plan merges ahead of `ship` reporting READY. Then make the merge order a
+  hook or required check, not a convention.
+- Phase 4 R-13 lands native PR reviews required on `main`, which makes this impossible.
+
 <a id="opencode-station-network"></a>
 ## C-1 — OpenCode stations can reach the network
 
