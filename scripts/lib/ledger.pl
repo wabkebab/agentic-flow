@@ -126,13 +126,14 @@ sub validate {
     $r->{chain} eq join('/',@p[0..4]) && integer($r->{issue},1) && $r->{issue}==$p[1] && integer($r->{seq_before}) && $r->{seq_before}==$p[2] && $r->{station} eq $p[3] or fail('intent identity disagrees with run');
     identifier($r->{step}) && member($r->{cli},qw(claude codex opencode)) && string($r->{model},256) && string($r->{host},256) or fail('invalid intent assignment');
     member($r->{reason},qw(initial relaunch resume-result resume-packet fresh-result resume-valid fix resume-dirty fresh-dirty)) or fail('invalid launch reason');
-    member($r->{session_mode},qw(new resume fresh-reassigned)) or fail('invalid session mode');
+    member($r->{session_mode},qw(new resume fresh-reassigned fresh-dead fresh-launcher-changed)) or fail('invalid session mode');
     for (qw(resume_of session)) { !defined($r->{$_}) || (string($r->{$_},256) && length($r->{$_})) or fail('invalid session'); }
     !defined($r->{reassigned_from}) || member($r->{reassigned_from},qw(claude codex opencode)) or fail('invalid reassigned CLI');
     sha($r->{base_head},40) && sha($r->{packet_sha256},64) or fail('invalid intent hashes');
     run_parts($r->{replaces},$plan) if defined($r->{replaces});
     !exists($r->{profile}) || string($r->{profile}) or fail('invalid profile');
     !exists($r->{contract_mode}) || member($r->{contract_mode},qw(native excluded overridden)) or fail('invalid contract mode');
+    !exists($r->{fingerprint}) || sha($r->{fingerprint},64) or fail('invalid launcher fingerprint');
   } elsif ($k eq 'session') {
     required($r,'session'); string($r->{session},256) && length($r->{session}) or fail('invalid session id');
   } elsif ($k eq 'station') {
@@ -217,8 +218,9 @@ sub apply_record {
       push @{$run->{handoffs}},$r;
     } else {
       !exists($run->{$k}) or fail("duplicate $k record");
-      # Codex and OpenCode issue their own session id, so it is recorded once the CLI reports it.
-      if ($k eq 'session') { $run->{intent}{cli} =~ /^(?:codex|opencode)$/ && !$run->{station} or fail('session must precede Codex or OpenCode station'); }
+      # Record captured ids before the station, including confirmation that
+      # Claude actually started the caller-chosen session.
+      if ($k eq 'session') { !$run->{station} or fail('session must precede station'); }
       if ($k eq 'station' && defined($r->{result})) { result_valid($r->{result},$run->{intent}{station}); }
       if ($k eq 'verify') { !$run->{decision} && $run->{station} && !defined($run->{station}{invalid_reason}) && ($run->{station}{result}{outcome}//'') eq 'submitted' && $r->{head} eq $run->{station}{result}{head} or fail('verify requires submitted station/head before decision'); }
       if ($k eq 'decision') {
@@ -375,7 +377,10 @@ sub diagnostic_note {
     my @p=run_parts($run,$plan); $answer=File::Spec->catfile($base,'runs',@p,'decision.md');
     $answer =~ s/'/'"'"'/g; $answer="'$answer'";
   }
-  my $footer="Ledger: ".join("\n",@paths)."\nRetry: scripts/agentic-flow handoff $issue resume --as approver --body-file $answer\n";
+  my $retry=$cause =~ /^station-infrastructure:/
+    ? "scripts/agentic-flow handoff $issue hold-clear --as approver --hold-id <hold-id>; then run the plan again"
+    : "scripts/agentic-flow handoff $issue resume --as approver --body-file $answer";
+  my $footer="Ledger: ".join("\n",@paths)."\nRetry: $retry\n";
   # Leave room for the transition/hold markers and owner mention added by handoff.
   my $budget=3200-length(encode('UTF-8',$header.$footer));
   $budget>=0 or fail('diagnostic identity exceeds comment budget');
@@ -434,7 +439,7 @@ sub summaries {
     my $c=$state->{chains}{$chain}; my $id=$c->{latest}; my $r=$state->{runs}{$id}; my $intent=$r->{intent};
     my ($invalid,$fixes,$recoveries)=(0,0,0);
     for my $run (@{$c->{runs}}) {
-      my $x=$state->{runs}{$run}; $invalid++ if $x->{station} && defined($x->{station}{invalid_reason});
+      my $x=$state->{runs}{$run}; $invalid++ if $x->{station} && defined($x->{station}{invalid_reason}) && $x->{station}{invalid_reason} !~ /^pre-launch failure/;
       $fixes++ if $x->{intent}{reason} eq 'fix';
       $recoveries++ if member($x->{intent}{reason},qw(relaunch resume-result resume-packet fresh-result resume-dirty fresh-dirty));
     }
@@ -443,6 +448,7 @@ sub summaries {
     my $ctx=$context->{$id}//{};
     if (!$closed) {
       if ($r->{decision}) { $pending='handoff'; }
+      elsif ($r->{station} && ($r->{station}{invalid_reason}//'') =~ /^pre-launch failure/) { $pending='infrastructure'; }
       elsif ($r->{station} && $r->{station}{exit}==124) { $pending='decide'; $escalation='station timed out'; }
       elsif ($r->{station} && ($r->{station}{invalid_reason}//'') eq 'bad claimed head') { $pending='decide'; $escalation='bad claimed head'; }
       elsif ($r->{station} && defined($r->{station}{invalid_reason})) { $pending=$invalid<2 ? 'resume-valid' : 'decide'; $escalation='malformed station result' if $invalid>=2; }

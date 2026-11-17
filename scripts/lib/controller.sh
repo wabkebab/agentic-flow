@@ -436,6 +436,17 @@ controller_pending() { # Rule f then g, oldest chain first. Only decide/handoff 
     fi
     [ "$run" != "$CT_REVIEWER_ESCALATE" ] || { pending=decide; item=$(printf '%s' "$item" | jq '.pending="decide"|.escalation="reviewer edited the worktree"'); }
     case "$pending" in
+      infrastructure)
+        rc=0; controller_superseded "$item" || rc=$?
+        case "$rc" in
+          0) ;;
+          1)
+            local infrastructure_intent infrastructure_reason
+            infrastructure_intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
+            infrastructure_reason=$(printf '%s' "$CT_RECORDS" | jq -r --arg run "$run" '.[]|select(.kind=="station" and .run==$run)|.invalid_reason')
+            controller_hold "$(printf '%s' "$infrastructure_intent" | jq .issue)" station-infrastructure "$infrastructure_reason" "$run" || return $? ;;
+          *) return "$rc" ;;
+        esac ;;
       decide)
         controller_decide "$item" || return $?
         CT_RECORDS=$(ledger_read "$CT_PLAN") || return 5
@@ -481,7 +492,8 @@ controller_gate() {
   done
   ROLES_JSON=$CT_ASSIGNMENTS
   roles_same_model "$CT_ROOT" || return 6
-  for role in executor reviewer; do launch_preflight "$role" "$CT_ROOT" || return 6; done
+  # Check launch readiness in the plan checkout at dispatch, where failures can
+  # use the infrastructure hold path after the ledger has been loaded.
 }
 controller_finished() {
   printf '%s' "$CT_REPORT" | jq -e '
@@ -579,11 +591,31 @@ controller_probe() { # station; once mode never auto-probes
       return 10
     fi
   fi
-  launch_preflight "$1" "$CT_WORKTREE" || return 6
+  if ! launch_preflight "$1" "$CT_WORKTREE" > "$CT_TMP/preflight" 2>&1; then
+    controller_hold "$CT_TRACKER" station-infrastructure "Launch preflight failed for $1: $(cat "$CT_TMP/preflight")" || return $?
+    return 10
+  fi
+}
+
+controller_retry_session() { # old intent fingerprint; set caller's resume/mode/from
+  local old=$1 fingerprint=$2 candidate used
+  if [ "$(printf '%s' "$old" | jq -r .cli)" != "$LAUNCH_CLI" ] || [ "$(printf '%s' "$old" | jq -r '.profile//""')" != "${LAUNCH_PROFILE#"$LAUNCH_ROOT"/}" ]; then
+    mode=fresh-reassigned; from=$(printf '%s' "$old" | jq -r .cli)
+    return 0
+  fi
+  candidate=$(printf '%s' "$CT_RECORDS" | jq -r --arg run "$(printf '%s' "$old" | jq -r .run)" '[.[]|select(.kind=="session" and .run==$run)]|last|.session//""')
+  used=$(printf '%s' "$CT_RECORDS" | jq --arg run "$(printf '%s' "$old" | jq -r .run)" 'any(.[];.kind=="station" and .run==$run and ((.usage.input//0)>0 or (.usage.output//0)>0))')
+  if [ "$(printf '%s' "$old" | jq -r '.fingerprint//""')" != "$fingerprint" ]; then mode=fresh-launcher-changed
+  elif [ -z "$candidate" ] || [ "$used" != true ]; then mode=fresh-dead
+  else resume=$candidate; mode=resume; fi
+}
+controller_prelaunch_failure() { # exit metadata captured-session (never a preassigned id)
+  [ "$1" -ne 0 ] && [ -z "$3" ] && printf '%s' "$2" | jq -e '
+    .seconds>=0 and .seconds<5 and (.usage.input//0)==0 and (.usage.output//0)==0' >/dev/null
 }
 
 controller_dispatch() {
-  local item row station number step pending=initial replaces='' chain run seq gen nth=1 old=null candidate='' resume='' mode=new from='' base hash session='' rc=0 invalid='' result=null metadata snapshot intent
+  local item row station number step pending=initial replaces='' chain run seq gen nth=1 old=null resume='' mode=new from='' base hash session='' rc=0 invalid='' result=null metadata snapshot intent fingerprint captured launch_started
   item=$(printf '%s' "$CT_PENDING" | jq -c '.[0]//null')
   if [ "$item" != null ]; then
     replaces=$(printf '%s' "$item" | jq -r .head); pending=$(printf '%s' "$item" | jq -r .pending)
@@ -622,16 +654,18 @@ controller_dispatch() {
   # Profiles and effective project config belong to the plan checkout. They may
   # differ from the caller's checkout or have changed during an earlier station.
   controller_probe "$station" || return $?
+  launch_assignment "$station" "$CT_WORKTREE" || return 6
+  fingerprint=$(launch_fingerprint "$station" "$CT_WORKTREE") || {
+    [ "$CT_UNATTENDED" = true ] || return 6
+    controller_hold "$number" station-infrastructure "Cannot fingerprint the $station launcher." || return $?
+    return 10
+  }
   (cd "$CT_WORKTREE" && scripts/agentic-flow packet "$number" --station "$station") > "$CT_TMP/packet" || return $?
   if [ "$old" = null ]; then
     old=$(printf '%s' "$CT_RECORDS" | jq -c --argjson n "$number" --arg station "$station" '[.[]|select(.kind=="intent" and .issue==$n and .station==$station)]|last//null')
   fi
   if [ "$old" != null ]; then
-    candidate=$(printf '%s' "$CT_RECORDS" | jq -r --arg run "$(printf '%s' "$old" | jq -r .run)" --argjson old "$old" '([.[]|select(.kind=="session" and .run==$run)]|last|.session)//$old.session//$old.resume_of//""')
-    if [ -n "$candidate" ]; then
-      if [ "$(printf '%s' "$old" | jq -r .cli)" = "$LAUNCH_CLI" ] && [ "$(printf '%s' "$old" | jq -r '.profile//""')" = "${LAUNCH_PROFILE#"$LAUNCH_ROOT"/}" ]; then resume=$candidate; mode=resume
-      else mode=fresh-reassigned; from=$(printf '%s' "$old" | jq -r .cli); fi
-    fi
+    controller_retry_session "$old" "$fingerprint"
   fi
   if [ -n "$replaces" ]; then
     chain=$(printf '%s' "$item" | jq -r .chain)
@@ -657,8 +691,8 @@ controller_dispatch() {
   if [ -z "$resume" ] && [ "$LAUNCH_CLI" = claude ]; then session=$(perl -e 'printf "%08x-%04x-4%03x-8%03x-%012x",time,int(rand(65536)),int(rand(4096)),int(rand(4096)),int(rand(2**48))'); fi
   hash=$(shasum -a 256 "$CT_TMP/packet"); hash=${hash%% *}
   jq -n --arg run "$run" --arg chain "$chain" --arg replaces "$replaces" --arg reason "$pending" --arg plan "$CT_PLAN" --argjson number "$number" --arg step "$step" --arg station "$station" \
-    --arg cli "$LAUNCH_CLI" --arg model "$LAUNCH_MODEL" --arg profile "${LAUNCH_PROFILE#"$LAUNCH_ROOT"/}" --arg contract "$LAUNCH_CONTRACT_MODE" --arg resume "$resume" --arg session "$session" --arg mode "$mode" --arg from "$from" --argjson seq "$seq" --arg base "$base" --arg hash "$hash" --arg host "$CT_HOST" \
-    '{v:1,kind:"intent",run:$run,chain:$chain,replaces:(if $replaces=="" then null else $replaces end),reason:$reason,plan:$plan,issue:$number,step:$step,station:$station,cli:$cli,model:$model,profile:$profile,contract_mode:$contract,resume_of:(if $resume=="" then null else $resume end),session:(if $session=="" then null else $session end),session_mode:$mode,reassigned_from:(if $from=="" then null else $from end),seq_before:$seq,base_head:$base,packet_sha256:$hash,host:$host,started:(now|floor)}' > "$CT_TMP/record"
+    --arg cli "$LAUNCH_CLI" --arg model "$LAUNCH_MODEL" --arg profile "${LAUNCH_PROFILE#"$LAUNCH_ROOT"/}" --arg contract "$LAUNCH_CONTRACT_MODE" --arg fingerprint "$fingerprint" --arg resume "$resume" --arg session "$session" --arg mode "$mode" --arg from "$from" --argjson seq "$seq" --arg base "$base" --arg hash "$hash" --arg host "$CT_HOST" \
+    '{v:1,kind:"intent",run:$run,chain:$chain,replaces:(if $replaces=="" then null else $replaces end),reason:$reason,plan:$plan,issue:$number,step:$step,station:$station,cli:$cli,model:$model,profile:$profile,contract_mode:$contract,fingerprint:$fingerprint,resume_of:(if $resume=="" then null else $resume end),session:(if $session=="" then null else $session end),session_mode:$mode,reassigned_from:(if $from=="" then null else $from end),seq_before:$seq,base_head:$base,packet_sha256:$hash,host:$host,started:(now|floor)}' > "$CT_TMP/record"
   intent=$(cat "$CT_TMP/record")
   controller_record intent || return 5
   if [ -n "$replaces" ]; then controller_fault after-replacement-intent || return $?; fi
@@ -670,20 +704,35 @@ controller_dispatch() {
   CT_CHILD_KIND=station
   rm -f "$LAUNCH_PGID_FILE"
   : > "$CT_TMP/result"
+  launch_started=$(date +%s)
   if [ -n "$resume" ]; then launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" --resume "$resume" > "$CT_TMP/launched" &
   else launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" > "$CT_TMP/launched" & fi
   CT_CHILD=$!
   wait "$CT_CHILD" || rc=$?
   CT_CHILD=''
   CT_STATIONS=$((CT_STATIONS+1))
-  [ "$rc" -ne 6 ] || return 6
+  # A supervised preflight refusal keeps its historical exit 6. An actual
+  # station exit (which has metadata) must still be classified below.
+  if [ "$rc" -eq 6 ] && [ ! -s "$CT_TMP/launched" ]; then
+    [ "$CT_UNATTENDED" = true ] || return 6
+    controller_hold "$number" station-infrastructure 'Launch preflight failed before station start.' "$run" || return $?
+    return 10
+  fi
   # A failed session callback aborts before any station record is published.
   if [ "${AGENTIC_CONTROLLER_TESTING:-}" = 1 ] && [ "${AGENTIC_CONTROLLER_FAULT:-}" = after-session ] && [ "$rc" -ne 0 ]; then return 5; fi
   controller_fault after-launch || return $?
   [ "$(git -C "$CT_WORKTREE" symbolic-ref --quiet --short HEAD)" = "$CT_BRANCH" ] || { controller_hold "$number" station-changed-branch 'Station changed the plan worktree branch.' "$run"; return 10; }
   metadata=$(cat "$CT_TMP/launched")
   if ! printf '%s' "$metadata" | jq -e 'type=="object" and (.seconds|type)=="number" and (.usage|type)=="object"' >/dev/null 2>&1; then
-    metadata='{"seconds":0,"usage":{"input":null,"output":null,"cost_usd":null}}'
+    metadata=$(jq -nc --argjson seconds "$(($(date +%s)-launch_started))" '{seconds:$seconds,usage:{input:null,output:null,cost_usd:null}}')
+  fi
+  CT_RECORDS=$(ledger_read "$CT_PLAN") || return 5
+  captured=$(printf '%s' "$CT_RECORDS" | jq -r --arg run "$run" '[.[]|select(.kind=="session" and .run==$run)]|last|.session//""')
+  # Claude's caller-chosen id alone is not evidence of a live session. Persist
+  # the session actually reported by its events, as for the other CLIs.
+  if [ -z "$captured" ]; then
+    captured=$(printf '%s' "$metadata" | jq -r '.session//""')
+    if [ -n "$captured" ]; then launch_session_record "$captured" || return 5; fi
   fi
   if controller_result_valid "$station" "$CT_TMP/result"; then result=$(cat "$CT_TMP/result")
   else invalid='malformed station result'; fi
@@ -692,6 +741,9 @@ controller_dispatch() {
   if [ "$result" != null ] && [ "$(printf '%s' "$result" | jq -r .outcome)" = submitted ] && [ "$(printf '%s' "$snapshot" | jq .dirty)" = true ]; then invalid='uncommitted changes after submit'; fi
   if [ "$result" != null ] && [ -z "$invalid" ] && ! controller_head_valid "$intent" "$result" "$row"; then
     invalid='bad claimed head'
+  fi
+  if controller_prelaunch_failure "$rc" "$metadata" "$captured"; then
+    invalid="pre-launch failure: exit $rc; seconds $(printf '%s' "$metadata" | jq .seconds)"
   fi
   jq -n --arg run "$run" --argjson exit "$rc" --argjson meta "$metadata" --argjson result "$result" --arg invalid "$invalid" \
     '{v:1,kind:"station",run:$run,exit:$exit,seconds:$meta.seconds,usage:$meta.usage,result:$result,invalid_reason:(if $invalid=="" then null else $invalid end),ended:(now|floor)}' > "$CT_TMP/record"

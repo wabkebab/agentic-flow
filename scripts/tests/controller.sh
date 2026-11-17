@@ -754,6 +754,53 @@ launch_tests() (
   export UNLISTED_HOST_VALUE=must-not-cross
   unset ANTHROPIC_API_KEY OPENAI_API_KEY
   . "$ROOT/scripts/lib/launch.sh"
+  # P-3/P-4 failure boundaries, without relying on wall-clock sleeps or ps.
+  (
+    . "$ROOT/scripts/lib/controller.sh"
+    local exit seconds tokens captured metadata expected status cli variant
+    for exit in 0 7 124; do
+      for seconds in 4.999 5 5.001; do
+        for tokens in null 0 1; do
+          for captured in '' captured-session; do
+            for direction in input output; do
+              metadata=$(jq -nc --argjson seconds "$seconds" --argjson tokens "$tokens" --arg direction "$direction" \
+                '{seconds:$seconds,usage:{input:null,output:null,cost_usd:0.1}}|.usage[$direction]=$tokens')
+              expected=1
+              if [ "$exit" != 0 ] && [ "$seconds" = 4.999 ] && [ "$tokens" != 1 ] && [ -z "$captured" ]; then expected=0; fi
+              status=0; controller_prelaunch_failure "$exit" "$metadata" "$captured" || status=$?
+              [ "$status" = "$expected" ] || fail "pre-launch boundary: exit=$exit seconds=$seconds tokens=$tokens session=$captured"
+            done
+          done
+        done
+      done
+    done
+    local old fingerprint resume mode from
+    LAUNCH_ROOT=/fixture LAUNCH_PROFILE=/fixture/profile
+    fingerprint=$(printf '%064d' 1)
+    for cli in claude codex opencode; do
+      LAUNCH_CLI=$cli
+      old=$(jq -nc --arg cli "$cli" --arg fingerprint "$fingerprint" \
+        '{run:"retry/1/0/executor/1/1",cli:$cli,profile:"profile",fingerprint:$fingerprint,session:"preassigned",resume_of:null}')
+      for variant in live dead no-session changed legacy reassigned; do
+        CT_RECORDS=$(jq -nc --arg variant "$variant" --arg run 'retry/1/0/executor/1/1' \
+          '[{kind:"station",run:$run,usage:{input:(if $variant=="dead" then null else 1 end),output:0}}] +
+           (if $variant=="no-session" then [] else [{kind:"session",run:$run,session:"captured"}] end)')
+        case "$variant" in
+          changed) old=$(printf '%s' "$old" | jq '.fingerprint=("a"*64)') ;;
+          legacy) old=$(printf '%s' "$old" | jq 'del(.fingerprint)') ;;
+          reassigned) old=$(printf '%s' "$old" | jq '.profile="other"') ;;
+        esac
+        resume='' mode=new from=''
+        controller_retry_session "$old" "$fingerprint"
+        case "$variant" in
+          live) [ "$resume/$mode" = captured/resume ] || fail "$cli live session did not resume" ;;
+          dead|no-session) [ "$resume/$mode" = /fresh-dead ] || fail "$cli dead attempt reused session" ;;
+          changed|legacy) [ "$resume/$mode" = /fresh-launcher-changed ] || fail "$cli launcher change reused session" ;;
+          reassigned) [ "$resume/$mode/$from" = "/fresh-reassigned/$cli" ] || fail "$cli reassignment reused session" ;;
+        esac
+      done
+    done
+  ) || fail 'retry and pre-launch boundary regressions failed'
   find_root() { printf '%s\n' "$C1/project"; }
   roles_load "$C1/project" || fail 'default roles failed'
   printf '%s' "$ROLES_JSON" | jq -e 'length==2 and all(.layer=="harness")' >/dev/null || fail 'defaults lost harness provenance'
@@ -1059,6 +1106,13 @@ launch_tests() (
     : > "$C1/gate"; probe_needed() { return 1; }
     controller_probe executor || fail 'cached unattended gate failed'
     [ "$(cat "$C1/gate")" = preflight ] || fail 'cached unattended gate probed again'
+    : > "$C1/gate"
+    launch_preflight() { printf 'cached launcher refused\n' >&2; return 6; }
+    rc=0; controller_probe executor || rc=$?
+    [ "$rc" = 10 ] && [ "$(cat "$C1/gate")" = '150 station-infrastructure' ] || fail 'cached preflight did not hold'
+    CT_UNATTENDED=false; : > "$C1/gate"
+    controller_probe executor || fail 'once mode ran unattended preflight'
+    [ ! -s "$C1/gate" ] || fail 'once mode raised a preflight hold'
   )
   return 0
 )
@@ -1473,6 +1527,16 @@ PREFIXES
   [ "$(ledger_generation demo 5 0 executor)" = 2 ] || fail 'ended generation not advanced'
   c2_intent 'demo/5/0/executor/2/1' || fail 'new generation failed'
   c2_expect demo '.[]|select(.chain=="demo/5/0/executor/2")|.remaining=={resume_valid:1,fix:1,recovery:3}'
+  c2_intent 'infrastructure/1/0/executor/1/1' || fail 'infrastructure intent failed'
+  jq -n '{v:1,kind:"station",run:"infrastructure/1/0/executor/1/1",exit:7,seconds:4.999,
+    usage:{input:null,output:0,cost_usd:null},result:null,invalid_reason:"pre-launch failure: fixture",ended:200}' |
+    c2_send station infrastructure || fail 'infrastructure station failed'
+  c2_expect infrastructure '.[0]|.pending=="infrastructure" and .escalation==null and .counts.invalid_results==0 and .remaining.resume_valid==1'
+  ledger_read infrastructure > "$c2/infrastructure-records"
+  printf 'station-infrastructure: pre-launch failure\n' > "$c2/infrastructure-cause"
+  ledger_backend diagnostic infrastructure 'infrastructure/1/0/executor/1/1' 1 "$c2/infrastructure-cause" "$c2/infrastructure-records" > "$c2/infrastructure-note" || fail 'infrastructure diagnostic failed'
+  grep -q 'handoff 1 hold-clear --as approver' "$c2/infrastructure-note" || fail 'infrastructure diagnostic omitted hold clear'
+  if grep -q 'handoff 1 resume' "$c2/infrastructure-note"; then fail 'infrastructure diagnostic requested journal resume'; fi
   c2_intent 'green/1/0/executor/1/1' || fail 'green intent failed'
   c2_station 'green/1/0/executor/1/1' submitted || fail 'green station failed'
   c2_decision 'green/1/0/executor/1/1' submit > "$c2/error" 2>&1 && fail 'unverified submit decision accepted'
@@ -2172,7 +2236,11 @@ if [ "$mode" = malformed ]; then
   printf 'malformed station evidence: %s\n' "${OPENAI_API_KEY:-none}" >&2
   printf '{}\n'; exit
 fi
-if [ "$mode" = timeout ]; then sleep 20; exit; fi
+if [ "$mode" = prelaunch ]; then printf 'launcher died at start\n' >&2; exit 7; fi
+if [ "$mode" = timeout ]; then
+  printf '%s\n' '{"type":"result","session_id":"timeout-session","usage":{"input_tokens":1}}'
+  sleep 20; exit
+fi
 if [ "$mode" = branch ]; then git checkout -qb escaped; exit; fi
 if [ "$mode" = reviewer-dirty ] && [ "$station" = reviewer ]; then printf 'review edit\n' > b; fi
 outcome=submitted; question=null; findings='[]'
@@ -2240,6 +2308,45 @@ MODEL
     test_timing_end
   }
   . "$ROOT/scripts/lib/brief.sh"
+  # A dead launcher holds without an ask, including a crash after its station
+  # record. Clearing the hold advances the generation with no journal resume.
+  for fault in none after-station; do
+    c5_reset; printf 'prelaunch\n' > "$state/mode"
+    if [ "$fault" = after-station ]; then
+      AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-station c5_run 5
+      c5_run 10
+    else c5_run 10; fi
+    [ "$(cat "$state/launches")" = 1 ] || fail 'infrastructure failure retried'
+    ledger_read recovery | jq -e 'any(.[];.kind=="station" and (.invalid_reason|startswith("pre-launch failure"))) and
+      any(.[];.kind=="end" and .how=="held") and all(.[];.kind!="decision")' >/dev/null || fail 'infrastructure failure escalated or left chain open'
+    ledger_chains recovery | jq -e '.[0]|.head==null and .counts.invalid_results==0' >/dev/null || fail 'infrastructure failure consumed invalid cap'
+    jq -e 'all(.comments.nodes[];(.body|contains("event=ask"))|not)' "$state/issue-1.json" >/dev/null || fail 'infrastructure failure journaled ask'
+    [ "$(ledger_generation recovery 1 0 executor)" = 2 ] || fail 'infrastructure hold did not advance generation'
+    c5_run 10
+    [ "$(cat "$state/launches")" = 1 ] || fail 'uncleared hold relaunched station'
+    jq -r '[.comments.nodes[].body|select(contains("station-infrastructure"))]|last' "$state/issue-1.json" > "$c4/infrastructure-note"
+    for expected in '@owner' 'Exit: 7' 'seconds:' 'launcher died at start' 'hold-clear --as approver'; do
+      grep -Fq "$expected" "$c4/infrastructure-note" || fail "infrastructure hold omitted $expected"
+    done
+    ref=$(ledger_read recovery | jq -r '[.[]|select(.kind=="hold")]|last|.hold')
+    c4_handoff 1 hold-clear --as approver --hold-id "$ref"
+    printf 'success\n' > "$state/mode"
+    c5_run 0 --once
+    ledger_read recovery | jq -e '[.[]|select(.kind=="intent")]|length==2 and .[1].chain=="recovery/1/0/executor/2" and
+      .[1].resume_of==null and .[1].session_mode=="fresh-dead"' >/dev/null || fail 'hold clear did not start fresh generation'
+    jq -e 'all(.comments.nodes[];(.body|contains("event=resume"))|not) and
+      any(.comments.nodes[];.body|contains("event=submit; from=executing"))' "$state/issue-1.json" >/dev/null || fail 'infrastructure recovery needed journal resume'
+  done
+  # A live Claude retry preserves its id unless the launcher fingerprint changes.
+  c5_reset; printf 'dirty\n' > "$state/mode"
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-station c5_run 5 --once
+  printf '2\n' > "$c4/version"
+  printf 'success\n' > "$state/mode"
+  c5_run 0 --once
+  ledger_read recovery | jq -e '[.[]|select(.kind=="intent")]|.[0].fingerprint!=.[1].fingerprint and
+    .[1].resume_of==null and .[1].session_mode=="fresh-launcher-changed" and .[1].session!=null' >/dev/null || fail 'changed launcher reused session'
+  if grep -q -- '--resume' "$state/args-2"; then fail 'changed launcher passed resume flag'; fi
+  rm "$c4/version"
   c5_reset
   c5_run 0
   jq -e '.status=="ready to ship"' "$c4/out" >/dev/null || fail 'Standard loop did not reach ready to ship'
@@ -2274,7 +2381,9 @@ MODEL
       after-intent)
         [ ! -f "$state/launches" ] || fail 'intent fault launched a station'
         c5_run 0 --once
-        grep -q -- '--resume' "$state/args-1" || fail 'preassigned session not resumed' ;;
+        if grep -q -- '--resume' "$state/args-1"; then fail 'unstarted preassigned session resumed'; fi
+        ledger_read recovery | jq -e '[.[]|select(.kind=="intent")]|.[1].session_mode=="fresh-dead" and
+          .[1].session!=.[0].session and .[1].resume_of==null' >/dev/null || fail 'unstarted Claude attempt did not get a new id' ;;
       after-station) c5_run 0 --once ;;
       *) c5_run 0 --reconcile-only ;;
     esac
@@ -2416,7 +2525,7 @@ MODEL
   [ "$(cat "$wt/a")/$(cat "$wt/b")/$(cat "$wt/c")" = staged/unstaged/untracked ] || fail 'interrupted executor lost edits'
   printf 'success\n' > "$state/mode"
   c5_run 0 --once
-  ledger_read recovery | jq -e '[.[]|select(.kind=="intent")]|length==2 and .[1].replaces==.[0].run and .[1].reason=="resume-dirty" and .[1].resume_of=="codex-fixture"' >/dev/null || fail 'dirty recovery lost session or chain'
+  ledger_read recovery | jq -e '[.[]|select(.kind=="intent")]|length==2 and .[1].replaces==.[0].run and .[1].reason=="resume-dirty" and .[1].resume_of==null and .[1].session_mode=="fresh-dead"' >/dev/null || fail 'dirty recovery without captured tokens reused session or lost chain'
   [ -z "$(git -C "$wt" status --porcelain)" ] || fail 'dirty recovery did not commit remaining edits'
   c5_reset; c5_codex; printf 'crash-dirty\n' > "$state/mode"
   AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-session c5_run 5 --once
