@@ -4,7 +4,7 @@
 verify_record_digest() {
   local directory digest
   directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) || return 1
-  digest=$(cat "$directory/verify-step.sh" "$directory/verify-record.sh" | shasum -a 256) || return 1
+  digest=$(cat "$directory/verify-step.sh" "$directory/verify-record.sh" "$directory/ledger.pl" "$directory/ledger.sh" | shasum -a 256) || return 1
   printf '%s\n' "${digest%% *}"
 }
 

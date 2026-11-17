@@ -13,6 +13,10 @@ ledger_backend() {
   [ -n "${LEDGER_DIR:-}" ] || ledger_init || return 2
   perl "$LEDGER_HELPER" "$LEDGER_DIR" "$@"
 }
+ledger_tails() { ledger_backend tails "$@"; }          # plan run events stderr
+# Redaction of scratch files is independent of repository discovery.
+ledger_output_tail() { perl "$LEDGER_HELPER" - output-tail "$@"; }
+ledger_comment() { perl "$LEDGER_HELPER" - comment "$@"; }
 ledger_read() { ledger_backend read "$@"; }             # plan -> records JSON
 ledger_chains() { ledger_backend chains "$@"; }         # plan [context JSON file]
 ledger_generation() { ledger_backend generation "$@"; } # plan issue seq station

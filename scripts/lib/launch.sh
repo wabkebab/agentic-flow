@@ -363,6 +363,10 @@ launch_station() { # station worktree packet result [--resume session | --probe]
     --arg cli "$LAUNCH_CLI" --arg turns "$LAUNCH_TURNS" --arg budget "$LAUNCH_BUDGET" \
     '. + {exit:$exit,seconds:$seconds,contract_mode:$mode,limits:{max_turns:$turns,budget_usd:$budget,mode:(if $cli=="claude" then "enforced" else "advisory" end)}}'
   cat "$scratch/stderr" >&2
+  # Transfer ownership of the original files; the caller validates after launch.
+  if declare -F launch_output_record >/dev/null; then
+    launch_output_record "$scratch/events" "$scratch/stderr" || { rm -rf "$scratch"; return 2; }
+  fi
   rm -rf "$scratch"
   return "$status"
 }

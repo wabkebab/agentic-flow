@@ -4,6 +4,7 @@
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/verify-record.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/ledger.sh"
 
 verify_cleanup() {
   [ -z "${VERIFY_TIMER:-}" ] || kill "$VERIFY_TIMER" 2>/dev/null || true
@@ -38,8 +39,13 @@ verify_run() { # directory, command; result in VERIFY_RESULT
     rm "$VERIFY_TMP/timed-out"
   fi
   digest=$(shasum -a 256 "$VERIFY_TMP/output"); digest=${digest%% *}
-  VERIFY_RESULT=$(jq -n --arg cmd "$command" --arg role "$role" --argjson exit "$status" --argjson seconds "$((SECONDS-start))" --arg digest "$digest" \
-    '{cmd:$cmd,role:$role,exit:$exit,seconds:$seconds,output_sha256:$digest}')
+  : > "$VERIFY_TMP/output-tail"
+  if [ "$status" -ne 0 ]; then
+    ledger_output_tail "$VERIFY_TMP/output" 65536 > "$VERIFY_TMP/output-tail" || return 1
+  fi
+  VERIFY_RESULT=$(jq -n --rawfile tail "$VERIFY_TMP/output-tail" --arg cmd "$command" --arg role "$role" --argjson exit "$status" --argjson seconds "$((SECONDS-start))" --arg digest "$digest" \
+    '{cmd:$cmd,role:$role,exit:$exit,seconds:$seconds,output_sha256:$digest} + (if $exit!=0 then {output_tail:$tail} else {} end)')
+  printf '%s\n' "$VERIFY_RESULT" > "$VERIFY_TMP/command-result"
   cat "$VERIFY_TMP/output" >&2
 }
 
@@ -131,6 +137,9 @@ verify_step_cmd() {
     red_base=$(git rev-parse --verify --end-of-options "$sha^" 2>/dev/null) || red_base=''
   fi
   command_plan=$(verify_record_plan "$selected") || return 1
+  printf '%s' "$command_plan" | jq -e '(.green|length)+2*(.red_first|length)+1<=100' >/dev/null || {
+    echo 'verify command plan exceeds 100 commands' >&2; return 1;
+  }
   key=$(verify_record_key "$sha" "$doc" "$step" "$red_base" "$command_plan") || return 1
   if [ "$force" = false ] && record=$(verify_record_fresh "$common/agentic-flow/verify/$sha.json" "$key"); then
     echo "verify-step $sha: reused ($common/agentic-flow/verify/$sha.json)" >&2
@@ -154,17 +163,17 @@ MAKE
   git worktree remove --force "$VERIFY_WT" || return 1
   git worktree add --quiet --detach "$VERIFY_WT" "$sha" || return 1
   if (cd "$VERIFY_WT" && make -n verify-prepare >/dev/null 2>&1); then
-    verify_run "$VERIFY_WT" 'make verify-prepare' prepare; prepare=$VERIFY_RESULT
-    commands=$(printf '%s' "$commands" | jq --argjson r "$VERIFY_RESULT" '.+[$r]')
+    verify_run "$VERIFY_WT" 'make verify-prepare' prepare || return 1; prepare=$VERIFY_RESULT
+    commands=$(printf '%s' "$commands" | jq --slurpfile r "$VERIFY_TMP/command-result" '.+[$r[0]]')
     [ "$(printf '%s' "$prepare" | jq .exit)" = 0 ] || passed=false
   fi
-  verify_run "$VERIFY_WT" 'make check'
-  commands=$(printf '%s' "$commands" | jq --argjson r "$VERIFY_RESULT" '.+[$r]')
+  verify_run "$VERIFY_WT" 'make check' || return 1
+  commands=$(printf '%s' "$commands" | jq --slurpfile r "$VERIFY_TMP/command-result" '.+[$r[0]]')
   [ "$(printf '%s' "$VERIFY_RESULT" | jq .exit)" = 0 ] || passed=false
   if [ -n "$selected" ]; then
     while IFS= read -r verify; do
-      verify_run "$VERIFY_WT" "$verify"
-      commands=$(printf '%s' "$commands" | jq --argjson r "$VERIFY_RESULT" '.+[$r]')
+      verify_run "$VERIFY_WT" "$verify" || return 1
+      commands=$(printf '%s' "$commands" | jq --slurpfile r "$VERIFY_TMP/command-result" '.+[$r[0]]')
       [ "$(printf '%s' "$VERIFY_RESULT" | jq .exit)" = 0 ] || passed=false
     done < <(printf '%s' "$selected" | jq -r '.packet.verification|split("\n")[0]|scan("`([^`]+)`")|.[0]')
     if [ "$(printf '%s' "$selected" | jq -r '.red_first|type')" = array ]; then
@@ -177,30 +186,35 @@ MAKE
           git -C "$VERIFY_WT" restore --source="$sha" --staged --worktree -- "$path" || return 1
         done < <(printf '%s' "$paths" | jq -r '.[]')
         if (cd "$VERIFY_WT" && make -n verify-prepare >/dev/null 2>&1); then
-          verify_run "$VERIFY_WT" 'make verify-prepare' prepare
-          commands=$(printf '%s' "$commands" | jq --argjson r "$VERIFY_RESULT" '.+[$r]')
+          verify_run "$VERIFY_WT" 'make verify-prepare' prepare || return 1
+          commands=$(printf '%s' "$commands" | jq --slurpfile r "$VERIFY_TMP/command-result" '.+[$r[0]]')
           [ "$(printf '%s' "$VERIFY_RESULT" | jq .exit)" = 0 ] || passed=false
         fi
         selector=$(printf '%s' "$result" | jq -r .selector)
-        verify_run "$VERIFY_WT" "$selector" red-first
-        commands=$(printf '%s' "$commands" | jq --argjson r "$VERIFY_RESULT" '.+[$r]')
+        verify_run "$VERIFY_WT" "$selector" red-first || return 1
+        commands=$(printf '%s' "$commands" | jq --slurpfile r "$VERIFY_TMP/command-result" '.+[$r[0]]')
         status=$(printf '%s' "$VERIFY_RESULT" | jq .exit)
         if [ "$status" = 0 ]; then status=green
         elif [ "$status" != 124 ] && [ "$status" != 130 ] && [ "$status" != 143 ] && [ -n "$signature" ] && grep -Eq -- "$signature" "$VERIFY_TMP/output"; then status=red
         else status=invalid; fi
         [ "$status" = red ] || passed=false
-        tail -40 "$VERIFY_TMP/output" > "$VERIFY_TMP/tail"
-        reds=$(printf '%s' "$reds" | jq --arg selector "$selector" --argjson paths "$paths" --argjson r "$VERIFY_RESULT" --arg status "$status" --rawfile tail "$VERIFY_TMP/tail" \
-          '.+[{selector:$selector,paths:$paths,exit:$r.exit,status:$status,tail:($tail|split("\n")|if .[-1]=="" then .[:-1] else . end)}]')
+        ledger_output_tail "$VERIFY_TMP/output" 65536 > "$VERIFY_TMP/red-output" || return 1
+        tail -40 "$VERIFY_TMP/red-output" > "$VERIFY_TMP/tail"
+        reds=$(printf '%s' "$reds" | jq --arg selector "$selector" --argjson paths "$paths" --slurpfile r "$VERIFY_TMP/command-result" --arg status "$status" --rawfile tail "$VERIFY_TMP/tail" \
+          '.+[{selector:$selector,paths:$paths,exit:$r[0].exit,status:$status,tail:($tail|split("\n")|if .[-1]=="" then .[:-1] else . end)}]')
       done < <(printf '%s' "$selected" | jq -c '.red_first[]')
     fi
   fi
+  printf '%s\n' "$commands" > "$VERIFY_TMP/commands"
+  printf '%s\n' "$prepare" > "$VERIFY_TMP/prepare"
+  printf '%s\n' "$reds" > "$VERIFY_TMP/reds"
   record=$(printf '%s' "$key" | jq --arg started "$started" --arg signature "$signature" --argjson passed "$passed" \
-    --argjson commands "$commands" --argjson prepare "$prepare" --argjson reds "$reds" \
-    '.+{started:$started,passed:$passed,commands:$commands,red_first:$reds,prepare:$prepare} |
+    --slurpfile commands "$VERIFY_TMP/commands" --slurpfile prepare "$VERIFY_TMP/prepare" --slurpfile reds "$VERIFY_TMP/reds" \
+    '.+{started:$started,passed:$passed,commands:$commands[0],red_first:$reds[0],prepare:$prepare[0]} |
       .verifier.signature_source.pattern=$signature') || return 1
   mkdir -p "$common/agentic-flow/verify"
   printf '%s\n' "$record" > "$VERIFY_TMP/record"
+  [ "$(wc -c < "$VERIFY_TMP/record")" -le 8388608 ] || { echo 'verify record exceeds 8 MiB cap' >&2; return 1; }
   # Rename a same-filesystem temporary file for atomic publication.
   local pending
   pending=$(mktemp "$common/agentic-flow/verify/.record.XXXXXX") || return 1

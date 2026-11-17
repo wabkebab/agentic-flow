@@ -284,6 +284,101 @@ sub load_plan {
   lock_file($fh,LOCK_SH); my $data=bounded_read($fh,$MAX_BYTES,'ledger too large'); close $fh;
   return (decode_ledger($data,$plan))[0];
 }
+# Redact before taking the final byte window. Read one key-length of lookbehind
+# so a value straddling the left boundary cannot leave a clear-text suffix.
+sub redact {
+  my ($bytes)=@_;
+  my @keys=sort { length($b)<=>length($a) } grep { length } map { $ENV{$_}//'' } qw(ANTHROPIC_API_KEY OPENAI_API_KEY);
+  if (@keys) { my $pattern=join('|',map { quotemeta($_) } @keys); $bytes =~ s/(?:$pattern)/[redacted]/g; }
+  return $bytes;
+}
+sub output_tail {
+  my ($path,$cap)=@_;
+  my $look=0; for (qw(ANTHROPIC_API_KEY OPENAI_API_KEY)) { my $n=length($ENV{$_}//''); $look=$n if $n>$look; }
+  $look<=1024*1024 or fail('provider value exceeds cap');
+  sysopen(my $fh,$path,O_RDONLY|O_NONBLOCK|O_NOFOLLOW) or fail('cannot open diagnostic output');
+  -f $fh or fail('diagnostic input must be a regular file'); binmode $fh;
+  my $size=-s $fh; my $offset=$size>$cap+$look ? $size-$cap-$look : 0;
+  sysseek($fh,$offset,SEEK_SET); my $bytes=redact(bounded_read($fh,$cap+$look)); close $fh;
+  return length($bytes)>$cap ? substr($bytes,-$cap) : $bytes;
+}
+sub store_tails {
+  my ($plan,$run,$events,$stderr)=@_; plan_id($plan); my @p=run_parts($run,$plan);
+  my $station=load_plan($plan)->{runs}{$run}{station} or fail('missing station for output');
+  return unless defined($station->{invalid_reason});
+  my $dir=File::Spec->catdir($base,'runs',@p); prepare_directory($dir,1);
+  for my $input ([$events,'events.tail',256*1024],[$stderr,'stderr.tail',64*1024]) {
+    my ($source,$name,$cap)=@$input; my $path=File::Spec->catfile($dir,$name);
+    !-l $path && (!-e $path || -f $path) or fail('unsafe diagnostic destination');
+    my $bytes=output_tail($source,$cap);
+    my ($fh,$temp)=tempfile('.tail.XXXXXX',DIR=>$dir,UNLINK=>0); binmode $fh;
+    print {$fh} $bytes or fail('cannot write diagnostic tail'); $fh->sync or fail('cannot fsync diagnostic tail');
+    close $fh or fail('cannot close diagnostic tail'); rename($temp,$path) or fail('cannot publish diagnostic tail');
+  }
+  sync_directories($dir);
+}
+sub utf8_text { return decode('UTF-8',$_[0]); }
+sub clip_text { # UTF-8 byte ceiling, never split a code point
+  my ($s,$limit)=@_; my $out='';
+  for my $c (split //,$s) { last if length(encode('UTF-8',$out.$c))>$limit; $out.=$c; }
+  return $out;
+}
+sub diagnostic_note {
+  my ($plan,$run,$issue,$cause_file,$records_file)=@_; plan_id($plan);
+  run_parts($run,$plan) unless $run eq 'none';
+  $issue=~/^[1-9][0-9]{0,9}$/ or fail('invalid diagnostic issue');
+  my $records=parse_json(read_path($records_file,$MAX_BYTES)); ref($records) eq 'ARRAY' && @$records<=50000 or fail('invalid diagnostic records');
+  my ($intent,$station,$verify);
+  for my $r (@$records) { next unless ($r->{run}//'') eq $run;
+    $intent=$r if $r->{kind} eq 'intent'; $station=$r if $r->{kind} eq 'station'; $verify=$r if $r->{kind} eq 'verify'; }
+  my $cause=utf8_text(redact(read_path($cause_file,256*1024))); $cause =~ s/\s+/ /g;
+  my $header=clip_text($cause,300)."\nStation: ".($intent->{station}//'none')."; step: ".($intent->{step}//'none')."; run: $run; head: ".($station->{result}{head}//$intent->{base_head}//'none')."\n";
+  $header.='Exit: '.($station->{exit}//'n/a').'; seconds: '.($station->{seconds}//'n/a').'; usage: '.$json->encode($station->{usage}//{input=>undef,output=>undef,cost_usd=>undef})."\n";
+  my @sections; my @paths=(File::Spec->catfile($base,"$plan.jsonl"));
+  if ($verify) {
+    my $path=$verify->{record}//'';
+    my $dir=File::Spec->catdir(dirname($base),'verify');
+    if ($path =~ /^\Q$dir\E\/[a-f0-9]{40}\.json$/ && -f $path && !-l $path) {
+      my $record=parse_json(read_path($path,8*1024*1024));
+      my @commands=(@{$record->{commands}//[]});
+      unshift @commands,$record->{prepare} if !@commands && $record->{prepare} && $record->{prepare}{exit};
+      @commands<=100 or fail('too many diagnostic commands');
+      for my $c (@commands) { next unless $c->{exit};
+        push @sections,["Command: $c->{cmd}; exit: $c->{exit}",utf8_text(redact(encode('UTF-8',$c->{output_tail}//''))),30]; }
+    }
+    push @sections,['Verifier output',utf8_text(redact(encode('UTF-8',$verify->{tail}//''))),30] unless @sections;
+    push @paths,$path;
+  }
+  if ($station && defined($station->{invalid_reason}) && $run ne 'none') {
+    my @p=run_parts($run,$plan); my $dir=File::Spec->catdir($base,'runs',@p);
+    prepare_directory($dir,0) if -e $dir;
+    for my $name ('events.tail','stderr.tail') {
+      my $path=File::Spec->catfile($dir,$name); push @paths,$path;
+      my $text=-e $path ? utf8_text(output_tail($path,$name eq 'events.tail' ? 256*1024 : 64*1024)) : '(not retained)';
+      push @sections,[$name,$text,20];
+    }
+  }
+  my $answer='<answer-file>';
+  if ($run ne 'none') {
+    my @p=run_parts($run,$plan); $answer=File::Spec->catfile($base,'runs',@p,'decision.md');
+    $answer =~ s/'/'"'"'/g; $answer="'$answer'";
+  }
+  my $footer="Ledger: ".join("\n",@paths)."\nRetry: scripts/agentic-flow handoff $issue resume --as approver --body-file $answer\n";
+  # Leave room for the transition/hold markers and owner mention added by handoff.
+  my $budget=3200-length(encode('UTF-8',$header.$footer));
+  $budget>=0 or fail('diagnostic identity exceeds comment budget');
+  my $each=@sections ? int($budget/@sections) : 0; my $body='';
+  for my $section (@sections) {
+    my ($title,$text,$lines)=@$section; my @lines=split /\n/,$text; splice(@lines,0,@lines-$lines) if @lines>$lines;
+    my $title_text=utf8_text(redact(encode('UTF-8',$title)));
+    my $suffix=$title_text =~ s/(; exit: [0-9]+)$// ? $1 : '';
+    my $heading=clip_text($title_text,int($each/2)-length($suffix)).$suffix."\n";
+    my $remaining=$each-length(encode('UTF-8',$heading))-48;
+    my $per=@lines ? int(($remaining>0?$remaining:0)/@lines) : 0;
+    $body.=$heading."[last $lines lines; bounded excerpt]\n".join("\n",map { length(encode('UTF-8',$_))<=$per ? $_ : ($per>=3 ? clip_text($_,$per-3).'...' : '') } @lines)."\n";
+  }
+  print redact(encode('UTF-8',$header.$body.$footer));
+}
 sub store_body {
   my ($r,$plan)=@_; my $body=read_path($r->{body_file},$MAX_LINE);
   sha256_hex($body) eq $r->{body_sha256} or fail('decision body hash mismatch');
@@ -497,7 +592,16 @@ sub metrics {
   }
 }
 my $ok=eval {
-  if ($command eq 'append' && @args==3) { print $json->encode(append_record(@args)),"\n"; }
+  if ($command eq 'output-tail' && @args==2) {
+    $args[1] =~ /^(65536|16384|262144|4096)$/ or fail('invalid tail cap');
+    my $bytes=encode('UTF-8',utf8_text(output_tail(@args)));
+    if (length($bytes)>$args[1]) { $bytes=substr($bytes,-$args[1]); $bytes =~ s/^[\x80-\xbf]+//; }
+    print $bytes;
+  }
+  elsif ($command eq 'comment' && @args==1) { my $body=redact(read_path($args[0],65536)); length($body)<=4096 or fail('andon comment exceeds 4 KiB'); print $body; }
+  elsif ($command eq 'tails' && @args==4) { store_tails(@args); }
+  elsif ($command eq 'diagnostic' && @args==5) { diagnostic_note(@args); }
+  elsif ($command eq 'append' && @args==3) { print $json->encode(append_record(@args)),"\n"; }
   elsif ($command eq 'read' && @args==1) { print $json->encode(load_plan($args[0])->{records}),"\n"; }
   elsif ($command eq 'chains' && (@args==1 || @args==2)) {
     my $context=@args==2 ? parse_json(read_path($args[1],4*1024*1024)) : {};

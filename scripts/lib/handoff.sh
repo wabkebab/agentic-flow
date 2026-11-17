@@ -113,7 +113,11 @@ handoff_post() { # number event role head body; replay MUST have just been read
   local next_state andon_reason='bounce cap reached'
   if [ "$event" = ask ]; then andon_reason=$(printf '%s\n' "$note" | awk 'NF {print substr($0,1,200); exit}'); fi
   next_state=$(workflow_successor "$JOURNAL_TOPOLOGY" "$from" "$event" "$(printf '%s' "$HANDOFF_REPLAY" | jq .bounces)" "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)") || return 3
-  if [ "$next_state" = escalated ]; then andon_mention "$andon_reason" >> "$file"; fi
+  if [ "$next_state" = escalated ]; then
+    andon_mention "$andon_reason" >> "$file"
+    ledger_comment "$file" > "$HANDOFF_TMP/redacted-comment" || return 5
+    mv "$HANDOFF_TMP/redacted-comment" "$file"
+  fi
   posted=$(handoff_gh issue comment "$number" --repo "$HANDOFF_REPO" --body-file "$file") || rc=$?
   posted_dbid=${posted##*#issuecomment-}
   [[ "$posted_dbid" =~ ^[0-9]+$ ]] || posted_dbid=''

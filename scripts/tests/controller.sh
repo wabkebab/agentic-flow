@@ -1196,6 +1196,98 @@ ledger_tests() (
     ledger_chains "$1" > "$c2/chains.json" || fail 'chain derivation failed'
     jq -e "$2" "$c2/chains.json" >/dev/null || fail "ledger chain expectation: $2"
   }
+  # Scenario 15: retain the end, redact before the byte boundary, refuse links.
+  local diagnostic_run='diagnostic/1/0/executor/1/1' tail_dir secret
+  secret=$(printf 'provider-%s\n%s' value split)
+  export OPENAI_API_KEY="${secret}"
+  local second_secret
+  second_secret=$(printf 'second.%s[+]\n%s' provider secret)
+  export ANTHROPIC_API_KEY="${second_secret}"
+  c2_intent "$diagnostic_run" || fail 'diagnostic intent failed'
+  c2_station "$diagnostic_run" ask malformed || fail 'diagnostic station failed'
+  perl -e 'print "start-marker\n", "x" x 300000, "\nend-events\n"' > "$c2/events"
+  perl -e 'print "start-marker\n", "y" x 70000, "\nend-stderr\n"' > "$c2/stderr"
+  printf '%s\n' "$secret" >> "$c2/events"
+  printf '%s\n' "$secret" >> "$c2/stderr"
+  printf '%s\n' "$second_secret" >> "$c2/events"
+  printf '%s\n' "$second_secret" >> "$c2/stderr"
+  ledger_tails diagnostic "$diagnostic_run" "$c2/events" "$c2/stderr" || fail 'invalid output tails not retained'
+  tail_dir="$LEDGER_DIR/runs/$diagnostic_run"
+  [ "$(wc -c < "$tail_dir/events.tail")" -le 262144 ] &&
+    [ "$(wc -c < "$tail_dir/stderr.tail")" -le 65536 ] || fail 'diagnostic tails exceed caps'
+  grep -q end-events "$tail_dir/events.tail" && grep -q end-stderr "$tail_dir/stderr.tail" || fail 'diagnostic kept beginning instead of end'
+  ! grep -q start-marker "$tail_dir/events.tail" || fail 'diagnostic kept first bytes'
+  ! grep -q provider-value "$tail_dir/events.tail" || fail 'multiline provider value leaked'
+  grep -q '\[redacted\]' "$tail_dir/stderr.tail" || fail 'stderr not redacted'
+  ! grep -Fq 'second.provider' "$tail_dir/stderr.tail" || fail 'second provider value leaked'
+  # A key crossing the left tail boundary must not leave its suffix in clear.
+  perl -e 'print "z" x 100, $ENV{OPENAI_API_KEY}, "q" x (262144-5)' > "$c2/events"
+  ledger_tails diagnostic "$diagnostic_run" "$c2/events" "$c2/stderr" || fail 'boundary tail failed'
+  ! grep -q split "$tail_dir/events.tail" || fail 'tail boundary exposed key suffix'
+  rm "$tail_dir/events.tail"; ln -s "$c2/outside" "$tail_dir/events.tail"
+  ledger_tails diagnostic "$diagnostic_run" "$c2/events" "$c2/stderr" > "$c2/error" 2>&1 && fail 'symlinked tail accepted'
+  [ ! -e "$c2/outside" ] || fail 'tail wrote through symlink'
+  rm "$tail_dir/events.tail"
+  mv "$tail_dir" "$c2/saved-run"; ln -s "$c2/saved-run" "$tail_dir"
+  ledger_tails diagnostic "$diagnostic_run" "$c2/events" "$c2/stderr" > "$c2/error" 2>&1 && fail 'symlinked run accepted'
+  rm "$tail_dir"; mv "$c2/saved-run" "$tail_dir"
+  c2_intent 'valid-output/1/0/executor/1/1' || fail 'valid output intent failed'
+  c2_station 'valid-output/1/0/executor/1/1' submitted || fail 'valid output station failed'
+  ledger_tails valid-output 'valid-output/1/0/executor/1/1' "$c2/events" "$c2/stderr" || fail 'valid output helper failed'
+  [ ! -e "$LEDGER_DIR/runs/valid-output" ] || fail 'valid result stored output'
+  # Verifier failures retain the same bounded, redacted suffix beside the hash.
+  (
+    . "$ROOT/scripts/lib/verify-step.sh"
+    VERIFY_TMP="$c2/verify-scratch" VERIFY_LIMIT=10
+    mkdir -p "$VERIFY_TMP"
+    cat > "$c2/failing-command" <<'FAIL_COMMAND'
+perl -e 'print "discarded-start\n", "x" x 70000, "\n"; for (1..35) { print "gate-line-$_\n" }; print $ENV{OPENAI_API_KEY}, "\n"'
+exit 23
+FAIL_COMMAND
+    verify_run "$c2" 'bash failing-command' > "$c2/run-out" 2> "$c2/run-err" || fail 'verify runner failed to record exit'
+    printf '%s\n' "$VERIFY_RESULT" > "$c2/command-result"
+    jq -e '.exit==23 and (.output_sha256|length)==64 and (.output_tail|utf8bytelength)<=65536 and (.output_tail|contains("gate-line-35")) and (.output_tail|contains("discarded-start")|not) and (.output_tail|contains("[redacted]"))' "$c2/command-result" >/dev/null || fail 'verify failure output not bounded/redacted'
+    verify_run "$c2" 'printf success' > "$c2/run-out" 2> "$c2/run-err" || fail 'verify success failed'
+    printf '%s' "$VERIFY_RESULT" | jq -e '.exit==0 and (has("output_tail")|not)' >/dev/null || fail 'green command retained output'
+  )
+  # All four causes include identity, statistics, excerpts, paths and the retry.
+  local verify_path cause
+  verify_path="${LEDGER_DIR%/ledger}/verify/$(printf '%040d' 1).json"
+  mkdir -p "${verify_path%/*}"
+  jq '{prepare:{exit:0},commands:[.,(.|.cmd="make second-gate"|.exit=24)]}' "$c2/command-result" > "$verify_path"
+  ledger_read diagnostic | jq --arg path "$verify_path" --arg run "$diagnostic_run" '.+[{kind:"verify",run:$run,status:"red",record:$path}]' > "$c2/diagnostic-records"
+  # Recreate recognizable station suffixes after the boundary case above.
+  perl -e 'for (1..25) { print "event-line-$_\n" }; print $ENV{OPENAI_API_KEY}, "\n"' > "$c2/events"
+  perl -e 'for (1..25) { print "stderr-line-$_\n" }; print $ENV{OPENAI_API_KEY}, "\n"' > "$c2/stderr"
+  ledger_tails diagnostic "$diagnostic_run" "$c2/events" "$c2/stderr" || fail 'comment tails failed'
+  for cause in 'station timed out' 'malformed station result' 'gate still red after fix' 'bounce cap reached'; do
+    printf '%s\n%s\n' "$cause" "$secret" > "$c2/cause"
+    ledger_backend diagnostic diagnostic "$diagnostic_run" 1 "$c2/cause" "$c2/diagnostic-records" > "$c2/note" || fail "diagnostic missing: $cause"
+    {
+      printf 'agentic-flow-transition: v=1; id=diagnostic/c-1/1/ask; event=ask; from=executing; role=executor; head=none\n'
+      cat "$c2/note"
+      printf '\n@owner needs a decision\n'
+    } > "$c2/comment"
+    ledger_comment "$c2/comment" > "$c2/posted-comment" || fail 'framed comment exceeds cap'
+    [ "$(wc -c < "$c2/posted-comment")" -le 4096 ] || fail 'andon over 4 KiB'
+    for expected in "$cause" 'Station: executor' 'step: c-1' "$diagnostic_run" 'head: aaaaa' 'Exit: 0; seconds: 10; usage:' 'bash failing-command; exit: 23' 'make second-gate; exit: 24' 'gate-line-35' 'event-line-25' 'stderr-line-25' "$tail_dir/events.tail" "$tail_dir/stderr.tail" "$verify_path" 'handoff 1 resume --as approver --body-file'; do
+      grep -Fq "$expected" "$c2/posted-comment" || fail "andon missing $expected"
+    done
+    ! grep -q provider-value "$c2/posted-comment" || fail 'andon leaked provider value'
+    ! grep -q gate-line-1$ "$c2/posted-comment" || fail 'andon included more than 30 gate lines'
+    ! grep -q event-line-1$ "$c2/posted-comment" || fail 'andon included more than 20 event lines'
+  done
+  # Oversized lines must still fit, with useful final evidence from each stream.
+  perl -e 'print "x" x 300000, "\nevent-final\n"' > "$c2/events"
+  perl -e 'print "y" x 70000, "\nstderr-final\n"' > "$c2/stderr"
+  ledger_tails diagnostic "$diagnostic_run" "$c2/events" "$c2/stderr" || fail 'large comment tails failed'
+  ledger_backend diagnostic diagnostic "$diagnostic_run" 1 "$c2/cause" "$c2/diagnostic-records" > "$c2/note" || fail 'large diagnostic failed'
+  [ "$(wc -c < "$c2/note")" -le 3200 ] || fail 'large diagnostics exceeded note budget'
+  grep -q event-final "$c2/note" && grep -q stderr-final "$c2/note" || fail 'large diagnostics lost suffix'
+  perl -e 'print "\xff" x 70000' > "$c2/non-utf8"
+  (cd "$c2" && ledger_output_tail "$c2/non-utf8" 65536) > "$c2/utf8-tail" || fail 'non-UTF-8 output rejected'
+  [ "$(wc -c < "$c2/utf8-tail")" -le 65536 ] || fail 'UTF-8 repair exceeded tail cap'
+  unset OPENAI_API_KEY ANTHROPIC_API_KEY
   # Literal prefix table: each durable boundary maps to its head, pending item
   # and complete allowance vector. A replaced run never becomes open again.
   ledger_chains table | jq -e 'length==0' >/dev/null || fail 'empty prefix has chain heads'
@@ -2008,10 +2100,14 @@ fi
 count=0; [ ! -f "$state/launches" ] || count=$(cat "$state/launches")
 count=$((count+1)); printf '%s\n' "$count" > "$state/launches"
 printf '%s\n' "$*" > "$state/args-$count"
+printf '%s\n' "$TMPDIR" > "$state/scratch-$count"
 cat > "$state/prompt-$count"
 mode=success; [ ! -f "$state/mode" ] || mode=$(cat "$state/mode")
 station=executor; grep -q '^Station: reviewer' "$state/prompt-$count" && station=reviewer
-if [ "$mode" = malformed ]; then printf '{}\n'; exit; fi
+if [ "$mode" = malformed ]; then
+  printf 'malformed station evidence: %s\n' "${OPENAI_API_KEY:-none}" >&2
+  printf '{}\n'; exit
+fi
 if [ "$mode" = timeout ]; then sleep 20; exit; fi
 if [ "$mode" = branch ]; then git checkout -qb escaped; exit; fi
 if [ "$mode" = reviewer-dirty ] && [ "$station" = reviewer ]; then printf 'review edit\n' > b; fi
@@ -2158,6 +2254,17 @@ MODEL
   # so no session exists to be reassigned from. The retry must still start fresh on the new CLI.
   ledger_read recovery | jq -e '[.[]|select(.kind=="intent")]|last|.cli=="claude" and .resume_of==null and .session_mode!="resume"' >/dev/null || fail 'reviewer reassignment reused stale session'
   if grep -q 'ses_fixture' "$state/args-4"; then fail 'Claude reviewer received OpenCode session'; fi
+  c5_reset; printf 'bounce\n' > "$state/mode"
+  for n in 1 2 3 4 5; do c5_run 0 --once; done
+  c5_run 10 --once
+  jq -r '[.comments.nodes[].body|select(contains("needs a decision"))]|last' "$state/issue-1.json" > "$c4/andon-comment"
+  for expected in 'bounce cap reached' 'Station: reviewer' 'step: alpha' 'run: recovery/' 'head:' 'Exit:' 'seconds:' 'usage:' 'Ledger:' 'handoff 1 resume --as approver --body-file'; do
+    grep -Fq "$expected" "$c4/andon-comment" || fail "bounce limit andon omitted $expected"
+  done
+  [ "$(wc -c < "$c4/andon-comment")" -le 4097 ] || fail 'bounce limit andon exceeded cap'
+  local diagnostic_secret
+  diagnostic_secret=$(printf 'provider-%s\n%s' value split)
+  export OPENAI_API_KEY="${diagnostic_secret}"
   for mode in bad-head malformed timeout red dirty ask branch; do
     c5_reset; printf '%s\n' "$mode" > "$state/mode"
     if [ "$mode" = timeout ]; then
@@ -2176,10 +2283,37 @@ MODEL
       malformed|red|dirty) [ "$(cat "$state/launches")" = 2 ] || fail "$mode exceeded chain retry limit" ;;
       timeout|ask|branch) [ "$(cat "$state/launches")" = 1 ] || fail "$mode relaunched" ;;
     esac
+    if [ "$mode" = malformed ] || [ "$mode" = timeout ] || [ "$mode" = red ]; then
+      jq -r '[.comments.nodes[].body|select(contains("needs a decision"))]|last' "$state/issue-1.json" > "$c4/andon-comment"
+      [ "$(wc -c < "$c4/andon-comment")" -le 4097 ] || fail "$mode andon exceeded 4 KiB"
+      for expected in 'Station: executor' 'step: alpha' 'run: recovery/' 'head:' 'Exit:' 'seconds:' 'usage:' 'Ledger:' 'handoff 1 resume --as approver --body-file'; do
+        grep -Fq "$expected" "$c4/andon-comment" || fail "$mode andon omitted $expected"
+      done
+      ! grep -q provider-value "$c4/andon-comment" || fail "$mode andon leaked provider value"
+      case "$mode" in
+        malformed|timeout)
+          local failed_run
+          failed_run=$(ledger_read recovery | jq -r '[.[]|select(.kind=="station")]|last|.run')
+          [ -f "$LEDGER_DIR/runs/$failed_run/events.tail" ] && [ -f "$LEDGER_DIR/runs/$failed_run/stderr.tail" ] || fail "$mode lost station tails"
+          grep -Fq "$LEDGER_DIR/runs/$failed_run/events.tail" "$c4/andon-comment" || fail "$mode andon omitted output path"
+          if [ "$mode" = malformed ]; then
+            grep -q 'malformed station result' "$c4/andon-comment" && grep -q 'malformed station evidence' "$c4/andon-comment" || fail 'malformed andon omitted cause or stderr'
+          else grep -q 'station timed out' "$c4/andon-comment" || fail 'timeout andon omitted cause'; fi ;;
+        red)
+          grep -q 'gate still red after fix' "$c4/andon-comment" && grep -q 'Command: make check; exit:' "$c4/andon-comment" && grep -q 'Error' "$c4/andon-comment" || fail 'red gate andon omitted failed recipe/output' ;;
+      esac
+    fi
+    for ((n=1; n<=$(cat "$state/launches"); n++)); do
+      [ ! -e "$(cat "$state/scratch-$n")" ] || fail "$mode kept launch scratch"
+    done
     [ ! -e "$project/.git/agentic-flow/locks/controller-recovery" ] || fail 'loop leaked controller lock'
     # Restore a station-switched branch explicitly, as a human recovery would.
     if [ "$mode" = branch ]; then git -C "$wt" checkout -q topic; git -C "$project" branch -D escaped >/dev/null; fi
   done
+  unset OPENAI_API_KEY
+  c5_reset; printf 'success\n' > "$state/mode"
+  c5_run 0 --once
+  [ -z "$(find "$LEDGER_DIR/runs" -name events.tail -o -name stderr.tail)" ] || fail 'valid station wrote diagnostic tails'
   # Limits are counted across controller invocations, rather than per launch.
   c5_reset; printf 'ask\n' > "$state/mode"
   c5_run 10

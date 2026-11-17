@@ -112,6 +112,8 @@ hold_transition() { # affected issue event reason run hold-id note
     fi
     printf 'agentic-flow-hold: v=1; id=%s; issue=#%s; reason=%s; run=%s\n%s\n' "$id" "$issue" "$reason" "$run" "$note" > "$file"
     andon_mention "$reason" >> "$file"
+    ledger_comment "$file" > "$HANDOFF_TMP/redacted-hold" || return 5
+    mv "$HANDOFF_TMP/redacted-hold" "$file"
     handoff_comment "$tracker" "$file" || return $?
     hold_record "$HANDOFF_PLAN" "$id" "$issue" "$reason" "$run" "$HANDOFF_COMMENT_ID" || return 5
     andon_desktop "$reason"
