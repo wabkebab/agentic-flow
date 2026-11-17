@@ -31,9 +31,12 @@ test:           ## full test suite
 # END SHARED SHELL GATE
 #	npm run test:run
 
-test-one:       ## one targeted test:  make test-one F=path/to/file
-	@echo "TODO: define 'test-one' (uses F=...). Got F=$(F)"
-#	npx vitest run $(F)
+test-one:       ## one harness group: make test-one F=controller [S=launch,ledger]
+	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller [S=launch,ledger,recovery,ship,andon (controller only)]" >&2; exit 2; }
+	@if [ "$(origin S)" != undefined ]; then \
+	  [ "$(F)" = controller ] || { echo "S= is valid only with F=controller" >&2; exit 2; }; \
+	  scripts/self-test.sh --only "$(F)" --scenario "$(S)"; \
+	else scripts/self-test.sh --only "$(F)"; fi
 
 build:          ## production build
 	@echo "TODO: define 'build' in the Makefile."

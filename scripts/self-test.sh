@@ -21,6 +21,8 @@ fi
 active_scope() { case " $PAYLOAD_ACTIVE_SCOPES " in *" $1 "*) return 0 ;; esac; return 1; }
 SELF_TEST_MODE=fast
 ONLY_GROUP=""
+SCENARIO_SET=0
+SCENARIOS=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --fast)
@@ -36,8 +38,14 @@ while [ "$#" -gt 0 ]; do
       ONLY_GROUP="$2"
       shift 2
       ;;
+    --scenario)
+      [ "$#" -ge 2 ] || { echo "error: --scenario requires tags" >&2; exit 2; }
+      SCENARIO_SET=1
+      SCENARIOS="$2"
+      shift 2
+      ;;
     -h|--help)
-      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller]" >&2
+      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario launch,ledger,recovery,ship,andon (controller only)]" >&2
       exit 0
       ;;
     *)
@@ -53,6 +61,29 @@ case " $SELF_TEST_GROUPS " in
   *" $ONLY_GROUP "*) ;;
   *) [ -z "$ONLY_GROUP" ] || { echo "unknown self-test group: $ONLY_GROUP" >&2; exit 2; } ;;
 esac
+# SCENARIO DISPATCH BEGIN: validate before fixtures or group checks run.
+CONTROLLER_SCENARIOS="launch ledger recovery ship andon"
+CONTROLLER_BLOCKS="timing:launch ship:ship andon:andon launch:launch ledger:ledger recovery:recovery"
+SCENARIO_BLOCKS_RAN=" "
+if [ "$SCENARIO_SET" = 1 ]; then
+  [ "$ONLY_GROUP" = controller ] || { echo 'error: --scenario requires --only controller' >&2; exit 2; }
+  case "$SCENARIOS" in
+    ''|,*|*,|*,,*) echo 'error: --scenario requires a nonempty comma-separated selection' >&2; exit 2 ;;
+  esac
+  scenario_rest=$SCENARIOS
+  while [ -n "$scenario_rest" ]; do
+    scenario=${scenario_rest%%,*}
+    case "$scenario" in
+      *[!a-z]*) echo "unknown controller scenario: $scenario" >&2; exit 2 ;;
+    esac
+    case " $CONTROLLER_SCENARIOS " in
+      *" $scenario "*) ;;
+      *) echo "unknown controller scenario: $scenario" >&2; exit 2 ;;
+    esac
+    case "$scenario_rest" in *,*) scenario_rest=${scenario_rest#*,} ;; *) break ;; esac
+  done
+fi
+# SCENARIO DISPATCH END
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
 LOCAL_EVENTS="$TMP/local-events"
@@ -390,6 +421,38 @@ should_run() { # <group>
   fi
   return 0
 }
+
+# SCENARIO HELPERS BEGIN
+scenario_selected() { # <tag>; no flag means every scenario, including CI's --full run.
+  [ "$SCENARIO_SET" = 1 ] || return 0
+  case ",$SCENARIOS," in *",$1,"*) return 0 ;; esac
+  return 1
+}
+
+should_run_scenario() { # <tag> <unique-block-name>
+  case " $CONTROLLER_BLOCKS " in
+    *" $2:$1 "*) ;;
+    *) fail "unknown controller scenario block at call site: $2:$1" ;;
+  esac
+  scenario_selected "$1" || return 1
+  SCENARIO_BLOCKS_RAN="$SCENARIO_BLOCKS_RAN $2:$1 "
+  measure_event "scenario:$1:$2"
+  return 0
+}
+
+assert_scenarios_ran() {
+  local block tag
+  [ "$SCENARIO_BLOCKS_RAN" != ' ' ] || fail 'no controller scenario block executed'
+  for block in $CONTROLLER_BLOCKS; do
+    tag=${block#*:}
+    scenario_selected "$tag" || continue
+    case "$SCENARIO_BLOCKS_RAN" in
+      *" $block "*) ;;
+      *) fail "controller scenario block '$block' never executed" ;;
+    esac
+  done
+}
+# SCENARIO HELPERS END
 
 workflow_contract_check() {
   local workflow_root=${1:-$ROOT}
@@ -1579,7 +1642,18 @@ for mf in "$ROOT/Makefile" "$ROOT/templates/harness/Makefile"; do
     || fail "$mf does not run fast self-test mode in 'make check'"
   grep -q "scripts/self-test.sh --full" "$mf" \
     || fail "$mf does not run full self-test mode in 'make test'"
+  # shellcheck disable=SC2016 # Literal Makefile variable references.
+  grep -q 'scripts/self-test.sh --only "$(F)" --scenario "$(S)"' "$mf" \
+    || fail "$mf does not forward controller scenario selection"
+  grep -q 'usage: make test-one .*S=' "$mf" \
+    || fail "$mf usage omits S="
 done
+if [ -f "$ROOT/templates/harness/Makefile" ]; then
+  sed -n '/^test-one:/,/^$/p' "$ROOT/Makefile" > "$TMP/root-test-one"
+  sed -n '/^test-one:/,/^$/p' "$ROOT/templates/harness/Makefile" > "$TMP/template-test-one"
+  cmp -s "$TMP/root-test-one" "$TMP/template-test-one" \
+    || fail 'root and template Makefile test-one call sites differ'
+fi
 
 # --- action-pin guard (run everywhere) ---------------------------------------------------
 # The guard's whole value is discriminating a mutable tag pin from an immutable SHA pin.
@@ -4915,6 +4989,7 @@ fi
 if should_run controller; then
   # shellcheck disable=SC1091
   . "$ROOT/scripts/tests/controller.sh"
+  assert_scenarios_ran
 fi
 
 # --- the run did what the mode promised --------------------------------------------------
