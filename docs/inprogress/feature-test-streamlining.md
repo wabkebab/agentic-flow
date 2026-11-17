@@ -82,14 +82,14 @@ The adopter gains almost nothing. These groups drive the harness's own scripts a
 
 | ID | Change | Expected saving |
 |---|---|---|
-| T-1 | **Verify once per commit.** `verify-step` returns the stored record when commit, tree, verifier implementation hash, signature source and harness version all match: the same freshness test `packet.sh` already applies. `--force` re-runs. Contracts: under the controller the executor does not run `verify-step` and the reviewer reads the packet's record. A reviewer re-runs only for a stale or failed record, or to test a specific doubt with a narrower command. | 1–2 group runs per step, plus each bounce |
+| T-1 | **Verify once per commit.** `verify-step` returns the stored record when commit, tree, verifier implementation hash, signature source and harness version all match: the same freshness test `packet.sh` already applies. `--force` re-runs. Contracts: under the controller the executor does not run `verify-step` and the reviewer reads the packet's record. A reviewer re-runs only for a stale or failed record, or to test a specific doubt with a narrower command it names (decided 2026-11-17). | 1–2 group runs per step, plus each bounce |
 | T-2 | **No nested full suite in the export group.** The fresh export runs `--fast` plus the hooks and contracts groups. The full suite in exported layout becomes its own CI job, not part of local `make test`. | About one controller-group run (10+ min) per `make test`, locally and in CI |
 | T-3 | **Profile before cutting.** A timing wrapper on `c4_run`, `c5_run` and the resets, enabled by an environment variable, reports per-scenario seconds in one run. | Turns T-4 into a measured decision |
 | T-4 | **Scenario selection.** Split `controller.sh` and `stations.sh` into tagged scenario files (launch, ledger, recovery, ship, andon). `make test-one F=controller S=<tag>`. A step's Verify line names its scenarios; the whole group runs at the end of the plan and in CI. | Likely 10 min down to a few per step; T-3 confirms |
 | T-5 | **Parallel groups in `--full`.** Fixtures are already isolated and concurrent runs are supported. Wall time becomes the slowest shard. | Large once T-4 creates shards |
-| T-6 | **Wall-time budget.** Record seconds per group next to the copy counts and fail when a group exceeds its approved ceiling, so the step that grows it is named. | Prevents a repeat of 32 s → 673 s |
+| T-6 | **Wall-time budget.** Record seconds per group next to the copy counts and fail when a group exceeds its own approved ceiling (per group, decided 2026-11-17), so the step that grows it is named. | Prevents a repeat of 32 s → 673 s |
 | T-7 | **Gate cadence in the contracts.** Per step: `make check` and the step's Verify command only. Full `make test` once at the end of the plan. Reviewer: no test runs by default (T-1). | Removes the extra groups executors run today |
-| T-8 | **Adopter test scope.** Each group declares a scope: `local` (depends on the adopter's own files: hooks, contracts, harness sync, payload manifest) or `scaffold` (exercises harness internals: controller, stations, lifecycle, plan-to-issues, export, upgrade). In an exported project, `--full` runs the `local` groups, and the `scaffold` groups only when the change touches harness-owned paths from the payload manifest, as an upgrade commit does. The check is a diff against the merge base, so it needs no local state and works the same in CI. `--full --all-groups` forces everything. The export group's assertion changes to match, and the `self-test.sh` header becomes true again. Non-breaking; it does not wait for R-14b. | The controller and stations runtime on every adopter `make test`, locally and in CI |
+| T-8 | **Adopter test scope.** Each group declares a scope: `local` if it tests the adopter's real files, or `scaffold` if it runs harness scripts against fixtures (controller, stations, lifecycle, plan-to-issues, export, upgrade; contracts and hooks pending the audit under Decisions). In an exported project, `--full` runs the `local` groups, and the `scaffold` groups only when the change touches harness-owned paths from the payload manifest, as an upgrade commit does. The check is a diff against the merge base, so it needs no local state and works the same in CI. `--full --all-groups` forces everything. The export group's assertion changes to match, and the `self-test.sh` header becomes true again. Non-breaking; it does not wait for R-14b. | The controller and stations runtime on every adopter `make test`, locally and in CI |
 | R-15 | **Split `self-test.sh` into `tests/<group>.sh`** (moved here from the cleanup list). T-4 and T-5 build on the split. Add an adopter-twin fixture (customized `CLAUDE.md` and `Makefile`, realistic commit commands) and run upgrade, hooks and `make check` against it as holdout scenarios. | Enables T-4/T-5 |
 
 ### Ordering
@@ -115,9 +115,9 @@ self-test.sh --only <group> [--scenario <tag>]
 
 self-test.sh --full [--jobs <n>]          # T-5; default min(groups, CPUs)
 
-# T-8: group scope, declared once next to SELF_TEST_GROUPS
-local:    contracts hooks
-scaffold: export upgrade plan-to-issues lifecycle stations controller
+# T-8: group scope, declared once next to SELF_TEST_GROUPS (final split after the audit)
+local:    groups that test the adopter's real files
+scaffold: export upgrade plan-to-issues lifecycle stations controller (+ contracts, hooks if fixture-only)
 exported project, --full: local groups; + scaffold groups when
   git diff --name-only <merge-base>...HEAD touches a payload-manifest destination
 self-test.sh --full --all-groups          # force every group
@@ -147,12 +147,15 @@ Bounds: parallel shards capped at the CPU count; each shard keeps the group's ex
 - Sharing verify records across machines or with CI.
 - Not exporting the harness tests at all. T-8 keeps them in the payload so an upgrade can run them; R-14b's harness/project split (Phase 4) may later make that cleaner.
 
+## Decisions
+
+- **T-1: a doubting reviewer runs a narrower command** (owner, 2026-11-17). It names the command it runs, for example one scenario or one test, and records it with its verdict. `--force` stays for a human or an executor who changed the environment; it is not the reviewer's tool.
+- **T-6: ceilings per group** (owner, 2026-11-17), so a failure names the group that grew.
+- **T-8: a group is `local` only if it tests the adopter's real files** (owner, 2026-11-17). Groups that run harness scripts against fixtures are `scaffold`. A first look: `lifecycle` runs against synthetic fixtures (`self-test.sh:4153`, `$TMP/lifecycle-v2`), so it is `scaffold`; contracts and hooks also appear to exercise harness scripts with fixtures. The brief audits each group. The `local` set may be nearly empty, because the checks that read an adopter's real files (harness sync, payload manifest, docs index, memory index, action pins) already run in `make check`.
+
 ## Open questions
 
-- [BLOCKING] T-2: is the full suite in exported layout acceptable as a CI-only job, so local `make test` no longer runs it?
-- T-1: should a reviewer that doubts a record re-run with `--force`, or only with a narrower command the reviewer names?
-- T-6: set ceilings per group from the post-split timings, or one global ceiling for `make test`?
-- T-8: which groups are `local`? The proposal says contracts and hooks; lifecycle reads the adopter's own docs and Status blocks and may belong there too.
+- [BLOCKING] T-2: is the full suite in exported layout acceptable as a CI-only job, so local `make test` no longer runs it? (Asked again 2026-11-17 with an explanation of "exported layout".)
 
 ---
 

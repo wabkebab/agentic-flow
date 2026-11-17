@@ -56,10 +56,10 @@ Every one passed the offline suite. The stub CLIs shared the launcher's assumpti
 
 | ID | Change |
 |---|---|
-| P-1 | **Real-CLI probe.** `agentic-flow doctor --stations` launches each assigned CLI through the real launcher, sandbox, environment and limits with a fixed tiny prompt. It checks exit status, session capture, result parsing, and that the sandbox allows writes to the worktree, `.agents/` and the commit paths and denies writes to the verify and ledger directories. It runs before a plan's first station and after any launcher or profile change. Six of the nine defects would have failed it (quoted keys, commit paths, `.agents/`, both file-size caps, the OpenCode session id), and a seventh if it records its session through the ledger. Resume and verdict-format faults still need a real station run. |
+| P-1 | **Real-CLI probe.** `agentic-flow doctor --stations` launches each assigned CLI through the real launcher, sandbox, environment and limits with a fixed tiny prompt. It checks exit status, session capture, result parsing, and that the sandbox allows writes to the worktree, `.agents/` and the commit paths and denies writes to the verify and ledger directories. `run` probes a station when its launcher or profile hash changed since the last passing probe (decided 2026-11-17). Six of the nine defects would have failed it (quoted keys, commit paths, `.agents/`, both file-size caps, the OpenCode session id), and a seventh if it records its session through the ledger. Resume and verdict-format faults still need a real station run. |
 | P-2 | **Keep failed output.** On an invalid result, store bounded events and the stderr tail under the run's ledger directory and name the path in the andon comment. |
 | P-3 | **Fresh session after a dead one.** If the previous attempt failed before launch (no session, no tokens, under 5 s), or the launcher or profile hash changed since the session started, the retry starts a fresh session instead of resuming. |
-| P-4 | **Operator hold for infrastructure faults.** A pre-launch failure raises an operator hold on the tracker instead of escalating the step. Clearing it retries without a journaled `resume`. A station's real question still escalates the step. |
+| P-4 | **Operator hold for infrastructure faults.** A pre-launch failure raises an operator hold on the tracker instead of escalating the step, and @-mentions the owner like an andon (decided 2026-11-17). Clearing it retries without a journaled `resume`. A station's real question still escalates the step. |
 | P-5 | **Salvage re-baseline.** `hold clear --rebaseline` records a fresh salvage snapshot on top of the new HEAD, so a fix committed to the plan branch does not force `reset --hard`. |
 | P-6 | **Explicit verdict format for schema-less CLIs.** The OpenCode prompt states that the final message is only the result JSON. The parser stays lenient. |
 | P-7 | **Investigate** the repeated `hold-projection` repair and the missing token totals in `metrics`, and fix or record each. |
@@ -105,10 +105,14 @@ Bounds: probe prompt fixed, 120 s per CLI; stored tails 256 KiB events and 64 Ki
 - Supporting new station CLIs.
 - Unattended mode changes beyond P-4's hold.
 
+## Decisions
+
+- **P-4 notifies like an andon** (owner, 2026-11-17). The operator hold @-mentions the owner on the tracker, as R-9 does, so an unattended run never stalls silently. It stays an operator hold, not a step escalation: clearing it needs `hold clear`, not the approver's `resume`.
+- **P-1 runs only on change** (owner, 2026-11-17). `run` probes a station when its launcher or profile hash differs from the last passing probe; `doctor --stations` forces a probe. Each probe makes real model calls, so it does not run before every station.
+
 ## Open questions
 
-- P-4: should the operator hold notify the owner like an andon, or only show in `brief` and `SessionStart`?
-- P-1: run automatically at the start of `run`, or only when the launcher or profile hash changed since the last passing probe?
+- None open.
 
 ---
 
