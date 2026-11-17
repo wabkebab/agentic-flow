@@ -2137,7 +2137,9 @@ MODEL
   c5_run 10
   jq -e '.raised|any(.reason=="station-infrastructure")' "$c4/out" >/dev/null || fail 'unsafe probe did not raise hold'
   [ ! -f "$state/launches" ] || fail 'unsafe plan checkout launched a station'
-  [ ! -f "$LEDGER_DIR/recovery.jsonl" ] || fail 'unsafe plan checkout wrote a launch intent'
+  # Raising the required hold writes a ledger record before any launch intent.
+  ledger_read recovery | jq -e 'any(.[];.kind=="hold" and .reason=="station-infrastructure") and
+    all(.[];.kind!="intent")' >/dev/null || fail 'unsafe plan checkout omitted its hold or wrote a launch intent'
   # Default entry gate fails closed; supervised mode still dispatches.
   c5_reset
   sed 's/identity-mode=distinct-account/identity-mode=single-operator/' "$project/.agentic-flow-review-policy" > "$c4/policy"
