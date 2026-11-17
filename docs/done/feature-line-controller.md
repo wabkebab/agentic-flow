@@ -1,19 +1,18 @@
 <!-- TRIAGE (first pass · 2026-11-15) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
 > Phase 2 of `product-harness-factory-optimization.md` (R-7–R-11, R-20, R-21): a local controller that drives the Phase 1 stations headless, so the human approves the plan, ships and merges, and answers andon calls. Draft for approval; nothing is executed. The identity-flip pass (decision 1) has merged (PR #148). Next: `plan-to-issues --doc`.
 
 # Feature — Line controller
 
 ## Tracker
-- [ ] c-1 — layered station assignment (`agentic-flow roles`) and the station launcher — open
-- [ ] c-2 — run ledger and `agentic-flow metrics` — open
-- [ ] c-3 — `ask`, return-to `resume`, andon, plan holds and clarification re-approval — open
-- [ ] c-4 — controller ownership and recovery (`run --reconcile-only`) — open
-- [ ] c-5 — `agentic-flow run`: one station at a time, headless — open
-- [ ] c-6 — `agentic-flow ship` and `final-approve` — open
-- [ ] c-7 — route the contracts to the controller — open
-
+- [x] c-1 — #139; approved=8840ba94810695e70762942e2d2239c2419b9567; submissions=217276066ad2492964579c14650cd9ea52d297d4,8840ba94810695e70762942e2d2239c2419b9567
+- [x] c-2 — #140; approved=4c13cf633bda64cb8830e9b6d76ceab5798a4b99; submissions=4c13cf633bda64cb8830e9b6d76ceab5798a4b99
+- [x] c-3 — #141; approved=b63be2e9a31f277cb30a6602854687567eafc605; submissions=b63be2e9a31f277cb30a6602854687567eafc605
+- [x] c-4 — #142; approved=0772cc4ae099da61ff89f455378c4a456d3d1bd0; submissions=0772cc4ae099da61ff89f455378c4a456d3d1bd0
+- [x] c-5 — #143; approved=4b8edccb5ab94920676ce66f7933a127076cb892; submissions=4b8edccb5ab94920676ce66f7933a127076cb892,d3e527d70016537d8983d67f40457a7aabc4b363
+- [x] c-6 — #144; approved=1f70ccab78e1c45188cf476d3c3d9072abceff54; submissions=1f70ccab78e1c45188cf476d3c3d9072abceff54,9108b748bf38a4731bb46bd21c703c05ad06f077
+- [x] c-7 — #145; approved=9bd5011eb2cb449d257b3106228e6be548d8003e; submissions=9bd5011eb2cb449d257b3106228e6be548d8003e
 ---
 
 # Part A — Analysis
@@ -963,10 +962,10 @@ Claude, on `phase-2`, after the last approval:
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/138
 - **Approval:** status=approved; by=wabkebab; at=2026-11-15; rev=563857487cb7c3ba0021b1fa240fb76967ddeb27
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** url=https://github.com/wabkebab/agentic-flow/pull/149
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
   the index in the last repository commit. After human push, obtain CI and a structured
   reviewer approval on the `Tracking issue` for that exact PR head and run attempt.

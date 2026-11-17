@@ -107,10 +107,10 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-harness-optimization | Feature | ✅ Done | done |
 | feature-init-and-template-split | Feature | ✅ Done | done |
+| feature-line-controller | Feature | ✅ Done | done |
 | feature-opencode-reviewer-role | Feature | ✅ Done | done |
 | feature-progressive-assurance-profiles | Feature | 🕰️ Superseded | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
-| feature-line-controller | Feature | 🟦 Proposal | inprogress |
 | feature-role-signing | Feature | 🟦 Proposal | inprogress |
 | feature-station-hardening | Feature | 🟦 Proposal | inprogress |
 | feature-test-streamlining | Feature | 🟦 Proposal | inprogress |
