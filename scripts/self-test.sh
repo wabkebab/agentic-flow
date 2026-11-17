@@ -142,9 +142,10 @@ assert_cost_budget() { # <event-file> <fast|full>
     # snapshot. The approved full-copy limits describe scaffold verification.
     [ "$(cost_count "$events" source_snapshot_copy)" -eq 1 ] || fail 'full mode did not reuse one source snapshot'
     [ "$(cost_count "$events" fixture_tree_copy)" -le 1 ] || fail 'full mode exceeded one fixture tree copy'
-    # C-1 expands the source snapshot and station fixtures. Human-approved
-    # measured baseline: 311 copies; retain the one-tree and fast-mode limits.
-    [ "$(cost_count "$events" fixture_file_copy)" -le 311 ] || fail 'full mode exceeded 311 fixture file copies'
+    # C-1 expanded the source snapshot and station fixtures (311); C-2..C-6 added
+    # scenarios that reuse the copying resets. Human-approved measured baseline
+    # 2026-11-17: 325 copies; retain the one-tree and fast-mode limits.
+    [ "$(cost_count "$events" fixture_file_copy)" -le 325 ] || fail 'full mode exceeded 325 fixture file copies'
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
@@ -2235,16 +2236,16 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
     || fail 'fixture budget did not identify repeated tree copying'
   printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
-  for ((copy_i=0; copy_i<311; copy_i++)); do
+  for ((copy_i=0; copy_i<325; copy_i++)); do
     printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   done
   assert_cost_budget "$MEASURE_FIX/full-files.events" full \
-    || fail 'full fixture budget rejected its approved 311-copy boundary'
+    || fail 'full fixture budget rejected its approved 325-copy boundary'
   printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
     > "$MEASURE_FIX/full-files.out" 2>&1 \
-    && fail 'full fixture budget accepted 312 copies'
-  grep -q 'exceeded 311 fixture file copies' "$MEASURE_FIX/full-files.out" \
+    && fail 'full fixture budget accepted 326 copies'
+  grep -q 'exceeded 325 fixture file copies' "$MEASURE_FIX/full-files.out" \
     || fail 'full fixture copy failure did not name the approved limit'
 fi
 ( PATH='' path_without_tools "$MEASURE_FIX/missing-tools" jq ) \
