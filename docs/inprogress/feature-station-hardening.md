@@ -381,13 +381,14 @@ scripts/doctor.sh --check
 1. After a station returns an invalid result, write bounded `events.tail` and `stderr.tail` into the run's ledger directory through a new `ledger.pl` helper, so the existing directory checks apply (no symlinks, ancestry cap, size caps).
 2. Take the last 256 KiB of events and 64 KiB of stderr, not the first. Redact the exact values of the provider keys in the launch environment before writing. Write nothing for a valid result.
 3. `launch_station` currently deletes its scratch directory before the caller sees it (`launch.sh:307`). Return the tails to the caller, or hand over the scratch files, without keeping a second copy on disk.
-4. Name the path in the andon comment the controller posts for an invalid result.
+4. Make every andon comment self-explaining (the owner's rule of 2026-11-17: a `needs-human` ticket must say what failed without a trip into the ledger). Each comment states, in order: the cause in one line; the station, step, run id and head; the exit code, seconds and usage; for a red gate, every failing command with its exit code and the last 30 lines of its output; the last 20 lines of the station's `events.tail` and `stderr.tail` for an invalid result; the ledger paths that hold the full tails; and the exact `handoff <issue> resume` line that retries. Redact before posting, cap the whole comment at 4 KiB, and never post the full tails.
+5. Keep the output a red gate needs for step 4. `verify-step` stores only an output hash per command today, so store a bounded tail (64 KiB, redacted) of each failing command's output in the verify record, beside the hash, without changing any field `packet.sh` reads.
 
-**Test:** scenario 15, in the `ledger` and `recovery` tags. Failure path first: output over the caps, a redaction case built with `printf`, a symlinked run directory, and a valid result that must store nothing.
+**Test:** scenario 15, in the `ledger` and `recovery` tags. Failure path first: output over the caps, a redaction case built with `printf`, a symlinked run directory, and a valid result that must store nothing. Then each andon cause (timeout, invalid result, red gate, bounce limit) posts a comment with every item in step 4, under 4 KiB, with no unredacted key.
 
-**DoD:** scenario 15 passes. A deliberately malformed station run leaves both tails and the andon comment names them.
+**DoD:** scenario 15 passes. A deliberately malformed station run leaves both tails. The andon comment for a timeout, an invalid result and a red gate each names the cause, the failing command or output excerpt, the ledger path and the resume line.
 **Verify:** `make test-one F=controller S=ledger,recovery`
-**Risks:** writing outside the ledger tree; unbounded tails; a provider key stored in the clear; a redaction that misses a value split across lines; keeping scratch files after the run; the andon comment quoting the content instead of naming the path.
+**Risks:** writing outside the ledger tree; unbounded tails; a provider key stored in the clear; a redaction that misses a value split across lines; keeping scratch files after the run; an andon comment that is too long or leaks a key (cap and redact); a comment that quotes so little that the owner must open the ledger anyway; a verify record that grows without bound.
 **Red-first:** `scripts/self-test.sh --only controller --scenario ledger,recovery` — scripts/self-test.sh scripts/tests/controller.sh
 **Commit:** `Keep bounded output from a station that returned an invalid result`
 
