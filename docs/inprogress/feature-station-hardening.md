@@ -458,9 +458,10 @@ scripts/doctor.sh --check
 Claude, on `phase-2b`, after the last approval, and before the human merges:
 
 1. Close-out commits: `VERSION` 0.17.0 and a `CHANGELOG.md` entry with migration notes: `agentic-flow doctor --stations` and when `run` probes; the `station-infrastructure` hold and `hold clear --rebaseline`; `verify-step --force` and the reuse rule; `S=` on `make test-one` (copy the Makefile change by hand); `AGENTIC_TEST_TIMING`; the reviewer contract change.
-2. The human runs `agentic-flow ship docs/inprogress/feature-station-hardening.md`. Claude commits the staged prep. The human runs `ship` again. The CHANGELOG makes the delta non-bookkeeping, so `ship` exits 11 until the reviewer runs `agentic-flow final-approve` for the final head; then `ship` runs `finish`. **Do not merge before `ship` reports READY** (see accepted risk C-8).
-3. The human runs `agentic-flow doctor --stations` once against the real CLIs and the result is recorded.
-4. Update `product-harness-factory-optimization.md` (the Phase 2b and Phase 3 tables, and the next-docs list) and record the human `resume` count and the before and after controller-group times against the analysis's "Expected effect" table.
+2. Claude runs `make check && make test` on `phase-2b` at the close-out head (about 32 minutes; decided 2026-11-17), before any push or PR, and records the result and the head it ran on in the close-out commit message. Only a green run goes on to the next item. A red run is fixed or escalated to the human; nothing is pushed, and `ship` is not run, until it is green. CI then repeats it on the pushed head.
+3. The human runs `agentic-flow ship docs/inprogress/feature-station-hardening.md`. Claude commits the staged prep. The human runs `ship` again. The CHANGELOG makes the delta non-bookkeeping, so `ship` exits 11 until the reviewer runs `agentic-flow final-approve` for the final head; then `ship` runs `finish`. **Do not merge before `ship` reports READY** (see accepted risk C-8).
+4. The human runs `agentic-flow doctor --stations` once against the real CLIs and the result is recorded.
+5. Update `product-harness-factory-optimization.md` (the Phase 2b and Phase 3 tables, and the next-docs list) and record the human `resume` count and the before and after controller-group times against the analysis's "Expected effect" table.
 
 ---
 
