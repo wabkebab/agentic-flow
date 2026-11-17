@@ -1541,6 +1541,9 @@ MODEL
   } > "$bin/claude"
   chmod +x "$bin/claude"
   cat "$bin/claude" > "$bin/codex"; cat "$bin/claude" > "$bin/opencode"
+  # The Linux preflight requires the host's Claude sandbox tools; this fixture tests
+  # controller logic, not the runner, so stub them (written, not copied: copy budget).
+  for tool in bwrap socat; do printf '#!/bin/sh\nexit 0\n' > "$bin/$tool"; chmod +x "$bin/$tool"; done
   c5_reset() {
     c4_reset
     git -C "$project" restore --source="$head" --worktree -- .agentic-flow-roles .agentic-flow-review-policy

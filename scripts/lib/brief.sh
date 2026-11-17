@@ -32,7 +32,7 @@ brief_normalize() { # stdin; preserve every byte outside the bookkeeping lines
 brief_parse() { # file, display path, revision -> JSON spec
   awk -v path="$2" -v rev="$3" '
     function bad(message) {print path ":" NR ": " message > "/dev/stderr"; failed=1; exit 1}
-    function quote(s) {gsub(/\\/,"\\\\",s); gsub(/\"/,"\\\"",s); gsub(/\t/,"\\t",s); gsub(/\r/,"\\r",s); gsub(/\n/,"\\n",s); return "\"" s "\""}
+    function quote(s) {gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); gsub(/\t/,"\\t",s); gsub(/\r/,"\\r",s); gsub(/\n/,"\\n",s); return "\"" s "\""}
     function trim(s) {sub(/\n+$/,"",s); return s}
     /^##? / {verify=0}
     /^# Part B / {part=1}
