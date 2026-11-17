@@ -212,6 +212,7 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     . "$ROOT/scripts/lib/review-policy.sh"
     if read_review_policy "$ROOT" >/dev/null 2>&1; then
       ok "review policy valid: $REVIEW_WORKFLOW"
+      if [ -n "$REVIEW_OWNER" ]; then ok "andon owner: $REVIEW_OWNER"; else warn "andon owner missing; set owner= before running the controller"; fi
     else
       fail "review policy valid"
     fi

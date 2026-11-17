@@ -44,17 +44,11 @@ order, edge cases — not finished code. Read the brief for the step before writ
    selector>` per step; run the full `make test` at the end. (The Stop hook runs
    `make check` regardless.)
 5. **Commit** (see contract below), one logical commit for the step, with `Fixes #N`.
-   Write the commit title, changes, verification and a `Red first:` failure output
-   to a body file.
-   Hand the step to review with the real full commit SHA:
-
-   ```bash
-   scripts/agentic-flow handoff <N> submit --as executor --head <sha40> --body-file <evidence-file>
-   ```
-
-   States live in `METHODOLOGY.md` §6. Use `brief`, `verify-step <sha40>
-   --doc <doc> --step <id>`, and `handoff submit`; retry after partial failure.
-   Never move workflow labels or close issues by hand.
+   Under the controller, return the station result JSON with the full commit SHA;
+   never call `handoff`. The controller verifies and submits it. For interactive use,
+   write evidence including `Red first:` to a body file and run `verify-step <sha40>
+   --doc <doc> --step <id>`, then `handoff <N> submit --as executor --head <sha40>
+   --body-file <evidence-file>`; retry partial failures. Never move labels by hand.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
    underspecified, stop and flag it rather than guessing.
 

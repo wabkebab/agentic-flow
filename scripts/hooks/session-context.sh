@@ -30,6 +30,8 @@ session_context() {
   cache="$common/agentic-flow/state/$plan.tsv"
   [ -f "$cache" ] || return 1
   size=$(wc -c < "$cache"); [ "$size" -le 65536 ] || return 1
+  # shellcheck disable=SC2031 # brief_cmd uses a subshell-local root; this root is unchanged.
+  brief_alerts "$root" "$plan"
   selected=$(jq -Rrse --arg steps "$steps" '
     ($steps|split("\n")) as $order |
     split("\n") | if .[-1]=="" then .[:-1] else . end |
@@ -46,7 +48,8 @@ session_context() {
        any($rows[]; .[1] as $s | $s!="tracker" and ($order|index($s))==null) or
        any($order[]; . as $s | ([$rows[]|select(.[1]==$s)]|length)!=1)
     then error("invalid cache") else
-      [$order[] as $s | $rows[] | select(.[1]==$s and .[2]!="approved" and .[2]!="closed")][0]
+      ([$order[] as $s | $rows[] | select(.[1]==$s and .[2]=="escalated")] +
+       [$order[] as $s | $rows[] | select(.[1]==$s and .[2]!="approved" and .[2]!="closed")])[0]
       | select(.!=null) | @tsv
     end' "$cache") || return 1
   IFS=$'\t' read -r number step state _ <<< "$selected"

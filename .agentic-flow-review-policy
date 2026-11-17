@@ -5,3 +5,4 @@ reviewer=agentic-flow-reviewer[bot]
 executor=flow-implementer[bot]
 approver=flow-approver[bot]
 approver=wabkebab
+owner=wabkebab

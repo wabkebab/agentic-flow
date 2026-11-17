@@ -37,7 +37,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations]" >&2
+      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller]" >&2
       exit 0
       ;;
     *)
@@ -47,7 +47,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 # The one list both the flag parser and every `should_run` call site are checked against.
-SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade stations"
+SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade stations controller"
 GROUPS_RAN=" "
 case " $SELF_TEST_GROUPS " in
   *" $ONLY_GROUP "*) ;;
@@ -142,7 +142,10 @@ assert_cost_budget() { # <event-file> <fast|full>
     # snapshot. The approved full-copy limits describe scaffold verification.
     [ "$(cost_count "$events" source_snapshot_copy)" -eq 1 ] || fail 'full mode did not reuse one source snapshot'
     [ "$(cost_count "$events" fixture_tree_copy)" -le 1 ] || fail 'full mode exceeded one fixture tree copy'
-    [ "$(cost_count "$events" fixture_file_copy)" -le 297 ] || fail 'full mode exceeded 297 fixture file copies'
+    # C-1 expanded the source snapshot and station fixtures (311); C-2..C-6 added
+    # scenarios that reuse the copying resets. Human-approved measured baseline
+    # 2026-11-17: 325 copies; retain the one-tree and fast-mode limits.
+    [ "$(cost_count "$events" fixture_file_copy)" -le 325 ] || fail 'full mode exceeded 325 fixture file copies'
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
@@ -371,6 +374,9 @@ fast_check_group() { # <group>; fast mode only
     plan-to-issues)
       [ -x "$ROOT/scripts/plan-to-issues.sh" ] || fail 'plan driver is missing'
       bash -n "$ROOT/scripts/plan-to-issues.sh" || fail 'plan driver has invalid syntax'
+      ;;
+    controller)
+      ( . "$ROOT/scripts/lib/roles.sh"; roles_load "$ROOT" false ) || fail 'invalid station assignments'
       ;;
     stations)
       [ -f "$ROOT/scripts/lib/journal.sh" ] || fail "journal library is missing"
@@ -2229,6 +2235,18 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     && fail 'fixture budget accepted repeated tree copying with one snapshot'
   grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
     || fail 'fixture budget did not identify repeated tree copying'
+  printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
+  for ((copy_i=0; copy_i<325; copy_i++)); do
+    printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
+  done
+  assert_cost_budget "$MEASURE_FIX/full-files.events" full \
+    || fail 'full fixture budget rejected its approved 325-copy boundary'
+  printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
+  ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
+    > "$MEASURE_FIX/full-files.out" 2>&1 \
+    && fail 'full fixture budget accepted 326 copies'
+  grep -q 'exceeded 325 fixture file copies' "$MEASURE_FIX/full-files.out" \
+    || fail 'full fixture copy failure did not name the approved limit'
 fi
 ( PATH='' path_without_tools "$MEASURE_FIX/missing-tools" jq ) \
   > "$MEASURE_FIX/missing-tools.out" 2>&1 \
@@ -2242,7 +2260,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     || fail 'nested fast dispatch failed'
   actual_fast_groups=$(awk -F: '$1 == "group" { print $2 }' \
     "$MEASURE_FIX/dispatch.events" | sort -u | tr '\n' ' ')
-  [ "$actual_fast_groups" = 'contracts hooks lifecycle plan-to-issues stations ' ] \
+  [ "$actual_fast_groups" = 'contracts controller hooks lifecycle plan-to-issues stations ' ] \
     || fail "fast dispatch included an unexpected group: $actual_fast_groups"
   assert_cost_budget "$MEASURE_FIX/dispatch.events" fast
 fi
@@ -3376,6 +3394,11 @@ for mutation in \
   'gh api repos/owner/repo/issues/1/labels -X DELETE' \
   'gh api repos/owner/repo/issues/1 --method PATCH --input file.json' \
   'gh api repos/owner/repo/issues/1 -X PATCH -f state=closed' \
+  'scripts/agentic-flow ship docs/inprogress/plan.md' \
+  'rtk proxy scripts/agentic-flow ship docs/inprogress/plan.md --wait-review' \
+  'bash -lc "scripts/agentic-flow ship docs/inprogress/plan.md"' \
+  'scripts/agentic-flow approve docs/inprogress/plan.md --by owner' \
+  'scripts/agentic-flow hold clear docs/inprogress/plan.md fixture/hold/1' \
   'scripts/agentic-flow token reviewer' \
   'rtk proxy scripts/agentic-flow token executor' \
   'bash -lc "scripts/agentic-flow token reviewer"' \
@@ -3390,6 +3413,7 @@ PATH="$STEP_HOOK_GH:$PATH" STEP_HOOK_GH_FAIL=1 must_block "$STEP_HOOK" 'gh issue
 PATH="$STEP_HOOK_GH:$PATH" STEP_HOOK_BODY='ordinary issue' must_allow "$STEP_HOOK" 'gh issue close 1'
 # shellcheck disable=SC2016 # Literal shell input for the hook lexer, never evaluated.
 for read_command in \
+  'scripts/agentic-flow final-approve docs/done/plan.md' \
   'gh issue view 1 --json body,comments' \
   'rtk gh issue view 127' \
   'bash -lc "n=$(echo 127); gh issue view 127"' \
@@ -4836,6 +4860,11 @@ if should_run stations; then
   . "$ROOT/scripts/tests/stations.sh"
 fi
 
+if should_run controller; then
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/tests/controller.sh"
+fi
+
 # --- the run did what the mode promised --------------------------------------------------
 # Without this, deleting or mis-guarding a group's `if should_run` block still prints
 # "self-test passed." A pass has to mean the groups for this mode actually executed.
@@ -4844,7 +4873,7 @@ if [ -n "$ONLY_GROUP" ]; then
 elif [ "$SELF_TEST_MODE" = full ]; then
   EXPECTED_GROUPS="$SELF_TEST_GROUPS"
 else
-  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle stations'
+  EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle stations controller'
 fi
 for group in $EXPECTED_GROUPS; do
   case "$GROUPS_RAN" in

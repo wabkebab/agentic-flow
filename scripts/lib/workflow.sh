@@ -38,15 +38,18 @@ workflow_load() {
       } else {
         roles["submit"]="executor"; roles["bounce"]="reviewer"; roles["resume"]="approver"
         roles["approve"]="reviewer"; roles["notify"]="reviewer"; roles["close"]="approver"
+        roles["ask"]=$4
         if (!($3 in roles)) bad(NR,"unknown event")
-        if ($4 != roles[$3]) bad(NR,"invalid role for event")
+        if (($3=="ask" && !(($4=="executor" && $5=="executing") || ($4=="reviewer" && $5=="reviewing"))) || $4 != roles[$3]) bad(NR,"invalid role for event")
         if ($5 == $6) bad(NR,"self-loop transition")
-        tokens($7,"|-|head|head≠last-bounced-head|findings|bounces<2|bounces=2|note|head=submitted|all-steps-approved|lifecycle-ready|","requirement")
+        tokens($7,"|-|head|head≠last-bounced-head|findings|bounces<2|bounces=2|note|head=submitted|all-steps-approved|lifecycle-ready|question|return=executing|return=reviewing|","requirement")
         if ($3 == "bounce" && $7 != "findings,bounces<2" && $7 != "findings,bounces=2") bad(NR,"invalid bounce requirement")
         expected["submit"]="head,head≠last-bounced-head"; expected["resume"]="note"
         expected["approve"]="head=submitted"; expected["notify"]="all-steps-approved"; expected["close"]="lifecycle-ready"
-        if ($3 != "bounce" && $7 != expected[$3]) bad(NR,"invalid event requirement")
-        guard=($3 == "bounce" ? $7 : "-")
+        expected["ask"]="question"
+        if ($3=="resume" && $7!="note,return=" $6) bad(NR,"invalid resume requirement")
+        if ($3 != "bounce" && $3 != "resume" && $7 != expected[$3]) bad(NR,"invalid event requirement")
+        guard=($3 == "bounce" || $3 == "resume" ? $7 : "-")
         key=$2 SUBSEP $5 SUBSEP $3 SUBSEP guard
         if (key in transitions) bad(NR,"duplicate transition")
         transitions[key]=NR
@@ -90,9 +93,10 @@ workflow_state_labels() {
 workflow_successor() { # topology state event bounces; caller enforces other requirements
   [ -n "${WORKFLOW_DATA:-}" ] || return 1
   case "$4" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' -v t="$1" -v s="$2" -v e="$3" -v b="$4" '
+  printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' -v t="$1" -v s="$2" -v e="$3" -v b="$4" -v r="${5:-executing}" '
     $1 == "transition" && $2 == t && $3 == e && $5 == s {
       if (e == "bounce" && !(($7 == "findings,bounces<2" && b+0 < 2) || ($7 == "findings,bounces=2" && b+0 == 2))) next
+      if (e == "resume" && $6 != r) next
       print $6; found=1
     }
     END { if (!found) exit 1 }

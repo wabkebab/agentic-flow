@@ -12,6 +12,7 @@ and the PR is open.
 stalled at the doc move until the human pushed and opened #121, which cost an extra
 push and CI round.
 
-**How to apply:** at the start of a close-out, check `gh pr list --head <branch>`. If there is
-no PR, commit the other close-out changes, ask the human to push and open the PR, then write
-the doc-move commit with the PR URL. Otherwise, write it in one pass.
+**How to apply:** the human runs `agentic-flow ship <doc>`. Its first phase checks for
+an existing PR, pushes the approved plan branch and opens the PR when needed, then runs
+`close-out prep` with the real URL. Commit the staged close-out and run `ship` again for
+CI and final-head evidence. Keep this entry until one pass has shipped through `ship`.

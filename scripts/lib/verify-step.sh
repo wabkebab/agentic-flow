@@ -68,6 +68,9 @@ verify_step_cmd() {
   root=$(git rev-parse --show-toplevel) || return 1
   cd "$root" || return 1
   sha=$(git rev-parse --verify --end-of-options "$sha^{commit}") || return 2
+  if [ -n "$red_base" ]; then
+    red_base=$(git rev-parse --verify --end-of-options "$red_base^{commit}") || return 2
+  fi
   common=$(git rev-parse --git-common-dir); common=$(cd "$common" && pwd -P)
   VERIFY_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentic-verify.XXXXXX") || return 1
   VERIFY_WT='' VERIFY_PID='' VERIFY_TIMER=''
@@ -101,7 +104,16 @@ verify_step_cmd() {
       if printf '%s' "$issue" | journal_stamp 2>/dev/null | jq -e --arg p "$plan" --arg s "$step" '.plan==$p and .step==$s' >/dev/null; then
         [ -z "$first" ] || { echo 'ambiguous step issue' >&2; return 1; }
         handoff_read "$number" || return 1
-        first=$(printf '%s' "$HANDOFF_REPLAY" | jq -er '[.accepted[]|select(.event=="submit")][0].head') || return 1
+        first=$(printf '%s' "$HANDOFF_REPLAY" | jq -r '[.accepted[]|select(.event=="submit")][0].head//empty') || return 1
+        # The controller verifies before the first submit. An explicit base is
+        # required there; ordinary post-submit callers retain the journal base.
+        if [ -z "$first" ]; then
+          [ -n "$red_base" ] && [ "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .state)" = executing ] || {
+            echo 'step requires a journaled submit or an executing step with --red-base' >&2; return 1;
+          }
+          git merge-base --is-ancestor "$red_base" "$sha" || return 1
+          first=$sha
+        fi
         rev=$(printf '%s' "$issue" | sed -n 's/.* approved=\([a-f0-9]\{40\}\).*/\1/p')
         # shellcheck disable=SC2016 # Match literal Markdown backticks.
         if [ -z "$rev" ]; then rev=$(printf '%s' "$issue" | sed -n 's/.*approved revision `\([a-f0-9]\{40\}\)`.*/\1/p'); fi
@@ -112,11 +124,9 @@ verify_step_cmd() {
     git show "$rev:$doc" > "$VERIFY_TMP/doc" || return 1
     spec=$(brief_parse "$VERIFY_TMP/doc" "$doc" "$rev") || return 1
     selected=$(printf '%s' "$spec" | jq -ec --arg s "$step" '.steps[]|select(.id==$s)') || return 1
-    [ -n "$red_base" ] || red_base="$first^"
+    [ -n "$red_base" ] || red_base=$(git rev-parse --verify --end-of-options "$first^") || return 2
   fi
-  if [ -n "$red_base" ]; then
-    red_base=$(git rev-parse --verify --end-of-options "$red_base^{commit}") || return 2
-  else
+  if [ -z "$red_base" ]; then
     # A root commit is valid when no red-first commands were requested.
     red_base=$(git rev-parse --verify --end-of-options "$sha^" 2>/dev/null) || red_base=''
   fi

@@ -5,3 +5,4 @@ accepted-risk=docs/accepted_risks.md#single-operator-review
 reviewer={{OWNER_LOGIN}}
 executor={{OWNER_LOGIN}}
 approver={{OWNER_LOGIN}}
+owner={{OWNER_LOGIN}}

@@ -75,6 +75,7 @@ packet_cmd() (
   handoff_read "$number" || return 3
   [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r .body)" = "$body" ] || { packet_error 'issue changed during admission; retry'; return 3; }
   comments=$(printf '%s' "$HANDOFF_ISSUE" | jq .comments.nodes | journal_normalize) || return 3
+  comments=$(printf '%s' "$comments" | jq 'map(.body|=(split("\n")|map(select(startswith("agentic-flow-run:")|not))|join("\n")))') || return 3
   journal=$HANDOFF_REPLAY
   dropped=$(printf '%s' "$comments" | jq --arg policy "$REVIEW_EXECUTORS$REVIEW_REVIEWERS$REVIEW_APPROVERS" '[.[]|select(.author as $a|($policy|split(" ")|index($a))==null)]|length') || return 3
   accepted=$(printf '%s' "$journal" | jq -c '[.accepted[]|select(.event=="submit")]|last // null')
@@ -82,7 +83,7 @@ packet_cmd() (
   submit_index=$(printf '%s' "$comments" | jq --arg id "$submit_id" 'map(.id)|index($id)// -1')
   findings='[]' submit=null verification=null
   if [ "$station" = executor ]; then
-    findings=$(printf '%s' "$comments" | jq --arg reviewers "$REVIEW_REVIEWERS" --argjson since "$submit_index" '[to_entries[]|select(.key>$since)|.value|select(.author as $a|($reviewers|split(" ")|index($a))!=null)]') || return 3
+    findings=$(printf '%s' "$comments" | jq --arg reviewers "$REVIEW_REVIEWERS" --argjson since "$submit_index" '[to_entries[]|select(.key>$since)|.value|select(.author as $a|($reviewers|split(" ")|index($a))!=null)|select((.body|startswith("agentic-flow-hold:")) or (.body|startswith("agentic-flow-hold-clear:"))|not)]') || return 3
   else
     submit=$(printf '%s' "$comments" | jq --arg id "$submit_id" '[.[]|select(.id==$id)]|first // null')
     verification='"no record; run verify-step"'

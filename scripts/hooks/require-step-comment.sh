@@ -22,7 +22,12 @@ check_handoff_write() {
   case "${HOOK_WORDS[0]:-}" in echo|printf|rg|grep|sed|jq|cat) return 0 ;; esac
   for ((i=0;i<${#HOOK_WORDS[@]};i++)); do
     word=${HOOK_WORDS[i]}
-    if [ "${word##*/}" = agentic-flow ] && [ "${HOOK_WORDS[i+1]:-}" = token ]; then block_handoff; return 2; fi
+    if [ "${word##*/}" = agentic-flow ]; then
+      case "${HOOK_WORDS[i+1]:-}:${HOOK_WORDS[i+2]:-}" in
+        token:*|ship:*|roles:set|roles:unset|roles:manual|approve:*|hold:clear) block_handoff; return 2 ;;
+      esac
+      if [ "${HOOK_WORDS[i+1]:-}" = handoff ] && [ "${HOOK_WORDS[i+3]:-}" = hold-clear ]; then block_handoff; return 2; fi
+    fi
     case "${word##*/}" in
       bash|sh|zsh)
         case "${HOOK_WORDS[i+1]:-}" in

@@ -12,7 +12,9 @@ templates/shared	templates/shared	source-only	none	source-only
 .claude/settings.local.json	.claude/settings.local.json	source-only	none	source-only
 .claude/skills	.claude/skills	claude	preserve	export
 .codex/hooks.json	.codex/hooks.json	codex	preserve	export
-.agents/skills	.agents/skills	codex	preserve	export
+.agents/skills/create-tags	.agents/skills/create-tags	codex	preserve	export
+.agents/skills/plan-to-issues	.agents/skills/plan-to-issues	codex	preserve	export
+.agents/skills/review-execution	.agents/skills/review-execution	core	preserve	export
 .opencode/agent	.opencode/agent	opencode	preserve	export
 .opencode/command	.opencode/command	opencode	preserve	export
 scripts	scripts	core	preserve	export
@@ -36,3 +38,4 @@ docs/done/security/.gitkeep	docs/done/security/.gitkeep	docs	preserve	export
 config/payload.tsv	config/payload.tsv	core	preserve	export
 config/workflow.tsv	config/workflow.tsv	core	preserve	export
 config/stations	config/stations	core	preserve	export
+config/roles.tsv	config/roles.tsv	core	preserve	export
