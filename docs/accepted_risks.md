@@ -63,6 +63,13 @@ The owner keeps OpenCode as the default reviewer to preserve model diversity.
 Command deny rules cannot stop arbitrary alternate network clients or credential
 reads. Operators can reassign either station or make it manual.
 
+OpenCode can also write the verify and ledger directories in the Git common
+directory: its command rules do not enforce a filesystem boundary. The station
+probe reports these properties as `unenforced`. This is accepted under the
+controller's ordering: verification records name a commit and tree, the reviewer
+sees only a head already verified, and the sandboxed executor cannot write these
+directories. The reviewer cannot know a future head's SHA to prepare its record.
+
 ### Revisit if
 - OpenCode ships a sandbox or network switch.
 - A station makes an unexpected network call.

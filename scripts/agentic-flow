@@ -16,6 +16,7 @@ usage:
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
   agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
+  agentic-flow doctor --stations [--station executor|reviewer] [--json]
   agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]
   agentic-flow approve <doc> --by <login>
   agentic-flow hold clear <doc> <hold-id> [--note <text>]
@@ -509,6 +510,11 @@ subcommand="${1:-}"
       # shellcheck disable=SC1091
       . "$(dirname "$0")/lib/controller.sh"
       controller_cmd "$@" ;;
+    doctor)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/probe.sh"
+      probe_cmd "$@" ;;
     metrics)
       shift
       # shellcheck disable=SC1091

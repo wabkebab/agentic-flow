@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/handoff.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/packet.sh"
-. "$(dirname "${BASH_SOURCE[0]}")/launch.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/probe.sh"
 CONTROLLER_RECOVERY=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/recovery.pl
 
 controller_error() { printf 'controller: %s\n' "$*" >&2; }
@@ -501,7 +501,7 @@ launch_session_record() {
 }
 controller_interrupt() {
   if [ -n "$CT_CHILD" ]; then
-    if [ "$CT_CHILD_KIND" = verify ]; then
+    if [ "$CT_CHILD_KIND" = verify ] || [ "$CT_CHILD_KIND" = probe ]; then
       kill -TERM "$CT_CHILD" 2>/dev/null || true
       wait "$CT_CHILD" 2>/dev/null || true
     else launch_abort "$CT_CHILD" "$CT_TMP/station-pgid"; fi
@@ -523,6 +523,23 @@ controller_result_valid() {
      elif $station=="executor" then .outcome=="submitted" and .head!=null
      else (.outcome=="approve" or (.outcome=="bounce" and (.findings|length)>0)) and .head!=null end)' "$2" >/dev/null 2>&1
 }
+controller_probe() { # station; once mode never auto-probes
+  [ "$CT_UNATTENDED" = true ] || return 0
+  if probe_needed "$1" "$CT_WORKTREE"; then
+    local probe_status=0
+    CT_CHILD_KIND=probe
+    probe_station "$1" "$CT_WORKTREE" > "$CT_TMP/probe.json" &
+    CT_CHILD=$!
+    wait "$CT_CHILD" || probe_status=$?
+    CT_CHILD=''
+    if [ "$probe_status" != 0 ]; then
+      controller_hold "$CT_TRACKER" station-infrastructure "$(cat "$CT_TMP/probe.json")" || return $?
+      return 10
+    fi
+  fi
+  launch_preflight "$1" "$CT_WORKTREE" || return 6
+}
+
 controller_dispatch() {
   local item row station number step pending=initial replaces='' chain run seq gen nth=1 old=null candidate='' resume='' mode=new from='' base hash session='' rc=0 invalid='' result=null metadata snapshot intent
   item=$(printf '%s' "$CT_PENDING" | jq -c '.[0]//null')
@@ -562,7 +579,7 @@ controller_dispatch() {
   fi
   # Profiles and effective project config belong to the plan checkout. They may
   # differ from the caller's checkout or have changed during an earlier station.
-  if [ "$CT_UNATTENDED" = true ]; then launch_preflight "$station" "$CT_WORKTREE" || return 6; fi
+  controller_probe "$station" || return $?
   (cd "$CT_WORKTREE" && scripts/agentic-flow packet "$number" --station "$station") > "$CT_TMP/packet" || return $?
   if [ "$old" = null ]; then
     old=$(printf '%s' "$CT_RECORDS" | jq -c --argjson n "$number" --arg station "$station" '[.[]|select(.kind=="intent" and .issue==$n and .station==$station)]|last//null')
