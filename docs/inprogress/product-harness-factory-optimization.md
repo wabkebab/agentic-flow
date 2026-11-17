@@ -281,6 +281,9 @@ Added 2026-11-17. Running Phase 2's controller on its own steps C-6 and C-7 hit 
 | P-5 | `hold clear --rebaseline`, so a commit on the plan branch during a pending salvage does not force `reset --hard`. | C-7 dogfood |
 | P-6 | Explicit final-message format for CLIs that cannot enforce an output schema (OpenCode). | C-7 dogfood |
 | P-7 | Investigate the `hold-projection` repair that repeats on every run and the missing token totals in `metrics`. | C-7 dogfood |
+| T-3 | Moved from Phase 3 (2026-11-17). Per-scenario timing behind an environment variable, so the controller group's time can be seen before it is cut. | Group growth |
+| T-4 | Moved from Phase 3 (2026-11-17), controller group only. Scenario selection by tag (`launch`, `ledger`, `recovery`, `ship`, `andon`): `make test-one F=controller S=<tag>`. | Group growth |
+| T-1 | Moved from Phase 3 (2026-11-17), after P-1. Verify once per commit, with a reuse key that also covers the step, red base and command list. | Repeat runs |
 
 ### Phase 3 — Streamline the tests
 
@@ -288,10 +291,10 @@ Added 2026-11-17. A step whose Verify line names the controller group runs that 
 
 | ID | Change | Fixes |
 |---|---|---|
-| T-1 | Verify once per commit: `verify-step` reuses a record whose commit, tree, verifier hash, signature source and harness version match; `--force` re-runs. Under the controller the reviewer reads the record. | Repeat runs |
+| T-1 | **Moved to Phase 2b.** Verify once per commit: `verify-step` reuses a record whose commit, tree, verifier hash, signature source and harness version match; `--force` re-runs. Under the controller the reviewer reads the record. | Repeat runs |
 | T-2 | The full suite in exported layout leaves everyday `make test` and runs at close-out: `ship` runs it through `make ship-gate` before the final push, and CI keeps it. | Repeat runs |
-| T-3 | Per-scenario timing behind an environment variable, before anything is cut. | Group growth |
-| T-4 | Scenario selection: tagged scenario files and `make test-one F=<group> S=<tag>`; a step's Verify line names its scenarios. | Group growth |
+| T-3 | **Moved to Phase 2b.** Per-scenario timing behind an environment variable, before anything is cut. | Group growth |
+| T-4 | **Controller group moved to Phase 2b; the `stations` group stays here.** Scenario selection: tagged scenario files and `make test-one F=<group> S=<tag>`; a step's Verify line names its scenarios. | Group growth |
 | T-5 | Run groups and scenario shards in parallel in `--full`. | Wall time |
 | T-6 | Wall-time ceiling per group next to the copy-count budget. | Group growth |
 | T-7 | Gate cadence in the contracts: per step `make check` plus the step's Verify command; full `make test` once at the end; reviewer runs nothing by default. | Repeat runs |
@@ -366,8 +369,8 @@ One cost follows from the R-4 correction: a clean worktree has no installed depe
 - [x] `docs/done/feature-distinct-identities.md` — the identity flip, Phase 1 decision 1's one-step follow-up (Strict). Drafted 2026-11-15; approved 2026-11-15 (rev `f7593c9`); shipped in PR #148 (merged 2026-11-15), tracker #146, step #147 approved clean. This repo now runs `identity-mode=distinct-account`: executor, reviewer and approver each post as their own App, the owner stays a second `approver=` for `plan-to-issues` issue creation (Option A), and `single-operator-review` (F-3) is retired with its anchor kept. The tracker closed as `flow-approver[bot]`, and the real reviewer-App login replayed correctly. Decision 4's required-review test is deferred, because the private repo cannot have branch protection; it moves to the publish step (R-0f) or Phase 4's R-13.
 - [x] `docs/done/feature-line-controller.md` — Phase 2 (Strict). Drafted 2026-11-15; approved 2026-11-15 after five review rounds (rev `4a8e46d`); tracker #138, steps #139–#145. Covers R-7 to R-11, R-20 and R-21. The identity flip it waited on has shipped, it shipped as `0.16.0` in PR #149 (merged 2026-11-17), tracker #138, steps #139–#145 all approved. Measured human touches and tokens per step are not recorded here: `agentic-flow metrics --plan 138` has no ledger in this checkout.
 - [ ] `docs/inprogress/feature-role-signing.md` — role-signed commits, part 1 of the signing follow-up (Strict). Drafted 2026-11-15; awaiting review. Runs after Phase 2. Part 2 is R-22 in Phase 4.
-- [ ] `docs/inprogress/feature-station-hardening.md` — Phase 2b (Strict). Part A drafted 2026-11-17 from the C-6 and C-7 controller runs; covers P-1 to P-7. Brief not drafted. Runs after Phase 2 merges.
-- [ ] `docs/inprogress/feature-test-streamlining.md` — Phase 3 (Strict). Part A drafted 2026-11-17; covers T-1 to T-8 and R-15. Brief not drafted. Runs after Phase 2b.
+- [ ] `docs/inprogress/feature-station-hardening.md` — Phase 2b (Strict). Part A drafted 2026-11-17 from the C-6 and C-7 controller runs; covers P-1 to P-7, plus T-1, T-3 and T-4 (controller group) moved in from Phase 3 on 2026-11-17. Brief drafted 2026-11-17 (steps h-1 to h-8); awaiting approval. Phase 2 has merged.
+- [ ] `docs/inprogress/feature-test-streamlining.md` — Phase 3 (Strict). Part A drafted 2026-11-17; covers T-1 to T-8 and R-15; T-1, T-3 and T-4 (controller group) moved to Phase 2b on 2026-11-17. Brief not drafted. Runs after Phase 2b.
 - [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 4 (Strict; R-14 is a public compatibility change). Not drafted. Covers R-12, R-13, R-14a, R-14b, R-16, R-17 and R-22.
 
 ## Sources

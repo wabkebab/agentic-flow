@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-17) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict
-> Phase 3 of `product-harness-factory-optimization.md` (T-1 to T-8, R-15): run each test group once per commit and once per full suite, make per-step runs scenario-sized, stop a group from growing unnoticed, and stop adopters running the harness's internal tests on every `make test`. Part A is the analysis; Part B lists candidate steps and is not yet an approvable brief. Runs after Phase 2b (`feature-station-hardening.md`).
+> Phase 3 of `product-harness-factory-optimization.md` (T-1 to T-8, R-15): run each test group once per commit and once per full suite, make per-step runs scenario-sized, stop a group from growing unnoticed, and stop adopters running the harness's internal tests on every `make test`. Part A is the analysis; Part B lists candidate steps and is not yet an approvable brief. T-1, T-3 and the controller-group half of T-4 moved into Phase 2b on 2026-11-17 and are not part of this phase's brief. Runs after Phase 2b (`feature-station-hardening.md`).
 
 # Feature — Test streamlining
 
@@ -83,10 +83,10 @@ The adopter gains almost nothing. These groups drive the harness's own scripts a
 
 | ID | Change | Expected saving |
 |---|---|---|
-| T-1 | **Verify once per commit.** `verify-step` returns the stored record when commit, tree, verifier implementation hash, signature source and harness version all match: the same freshness test `packet.sh` already applies. `--force` re-runs. Contracts: under the controller the executor does not run `verify-step` and the reviewer reads the packet's record. A reviewer re-runs only for a stale or failed record, or to test a specific doubt with a narrower command it names (decided 2026-11-17). | 1–2 group runs per step, plus each bounce |
+| T-1 | **Moved to Phase 2b (h-4).** **Verify once per commit.** `verify-step` returns the stored record when commit, tree, verifier implementation hash, signature source and harness version all match: the same freshness test `packet.sh` already applies. `--force` re-runs. Contracts: under the controller the executor does not run `verify-step` and the reviewer reads the packet's record. A reviewer re-runs only for a stale or failed record, or to test a specific doubt with a narrower command it names (decided 2026-11-17). | 1–2 group runs per step, plus each bounce |
 | T-2 | **Exported-layout suite at close-out, not in every `make test`.** The export group's fresh export runs `--fast` plus a check that `make check` passes. The full suite in exported layout moves to its own target, which `ship` runs locally on the final head, after the close-out commit and before the final push (`ship.sh:111`). A failure stops the push. CI still runs it. | About one controller-group run (10+ min) per everyday `make test`; paid once per plan instead |
-| T-3 | **Profile before cutting.** A timing wrapper on `c4_run`, `c5_run` and the resets, enabled by an environment variable, reports per-scenario seconds in one run. | Turns T-4 into a measured decision |
-| T-4 | **Scenario selection.** Split `controller.sh` and `stations.sh` into tagged scenario files (launch, ledger, recovery, ship, andon). `make test-one F=controller S=<tag>`. A step's Verify line names its scenarios; the whole group runs at the end of the plan and in CI. | Likely 10 min down to a few per step; T-3 confirms |
+| T-3 | **Moved to Phase 2b (h-1).** **Profile before cutting.** A timing wrapper on `c4_run`, `c5_run` and the resets, enabled by an environment variable, reports per-scenario seconds in one run. | Turns T-4 into a measured decision |
+| T-4 | **Controller group moved to Phase 2b (h-2); the `stations` group's tags stay here.** **Scenario selection.** Split `controller.sh` and `stations.sh` into tagged scenario files (launch, ledger, recovery, ship, andon). `make test-one F=controller S=<tag>`. A step's Verify line names its scenarios; the whole group runs at the end of the plan and in CI. | Likely 10 min down to a few per step; T-3 confirms |
 | T-5 | **Parallel groups in `--full`.** Fixtures are already isolated and concurrent runs are supported. Wall time becomes the slowest shard. | Large once T-4 creates shards |
 | T-6 | **Wall-time budget.** Record seconds per group next to the copy counts and fail when a group exceeds its own approved ceiling (per group, decided 2026-11-17), so the step that grows it is named. | Prevents a repeat of 32 s → 673 s |
 | T-7 | **Gate cadence in the contracts.** Per step: `make check` and the step's Verify command only. Full `make test` once at the end of the plan. Reviewer: no test runs by default (T-1). | Removes the extra groups executors run today |
@@ -95,7 +95,7 @@ The adopter gains almost nothing. These groups drive the harness's own scripts a
 
 ### Ordering
 
-**Option A — measure, then cut (recommended).** First T-3, T-1 and T-2, plus T-7's contract text. These are small, remove most of the repeats, and do not change coverage. T-8 lands with T-2, since both change the export group's assertion about the exported suite. Then R-15 with T-4 and T-5, guided by the profile. Then T-6, with ceilings set from the post-split timings.
+**Option A — measure, then cut (recommended).** T-3 and T-1 moved to Phase 2b on 2026-11-17, so this phase starts at T-2, plus T-7's contract text. These are small, remove most of the repeats, and do not change coverage. T-8 lands with T-2, since both change the export group's assertion about the exported suite. Then R-15 with T-4 and T-5, guided by the profile. Then T-6, with ceilings set from the post-split timings.
 
 **Option B — split first.** Start with R-15's split and scenario tags. This touches the most files before anything is measured, and the profile might show a few scenarios dominate, making a full split unnecessary.
 
@@ -132,7 +132,7 @@ self-test.sh --full --all-groups          # force every group
 
 ## Threat model
 
-Verify reuse turns a stored record into permission to skip a gate. The record is keyed by commit, tree and the verifier's own hash, so a code or verifier change re-runs. The new risk is a forged record. Records live in `.git/agentic-flow/verify/`, which no station may write; Phase 2b's P-1 makes that a tested property, so T-1 must not land before it. A human can still edit the record by hand, as they can skip any local gate today. CI does not use local records and runs the full suite.
+Verify reuse turns a stored record into permission to skip a gate. The record is keyed by commit, tree and the verifier's own hash, so a code or verifier change re-runs. The new risk is a forged record. Records live in `.git/agentic-flow/verify/`, which no station may write; T-1 now lands in Phase 2b, after P-1, which makes that a tested property for the CLIs that have an OS sandbox (OpenCode has none; see `feature-station-hardening.md`, Threat model). A human can still edit the record by hand, as they can skip any local gate today. CI does not use local records and runs the full suite.
 
 T-8 lets an adopter skip harness-internal groups. The risk is a harness defect that only shows on the adopter's platform. The scaffold's own CI runs every group, the `scaffold` groups still run on any change to harness-owned files, and Phase 2b's probe exercises the real launcher on the adopter's machine. A hand edit to a harness file is itself a change to a harness-owned path, so it triggers the full run.
 
@@ -170,12 +170,12 @@ Bounds: parallel shards capped at the CPU count; each shard keeps the group's ex
 
 # Part B — Implementation Brief
 
-> Not drafted yet. Part A has to be reviewed first. Candidate step order, per Option A:
+> Not drafted yet. Part A has to be reviewed first. Candidate step order, per Option A. T-3, T-1 and the controller-group half of T-4 shipped in Phase 2b (`feature-station-hardening.md`, steps h-1, h-4, h-2); re-measure with T-3 before drafting.
 >
-> 1. T-3 profile wrapper; T-1 verify reuse with `--force`; T-7 contract text.
+> 1. T-7 contract text.
 > 2. T-2 export group runs `--fast` plus `make check` in the fresh export; the full exported-layout suite becomes `make ship-gate`, run by `ship` before the final push and kept in CI. T-8 group scopes and harness-change detection in the same step.
 > 3. R-15 split into `tests/<group>.sh` and the adopter-twin fixture.
-> 4. T-4 scenario tags and selector; T-5 parallel shards.
+> 4. T-4 for the `stations` group (tags and selector); T-5 parallel shards.
 > 5. T-6 wall-time ceilings from the new timings.
 
 ## Status / Implementation status
