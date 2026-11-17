@@ -1277,6 +1277,70 @@ FAIL_COMMAND
     ! grep -q gate-line-1$ "$c2/posted-comment" || fail 'andon included more than 30 gate lines'
     ! grep -q event-line-1$ "$c2/posted-comment" || fail 'andon included more than 20 event lines'
   done
+  # Review regression: retain whichever stream survives a failed scratch move.
+  (
+    . "$ROOT/scripts/lib/controller.sh"
+    CT_TMP="$c2/partial-output" LAUNCH_OUTPUT_DIR="$c2/partial-output" CT_PLAN=partial
+    mkdir -p "$CT_TMP"
+    local missing partial_scratch partial_run arrived rc issue=0
+    for missing in stderr events; do
+      issue=$((issue+1)); partial_run="partial/$issue/0/executor/1/1"
+      c2_intent "$partial_run" || fail 'partial-transfer intent failed'
+      c2_station "$partial_run" ask 'station exit 2' || fail 'partial-transfer station failed'
+      partial_scratch="$c2/partial-scratch-$missing"
+      mkdir -p "$partial_scratch"
+      printf 'event evidence\n%s\n' "$secret" > "$partial_scratch/events"
+      printf 'stderr evidence\n%s\n' "$secret" > "$partial_scratch/stderr"
+      mv() {
+        if [ "$1" = "$partial_scratch/$missing" ]; then return 1; fi
+        command mv "$@"
+      }
+      rc=0
+      launch_output_record "$partial_scratch/events" "$partial_scratch/stderr" || rc=$?
+      unset -f mv
+      [ "$rc" -ne 0 ] || fail "failed $missing transfer was reported successful"
+      arrived=events; [ "$missing" != events ] || arrived=stderr
+      [ -f "$CT_TMP/station-$arrived" ] || fail "$missing failure skipped the other stream"
+      # The launcher deletes its remaining scratch even when the callback fails.
+      rm -rf "$partial_scratch"
+      controller_store_output "$partial_run" || fail 'partial station output was not retained'
+      [ -s "$LEDGER_DIR/runs/$partial_run/$arrived.tail" ] || fail 'arrived stream lost its ledger tail'
+      [ ! -e "$LEDGER_DIR/runs/$partial_run/$missing.tail" ] || fail 'missing stream wrote a tail'
+      ! grep -q provider-value "$LEDGER_DIR/runs/$partial_run/$arrived.tail" || fail 'partial tail leaked provider value'
+      [ ! -e "$CT_TMP/station-events" ] && [ ! -e "$CT_TMP/station-stderr" ] || fail 'partial transfer left raw controller output'
+    done
+  ) || fail 'partial-transfer regression failed'
+  # Review regression: a long salvage note must post a bounded hold, not abort.
+  (
+    . "$ROOT/scripts/lib/andon.sh"
+    HANDOFF_ROOT="$c2/project" HANDOFF_TMP="$c2" HANDOFF_PLAN=diagnostic HANDOFF_TRACKER=1
+    HANDOFF_ISSUE='{"comments":{"nodes":[]}}' REVIEW_OWNER=owner
+    handoff_plan_read() { :; }
+    handoff_read() { :; }
+    hold_snapshot() { printf '[]\n'; }
+    handoff_identity() { :; }
+    handoff_comment() { cat "$2" > "$c2/posted-hold"; HANDOFF_COMMENT_ID=1; }
+    hold_record() { :; }
+    andon_desktop() { :; }
+    jq -nc '[range(20)|{path:(("salvage-"+(.|tostring)+"-"+("x"*200))[0:200]),status:"??"}]' > "$c2/salvage-paths"
+    {
+      printf 'Unowned edits saved at refs/agentic-flow/salvage/fixture: %s (full paths are in the salvage record)\n' "$(cat "$c2/salvage-paths")"
+      printf '%s\nRetry: scripts/agentic-flow handoff 1 resume --as approver --body-file answer.md\n' "$secret"
+    } > "$c2/long-hold-note"
+    hold_transition 1 hold unexplained-worktree-changes none '' "$(cat "$c2/long-hold-note")" > "$c2/hold-result" || fail 'oversized salvage hold was not posted'
+    [ "$(wc -c < "$c2/posted-hold")" -le 4096 ] || fail 'salvage hold exceeded 4 KiB'
+    for expected in 'agentic-flow-hold: v=1; id=diagnostic/hold/1;' 'Unowned edits saved' 'truncated' 'handoff 1 resume --as approver' '@owner needs a decision'; do
+      grep -Fq "$expected" "$c2/posted-hold" || fail "salvage hold omitted $expected"
+    done
+    ! grep -q provider-value "$c2/posted-hold" || fail 'salvage hold leaked provider value'
+    # Multibyte text and a key crossing the cut must remain valid and redacted.
+    perl -e 'print "agentic-flow-hold: unicode\n", "\xe2\x98\x83" x 1013, $ENV{OPENAI_API_KEY}, "\xe2\x98\x83" x 1000, "\nRetry: resume\n"' > "$c2/unicode-comment"
+    ledger_comment "$c2/unicode-comment" > "$c2/bounded-unicode" || fail 'Unicode comment cap failed'
+    [ "$(wc -c < "$c2/bounded-unicode")" -le 4096 ] || fail 'Unicode comment exceeded byte cap'
+    perl -MEncode=decode,FB_CROAK -e 'local $/; decode("UTF-8",<>,FB_CROAK)' "$c2/bounded-unicode" || fail 'comment truncation split UTF-8'
+    ! grep -q provid "$c2/bounded-unicode" || fail 'comment cut exposed provider value'
+    grep -q 'Retry: resume' "$c2/bounded-unicode" || fail 'comment truncation lost retry'
+  ) || fail 'oversized salvage hold regression failed'
   # Oversized lines must still fit, with useful final evidence from each stream.
   perl -e 'print "x" x 300000, "\nevent-final\n"' > "$c2/events"
   perl -e 'print "y" x 70000, "\nstderr-final\n"' > "$c2/stderr"

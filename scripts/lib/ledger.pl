@@ -308,7 +308,8 @@ sub store_tails {
   return unless defined($station->{invalid_reason});
   my $dir=File::Spec->catdir($base,'runs',@p); prepare_directory($dir,1);
   for my $input ([$events,'events.tail',256*1024],[$stderr,'stderr.tail',64*1024]) {
-    my ($source,$name,$cap)=@$input; my $path=File::Spec->catfile($dir,$name);
+    my ($source,$name,$cap)=@$input; next unless length($source);
+    my $path=File::Spec->catfile($dir,$name);
     !-l $path && (!-e $path || -f $path) or fail('unsafe diagnostic destination');
     my $bytes=output_tail($source,$cap);
     my ($fh,$temp)=tempfile('.tail.XXXXXX',DIR=>$dir,UNLINK=>0); binmode $fh;
@@ -322,6 +323,17 @@ sub clip_text { # UTF-8 byte ceiling, never split a code point
   my ($s,$limit)=@_; my $out='';
   for my $c (split //,$s) { last if length(encode('UTF-8',$out.$c))>$limit; $out.=$c; }
   return $out;
+}
+sub bounded_comment {
+  my $body=utf8_text(redact(read_path($_[0],$MAX_LINE)));
+  if (length(encode('UTF-8',$body))>4096) {
+    # Keep the journal/hold marker and cause, plus the closing paths, retry and
+    # owner mention. Redact before clipping so a cut cannot expose a key suffix.
+    my $notice="\n[comment truncated to 4 KiB]\n";
+    my $end=reverse clip_text(scalar reverse($body),4096-3072-length($notice));
+    $body=clip_text($body,3072).$notice.$end;
+  }
+  return encode('UTF-8',$body);
 }
 sub diagnostic_note {
   my ($plan,$run,$issue,$cause_file,$records_file)=@_; plan_id($plan);
@@ -598,7 +610,7 @@ my $ok=eval {
     if (length($bytes)>$args[1]) { $bytes=substr($bytes,-$args[1]); $bytes =~ s/^[\x80-\xbf]+//; }
     print $bytes;
   }
-  elsif ($command eq 'comment' && @args==1) { my $body=redact(read_path($args[0],65536)); length($body)<=4096 or fail('andon comment exceeds 4 KiB'); print $body; }
+  elsif ($command eq 'comment' && @args==1) { print bounded_comment($args[0]); }
   elsif ($command eq 'tails' && @args==4) { store_tails(@args); }
   elsif ($command eq 'diagnostic' && @args==5) { diagnostic_note(@args); }
   elsif ($command eq 'append' && @args==3) { print $json->encode(append_record(@args)),"\n"; }

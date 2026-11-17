@@ -108,7 +108,18 @@ controller_diagnostic() { # issue run cause-file -> bounded note
 }
 launch_output_record() { # hand over scratch output without a second disk copy
   [ -n "${LAUNCH_OUTPUT_DIR:-}" ] || return 0
-  mv "$1" "$LAUNCH_OUTPUT_DIR/station-events" && mv "$2" "$LAUNCH_OUTPUT_DIR/station-stderr"
+  local status=0
+  mv "$1" "$LAUNCH_OUTPUT_DIR/station-events" || status=$?
+  mv "$2" "$LAUNCH_OUTPUT_DIR/station-stderr" || status=$?
+  return "$status"
+}
+controller_store_output() { # run; retain each stream that reached the controller
+  local run=$1 events='' stderr=''
+  if [ -e "$CT_TMP/station-events" ] || [ -L "$CT_TMP/station-events" ]; then events="$CT_TMP/station-events"; fi
+  if [ -e "$CT_TMP/station-stderr" ] || [ -L "$CT_TMP/station-stderr" ]; then stderr="$CT_TMP/station-stderr"; fi
+  [ -n "$events$stderr" ] || return 0
+  ledger_tails "$CT_PLAN" "$run" "$events" "$stderr" || return 5
+  rm -f "$CT_TMP/station-events" "$CT_TMP/station-stderr"
 }
 controller_hold() { # issue reason paragraph [run]
   local number=$1 reason=$2 note=$3 run=${4:-none} rc=0
@@ -685,10 +696,7 @@ controller_dispatch() {
   jq -n --arg run "$run" --argjson exit "$rc" --argjson meta "$metadata" --argjson result "$result" --arg invalid "$invalid" \
     '{v:1,kind:"station",run:$run,exit:$exit,seconds:$meta.seconds,usage:$meta.usage,result:$result,invalid_reason:(if $invalid=="" then null else $invalid end),ended:(now|floor)}' > "$CT_TMP/record"
   controller_record station || return 5
-  if [ -f "$CT_TMP/station-events" ] && [ -f "$CT_TMP/station-stderr" ]; then
-    ledger_tails "$CT_PLAN" "$run" "$CT_TMP/station-events" "$CT_TMP/station-stderr" || return 5
-    rm -f "$CT_TMP/station-events" "$CT_TMP/station-stderr"
-  fi
+  controller_store_output "$run" || return 5
   controller_fault after-station
 }
 
