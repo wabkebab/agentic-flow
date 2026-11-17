@@ -288,6 +288,8 @@ make build
 scripts/doctor.sh --check
 ```
 
+**Station sandbox (decided 2026-11-17).** The executor's sandbox cannot run `ps`: `/bin/ps` is setuid and the sandbox refuses to execute it. Every test that runs `scripts/lib/recovery.pl` therefore fails there with `cannot read live process start time`, including each `make test-one F=controller` run and every `S=` tag, and it fails the same way on an unchanged tree. Do not weaken the sandbox, patch `recovery.pl` or skip the test to get around it, and do not stop to ask. Run `make check` and every other command this brief names that the sandbox allows. Write the controller-group edits and their tests, commit, and return `submitted`. State in the commit body which Verify commands you could not run in the sandbox. The controller runs the step's Verify line outside the sandbox after you submit, and a red result comes back to you once with its output tail.
+
 ---
 
 ## h-1 — Time every controller scenario
@@ -296,11 +298,11 @@ scripts/doctor.sh --check
 **Approach:**
 1. Add `AGENTIC_TEST_TIMING` to `scripts/self-test.sh` and wrap `c4_run`, `c5_run`, the fixture-reset functions and each top-level block of `scripts/tests/controller.sh` with a timer. The wrapper records seconds and the caller's source line (`BASH_SOURCE`/`BASH_LINENO`), and prints the report to stderr after the run, per the Interface.
 2. Unset, the wrappers must add no output and no measurable cost. Keep timing out of stdout and out of `assert_cost_budget`'s event file.
-3. Run it once on a clean tree and paste the report into the commit body. Name the five blocks and their seconds. h-2 and Phase 3's ceilings both read it.
+3. Do not try to produce the profile: it needs the controller group, which the station sandbox cannot run. The human runs `AGENTIC_TEST_TIMING=1 make test-one F=controller` outside the sandbox after h-1 is verified and posts the report on this step's issue, naming the five blocks and their seconds. h-2 and Phase 3's ceilings both read it.
 
 **Test:** scenario 1. Failure path first: with `AGENTIC_TEST_TIMING` unset, the group's output is byte-identical to a run on the previous commit; a non-numeric value is treated as unset.
 
-**DoD:** scenario 1 passes. The commit body carries a real profile from this machine.
+**DoD:** scenario 1 passes, as verified by the controller outside the sandbox. A real profile from the operator's machine is posted on the step issue before h-2 starts.
 **Verify:** `make test-one F=controller`
 **Risks:** a wrapper that changes a function's exit status or `set -e` behavior (return the wrapped status, and keep the wrapper out of subshell-exit paths); timing noise from the clock source (use whole seconds, as the verifier does); a report that hides a failing run (print it from an EXIT path too).
 **Red-first:** none
