@@ -295,6 +295,7 @@ Added 2026-11-17. A step whose Verify line names the controller group runs that 
 | T-5 | Run groups and scenario shards in parallel in `--full`. | Wall time |
 | T-6 | Wall-time ceiling per group next to the copy-count budget. | Group growth |
 | T-7 | Gate cadence in the contracts: per step `make check` plus the step's Verify command; full `make test` once at the end; reviewer runs nothing by default. | Repeat runs |
+| T-8 | Adopter test scope: groups are `local` or `scaffold`; an exported project's `make test` runs `scaffold` groups only when a change touches harness-owned paths. Adopters stop running the controller and stations groups on every `make test`. | Adopter cost |
 | R-15 | Moved here from the cleanup list. Split `self-test.sh` into `tests/<group>.sh`. Add an adopter-twin fixture (customized `CLAUDE.md` and `Makefile`, realistic commit commands) and run upgrade, hooks and `make check` against it as holdout scenarios. | C-4, F-1 |
 
 ### Phase 4 — Remove what the above makes redundant
@@ -366,7 +367,7 @@ One cost follows from the R-4 correction: a clean worktree has no installed depe
 - [ ] `docs/inprogress/feature-line-controller.md` — Phase 2 (Strict). Drafted 2026-11-15; approved 2026-11-15 after five review rounds (rev `4a8e46d`); tracker #138, steps #139–#145. Covers R-7 to R-11, R-20 and R-21. The identity flip it waited on has shipped, so execution can start after `plan-to-issues --doc --apply`.
 - [ ] `docs/inprogress/feature-role-signing.md` — role-signed commits, part 1 of the signing follow-up (Strict). Drafted 2026-11-15; awaiting review. Runs after Phase 2. Part 2 is R-22 in Phase 4.
 - [ ] `docs/inprogress/feature-station-hardening.md` — Phase 2b (Strict). Part A drafted 2026-11-17 from the C-6 and C-7 controller runs; covers P-1 to P-7. Brief not drafted. Runs after Phase 2 merges.
-- [ ] `docs/inprogress/feature-test-streamlining.md` — Phase 3 (Strict). Part A drafted 2026-11-17; covers T-1 to T-7 and R-15. Brief not drafted. Runs after Phase 2b.
+- [ ] `docs/inprogress/feature-test-streamlining.md` — Phase 3 (Strict). Part A drafted 2026-11-17; covers T-1 to T-8 and R-15. Brief not drafted. Runs after Phase 2b.
 - [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 4 (Strict; R-14 is a public compatibility change). Not drafted. Covers R-12, R-13, R-14a, R-14b, R-16, R-17 and R-22.
 
 ## Sources
