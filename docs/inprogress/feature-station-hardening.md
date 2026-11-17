@@ -422,12 +422,13 @@ scripts/doctor.sh --check
 2. In `controller_holds`, import the flag with the clear. At the next reconcile (`controller.sh:267-280`), when a clear carried it, save a salvage ref of the current state and use the new HEAD as the baseline, instead of raising `worktree-changed-after-salvage`. Without the flag, behavior is unchanged.
 3. Only an authorized approver's clear counts, as today. A crash between posting the clear and recording the salvage replays on the next reconcile and records one salvage, not two.
 4. Update `hold clear` usage text and `docs/` where it is described.
+5. Keep the red base of a resumed step (found on #154, 2026-11-17). After a `handoff resume`, the next executor chain's `base_head` is the previous attempt's head, and `controller_verify` passes it as `--red-base`. The red-first command then runs against code that already holds the step's tests, passes, and marks the record failed, so no fix on top of a green step can ever pass the gate. Pass the base of the step's first attempt (chain 0) as the red base for every later attempt of that step, and keep `base_head` for what the executor diffs against. Take it from the first `intent` record of the step in the ledger, never from the issue or the station's reply.
 
-**Test:** scenario 20, in the `recovery` tag and the stations group's hold tests. Failure path first: an unauthorized clear carrying the flag, a replay after a crash, and a clear without the flag.
+**Test:** scenario 20, in the `recovery` tag and the stations group's hold tests. Failure path first: an unauthorized clear carrying the flag, a replay after a crash, and a clear without the flag. Then a step that went green, was escalated and resumed: its second attempt's red-first runs against the first attempt's base and can fail, and a step with no earlier attempt is unchanged.
 
-**DoD:** scenario 20 passes. A commit on the plan branch during a pending salvage no longer forces `reset --hard`.
+**DoD:** scenario 20 passes. A commit on the plan branch during a pending salvage no longer forces `reset --hard`. A resumed step is verified against the base of its first attempt.
 **Verify:** `make test-one F=stations` and `make test-one F=controller S=recovery`
-**Risks:** a flag that re-baselines over edits nobody saved (the salvage ref is saved first, always); an unauthorized marker honored; the flag lost when the clear is imported from the journal on another host; two salvages on a replay; the hold re-raised on the very next reconcile.
+**Risks:** a flag that re-baselines over edits nobody saved (the salvage ref is saved first, always); an unauthorized marker honored; the flag lost when the clear is imported from the journal on another host; two salvages on a replay; the hold re-raised on the very next reconcile; a red base taken from anything but the ledger's first intent; a fix commit that passes only because the base already holds the tests (the original base is what keeps red-first honest); a resumed step whose first intent is missing or from another plan.
 **Red-first:** `scripts/self-test.sh --only controller --scenario recovery` — scripts/self-test.sh scripts/tests/controller.sh
 **Commit:** `Add hold clear --rebaseline so a fix on the plan branch survives a salvage`
 
