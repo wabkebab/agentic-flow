@@ -12,7 +12,7 @@ usage:
   agentic-flow ship <doc> [--wait-review]
   agentic-flow final-approve <doc> [--body-file <path>]
   agentic-flow packet <issue> --station executor|reviewer [--json]
-  agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--json]
+  agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--force] [--json]
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
   agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]

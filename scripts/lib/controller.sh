@@ -474,7 +474,7 @@ controller_head_valid() {
     git show -s --format=%B "$head" | grep -Eiq "(^|[[:space:]])Fixes #$number([^0-9]|$)"
 }
 controller_verify() {
-  local run=$1 intent result row head status=green rc=0
+  local run=$1 intent result row head status=green rc=0 reused=false selected command_plan key
   intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
   result=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="station" and .run==$run)|.result')
   row=$(printf '%s' "$CT_REPORT" | jq -c --argjson n "$(printf '%s' "$intent" | jq .issue)" '.issues[]|select(.number==$n)')
@@ -482,15 +482,23 @@ controller_verify() {
     controller_decide "$(jq -nc --arg run "$run" '{head:$run,escalation:"bad claimed head"}')"; return $?
   fi
   head=$(printf '%s' "$result" | jq -r .head)
-  CT_CHILD_KIND=verify
-  (cd "$CT_WORKTREE" && exec scripts/agentic-flow verify-step "$head" --doc "$CT_DOC" --step "$(printf '%s' "$intent" | jq -r .step)" --red-base "$(printf '%s' "$intent" | jq -r .base_head)" --json) > "$CT_TMP/verify-output" 2> "$CT_TMP/verify-tail" &
-  CT_CHILD=$!
-  wait "$CT_CHILD" || rc=$?
-  CT_CHILD=''
+  selected=$(printf '%s' "$CT_SPEC" | jq -c --arg s "$(printf '%s' "$intent" | jq -r .step)" '.steps[]|select(.id==$s)') || return 5
+  command_plan=$(verify_record_plan "$selected") || return 5
+  if key=$(cd "$CT_WORKTREE" && verify_record_key "$head" "$CT_DOC" "$(printf '%s' "$intent" | jq -r .step)" "$(printf '%s' "$intent" | jq -r .base_head)" "$command_plan") &&
+    verify_record_fresh "$CT_COMMON/agentic-flow/verify/$head.json" "$key" > "$CT_TMP/verify-output"; then
+    reused=true
+    : > "$CT_TMP/verify-tail"
+  else
+    CT_CHILD_KIND=verify
+    (cd "$CT_WORKTREE" && exec scripts/agentic-flow verify-step "$head" --doc "$CT_DOC" --step "$(printf '%s' "$intent" | jq -r .step)" --red-base "$(printf '%s' "$intent" | jq -r .base_head)" --json) > "$CT_TMP/verify-output" 2> "$CT_TMP/verify-tail" &
+    CT_CHILD=$!
+    wait "$CT_CHILD" || rc=$?
+    CT_CHILD=''
+  fi
   [ "$rc" -eq 0 ] || status=red
   tail -c 16384 "$CT_TMP/verify-tail" > "$CT_TMP/tail"
-  jq -n --arg run "$run" --arg head "$head" --arg status "$status" --arg record "$CT_COMMON/agentic-flow/verify/$head.json" --rawfile tail "$CT_TMP/tail" \
-    '{v:1,kind:"verify",run:$run,head:$head,status:$status,record:$record,tail:$tail,at:(now|floor)}' > "$CT_TMP/record"
+  jq -n --arg run "$run" --arg head "$head" --arg status "$status" --argjson reused "$reused" --arg record "$CT_COMMON/agentic-flow/verify/$head.json" --rawfile tail "$CT_TMP/tail" \
+    '{v:1,kind:"verify",run:$run,head:$head,status:$status,reused:$reused,record:$record,tail:$tail,at:(now|floor)}' > "$CT_TMP/record"
   controller_record verify || return 5
   controller_fault after-verify
 }

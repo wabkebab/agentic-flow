@@ -4,6 +4,24 @@
 grep -q "brief)" "$ROOT/scripts/agentic-flow" || fail 'brief command is missing'
 grep -q "close-out)" "$ROOT/scripts/agentic-flow" || fail 'close-out command is missing'
 grep -q "packet)" "$ROOT/scripts/agentic-flow" || fail 'packet command is missing'
+# S is a command-line selector only, including in the exported harness recipe.
+SELECT_ENV_FIX="$TMP/exported-s"
+mkdir -p "$SELECT_ENV_FIX/scripts"
+printf '#!/usr/bin/env bash\nprintf "%%s\n" "$@"\n' > "$SELECT_ENV_FIX/scripts/self-test.sh"
+chmod +x "$SELECT_ENV_FIX/scripts/self-test.sh"
+for select_env_makefile in "$ROOT/Makefile" "$ROOT/templates/harness/Makefile"; do
+  [ -f "$select_env_makefile" ] || continue
+  for select_env_group in hooks controller; do
+    env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES S=launch make -s -C "$SELECT_ENV_FIX" -f "$select_env_makefile" \
+      test-one F="$select_env_group" > "$TMP/exported-s.out" || fail 'exported S affected test-one'
+    [ "$(cat "$TMP/exported-s.out")" = "$(printf '%s\n' --only "$select_env_group")" ] || fail 'exported S selected a scenario'
+  done
+  env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES S=launch make -s -C "$SELECT_ENV_FIX" -f "$select_env_makefile" \
+    test-one F=controller S=recovery > "$TMP/exported-s.out" || fail 'command-line S failed'
+  [ "$(cat "$TMP/exported-s.out")" = "$(printf '%s\n' --only controller --scenario recovery)" ] || fail 'command-line S did not override environment'
+  env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES make -s -C "$SELECT_ENV_FIX" -f "$select_env_makefile" \
+    test-one F=hooks S=launch > "$TMP/exported-s.out" 2>&1 && fail 'command-line S accepted for hooks'
+done
 # Verification must certify only committed bytes and classify wiring failures.
 VERIFY_FIX="$TMP/verify-fixture"
 mkdir -p "$VERIFY_FIX"
@@ -23,6 +41,55 @@ printf 'check:\n\t@exit 1\n' > "$VERIFY_FIX/Makefile"
 jq -e --arg sha "$VERIFY_BASE" '.sha==$sha and .prepare.exit==0 and .red_first=="not-declared" and .commands[0].exit==0' "$TMP/verify.json" >/dev/null || fail 'verification record invalid'
 [ "$(git -C "$VERIFY_FIX" rev-parse "HEAD^{tree}")" = "$(jq -r .tree "$TMP/verify.json")" ] || fail 'verification tree mismatch'
 [ "$(git -C "$VERIFY_FIX" worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail 'verification leaked worktree'
+# h-4: malformed/failed records must rerun; an identical passing call runs nothing.
+VERIFY_RECORD="$VERIFY_FIX/.git/agentic-flow/verify/$VERIFY_BASE.json"
+cp "$VERIFY_RECORD" "$TMP/reuse-good.json"
+mkdir -p "$VERIFY_FIX/bin"
+cat > "$VERIFY_FIX/bin/make" <<'MAKE_LOG'
+#!/usr/bin/env bash
+case "$*" in *--version*) ;; *) echo "$*" >> "${VERIFY_MAKE_LOG:?}" ;; esac
+exec "${VERIFY_MAKE_REAL:?}" "$@"
+MAKE_LOG
+chmod +x "$VERIFY_FIX/bin/make"
+cat > "$VERIFY_FIX/bin/git" <<'GIT_LOG'
+#!/usr/bin/env bash
+if [ "$1" = worktree ]; then echo "$*" >> "${VERIFY_MAKE_LOG:?}"; fi
+exec "${VERIFY_CACHE_GIT_REAL:?}" "$@"
+GIT_LOG
+chmod +x "$VERIFY_FIX/bin/git"
+VERIFY_CACHE_GIT_REAL=$(command -v git)
+export VERIFY_CACHE_GIT_REAL
+VERIFY_MAKE_REAL=$(command -v make)
+export VERIFY_MAKE_REAL
+verify_reuse_run() {
+  : > "$TMP/reuse-make.log"
+  (cd "$VERIFY_FIX" && PATH="$VERIFY_FIX/bin:$PATH" VERIFY_MAKE_LOG="$TMP/reuse-make.log" \
+    "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_BASE" --json "$@") > "$TMP/reuse.json" 2> "$TMP/reuse.err"
+}
+for verify_mutation in '.sha="wrong"' '.tree="wrong"' '.step="other"' '.doc="other"' \
+  '.red_base="wrong"' '.commands_sha256="wrong"' '.harness_version="wrong"' \
+  '.tools.git="wrong"' '.passed=false' '.commands[0].exit=1' '.commands=[]' \
+  '.verifier.implementation_sha256="wrong"' '.verifier.signature_source.makefile_blob="wrong"'; do
+  jq "$verify_mutation" "$TMP/reuse-good.json" > "$VERIFY_RECORD"
+  verify_reuse_run || fail "cache fallback failed: $verify_mutation"
+  [ -s "$TMP/reuse-make.log" ] || fail "cache reused mismatch: $verify_mutation"
+done
+for verify_bad in corrupt oversized unreadable multiple; do
+  case "$verify_bad" in
+    corrupt) printf '{' > "$VERIFY_RECORD" ;;
+    oversized) perl -e 'print " " x 262145' > "$VERIFY_RECORD" ;;
+    unreadable) printf '{' > "$VERIFY_RECORD"; chmod 000 "$VERIFY_RECORD" ;;
+    multiple) cat "$TMP/reuse-good.json" "$TMP/reuse-good.json" > "$VERIFY_RECORD" ;;
+  esac
+  verify_reuse_run || fail "cache fallback failed: $verify_bad"
+  [ -s "$TMP/reuse-make.log" ] || fail "cache reused $verify_bad record"
+done
+verify_reuse_run || fail 'unchanged verification failed'
+[ ! -s "$TMP/reuse-make.log" ] || fail 'unchanged verification reran make'
+grep -q reused "$TMP/reuse.err" || fail 'reuse was not reported'
+cmp "$VERIFY_RECORD" "$TMP/reuse.json" || fail 'reuse did not print stored record'
+verify_reuse_run --force || fail 'forced verification failed'
+[ -s "$TMP/reuse-make.log" ] || fail '--force reused a record'
 printf 'check:\n\t@sleep 30\n' > "$VERIFY_FIX/Makefile"
 git -C "$VERIFY_FIX" add Makefile
 git -C "$VERIFY_FIX" commit -qm 'Timeout fixture'
@@ -54,14 +121,15 @@ TIMER
 chmod +x "$VERIFY_REVIEW_FIX/bin/perl"
 verify_review_run() {
   (cd "$VERIFY_REVIEW_FIX" && PATH="$VERIFY_REVIEW_FIX/bin:$PATH" VERIFY_LIMIT_FILE="$TMP/verify-limit" \
-    "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_REVIEW_HEAD" --json) > "$TMP/verify-review.json" 2> "$TMP/verify-review.err"
+    "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_REVIEW_HEAD" --json "$@") > "$TMP/verify-review.json" 2> "$TMP/verify-review.err"
 }
 verify_review_rc=0
 verify_review_run || verify_review_rc=$?
 [ "$(cat "$TMP/verify-limit")" = 1800 ] || fail 'verification timeout default is not 1800 seconds'
 [ "$verify_review_rc" = 0 ] || fail 'completed command classified as timeout at the boundary'
 jq -e '.commands[0].exit==0 and .verifier.timeout_seconds==1800' "$TMP/verify-review.json" >/dev/null || fail 'boundary completion not recorded'
-VERIFY_IMPL_HASH=$(shasum -a 256 "$ROOT/scripts/lib/verify-step.sh"); VERIFY_IMPL_HASH=${VERIFY_IMPL_HASH%% *}
+. "$ROOT/scripts/lib/verify-record.sh"
+VERIFY_IMPL_HASH=$(verify_record_digest)
 jq -e --arg sha "$VERIFY_REVIEW_HEAD" --arg impl "$VERIFY_IMPL_HASH" \
   '.verifier.implementation_sha256==$impl and .verifier.signature_source.sha==$sha and .verifier.signature_source.pattern=="^fixture assertion:"' \
   "$TMP/verify-review.json" >/dev/null || fail 'verification provenance is missing'
@@ -85,7 +153,7 @@ exec "$VERIFY_REAL_GIT" "$@"
 BROKEN_GIT
 chmod +x "$VERIFY_REVIEW_FIX/bin/git"
 verify_review_rc=0
-verify_review_run || verify_review_rc=$?
+verify_review_run --force || verify_review_rc=$?
 [ "$verify_review_rc" = 1 ] || fail 'internal verification failure did not exit 1'
 [ ! -s "$TMP/verify-review.json" ] || fail 'internal failure emitted a record'
 [ "$(git -C "$VERIFY_REVIEW_FIX" worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail 'internal failure leaked worktree'
@@ -683,7 +751,7 @@ verify_fixture_commit() {
   mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 }
 verify_fixture_run() {
-  (cd "$VERIFY_FIX" && PATH="$STATION_FIX/bin:$PATH" "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_HEAD" --doc docs/plan.md --step alpha --red-base "$VERIFY_RED_BASE" --json) > "$TMP/verify.json" 2> "$TMP/verify.err"
+  (cd "$VERIFY_FIX" && PATH="$STATION_FIX/bin:$PATH" "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_HEAD" --doc docs/plan.md --step alpha --red-base "$VERIFY_RED_BASE" --json "$@") > "$TMP/verify.json" 2> "$TMP/verify.err"
 }
 verify_fixture_commit
 verify_fixture_run && fail 'unknown base runner counted as red'
@@ -693,6 +761,32 @@ cat "$TMP/plan" > "$VERIFY_FIX/docs/plan.md"
 verify_fixture_commit
 verify_fixture_run || fail "declared runner did not count as red: $(cat "$TMP/verify.err")"
 jq -e '.red_first[0].status=="red" and .red_first[0].tail==["assertion failed: regression"]' "$TMP/verify.json" >/dev/null || fail 'red-first evidence missing'
+# h-4: red-first nonzero exits certify a passing run, and check-only cannot skip gates.
+VERIFY_STEP_RECORD="$VERIFY_FIX/.git/agentic-flow/verify/$VERIFY_HEAD.json"
+cp "$VERIFY_STEP_RECORD" "$TMP/reuse-red-good.json"
+for verify_mutation in '.red_first[0].status="invalid"' '.red_first[0].status="green"' \
+  '.commands[0].role="unknown"' '(.commands[]|select(.role=="green")|.exit)=1' \
+  '.command_plan.red_first[0].paths=[]'; do
+  jq "$verify_mutation" "$TMP/reuse-red-good.json" > "$VERIFY_STEP_RECORD"
+  verify_fixture_run || fail "red-first cache fallback failed: $verify_mutation"
+  grep -q reused "$TMP/verify.err" && fail "red-first cache reused: $verify_mutation"
+done
+verify_fixture_run || fail 'passing red-first record did not reuse'
+grep -q reused "$TMP/verify.err" || fail 'passing red-first record reran'
+verify_fixture_run --force || fail 'forced red-first verification failed'
+grep -q reused "$TMP/verify.err" && fail 'forced red-first verification reused'
+(cd "$VERIFY_FIX" && "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_HEAD" --json) > "$TMP/check-only.json" 2> "$TMP/check-only.err" || fail 'check-only verification failed'
+verify_fixture_run || fail 'step verification after check-only failed'
+grep -q reused "$TMP/verify.err" && fail 'check-only record skipped step gates'
+# Both implementation files participate in the same digest, independently.
+cp "$ROOT/scripts/agentic-flow" "$VERIFY_FIX/scripts/agentic-flow"
+for verify_library in verify-step.sh verify-record.sh; do
+  printf '\n# changed verifier fixture\n' >> "$VERIFY_FIX/scripts/lib/$verify_library"
+  (cd "$VERIFY_FIX" && PATH="$STATION_FIX/bin:$PATH" scripts/agentic-flow verify-step "$VERIFY_HEAD" \
+    --doc docs/plan.md --step alpha --red-base "$VERIFY_RED_BASE" --json) > "$TMP/copy-verify.json" 2> "$TMP/copy-verify.err" || fail 'changed verifier failed'
+  grep -q reused "$TMP/copy-verify.err" && fail "edited $verify_library reused a record"
+done
+verify_fixture_run || fail 'restored verifier failed'
 # Approved Option A: native Cargo/make exits are red only with the assertion.
 for verify_exit in 2 101; do
   printf 'echo "assertion failed: regression"\nexit %s\n' "$verify_exit" > "$VERIFY_FIX/scripts/regression.sh"
@@ -778,12 +872,31 @@ if grep -Eq 'HOSTILE_SENTINEL|CURRENT_FINDING|APPROVER_PROSE_NOT_NEEDED' "$TMP/p
 grep -q 'run verify-step' "$TMP/packet.json" || fail 'missing verification record not identified'
 # Preserve valid provenance and make stale records explicitly unavailable.
 PACKET_TREE=$(git -C "$VERIFY_FIX" rev-parse "$PACKET_REV^{tree}")
-PACKET_IMPL=$(shasum -a 256 "$ROOT/scripts/lib/verify-step.sh"); PACKET_IMPL=${PACKET_IMPL%% *}
+PACKET_IMPL=$(verify_record_digest)
 mkdir -p "$VERIFY_FIX/.git/agentic-flow/verify"
-jq -n --arg sha "$PACKET_REV" --arg tree "$PACKET_TREE" --arg impl "$PACKET_IMPL" \
-  '{v:1,sha:$sha,tree:$tree,verifier:{implementation_sha256:$impl,signature_source:{sha:$sha,tree:$tree,pattern:"fixture"}},marker:"VALID_RECORD_SENTINEL"}' > "$VERIFY_FIX/.git/agentic-flow/verify/$PACKET_REV.json"
+# Regenerate valid evidence for the current step (the last failure intentionally
+# removed its assertion signature). Restore a committed signature first.
+printf 'RED_FIRST_SIGNATURE := ^assertion failed:\ncheck:\n\t@:\n' > "$VERIFY_FIX/Makefile"
+verify_fixture_commit
+verify_fixture_run || fail 'packet evidence verification failed'
+PACKET_REV=$VERIFY_HEAD
+PACKET_TREE=$(git -C "$VERIFY_FIX" rev-parse "$PACKET_REV^{tree}")
+# Refresh the accepted submit and approval stamp to this candidate.
+packet_issue
+packet_comment stranger 'HOSTILE_SENTINEL'
+packet_comment stranger 'HOSTILE_SENTINEL'
+packet_comment exec "agentic-flow-transition: v=1; id=fixture/alpha/1/submit; event=submit; from=executing; role=executor; head=$PACKET_REV
+SUBMIT_SENTINEL"
+packet_comment review "agentic-flow-transition: v=1; id=fixture/alpha/2/bounce; event=bounce; from=reviewing; role=reviewer; head=none
+CURRENT_FINDING"
+jq '.marker="VALID_RECORD_SENTINEL"' "$VERIFY_FIX/.git/agentic-flow/verify/$PACKET_REV.json" > "$TMP/packet-good-record"
+cat "$TMP/packet-good-record" > "$VERIFY_FIX/.git/agentic-flow/verify/$PACKET_REV.json"
 packet_run 0 --station reviewer --json
 jq -e --arg impl "$PACKET_IMPL" '.verification.verifier.implementation_sha256==$impl and .verification.marker=="VALID_RECORD_SENTINEL"' "$TMP/packet.json" >/dev/null || fail 'packet lost record provenance'
+# A helper-only implementation change is stale in the packet too.
+cp "$ROOT/scripts/lib/verify-step.sh" "$VERIFY_FIX/scripts/lib/verify-step.sh"
+(cd "$VERIFY_FIX" && PATH="$STATION_FIX/bin:$PATH" scripts/agentic-flow packet 1 --station reviewer --json) > "$TMP/copied-packet.json" || fail 'copied packet failed'
+grep -q 'stale or invalid record; run verify-step' "$TMP/copied-packet.json" || fail 'helper edit did not invalidate packet'
 sed 's/VALID_RECORD_SENTINEL/STALE_RECORD_SENTINEL/; s/"implementation_sha256": "[a-f0-9]*"/"implementation_sha256": "stale"/' "$VERIFY_FIX/.git/agentic-flow/verify/$PACKET_REV.json" > "$TMP/stale-record"
 cat "$TMP/stale-record" > "$VERIFY_FIX/.git/agentic-flow/verify/$PACKET_REV.json"
 packet_run 0 --station reviewer --json

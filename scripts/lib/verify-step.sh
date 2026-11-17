@@ -3,6 +3,7 @@
 # Commit-bound verification. Commands are trusted project recipes from the brief.
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/verify-record.sh"
 
 verify_cleanup() {
   [ -z "${VERIFY_TIMER:-}" ] || kill "$VERIFY_TIMER" 2>/dev/null || true
@@ -12,7 +13,7 @@ verify_cleanup() {
 }
 
 verify_run() { # directory, command; result in VERIFY_RESULT
-  local directory=$1 command=$2 start=$SECONDS status=0 timer digest
+  local directory=$1 command=$2 role=${3:-green} start=$SECONDS status=0 timer digest
   # setsid ensures timeout/interrupt terminates the whole recipe process tree.
   (cd "$directory" && exec perl -MPOSIX=setsid -e 'setsid() or die $!; exec @ARGV' bash -o pipefail -c "$command") > "$VERIFY_TMP/output" 2>&1 &
   VERIFY_PID=$!
@@ -37,18 +38,16 @@ verify_run() { # directory, command; result in VERIFY_RESULT
     rm "$VERIFY_TMP/timed-out"
   fi
   digest=$(shasum -a 256 "$VERIFY_TMP/output"); digest=${digest%% *}
-  VERIFY_RESULT=$(jq -n --arg cmd "$command" --argjson exit "$status" --argjson seconds "$((SECONDS-start))" --arg digest "$digest" \
-    '{cmd:$cmd,exit:$exit,seconds:$seconds,output_sha256:$digest}')
+  VERIFY_RESULT=$(jq -n --arg cmd "$command" --arg role "$role" --argjson exit "$status" --argjson seconds "$((SECONDS-start))" --arg digest "$digest" \
+    '{cmd:$cmd,role:$role,exit:$exit,seconds:$seconds,output_sha256:$digest}')
   cat "$VERIFY_TMP/output" >&2
 }
 
 verify_step_cmd() {
   [ "$#" -ge 1 ] || return 2
-  local verify_source
-  verify_source=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/${BASH_SOURCE[0]##*/}
-  local sha=$1 doc='' step='' red_base='' json=false root common rev='' spec='' selected='' first='' issue='' issues='' number=''
-  local implementation_hash signature_sha signature_tree
-  local commands='[]' prepare='{"cmd":"skipped","exit":0,"seconds":0}' reds='"not-declared"' passed=true signature='' selector paths path status result verify started tree version tools record
+  local sha=$1 doc='' step='' red_base='' json=false force=false root common rev='' spec='' selected='' first='' issue='' issues='' number=''
+  local signature_sha key command_plan
+  local commands='[]' prepare='{"cmd":"skipped","role":"prepare","exit":0,"seconds":0}' reds='"not-declared"' passed=true signature='' selector paths path status result verify started record
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -57,6 +56,7 @@ verify_step_cmd() {
         case "$1" in --doc) doc=$2 ;; --step) step=$2 ;; --red-base) red_base=$2 ;; esac
         shift 2 ;;
       --json) json=true; shift ;;
+      --force) force=true; shift ;;
       *) echo "unknown verify-step flag: $1" >&2; return 2 ;;
     esac
   done
@@ -130,11 +130,14 @@ verify_step_cmd() {
     # A root commit is valid when no red-first commands were requested.
     red_base=$(git rev-parse --verify --end-of-options "$sha^" 2>/dev/null) || red_base=''
   fi
-  tree=$(git rev-parse "$sha^{tree}") || return 1
-  implementation_hash=$(shasum -a 256 "$verify_source") || return 1
-  implementation_hash=${implementation_hash%% *}
-  signature_sha=$(git rev-parse HEAD) || return 1
-  signature_tree=$(git rev-parse "$signature_sha^{tree}") || return 1
+  command_plan=$(verify_record_plan "$selected") || return 1
+  key=$(verify_record_key "$sha" "$doc" "$step" "$red_base" "$command_plan") || return 1
+  if [ "$force" = false ] && record=$(verify_record_fresh "$common/agentic-flow/verify/$sha.json" "$key"); then
+    echo "verify-step $sha: reused ($common/agentic-flow/verify/$sha.json)" >&2
+    if [ "$json" = true ]; then printf '%s\n' "$record"; fi
+    return 0
+  fi
+  signature_sha=$(printf '%s' "$key" | jq -r .verifier.signature_source.sha)
   started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   VERIFY_WT="$VERIFY_TMP/worktree"
   git worktree add --quiet --detach "$VERIFY_WT" "$signature_sha" || return 1
@@ -150,9 +153,9 @@ MAKE
   ) || return 1
   git worktree remove --force "$VERIFY_WT" || return 1
   git worktree add --quiet --detach "$VERIFY_WT" "$sha" || return 1
-  version=$(cat "$VERIFY_WT/.agentic-flow-version" 2>/dev/null || printf unknown)
   if (cd "$VERIFY_WT" && make -n verify-prepare >/dev/null 2>&1); then
-    verify_run "$VERIFY_WT" 'make verify-prepare'; prepare=$VERIFY_RESULT
+    verify_run "$VERIFY_WT" 'make verify-prepare' prepare; prepare=$VERIFY_RESULT
+    commands=$(printf '%s' "$commands" | jq --argjson r "$VERIFY_RESULT" '.+[$r]')
     [ "$(printf '%s' "$prepare" | jq .exit)" = 0 ] || passed=false
   fi
   verify_run "$VERIFY_WT" 'make check'
@@ -174,12 +177,12 @@ MAKE
           git -C "$VERIFY_WT" restore --source="$sha" --staged --worktree -- "$path" || return 1
         done < <(printf '%s' "$paths" | jq -r '.[]')
         if (cd "$VERIFY_WT" && make -n verify-prepare >/dev/null 2>&1); then
-          verify_run "$VERIFY_WT" 'make verify-prepare'
+          verify_run "$VERIFY_WT" 'make verify-prepare' prepare
           commands=$(printf '%s' "$commands" | jq --argjson r "$VERIFY_RESULT" '.+[$r]')
           [ "$(printf '%s' "$VERIFY_RESULT" | jq .exit)" = 0 ] || passed=false
         fi
         selector=$(printf '%s' "$result" | jq -r .selector)
-        verify_run "$VERIFY_WT" "$selector"
+        verify_run "$VERIFY_WT" "$selector" red-first
         commands=$(printf '%s' "$commands" | jq --argjson r "$VERIFY_RESULT" '.+[$r]')
         status=$(printf '%s' "$VERIFY_RESULT" | jq .exit)
         if [ "$status" = 0 ]; then status=green
@@ -192,11 +195,10 @@ MAKE
       done < <(printf '%s' "$selected" | jq -c '.red_first[]')
     fi
   fi
-  tools=$(jq -n --arg bash "$BASH_VERSION" --arg git "$(git --version)" --arg make "$(make --version | head -1)" --arg jq "$(jq --version)" '{bash:$bash,git:$git,make:$make,jq:$jq}')
-  record=$(jq -n --arg sha "$sha" --arg tree "$tree" --arg red_base "$red_base" --arg version "$version" --arg started "$started" \
-    --arg implementation "$implementation_hash" --arg signature_sha "$signature_sha" --arg signature_tree "$signature_tree" --arg signature "$signature" --argjson timeout "$VERIFY_LIMIT" \
-    --argjson commands "$commands" --argjson prepare "$prepare" --argjson reds "$reds" --argjson tools "$tools" \
-    '{v:1,sha:$sha,tree:$tree,red_base:$red_base,harness_version:$version,started:$started,commands:$commands,red_first:$reds,prepare:$prepare,tools:$tools,verifier:{implementation_sha256:$implementation,timeout_seconds:$timeout,signature_source:{sha:$signature_sha,tree:$signature_tree,pattern:$signature}}}')
+  record=$(printf '%s' "$key" | jq --arg started "$started" --arg signature "$signature" --argjson passed "$passed" \
+    --argjson commands "$commands" --argjson prepare "$prepare" --argjson reds "$reds" \
+    '.+{started:$started,passed:$passed,commands:$commands,red_first:$reds,prepare:$prepare} |
+      .verifier.signature_source.pattern=$signature') || return 1
   mkdir -p "$common/agentic-flow/verify"
   printf '%s\n' "$record" > "$VERIFY_TMP/record"
   # Rename a same-filesystem temporary file for atomic publication.

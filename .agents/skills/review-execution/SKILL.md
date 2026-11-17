@@ -14,10 +14,10 @@ do not implement fixes unless the user separately asks for them.
    actual verification output, and `AGENTS.md` → Engineering standards. Read `CLAUDE.md`
    Stack profile/Gotchas or `METHODOLOGY.md` sections only when the diff or brief points
    there.
-2. Locate and read the approved implementation brief under `docs/inprogress/`. Treat the
+2. Read the approved brief under `docs/inprogress/`. Treat the
    document as design intent and its ordered steps, regression tests, Definition of Done,
    and verification commands as the acceptance contract.
-3. Identify the exact base and head being reviewed. Prefer an explicit range from the user,
+3. Identify the reviewed base and head. Prefer a range from the user,
    brief, issue, or PR. Otherwise inspect the current branch and derive the merge base
    without changing branches.
 4. Inspect the working tree separately from the committed range. State whether uncommitted
@@ -28,7 +28,7 @@ do not implement fixes unless the user separately asks for them.
 
 ## Review the implementation
 
-Review the complete range and each step commit. Check behavior against the brief, trace
+Review the range and each step commit. Check behavior against the brief, trace
 changed code into callers and downstream consumers, and apply `AGENTS.md` Engineering
 standards rather than restating them here. Pay special attention to failure paths,
 migrations, persisted data, public APIs, configuration compatibility, and whether tests
@@ -42,10 +42,9 @@ A finding must be introduced by the reviewed change, actionable, and supported b
 
 ## Verify with evidence
 
-Run the brief's exact per-step verification where practical. At minimum, inspect the tests
-and run the project's relevant `make test-one F=...` and `make check`; run `make test` for
-the completed brief when the environment supports it.
-
+Read the packet's verification record first. Reuse fresh passing evidence for this head
+and step. Re-run only a narrower command needed to resolve a concrete gap; name that
+command and record its result. Do not repeat the full per-step gate.
 Record the commands and outcomes. Never describe a skipped, unavailable, or stale CI result
 as passing. A tool/environment failure may make the verdict pending, but it is not itself a
 code finding unless the branch caused it.
@@ -72,7 +71,7 @@ or `handoff <issue> bounce --as reviewer --body-file <findings-file>`; states li
 in `METHODOLOGY.md` §6. Pending leaves state unchanged. Never edit accepted verdicts.
 
 Reuse evidence only when `sha` and `tree` match the reviewed head and
-`verifier.implementation_sha256` matches the current `verify-step.sh`; otherwise regenerate.
+`verifier.implementation_sha256` matches the current verifier digest (`verify-step.sh` plus `verify-record.sh`); otherwise regenerate.
 Inspect signature-source provenance and red-first output. Exit 0 is green; nonzero
 with an assertion-signature match is red, except timeout 124 and interrupts 130/143,
 which are invalid. Missing or mismatched signatures are invalid and prevent approval.
@@ -96,8 +95,7 @@ For every finding include:
 4. the mechanism and user/security impact;
 5. the minimal required change and regression evidence.
 
-Do not dilute the report with compliments or non-actionable observations. When there are no
-findings, say so explicitly.
+Do not dilute the report with compliments or non-actionable observations. State explicitly when there are no findings.
 
 After findings, include:
 

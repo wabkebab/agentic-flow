@@ -17,7 +17,7 @@ or `handoff <issue> bounce --as reviewer --body-file <findings-file>`; states li
 in `METHODOLOGY.md` §6. Pending leaves state unchanged. Never edit accepted verdicts.
 
 Reuse evidence only when `sha` and `tree` match the reviewed head and
-`verifier.implementation_sha256` matches the current `verify-step.sh`; otherwise regenerate.
+`verifier.implementation_sha256` matches the current verifier digest (`verify-step.sh` plus `verify-record.sh`); otherwise regenerate.
 Inspect signature-source provenance and red-first output. Exit 0 is green; nonzero
 with an assertion-signature match is red, except timeout 124 and interrupts 130/143,
 which are invalid. Missing or mismatched signatures are invalid and prevent approval.

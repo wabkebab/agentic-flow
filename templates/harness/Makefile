@@ -33,7 +33,7 @@ test:           ## full test suite
 
 test-one:       ## one harness group: make test-one F=controller [S=launch,ledger]
 	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller [S=launch,ledger,recovery,ship,andon (controller only)]" >&2; exit 2; }
-	@if [ "$(origin S)" != undefined ]; then \
+	@if [ "$(origin S)" = "command line" ]; then \
 	  [ "$(F)" = controller ] || { echo "S= is valid only with F=controller" >&2; exit 2; }; \
 	  scripts/self-test.sh --only "$(F)" --scenario "$(S)"; \
 	else scripts/self-test.sh --only "$(F)"; fi
