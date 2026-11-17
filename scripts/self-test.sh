@@ -63,7 +63,59 @@ PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 # dollar-brace expression syntax that shipped docs quote when documenting CI workflows.
 # Built with printf so this file never contains a literal placeholder to self-match.
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
-trap 'rm -rf "$TMP"' EXIT
+# TIMING BEGIN: separate from cost events; disabled runs do no clock/file work.
+TEST_TIMING=0
+case "${AGENTIC_TEST_TIMING:-}" in
+  ''|*[!0-9]*) ;;
+  *) case "$AGENTIC_TEST_TIMING" in *[1-9]*) TEST_TIMING=1 ;; esac ;;
+esac
+if [ "$TEST_TIMING" = 1 ]; then
+  TEST_TIMING_EVENTS="$TMP/timing"
+  : > "$TEST_TIMING_EVENTS"
+fi
+
+test_timing_begin() { # <block|call|reset> <name> [caller depth]
+  [ "$TEST_TIMING" = 1 ] || return 0
+  local depth=${3:-0}
+  printf 'begin\t%s\t%s\t%s\t%s:%s\n' "$SECONDS" "$1" "$2" \
+    "${BASH_SOURCE[$((depth+1))]}" "${BASH_LINENO[$depth]}" >> "$TEST_TIMING_EVENTS"
+}
+
+test_timing_end() { # Preserve the last command's status and its errexit context.
+  local status=$?
+  if [ "$TEST_TIMING" = 1 ]; then
+    printf 'end\t%s\n' "$SECONDS" >> "$TEST_TIMING_EVENTS"
+  fi
+  return "$status"
+}
+
+test_timing_report() {
+  [ "$TEST_TIMING" = 1 ] || return 0
+  [ -s "$TEST_TIMING_EVENTS" ] || return 0
+  # Begin records survive a failing subshell or exit; unfinished spans end here.
+  awk -F '\t' -v now="$SECONDS" '
+    $1=="begin" { n++; stack[++depth]=n; started[n]=$2; kind[n]=$3; name[n]=$4; site[n]=$5 }
+    $1=="end" { elapsed[stack[depth]]=$2-started[stack[depth]]; done[stack[depth]]=1; depth-- }
+    END {
+      for (i=1; i<=n; i++) {
+        seconds=(done[i] ? elapsed[i] : now-started[i])
+        if (kind[i]=="block") printf "block %s: %d seconds%s\n", name[i], seconds, (done[i] ? "" : " (incomplete)")
+        if (kind[i]=="reset") { resets++; reset_seconds+=seconds }
+        if (kind[i]=="call") { calls++; times[calls]=seconds; sites[calls]=site[i] }
+      }
+      print "slowest c4_run/c5_run calls (seconds file:line):"
+      # Only 15 selections, regardless of how many calls the suite adds.
+      for (rank=1; rank<=15 && rank<=calls; rank++) {
+        best=0
+        for (i=1; i<=calls; i++) if (!used[i] && (!best || times[i]>times[best])) best=i
+        printf "%d %s\n", times[best], sites[best]; used[best]=1
+      }
+      printf "resets: %d calls, %d seconds total (includes nested resets)\n", resets, reset_seconds
+    }
+  ' "$TEST_TIMING_EVENTS" >&2
+}
+trap 'test_timing_report; rm -rf "$TMP"' EXIT
+# TIMING END
 
 # Keep per-process cost evidence even when no external report was requested.
 # An external report also receives nested self-test events.
