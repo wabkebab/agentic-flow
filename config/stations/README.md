@@ -7,17 +7,44 @@ not quoted; policy authors remain trusted. Packets are limited to 3,000 words.
 Reviewer packets include the latest accepted submit and a SHA/tree/implementation-
 matched verification record, preserving its provenance, or a request to regenerate it.
 
-These files are launch inputs, not automatically active project settings. Phase 2's
-controller must load them, remove GitHub credentials (including on-disk credential
-stores and connected tools), and enforce network isolation. Do not launch an agent
-with a prompt sourced directly from a raw issue thread.
+`agentic-flow roles [--json]` shows each effective assignment and its layer.
+Defaults in `config/roles.tsv` are overridden by a whole project row in
+`.agentic-flow-roles`, then by the operator file under
+`$XDG_CONFIG_HOME/agentic-flow/roles/<owner>/<repo>.tsv` (default `~/.config`).
+Only the human sets, unsets or makes a station manual. Project changes are staged;
+upgrades replace harness defaults and preserve project/operator choices.
+
+`scripts/lib/launch.sh` activates these profiles in a whole-process `env -i`
+environment. Its preflight probes gh authentication and every remote push URL,
+checks effective settings, and reports contract mode and accepted-risk gaps.
+The controller caller uses `LAUNCH_STEP` and optionally `LAUNCH_SESSION` for the
+preamble and preassigned session. A resume also requires the creating intent's
+`LAUNCH_RESUME_CLI` and `LAUNCH_RESUME_PROFILE` (project-relative profile path).
+Codex's `launch_session_record` callback receives the first `thread.started` id;
+C-2/C-5 own ledger persistence. Launch metadata includes raw reported usage and
+whether turn/budget limits are advisory. A `-` timeout still gets a 2,700-second
+controller watchdog; explicit timeouts override it. Every process group is reaped
+on completion, timeout or a failed session callback. `ulimit -f 65536` caps each
+file written by the CLI at 64 MiB (Bash uses 1,024-byte blocks), including capture
+files and session/database files under HOME. A larger existing CLI database may
+therefore reject writes; this is a per-file process limit, not a capture-only cap.
+
+Executor bundles read the live AGENTS.md, including its render-shared engineering
+standards; reviewer bundles read the live review-execution skill. The preamble
+wins over vendor instruction roles. Codex reviewer launches exclude AGENTS.md;
+Claude excludes vendor instructions only under API-key authentication with `--bare`.
+OAuth Claude and OpenCode report `overridden`. OpenCode has no OS network boundary; its unattended use requires the accepted risk
+`opencode-station-network`. An identical CLI/model pair requires `same-model-review`.
 
 ## Claude
 
 Load `claude.settings.json` using Claude Code's `--settings` option. Its deny rules
 block direct `gh` calls and GitHub WebFetch domains. Tests parse the file and assert
-the deny entries. Shell tool permissions do not block arbitrary alternate programs
-or replace OS network isolation. Do not use a permission-bypass launch mode.
+the deny entries. Shell tool permissions do not block arbitrary alternate programs. The station profile
+also requires the Bash sandbox, refuses unsandboxed retries and unavailable sandbox
+runtimes, and uses a strict empty outbound domain allow-list. Preflight checks these
+settings and the platform sandbox dependencies. Do not use a permission-bypass launch mode.
+See [sandbox configuration](https://code.claude.com/docs/en/sandboxing).
 
 Reference: [Claude permissions](https://code.claude.com/docs/en/permissions).
 
@@ -54,6 +81,54 @@ GitHub client or filesystem credential read. The controller must supply the OS
 network and credential boundary and check effective merged permissions.
 
 Reference: [OpenCode permissions](https://opencode.ai/docs/permissions/).
+
+## Run ledger and metrics
+
+Source `scripts/lib/ledger.sh`, then call `ledger_init <worktree>`. All linked
+worktrees resolve the same Git common directory. Each `ledger_<kind> <plan>
+<record-json-file>` writer validates one record, takes a bounded append lock,
+and publishes one JSONL line with one write followed by fsync. The controller
+adds its longer-lived per-plan lock. Duplicate once-only records, stale
+replacement heads and invalid record order are refused. `ledger_ship` records a
+human invocation as `{v:1,kind:"ship",plan,ship:<unique-id>,at}`.
+
+Executor verification records use
+`{v:1,kind:"verify",run,head,record,status:"green"|"red",tail?,at}`.
+`record` is the verify-step record path. The optional `tail` contains the final
+16,384 bytes at most of verify-step stderr, bounded before the ledger append.
+Fix-resume packets use this durable diagnostic suffix across controller restarts
+without reopening the record path. Older records without `tail` remain valid.
+
+`ledger_chains <plan> [context-json-file]` reports every chain's latest run,
+open head, closed runs, pending item and remaining retry allowances. Context is
+an object keyed by run id with optional boolean `commit` and `dirty` flags;
+the caller supplies worktree observations. Replacement runs preserve chain-wide
+limits. `ledger_generation` advances only after a chain end. These are local
+recovery hints; the controller still replays the journal before any transition.
+
+Ledgers are limited to 50,000 lines / 32 MiB per plan, records and decision bodies
+to 256 KiB, and plan scans to 1,000 ledgers. Reads cover the entire selected plan.
+A malformed crash suffix is ignored with a warning. A subsequent append seals
+its exact byte length and SHA-256 in reserved framing metadata, preserving the
+old bytes even after repeated interrupted repairs. Malformed interior records
+without such framing are rejected. Decision bodies are fsynced before their
+record; `ledger_body <plan> <run>` verifies the stored body hash before returning
+any bytes.
+
+`agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]` reads local
+ledgers and the handoff-generated `.metrics.json` state-cache companion. The
+existing six-column session cache is unchanged. Missing journal history or usage
+is `null` in JSON and `n/a` in text. Incomplete or partially reported usage totals remain unknown;
+reported zeroes stay zero. No network call is made.
+
+First-pass yield is approved steps without any bounce divided by approved steps.
+Bounce rate is admitted bounce events divided by bounce plus approve events.
+Touch count is admitted resume + approve events + unique ship invocations;
+handoff retries add no touches or bounces. Station quality metrics use the issues
+that station ran. Lead time is the first intent to the journaled tracker/work
+close, in UTC seconds. Wall time sums completed station records. `--since` filters
+run activity and journal events; lead time retains the full lifecycle interval.
+The JSON includes per-plan/per-station totals and per-step station usage/cost.
 
 ## Red-first amendment
 

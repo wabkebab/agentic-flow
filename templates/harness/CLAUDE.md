@@ -19,13 +19,16 @@
   load the chosen template, relevant live code/tests, and only the methodology section the
   task needs. For close-out, load the Tracker/Status, step issue states, the reviewer's
   verdict comments, CI evidence, and lifecycle output. Commit with `git-claude`.
-- **Execute — Codex.** Implements the issues, recording each step's commit as a comment on
-  its issue. Commits with `git-codex`. See `AGENTS.md`.
-- **Review — OpenCode.** The independent per-step review: reads the commit Codex recorded
-  against the brief, then either returns findings to Codex or records an approving verdict
-  and closes Strict sub-issues or relabels Standard work issues. Commits review notes with `git-opencode`. See `METHODOLOGY.md`
-  §1 and the label pairs in §6.
-- **Own / merge / deploy — the human.** Approves plans, merges PRs, controls all pushes.
+- **Execute — Codex.** Implements steps and commits with `git-codex`. See `AGENTS.md`.
+- **Review — OpenCode.** Reviews each step against the brief; see `review-execution`.
+- **Own / merge / deploy — the human.** Approves the plan, runs `agentic-flow run`,
+  answers andon, runs `agentic-flow ship`, and merges. Use supervised `run --once`
+  until the unattended entry gate is satisfied (see `ADOPTION.md`).
+
+Controller stations return result JSON and never call `handoff`; the controller verifies
+and journals results. Interactive executors use `brief`, `verify-step`, and `handoff submit`;
+reviewers use `packet`, `verify-step`, and `handoff approve|bounce` (§6). `ship` handles
+push, PR and close-out gates; commit its staged close-out when prompted, then run it again.
 
 **Exactly one role reviews.** An opt-out reassigns the review; it never leaves it to both.
 

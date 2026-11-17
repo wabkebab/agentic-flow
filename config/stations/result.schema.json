@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "station": {
+      "enum": [
+        "executor",
+        "reviewer"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "submitted",
+        "approve",
+        "bounce",
+        "ask"
+      ]
+    },
+    "head": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 1200
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "severity": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3"
+            ]
+          },
+          "file": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 1200
+          }
+        },
+        "required": [
+          "severity",
+          "file",
+          "line",
+          "text"
+        ]
+      }
+    },
+    "question": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 1200
+    }
+  },
+  "required": [
+    "v",
+    "station",
+    "outcome",
+    "head",
+    "summary",
+    "findings",
+    "question"
+  ]
+}

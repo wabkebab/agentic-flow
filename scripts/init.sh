@@ -3,7 +3,7 @@
 #
 # Usage:
 #   scripts/init.sh <target-dir> --name <kebab> [--stack <profile>]
-#                   [--claude-only] [--git-init] [--yes] [--dry-run]
+#                   [--owner-login <login>] [--claude-only] [--git-init] [--yes] [--dry-run]
 #
 # Every promptable choice has a matching flag. Non-TTY runs never prompt.
 set -euo pipefail
@@ -235,7 +235,8 @@ preexisting_ci_template=false
 owner_token=$(printf '{%sOWNER_LOGIN}%s' '{' '}')
 for policy in "$TARGET_ABS/.agentic-flow-review-policy" "$TARGET_ABS/.agentic-flow-review-policy.agentic-new"; do
   [ -f "$policy" ] || continue
-  sed "s/$owner_token/$OWNER_LOGIN/g" "$policy" > "$policy.tmp.$$"
+  sed "s/$owner_token/$OWNER_LOGIN/g; /^owner=/d" "$policy" > "$policy.tmp.$$"
+  printf 'owner=%s\n' "$OWNER_LOGIN" >> "$policy.tmp.$$"
   mv "$policy.tmp.$$" "$policy"
 done
 

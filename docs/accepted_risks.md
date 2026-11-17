@@ -9,6 +9,34 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="opencode-station-network"></a>
+## C-1 — OpenCode stations can reach the network
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-15
+**Decided by:** Human approval of line-controller decision 9, tracker #138
+**Tracking:** docs/inprogress/feature-line-controller.md; step #139
+
+### Finding / proposal
+OpenCode 2.3.0 has command deny rules but no OS sandbox or network switch.
+Station shell commands can reach the network with the operator's rights, including
+credentials read from HOME. Environment scrubbing alone does not prevent that.
+
+### Proposed mitigation / implementation
+The station gets packet input, no inherited GitHub token, an empty GH_CONFIG_DIR,
+a disabled push URL and credential helper, and the activated deny profile.
+Unattended preflight requires this accepted entry and warns on every run.
+
+### Acceptance rationale
+The owner keeps OpenCode as the default reviewer to preserve model diversity.
+Command deny rules cannot stop arbitrary alternate network clients or credential
+reads. Operators can reassign either station or make it manual.
+
+### Revisit if
+- OpenCode ships a sandbox or network switch.
+- A station makes an unexpected network call.
+- The repository holds secrets beyond the App keys.
+
 <a id="agent-thread-prompt-injection"></a>
 ## D-9 — Interactive agents still read raw issue threads
 
@@ -42,13 +70,14 @@ Interactive agents can still read raw threads. Policy-authored text is trusted b
 identity, not screened for instructions. Claude/OpenCode command permissions do
 not provide an OS network boundary or stop every alternate program from reaching
 GitHub. Codex environment filtering does not remove on-disk credentials or inherited
-connectors. Headless deployment still needs a controller-enforced credential-free,
-network-isolated environment and must actually activate the station profiles.
-The packet narrows thread exposure; it is not proof of complete process isolation.
+connectors. The controller clears inherited credentials, supplies an empty GH_CONFIG_DIR, disables
+push and credential helpers, and activates station profiles; unattended entry checks their
+effective isolation. OpenCode lacks an OS network boundary, accepted separately under
+[opencode-station-network](#opencode-station-network). On-disk credentials and connected
+tools remain a risk. The packet is not proof of complete process isolation.
 
 ### Revisit if
-- Any station runs headless or unattended: verify the controller's isolation and
-  profile activation before launch; packet-only admission is not sufficient.
+- Controller isolation or station profile activation changes; packet-only admission is not sufficient.
 - A hostile comment is observed steering an interactive agent or a policy identity.
 
 <a id="codex-guard-fail-open"></a>
