@@ -4,15 +4,18 @@
   "additionalProperties": false,
   "properties": {
     "v": {
+      "type": "integer",
       "const": 1
     },
     "station": {
+      "type": "string",
       "enum": [
         "executor",
         "reviewer"
       ]
     },
     "outcome": {
+      "type": "string",
       "enum": [
         "submitted",
         "approve",
@@ -39,6 +42,7 @@
         "additionalProperties": false,
         "properties": {
           "severity": {
+            "type": "string",
             "enum": [
               "P1",
               "P2",
