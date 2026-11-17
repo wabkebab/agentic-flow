@@ -441,12 +441,13 @@ scripts/doctor.sh --check
 1. **P-6.** For a CLI that cannot enforce an output schema (OpenCode), end the prompt `launch_bundle` builds with one explicit line: the final message is only the result JSON object, with no prose and no fences. Claude and Codex prompts stay byte-identical. Keep the parser lenient (`station-output.jq`).
 2. **P-7a.** Find why `repaired #138: hold-projection` prints on every `run` (`controller.sh:730`). Fix it with a test, or record the cause in the commit body if it is intended.
 3. **P-7b.** Find why `metrics` reports tokens as `n/a` when the ledger holds Codex usage. Check `usage_sum` and `breakdown` (`ledger.pl:379-393`) first: one run with no station record or a null field makes the whole plan unknown. Fix it so known usage is reported with a count of the runs that were unknown, or record why not.
+4. **Summary cap** (decided 2026-11-17, from #154). The OpenCode reviewer approved h-4 twice with a 1513-character `summary`, and the controller refused both as "malformed station result" because the schema allows 1200. Raise the `summary` cap to 2000 characters in `result.schema.json` and in `controller_result_valid` (`controller.sh:514`), and in any other copy of the schema. Leave `question` and each finding's `text` at 1200. State the 2000 limit on the verdict-format line from step 1, so a station is told it. Keep the limit a hard failure: an over-length verdict is still refused, never truncated.
 
-**Test:** scenarios 21 and 22. Failure path first: prose followed by JSON, fenced JSON, a plan where one run has null usage, and a hold projection that is already correct.
+**Test:** scenarios 21 and 22. Failure path first: prose followed by JSON, fenced JSON, a plan where one run has null usage, and a hold projection that is already correct. Then a summary of 2000 characters passes, one of 2001 is refused as malformed, and a `question` of 1201 is still refused.
 
-**DoD:** scenarios 21 and 22 pass, and the commit body states each P-7 outcome.
+**DoD:** scenarios 21 and 22 pass, and the commit body states each P-7 outcome. A 2000-character summary is accepted and the limit is in the station's prompt.
 **Verify:** `make test-one F=controller S=launch,ledger`
-**Risks:** changing a prompt for the CLIs that enforce the schema; tightening the parser and rejecting a real reviewer message; a metrics change that reports a partial total as a complete one (show the unknown count); a "fix" to the repair that stops it repairing a real drift.
+**Risks:** changing a prompt for the CLIs that enforce the schema; tightening the parser and rejecting a real reviewer message; a metrics change that reports a partial total as a complete one (show the unknown count); a "fix" to the repair that stops it repairing a real drift; raising the cap in the schema but not the validator (or the reverse), so a verdict the schema allows is still refused; truncating an over-length summary and hiding a lost finding; the new limit missing from a CLI's prompt.
 **Red-first:** `scripts/self-test.sh --only controller --scenario launch,ledger` — scripts/self-test.sh scripts/tests/controller.sh
 **Commit:** `State the verdict format for schema-less CLIs and fix the two unexplained controller faults`
 
