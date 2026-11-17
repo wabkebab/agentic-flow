@@ -44,7 +44,8 @@ Verify records in `.git/agentic-flow/verify/` time every command `verify-step` r
 - `make check` is not the cost. It takes 2–4 s, and the Stop hook already skips it on an unchanged tree (`scripts/hooks/check-gate.sh`, state hash).
 - The controller group grew about 20× across three steps. `scripts/tests/controller.sh` has 1,726 lines, about 83 `c4_run`/`c5_run` controller invocations (`:1117`, `:1556`) and 48 fixture resets. Nothing flagged the growth: `assert_cost_budget` (`scripts/self-test.sh:134`) counts file copies, not time.
 - The export group alone took more than 600 s (`make test-one F=export`, 2026-11-17).
-- A full `make test` on `7599d61` was still running after 16 minutes (2026-11-17).
+- A full `make test` takes **32 min 10 s** (`b6c1962`, 2026-11-17; 843 s user, 943 s system). During it, the nested exported-layout suite runs as a second `self-test.sh --full` process.
+- The full-mode copy budget was exceeded for all of Phase 2 without anyone seeing it. The first full `make test` on `phase-2` failed only at its last check: 325 fixture file copies against a budget of 311. No new `cp` lines landed after C-1; C-2 to C-6 added scenarios that reuse the copying fixture resets. The budget is checked only in a full run, and every per-step Verify line ran `make test-one`. The owner approved 325 as the new baseline (`b6c1962`). This is the case for T-6 (per-group budgets checked on per-step runs) and T-7 (a full run once per plan).
 - Not measured yet: how the controller group's time splits across scenarios.
 
 ### Where a group runs more than once
