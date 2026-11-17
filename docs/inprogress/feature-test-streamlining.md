@@ -83,7 +83,7 @@ The adopter gains almost nothing. These groups drive the harness's own scripts a
 | ID | Change | Expected saving |
 |---|---|---|
 | T-1 | **Verify once per commit.** `verify-step` returns the stored record when commit, tree, verifier implementation hash, signature source and harness version all match: the same freshness test `packet.sh` already applies. `--force` re-runs. Contracts: under the controller the executor does not run `verify-step` and the reviewer reads the packet's record. A reviewer re-runs only for a stale or failed record, or to test a specific doubt with a narrower command it names (decided 2026-11-17). | 1–2 group runs per step, plus each bounce |
-| T-2 | **No nested full suite in the export group.** The fresh export runs `--fast` plus the hooks and contracts groups. The full suite in exported layout becomes its own CI job, not part of local `make test`. | About one controller-group run (10+ min) per `make test`, locally and in CI |
+| T-2 | **Exported-layout suite at close-out, not in every `make test`.** The export group's fresh export runs `--fast` plus a check that `make check` passes. The full suite in exported layout moves to its own target, which `ship` runs locally on the final head, after the close-out commit and before the final push (`ship.sh:111`). A failure stops the push. CI still runs it. | About one controller-group run (10+ min) per everyday `make test`; paid once per plan instead |
 | T-3 | **Profile before cutting.** A timing wrapper on `c4_run`, `c5_run` and the resets, enabled by an environment variable, reports per-scenario seconds in one run. | Turns T-4 into a measured decision |
 | T-4 | **Scenario selection.** Split `controller.sh` and `stations.sh` into tagged scenario files (launch, ledger, recovery, ship, andon). `make test-one F=controller S=<tag>`. A step's Verify line names its scenarios; the whole group runs at the end of the plan and in CI. | Likely 10 min down to a few per step; T-3 confirms |
 | T-5 | **Parallel groups in `--full`.** Fixtures are already isolated and concurrent runs are supported. Wall time becomes the slowest shard. | Large once T-4 creates shards |
@@ -114,6 +114,12 @@ self-test.sh --only <group> [--scenario <tag>]
   cost events gain group:<name>:seconds; full mode fails over an approved ceiling
 
 self-test.sh --full [--jobs <n>]          # T-5; default min(groups, CPUs)
+
+# T-2: close-out gate, owned by the Makefile like every other command
+make ship-gate        # optional target; ship runs it before the final push when it exists
+                      # this repo: the full suite inside a fresh export (exported layout)
+                      # adopters: whatever their Makefile defines, or nothing
+ship: non-zero ship-gate → stop before push, print the failing group, exit 1
 
 # T-8: group scope, declared once next to SELF_TEST_GROUPS (final split after the audit)
 local:    groups that test the adopter's real files
@@ -153,9 +159,11 @@ Bounds: parallel shards capped at the CPU count; each shard keeps the group's ex
 - **T-6: ceilings per group** (owner, 2026-11-17), so a failure names the group that grew.
 - **T-8: a group is `local` only if it tests the adopter's real files** (owner, 2026-11-17). Groups that run harness scripts against fixtures are `scaffold`. A first look: `lifecycle` runs against synthetic fixtures (`self-test.sh:4153`, `$TMP/lifecycle-v2`), so it is `scaffold`; contracts and hooks also appear to exercise harness scripts with fixtures. The brief audits each group. The `local` set may be nearly empty, because the checks that read an adopter's real files (harness sync, payload manifest, docs index, memory index, action pins) already run in `make check`.
 
+- **T-2: the exported-layout suite runs at close-out, before CI** (owner, 2026-11-17). It leaves everyday `make test`. `ship` runs it locally through an optional `make ship-gate` target on the final head, after the close-out commit and before the final push, so adopter-layout breakage is caught before anything ships. CI keeps running it too, because CI is the merge gate and runs on a different platform. The cost is about 10+ minutes once per plan, at the end, instead of on every `make test`.
+
 ## Open questions
 
-- [BLOCKING] T-2: is the full suite in exported layout acceptable as a CI-only job, so local `make test` no longer runs it? (Asked again 2026-11-17 with an explanation of "exported layout".)
+- None open.
 
 ---
 
@@ -164,7 +172,7 @@ Bounds: parallel shards capped at the CPU count; each shard keeps the group's ex
 > Not drafted yet. Part A has to be reviewed first. Candidate step order, per Option A:
 >
 > 1. T-3 profile wrapper; T-1 verify reuse with `--force`; T-7 contract text.
-> 2. T-2 export group runs `--fast` plus hooks and contracts; full exported-layout CI job. T-8 group scopes and harness-change detection in the same step.
+> 2. T-2 export group runs `--fast` plus `make check` in the fresh export; the full exported-layout suite becomes `make ship-gate`, run by `ship` before the final push and kept in CI. T-8 group scopes and harness-change detection in the same step.
 > 3. R-15 split into `tests/<group>.sh` and the adopter-twin fixture.
 > 4. T-4 scenario tags and selector; T-5 parallel shards.
 > 5. T-6 wall-time ceilings from the new timings.

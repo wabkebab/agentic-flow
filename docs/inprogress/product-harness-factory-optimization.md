@@ -289,7 +289,7 @@ Added 2026-11-17. A step whose Verify line names the controller group runs that 
 | ID | Change | Fixes |
 |---|---|---|
 | T-1 | Verify once per commit: `verify-step` reuses a record whose commit, tree, verifier hash, signature source and harness version match; `--force` re-runs. Under the controller the reviewer reads the record. | Repeat runs |
-| T-2 | The export group runs `--fast` plus hooks and contracts in the fresh export; the full exported-layout suite becomes its own CI job. | Repeat runs |
+| T-2 | The full suite in exported layout leaves everyday `make test` and runs at close-out: `ship` runs it through `make ship-gate` before the final push, and CI keeps it. | Repeat runs |
 | T-3 | Per-scenario timing behind an environment variable, before anything is cut. | Group growth |
 | T-4 | Scenario selection: tagged scenario files and `make test-one F=<group> S=<tag>`; a step's Verify line names its scenarios. | Group growth |
 | T-5 | Run groups and scenario shards in parallel in `--full`. | Wall time |
