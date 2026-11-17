@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-15) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict
-> Part 1 of the signing follow-up: every commit is signed by its role's key, and lifecycle and CI check that, so a step commit proves the executor's key made it. Runs after Phase 2 merges. Part 2 (role-neutral contracts and labels) is Phase 3's R-22. Draft for approval; nothing is executed.
+> Part 1 of the signing follow-up: every commit is signed by its role's key, and lifecycle and CI check that, so a step commit proves the executor's key made it. Runs after Phase 2 merges. Part 2 (role-neutral contracts and labels) is Phase 4's R-22. Draft for approval; nothing is executed.
 
 # Feature — Role-signed commits
 
@@ -133,7 +133,7 @@ Bounds: one `verify-commit` per commit in the PR range; CI's range is bounded by
 
 ## Out of scope / What NOT to build in this pass
 
-- Role-neutral contracts, role-named labels and a non-Claude planner: Phase 3's R-22.
+- Role-neutral contracts, role-named labels and a non-Claude planner: Phase 4's R-22.
 - GitHub's Verified badge for agent commits (Options B and C).
 - Signing tags or releases.
 - Re-signing or re-checking history before this pass: checks cover each pass's own range only.

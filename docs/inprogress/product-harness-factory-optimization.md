@@ -268,7 +268,38 @@ The human approves at Spec, releases at Release, and answers andon calls. Every 
 - a replayed handoff after a later transition, which must change nothing;
 - a hostile comment on a thread.
 
-### Phase 3 — Remove what the above makes redundant
+### Phase 2b — Station hardening
+
+Added 2026-11-17. Running Phase 2's controller on its own steps C-6 and C-7 hit nine launcher and ledger defects that the offline suite could not see, and all five human `resume`s in C-7 were for launcher faults. This runs before Phase 3, because every later phase executes through the controller. Analysis: `docs/inprogress/feature-station-hardening.md`.
+
+| ID | Change | Fixes |
+|---|---|---|
+| P-1 | Real-CLI station probe (`doctor --stations`): launch each assigned CLI through the real launcher, sandbox and limits with a fixed prompt; check exit, session capture, result parsing and sandbox writes. | C-7 dogfood |
+| P-2 | Keep a failed station's bounded events and stderr under its ledger run, and name the path in the andon comment. | C-7 dogfood |
+| P-3 | Start a fresh session when the previous attempt died before launch or the launcher or profile changed, instead of resuming it. | C-7 dogfood |
+| P-4 | A pre-launch failure raises an operator hold, not a step escalation that needs the approver's `resume`. | C-7 dogfood |
+| P-5 | `hold clear --rebaseline`, so a commit on the plan branch during a pending salvage does not force `reset --hard`. | C-7 dogfood |
+| P-6 | Explicit final-message format for CLIs that cannot enforce an output schema (OpenCode). | C-7 dogfood |
+| P-7 | Investigate the `hold-projection` repair that repeats on every run and the missing token totals in `metrics`. | C-7 dogfood |
+
+### Phase 3 — Streamline the tests
+
+Added 2026-11-17. A step whose Verify line names the controller group runs that group three to four times per commit (executor, controller `verify-step`, reviewer) and twice more per full `make test`, because the export group nests a second full suite. The group grew from 32 s to 673 s across C-3 to C-6 and no check noticed. Analysis: `docs/inprogress/feature-test-streamlining.md`.
+
+| ID | Change | Fixes |
+|---|---|---|
+| T-1 | Verify once per commit: `verify-step` reuses a record whose commit, tree, verifier hash, signature source and harness version match; `--force` re-runs. Under the controller the reviewer reads the record. | Repeat runs |
+| T-2 | The export group runs `--fast` plus hooks and contracts in the fresh export; the full exported-layout suite becomes its own CI job. | Repeat runs |
+| T-3 | Per-scenario timing behind an environment variable, before anything is cut. | Group growth |
+| T-4 | Scenario selection: tagged scenario files and `make test-one F=<group> S=<tag>`; a step's Verify line names its scenarios. | Group growth |
+| T-5 | Run groups and scenario shards in parallel in `--full`. | Wall time |
+| T-6 | Wall-time ceiling per group next to the copy-count budget. | Group growth |
+| T-7 | Gate cadence in the contracts: per step `make check` plus the step's Verify command; full `make test` once at the end; reviewer runs nothing by default. | Repeat runs |
+| R-15 | Moved here from the cleanup list. Split `self-test.sh` into `tests/<group>.sh`. Add an adopter-twin fixture (customized `CLAUDE.md` and `Makefile`, realistic commit commands) and run upgrade, hooks and `make check` against it as holdout scenarios. | C-4, F-1 |
+
+### Phase 4 — Remove what the above makes redundant
+
+Renumbered from Phase 3 on 2026-11-17, when test streamlining became Phase 3 and R-15 moved there. The approved Phase 2 brief (`feature-line-controller.md`) still calls these items "Phase 3"; read that as Phase 4.
 
 | ID | Change | Fixes |
 |---|---|---|
@@ -276,7 +307,6 @@ The human approves at Spec, releases at Release, and answers andon calls. Every 
 | R-13 | With R-18 in place: the final approval becomes a native PR review by the reviewer identity, required on `main` together with `CI gate` and dismissed on a new push. Step verdicts stay as issue comments, because steps are reviewed before the PR exists, and are accepted only from the reviewer login. Delete edit detection, run-attempt binding and the role-claim check. Lifecycle keeps the Status block, ancestry and the step-verdict lookup. | E-1 |
 | R-14a | Non-breaking: classify an upgrade file as a candidate only when upstream changed since the per-file hash recorded at the last upgrade. | E-3, #109 |
 | R-14b | Breaking, at 1.0: split harness-owned from project-owned files. `AGENTS.md` becomes fully harness-owned (it differs from the template only by project name). `CLAUDE.md` keeps Stack profile, tools, Architecture and Gotchas and imports a harness-owned file for the rest. The `Makefile` includes `harness.mk`. Hook entries in `settings.json` are merged by key with `jq`. Upgrade becomes overwrite. | E-3, #109 |
-| R-15 | Split `self-test.sh` into `tests/<group>.sh`. Add an adopter-twin fixture (customized `CLAUDE.md` and `Makefile`, realistic commit commands) and run upgrade, hooks and `make check` against it as holdout scenarios. | C-4, F-1 |
 | R-16 | Docs diet: one reviewer contract, `METHODOLOGY.md` §9–§11 moved to reference files, roadmap cut to the open queue, the HTML explainer generated or dropped. | B-4, B-6, E-4 |
 | R-17 | Scenario-first brief template with a word cap. Acceptance scenarios are written at Spec and the executor cannot edit them. | F-1, F-2 |
 | R-22 | Role-neutral roles (added 2026-11-15, split from the signing follow-up). Role contracts move to role-named files, and `CLAUDE.md` and `AGENTS.md` become thin routers that load the session's role, so any vendor can plan, execute, review or close. Workflow labels become role-named (`role:executor` and the like, instead of `agent:codex`), which is a breaking change with a migration. Plan it with R-14b, since both rework the same files. This supersedes the line in `feature-line-controller.md`'s out-of-scope list that sends this work to the signing pass. | F-4 |
@@ -332,10 +362,12 @@ One cost follows from the R-4 correction: a clean worktree has no installed depe
 
 - [x] `docs/done/feature-gate-and-handoff-fixes.md` — Phase 0 (Strict, because it changes gates and review provenance). Drafted 2026-11-11; shipped as `0.14.0` in PR #121, tracker #114. R-0b was replaced by G-5: #113's 89.5 s was measured at `0.13.1`, before F-12, and a fresh `0.13.3` export runs `make check` in 5.5 s.
 - [x] `docs/done/feature-deterministic-stations.md` — Phase 1 (Strict). Drafted 2026-11-12; shipped as `0.15.0` in PR #135 (merged 2026-11-15), tracker #124, steps #125–#133 all approved, with two bounces (s-3, s-5). Delivered R-1 to R-6 and R-19, plus R-18's App-identity support. This repo stayed `single-operator` until the identity flip below.
-- [x] `docs/done/feature-distinct-identities.md` — the identity flip, Phase 1 decision 1's one-step follow-up (Strict). Drafted 2026-11-15; approved 2026-11-15 (rev `f7593c9`); shipped in PR #148 (merged 2026-11-15), tracker #146, step #147 approved clean. This repo now runs `identity-mode=distinct-account`: executor, reviewer and approver each post as their own App, the owner stays a second `approver=` for `plan-to-issues` issue creation (Option A), and `single-operator-review` (F-3) is retired with its anchor kept. The tracker closed as `flow-approver[bot]`, and the real reviewer-App login replayed correctly. Decision 4's required-review test is deferred, because the private repo cannot have branch protection; it moves to the publish step (R-0f) or Phase 3's R-13.
+- [x] `docs/done/feature-distinct-identities.md` — the identity flip, Phase 1 decision 1's one-step follow-up (Strict). Drafted 2026-11-15; approved 2026-11-15 (rev `f7593c9`); shipped in PR #148 (merged 2026-11-15), tracker #146, step #147 approved clean. This repo now runs `identity-mode=distinct-account`: executor, reviewer and approver each post as their own App, the owner stays a second `approver=` for `plan-to-issues` issue creation (Option A), and `single-operator-review` (F-3) is retired with its anchor kept. The tracker closed as `flow-approver[bot]`, and the real reviewer-App login replayed correctly. Decision 4's required-review test is deferred, because the private repo cannot have branch protection; it moves to the publish step (R-0f) or Phase 4's R-13.
 - [ ] `docs/inprogress/feature-line-controller.md` — Phase 2 (Strict). Drafted 2026-11-15; approved 2026-11-15 after five review rounds (rev `4a8e46d`); tracker #138, steps #139–#145. Covers R-7 to R-11, R-20 and R-21. The identity flip it waited on has shipped, so execution can start after `plan-to-issues --doc --apply`.
-- [ ] `docs/inprogress/feature-role-signing.md` — role-signed commits, part 1 of the signing follow-up (Strict). Drafted 2026-11-15; awaiting review. Runs after Phase 2. Part 2 is R-22 in Phase 3.
-- [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 3 (Strict; R-14 is a public compatibility change). Part A drafted 2026-11-17: adds test-cost items T-1 to T-7 and station-reliability items P-1 to P-7 from the Phase 2 dogfood runs. Brief not drafted.
+- [ ] `docs/inprogress/feature-role-signing.md` — role-signed commits, part 1 of the signing follow-up (Strict). Drafted 2026-11-15; awaiting review. Runs after Phase 2. Part 2 is R-22 in Phase 4.
+- [ ] `docs/inprogress/feature-station-hardening.md` — Phase 2b (Strict). Part A drafted 2026-11-17 from the C-6 and C-7 controller runs; covers P-1 to P-7. Brief not drafted. Runs after Phase 2 merges.
+- [ ] `docs/inprogress/feature-test-streamlining.md` — Phase 3 (Strict). Part A drafted 2026-11-17; covers T-1 to T-7 and R-15. Brief not drafted. Runs after Phase 2b.
+- [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 4 (Strict; R-14 is a public compatibility change). Not drafted. Covers R-12, R-13, R-14a, R-14b, R-16, R-17 and R-22.
 
 ## Sources
 
