@@ -183,11 +183,12 @@ Bounds: probe prompt fixed, 120 s per CLI; stored tails 256 KiB events and 64 Ki
 - **T-1: a doubting reviewer runs a narrower command** (owner, 2026-11-17). It names the command it runs, for example one scenario, and records it with its verdict. `--force` stays for a human or an executor who changed the environment; it is not the reviewer's tool.
 - **T-3, T-1 and T-4 move into this phase** (owner, 2026-11-17). They are small and do not touch the launcher, and they cut this phase's own iteration cost. T-1 must follow P-1. T-4 covers the `controller` group only.
 - **Controller runs of this brief record every human `resume` and its cause** in the close-out, as the measure of whether P-1 to P-4 worked (C-7 baseline: five).
+- **An unattended preflight failure raises the same hold** (owner, 2026-11-17). `launch_preflight` failures returned exit 6 (`controller.sh:565`) and stopped the loop with no hold, so an unattended run stalled silently. P-4 now raises the `station-infrastructure` hold for them too. `run --once` keeps exit 6.
+- **OpenCode's write exposure goes on record** (owner, 2026-11-17). Step h-3 adds one paragraph to `docs/accepted_risks.md#opencode-station-network` saying OpenCode can write the verify and ledger directories, and why that is acceptable under the controller's ordering.
 
 ## Open questions
 
-1. **Preflight failure in unattended mode** (non-blocking; this brief assumes yes). `launch_preflight` failures return exit 6 today (`controller.sh:565`) and stop the loop with no hold, so an unattended run stalls silently. P-4 as written covers a launch that dies after start. Recommendation: P-4 also raises the same `station-infrastructure` hold for an unattended preflight failure. Say if you want it left as exit 6.
-2. **OpenCode write exposure on the record** (non-blocking). Step h-3 adds one paragraph to `docs/accepted_risks.md#opencode-station-network` saying OpenCode can write the verify and ledger directories. Approving this brief accepts that edit.
+- None open.
 
 ---
 
@@ -266,7 +267,7 @@ Do not raise a ceiling. Only h-4 edits a contract: the reviewer skill, which is 
 16. **Retry rule.** A retry resumes only when the prior run captured a session and used tokens and the fingerprint is unchanged. A prior attempt that died before launch, or a changed fingerprint, starts a fresh session. Claude's and OpenCode's id rules are unchanged.
 17. **Infrastructure fault.** A launch that exits nonzero with no session, no tokens and under 5 s writes a station record whose reason starts with `pre-launch failure`, raises the `station-infrastructure` hold with the owner mention, leaves the step in `executing` or `reviewing`, journals no `ask`, and does not count toward the cap of two. After `hold clear`, the next `run` starts a new chain with no `resume`.
 18. **Real failures still escalate.** A station's own question, and two malformed results, escalate exactly as before.
-19. **Unattended preflight failure** raises the same hold (open question 1), and `run --once` keeps today's exit 6.
+19. **Unattended preflight failure** raises the same hold (decided 2026-11-17), and `run --once` keeps today's exit 6.
 
 **P-5**
 20. **Re-baseline.** With a commit on the plan branch during a pending salvage, `hold clear <doc> <id> --rebaseline` followed by `run` saves a salvage ref of the current state, raises no `worktree-changed-after-salvage`, and needs no `reset --hard`. Without the flag nothing changes. Only an authorized approver's marker counts, and a second controller on another machine reproduces the effect from the journal.
@@ -395,7 +396,7 @@ scripts/doctor.sh --check
 1. **P-3.** Record the fingerprint in the intent record. In the retry decision (`controller.sh:570-576`), resume only when the prior run captured a session, used tokens and the fingerprint is unchanged. Otherwise start fresh, with a session mode that names why (a dead attempt, or a changed launcher). Leave Claude's and OpenCode's id rules alone.
 2. **P-4.** Classify a pre-launch failure (nonzero exit, no session, no tokens, under 5 s) when the station record is written (`controller.sh:630`). Record it with a reason that starts `pre-launch failure`, and make `ledger.pl`'s chain summary not count it toward the invalid-result cap (`ledger.pl:341`) and return a pending state for it. The controller then raises the `station-infrastructure` hold through `controller_hold`, which already ends the chain as `held` and mentions the owner.
 3. After `hold clear`, a new `run` starts a new chain with the existing generation rules. Confirm against `ledger_generation` that no `resume` is needed, and say what you found in the commit body.
-4. Per open question 1, an unattended `launch_preflight` failure (`controller.sh:565`) raises the same hold. `run --once` keeps exit 6.
+4. Per the 2026-11-17 decision, an unattended `launch_preflight` failure (`controller.sh:565`) raises the same hold. `run --once` keeps exit 6.
 5. A station's own question, and two malformed results, escalate as before.
 
 **Test:** scenarios 16 to 19. Failure path first: the pre-launch classification boundary (just under and just over 5 s, with and without tokens, with and without a session), and a launcher change between attempts.
