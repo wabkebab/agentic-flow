@@ -460,7 +460,7 @@ Claude, on `phase-2b`, after the last approval, and before the human merges:
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-17; rev=88a31f60322a2829b279c6a27cd3fe1534b7c9f1
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
