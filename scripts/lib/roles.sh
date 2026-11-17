@@ -71,7 +71,10 @@ roles_same_model() { # root; preflight for the pair, independent of per-station 
 
 roles_risk_accepted() { # root anchor; status must belong to this entry
   [ -f "$1/docs/accepted_risks.md" ] || return 1
-  awk -v anchor="<a id=\"$2\"></a>" '
+  # Pass only the id: escape processing in -v values differs between awks
+  # (GNU awk did not turn \" into a quote, so the anchor never matched on Linux).
+  awk -v id="$2" '
+    BEGIN {anchor="<a id=\"" id "\"></a>"}
     /^<a id=/ {inside=($0==anchor); headings=0}
     inside && /^## / {headings++; if(headings>1) inside=0}
     inside && $0=="**Status:** Accepted risk" {found=1}
