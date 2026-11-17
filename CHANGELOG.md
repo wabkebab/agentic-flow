@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.16.0
+
+Line controller, phase 2 (tracker #138). A local controller starts each LLM station
+headless from the journal, so the human approves the plan, ships and answers andon
+calls instead of relaying output between stations.
+
+- `agentic-flow run <doc> [--once]` owns the plan worktree and branch, starts the
+  executor and reviewer headless, checks each verdict against a schema, resumes a
+  station's own session after a bounce, and recovers from the journal and run ledger
+  after a crash. Anything it cannot recover is raised as andon, never guessed at.
+- Station assignment lives in `config/roles.tsv`, with operator and project overrides
+  in `.agentic-flow-roles`; inspect or change it with `agentic-flow roles`.
+- `agentic-flow ship <doc>` pushes, opens the PR, waits for CI and the final-head
+  approval, then runs close-out. `final-approve` is the reviewer's approval of the
+  final head; `ship` exits 11 until it exists when the close-out delta is not
+  bookkeeping only. `approve` records plan approval and `hold clear` releases a hold.
+- `handoff` gains `ask` and `resume`: a station's open question moves the issue to
+  `escalated` with the question as evidence and notifies the owner. `resume` returns
+  to the state the issue left, `reviewing` after a reviewer's question.
+- `agentic-flow metrics` reports lead time, bounces, first-pass yield and tokens per
+  step from the run ledger.
+- Stations launch without GitHub credentials, in isolated groups, behind an entry gate
+  that refuses to run when the profile or identities are missing. The Codex station
+  profile is installed from `config/stations/`. The `opencode-station-network`
+  accepted risk (`docs/accepted_risks.md`) records OpenCode's remaining network access.
+- The role contracts now route to the controller, ship and andon; `METHODOLOGY.md`
+  no longer describes a person starting each station.
+
+Migration: run `scripts/agentic-flow upgrade` and merge `CLAUDE.md`, `AGENTS.md`,
+`Makefile` and `.claude/settings.json` by hand. Add `owner=<login>` to
+`.agentic-flow-review-policy`. Run `agentic-flow roles` and confirm each station's CLI,
+install the Codex station profile, and read the `opencode-station-network` risk before
+enabling unattended runs. Without App identities and installed profiles, keep using
+`run --once` with the gate.
+
 ## 0.15.0
 
 Deterministic stations, phase 1 (tracker #124). Each mechanical station is a command
