@@ -1490,49 +1490,6 @@ fi # scenario
 
 if should_run_scenario recovery recovery; then
 test_timing_begin block recovery
-# h-4: a fresh record bypasses the verifier process, not just its recipes.
-controller_reuse_tests() (
-  local fixture="$TMP/controller-verify-reuse" head key plan source_file
-  mkdir -p "$fixture/scripts"
-  git -C "$fixture" init -q
-  git -C "$fixture" config user.name Fixture
-  git -C "$fixture" config user.email fixture@example.invalid
-  git -C "$fixture" config commit.gpgsign false
-  printf 'check:\n\t@:\n' > "$fixture/Makefile"
-  git -C "$fixture" add Makefile
-  git -C "$fixture" commit -qm 'Controller cache fixture'
-  head=$(git -C "$fixture" rev-parse HEAD)
-  CT_WORKTREE=$fixture CT_COMMON="$fixture/.git" CT_DOC=docs/plan.md CT_TMP="$fixture/tmp"
-  mkdir -p "$CT_TMP" "$CT_COMMON/agentic-flow/verify"
-  . "$ROOT/scripts/lib/controller.sh"
-  CT_SPEC='{"steps":[{"id":"alpha","packet":{"verification":"`make focused`"},"red_first":null}]}'
-  CT_RECORDS=$(jq -nc --arg head "$head" '[{kind:"intent",run:"fixture/1/0/executor/1/1",issue:1,step:"alpha",base_head:$head},
-    {kind:"station",run:"fixture/1/0/executor/1/1",result:{outcome:"submitted",head:$head}}]')
-  CT_REPORT='{"issues":[{"number":1}]}'
-  plan=$(verify_record_plan "$(printf '%s' "$CT_SPEC" | jq -c '.steps[0]')")
-  key=$(cd "$fixture" && verify_record_key "$head" "$CT_DOC" alpha "$head" "$plan") || fail 'controller cache key failed'
-  source_file="$CT_COMMON/agentic-flow/verify/$head.json"
-  printf '%s' "$key" | jq '.+{passed:true,prepare:{role:"prepare",exit:0},red_first:"not-declared",
-    commands:[{cmd:"make check",role:"green",exit:0},{cmd:"make focused",role:"green",exit:0}]} |
-    .verifier.signature_source.pattern=""' > "$source_file"
-  cat > "$fixture/scripts/agentic-flow" <<'VERIFY_STUB'
-#!/usr/bin/env bash
-touch verifier-launched
-exit 1
-VERIFY_STUB
-  chmod +x "$fixture/scripts/agentic-flow"
-  controller_head_valid() { return 0; }
-  controller_record() { cp "$CT_TMP/record" "$fixture/ledger-record"; }
-  controller_fault() { :; }
-  controller_verify fixture/1/0/executor/1/1 || fail 'controller cache verification failed'
-  [ ! -f "$fixture/verifier-launched" ] || fail 'controller launched verifier for fresh record'
-  jq -e '.kind=="verify" and .status=="green" and .reused==true' "$fixture/ledger-record" >/dev/null || fail 'controller did not ledger reuse'
-  jq '.passed=false' "$source_file" > "$fixture/failed"
-  cat "$fixture/failed" > "$source_file"
-  controller_verify fixture/1/0/executor/1/1 || fail 'controller failed record path failed'
-  [ -f "$fixture/verifier-launched" ] || fail 'controller reused failed record'
-  jq -e '.status=="red" and .reused==false' "$fixture/ledger-record" >/dev/null || fail 'controller fallback not recorded'
-)
 controller_reuse_tests || fail 'controller verification reuse regressions failed'
 
 

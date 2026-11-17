@@ -4,6 +4,7 @@
 grep -q "brief)" "$ROOT/scripts/agentic-flow" || fail 'brief command is missing'
 grep -q "close-out)" "$ROOT/scripts/agentic-flow" || fail 'close-out command is missing'
 grep -q "packet)" "$ROOT/scripts/agentic-flow" || fail 'packet command is missing'
+controller_reuse_tests || fail 'controller verification reuse regressions failed'
 # S is a command-line selector only, including in the exported harness recipe.
 SELECT_ENV_FIX="$TMP/exported-s"
 mkdir -p "$SELECT_ENV_FIX/scripts"

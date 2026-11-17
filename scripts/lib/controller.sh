@@ -474,7 +474,7 @@ controller_head_valid() {
     git show -s --format=%B "$head" | grep -Eiq "(^|[[:space:]])Fixes #$number([^0-9]|$)"
 }
 controller_verify() {
-  local run=$1 intent result row head status=green rc=0 reused=false selected command_plan key
+  local run=$1 intent result row head status=green rc=0 reused=false selected command_plan key red_base
   intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
   result=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="station" and .run==$run)|.result')
   row=$(printf '%s' "$CT_REPORT" | jq -c --argjson n "$(printf '%s' "$intent" | jq .issue)" '.issues[]|select(.number==$n)')
@@ -482,15 +482,21 @@ controller_verify() {
     controller_decide "$(jq -nc --arg run "$run" '{head:$run,escalation:"bad claimed head"}')"; return $?
   fi
   head=$(printf '%s' "$result" | jq -r .head)
+  # A new chain after a human resume can start on already-implemented code.
+  # Red-first always needs the step's original executor base; the current
+  # intent base still governs ownership and whether the station advanced HEAD.
+  red_base=$(printf '%s' "$CT_RECORDS" | jq -er --argjson intent "$intent" '
+    [.[]|select(.kind=="intent" and .station=="executor" and
+      .issue==$intent.issue and .step==$intent.step)]|first|.base_head // empty') || return 5
   selected=$(printf '%s' "$CT_SPEC" | jq -c --arg s "$(printf '%s' "$intent" | jq -r .step)" '.steps[]|select(.id==$s)') || return 5
   command_plan=$(verify_record_plan "$selected") || return 5
-  if key=$(cd "$CT_WORKTREE" && verify_record_key "$head" "$CT_DOC" "$(printf '%s' "$intent" | jq -r .step)" "$(printf '%s' "$intent" | jq -r .base_head)" "$command_plan") &&
+  if key=$(cd "$CT_WORKTREE" && verify_record_key "$head" "$CT_DOC" "$(printf '%s' "$intent" | jq -r .step)" "$red_base" "$command_plan") &&
     verify_record_fresh "$CT_COMMON/agentic-flow/verify/$head.json" "$key" > "$CT_TMP/verify-output"; then
     reused=true
     : > "$CT_TMP/verify-tail"
   else
     CT_CHILD_KIND=verify
-    (cd "$CT_WORKTREE" && exec scripts/agentic-flow verify-step "$head" --doc "$CT_DOC" --step "$(printf '%s' "$intent" | jq -r .step)" --red-base "$(printf '%s' "$intent" | jq -r .base_head)" --json) > "$CT_TMP/verify-output" 2> "$CT_TMP/verify-tail" &
+    (cd "$CT_WORKTREE" && exec scripts/agentic-flow verify-step "$head" --doc "$CT_DOC" --step "$(printf '%s' "$intent" | jq -r .step)" --red-base "$red_base" --json) > "$CT_TMP/verify-output" 2> "$CT_TMP/verify-tail" &
     CT_CHILD=$!
     wait "$CT_CHILD" || rc=$?
     CT_CHILD=''

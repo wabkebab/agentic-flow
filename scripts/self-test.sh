@@ -210,6 +210,76 @@ fail() {
   exit 1
 }
 
+# Shared by stations and recovery, so the approved red-first paths carry the
+# resumed-baseline regression to an older implementation.
+# shellcheck disable=SC2030,SC2031,SC2034,SC2329 # Sourced controller consumes fixture context.
+controller_reuse_tests() (
+  local fixture head base resumed_base key plan source_file
+  local verify_run=fixture/1/2/executor/1/1 original_record recorded_verification
+  fixture=$(mktemp -d "$TMP/controller-verify-reuse.XXXXXX") || fail 'controller cache fixture creation failed'
+  mkdir -p "$fixture/scripts"
+  git -C "$fixture" init -q
+  git -C "$fixture" config user.name Fixture
+  git -C "$fixture" config user.email fixture@example.invalid
+  git -C "$fixture" config commit.gpgsign false
+  printf 'check:\n\t@:\n' > "$fixture/Makefile"
+  git -C "$fixture" add Makefile
+  git -C "$fixture" commit -qm 'Controller cache fixture'
+  base=$(git -C "$fixture" rev-parse HEAD)
+  git -C "$fixture" commit --allow-empty -qm 'Implementation before human resume'
+  resumed_base=$(git -C "$fixture" rev-parse HEAD)
+  git -C "$fixture" commit --allow-empty -qm 'Implementation after human resume'
+  head=$(git -C "$fixture" rev-parse HEAD)
+  CT_WORKTREE=$fixture CT_COMMON="$fixture/.git" CT_DOC=docs/plan.md CT_TMP="$fixture/tmp"
+  mkdir -p "$CT_TMP" "$CT_COMMON/agentic-flow/verify"
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/lib/controller.sh"
+  # shellcheck disable=SC2016 # Brief commands use literal Markdown backticks.
+  CT_SPEC='{"steps":[{"id":"alpha","packet":{"verification":"`make focused`"},"red_first":null}]}'
+  CT_RECORDS=$(jq -nc --arg head "$head" --arg base "$base" --arg resumed_base "$resumed_base" --arg run "$verify_run" '[
+    {kind:"intent",run:"fixture/2/0/executor/1/1",issue:2,station:"executor",step:"beta",base_head:$resumed_base},
+    {kind:"intent",run:"fixture/1/0/reviewer/1/1",issue:1,station:"reviewer",step:"alpha",base_head:$resumed_base},
+    {kind:"intent",run:"fixture/1/0/executor/1/1",issue:1,station:"executor",step:"alpha",base_head:$base},
+    {kind:"intent",run:$run,issue:1,station:"executor",step:"alpha",base_head:$resumed_base},
+    {kind:"station",run:$run,result:{outcome:"submitted",head:$head}}]')
+  CT_REPORT='{"issues":[{"number":1}]}'
+  plan=$(verify_record_plan "$(printf '%s' "$CT_SPEC" | jq -c '.steps[0]')")
+  key=$(cd "$fixture" && verify_record_key "$head" "$CT_DOC" alpha "$base" "$plan") || fail 'controller cache key failed'
+  source_file="$CT_COMMON/agentic-flow/verify/$head.json"
+  original_record=$(printf '%s' "$key" | jq '.+{passed:true,prepare:{role:"prepare",exit:0},red_first:"not-declared",
+    commands:[{cmd:"make check",role:"green",exit:0},{cmd:"make focused",role:"green",exit:0}]} |
+    .verifier.signature_source.pattern=""') || fail 'controller cache record creation failed'
+  printf '%s\n' "$original_record" > "$source_file"
+  cat > "$fixture/scripts/agentic-flow" <<'VERIFY_STUB'
+#!/usr/bin/env bash
+touch verifier-launched
+printf '%s\n' "$@" > verifier-args
+exit 1
+VERIFY_STUB
+  chmod +x "$fixture/scripts/agentic-flow"
+  controller_head_valid() { return 0; }
+  controller_record() { recorded_verification=$(cat "$CT_TMP/record"); }
+  controller_fault() { :; }
+  # A resumed execution base already contains the implementation. Never reuse
+  # its weaker red-first evidence, even though it matches the current intent.
+  jq --arg base "$resumed_base" '.red_base=$base' "$source_file" > "$fixture/weaker-record"
+  cat "$fixture/weaker-record" > "$source_file"
+  controller_verify "$verify_run" || fail 'controller resumed verification failed'
+  [ -f "$fixture/verifier-launched" ] || fail 'controller reused verification against resumed execution base'
+  [ "$(sed -n '/^--red-base$/{n;p;}' "$fixture/verifier-args")" = "$base" ] || fail 'controller reran against resumed execution base'
+  printf '%s' "$recorded_verification" | jq -e '.status=="red" and .reused==false' >/dev/null || fail 'controller resumed fallback not recorded'
+  printf '%s\n' "$original_record" > "$source_file"
+  rm "$fixture/verifier-launched"
+  controller_verify "$verify_run" || fail 'controller cache verification failed'
+  [ ! -f "$fixture/verifier-launched" ] || fail 'controller launched verifier for fresh record'
+  printf '%s' "$recorded_verification" | jq -e '.kind=="verify" and .status=="green" and .reused==true' >/dev/null || fail 'controller did not ledger reuse'
+  jq '.passed=false' "$source_file" > "$fixture/failed"
+  cat "$fixture/failed" > "$source_file"
+  controller_verify "$verify_run" || fail 'controller failed record path failed'
+  [ -f "$fixture/verifier-launched" ] || fail 'controller reused failed record'
+  printf '%s' "$recorded_verification" | jq -e '.status=="red" and .reused==false' >/dev/null || fail 'controller fallback not recorded'
+)
+
 cost_count() { # <event-file> <event>
   awk -v event="$2" '$0 == event { n++ } END { print n+0 }' "$1"
 }
