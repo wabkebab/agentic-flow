@@ -1539,7 +1539,7 @@ controller_reuse_tests || fail 'controller verification reuse regressions failed
 # C-4: stateful GitHub, real Git worktrees, no model or verifier invocations.
 recovery_tests() (
   set -euo pipefail
-  local c4="$TMP/controller-recovery" project state bin rc head base run chain before index ref snapshot count
+  local c4="$TMP/controller-recovery" project state bin rc head base run chain before index ref snapshot count verification_record
   project="$c4/project with spaces"; state="$c4/state"; bin="$c4/bin"
   mkdir -p "$project/scripts/lib" "$project/config" "$project/docs/inprogress" "$state" "$bin"
   for file in "$ROOT/scripts/lib/"*; do ln "$file" "$project/scripts/lib/${file##*/}"; done
@@ -2209,7 +2209,13 @@ MODEL
     fi
     c5_run 10
     case "$mode" in
-      bad-head) [ "$(cat "$state/launches")" = 1 ] || fail 'bad head retried'; [ ! -d "$project/.git/agentic-flow/verify" ] || fail 'bad head was verified' ;;
+      bad-head)
+        [ "$(cat "$state/launches")" = 1 ] || fail 'bad head retried'
+        # The probe creates this directory before the station claims a head.
+        for verification_record in "$project/.git/agentic-flow/verify/"*.json; do
+          [ ! -e "$verification_record" ] || fail 'bad head wrote a verification record'
+        done
+        ledger_read recovery | jq -e 'all(.[];.kind!="verify")' >/dev/null || fail 'bad head was verified' ;;
       malformed|red|dirty) [ "$(cat "$state/launches")" = 2 ] || fail "$mode exceeded chain retry limit" ;;
       timeout|ask|branch) [ "$(cat "$state/launches")" = 1 ] || fail "$mode relaunched" ;;
     esac
