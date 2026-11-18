@@ -210,8 +210,55 @@ fail() {
   exit 1
 }
 
-# Shared by stations and recovery, so the approved red-first paths carry the
-# resumed-baseline regression to an older implementation.
+# Shared by stations and recovery, including the approved red-first paths.
+# shellcheck disable=SC2034 # Sourced ledger consumes fixture context.
+controller_salvage_ledger_tests() (
+  local fixture run=fixture/1/0/executor/1/1 before clear
+  fixture=$(mktemp -d "$TMP/controller-salvage-ledger.XXXXXX") || fail 'salvage ledger fixture creation failed'
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/lib/ledger.sh"
+  LEDGER_DIR="$fixture/ledger"
+  jq -n --arg run "$run" '{v:1,kind:"intent",run:$run,chain:"fixture/1/0/executor/1",replaces:null,
+    reason:"initial",plan:"fixture",issue:1,step:"alpha",station:"executor",cli:"codex",model:"fixture",
+    resume_of:null,session:null,session_mode:"new",reassigned_from:null,seq_before:0,
+    base_head:("a"*40),packet_sha256:("b"*64),started:1,host:"fixture"}' > "$fixture/intent"
+  ledger_intent fixture "$fixture/intent" >/dev/null || fail 'salvage ledger intent failed'
+  jq -n --arg run "$run" '{v:1,kind:"salvage",run:$run,chain:"fixture/1/0/executor/1",
+    ref:("refs/agentic-flow/salvage/"+$run),head:("a"*40),index_commit:("b"*40),worktree_commit:("c"*40),
+    index_tree:("d"*40),worktree_tree:("e"*40),paths:[],at:2}' > "$fixture/original"
+  ledger_salvage fixture "$fixture/original" >/dev/null || fail 'original salvage append failed'
+  before=$(shasum "$LEDGER_DIR/fixture.jsonl")
+  ledger_salvage fixture "$fixture/original" > "$fixture/error" 2>&1 && fail 'duplicate ordinary salvage accepted'
+  jq '.rebaseline="fixture/hold/1"|.ref+="-rebaseline"|.head=("f"*40)' "$fixture/original" > "$fixture/rebaseline"
+  ledger_salvage fixture "$fixture/rebaseline" > "$fixture/error" 2>&1 && fail 'salvage accepted missing clear'
+  [ "$before" = "$(shasum "$LEDGER_DIR/fixture.jsonl")" ] || fail 'rejected salvage changed ledger'
+  jq -n '{v:1,kind:"end",chain:"fixture/1/0/executor/1",how:"held",hold:null,at:3}' > "$fixture/end"
+  ledger_end fixture "$fixture/end" >/dev/null || fail 'salvage chain end failed'
+  # A plain clear cannot authorize a second snapshot of an owned run.
+  for clear in 1 2 3; do
+    jq -n --arg id "fixture/hold/$clear" --arg run "$run" '{v:1,kind:"hold",plan:"fixture",hold:$id,
+      issue:1,reason:"worktree-changed-after-salvage",run:$run,comment_id:null,at:3}' > "$fixture/hold"
+    ledger_hold fixture "$fixture/hold" >/dev/null || fail 'salvage hold append failed'
+    jq -n --arg id "fixture/hold/$clear" --argjson flagged "$(if [ "$clear" = 1 ]; then echo false; else echo true; fi)" '
+      {v:1,kind:"clear",plan:"fixture",hold:$id,by:"approver",note:"resolved",rebaseline:$flagged,at:4}' > "$fixture/clear"
+    ledger_clear fixture "$fixture/clear" >/dev/null || fail 'salvage clear append failed'
+    jq --arg id "fixture/hold/$clear" '.rebaseline=$id|.ref+=$id' "$fixture/rebaseline" > "$fixture/next"
+    if [ "$clear" = 1 ]; then
+      ledger_salvage fixture "$fixture/next" > "$fixture/error" 2>&1 && fail 'salvage accepted plain clear'
+    else
+      ledger_salvage fixture "$fixture/next" >/dev/null || fail 'authorized rebaseline rejected for owned run'
+      before=$(shasum "$LEDGER_DIR/fixture.jsonl")
+      ledger_salvage fixture "$fixture/next" > "$fixture/error" 2>&1 && fail 'clear authorized two salvages'
+      # The same clear cannot be consumed again under an orphan run either.
+      jq '.orphan=true|.chain=null|.run=("fixture/unowned/"+("a"*24))' "$fixture/next" > "$fixture/orphan"
+      ledger_salvage fixture "$fixture/orphan" > "$fixture/error" 2>&1 && fail 'clear reused for orphan salvage'
+      [ "$before" = "$(shasum "$LEDGER_DIR/fixture.jsonl")" ] || fail 'duplicate rebaseline changed ledger'
+    fi
+  done
+  ledger_read fixture | jq -e '[.[]|select(.kind=="salvage")]|length==3 and .[0].rebaseline==null and
+    .[0].head==("a"*40) and .[1].rebaseline=="fixture/hold/2" and .[2].rebaseline=="fixture/hold/3"' >/dev/null || fail 'rebaseline ledger lost original/history'
+)
+
 # shellcheck disable=SC2030,SC2031,SC2034,SC2329 # Sourced controller consumes fixture context.
 controller_reuse_tests() (
   local fixture head base resumed_base key plan source_file

@@ -1710,6 +1710,7 @@ fi # scenario
 
 if should_run_scenario recovery recovery; then
 test_timing_begin block recovery
+controller_salvage_ledger_tests || fail 'controller salvage ledger regressions failed'
 controller_reuse_tests || fail 'controller verification reuse regressions failed'
 
 

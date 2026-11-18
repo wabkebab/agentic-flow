@@ -187,6 +187,12 @@ sub generation {
 sub apply_record {
   my ($state,$r,$plan)=@_; validate($r,$plan);
   my $k=$r->{kind}; my $id=$r->{run};
+  if ($k eq 'salvage' && exists($r->{rebaseline})) {
+    my $hold=$state->{holds}{$r->{rebaseline}};
+    $hold && $hold->{clear} && $hold->{clear}{rebaseline} && !$hold->{rebaseline}
+      or fail('salvage requires an unused rebaseline clear');
+    $hold->{rebaseline}=$r;
+  }
   if ($k eq 'intent') {
     !exists($state->{runs}{$id}) or fail('duplicate intent');
     my @p=run_parts($id,$plan); my $chain=$r->{chain}; my $c=$state->{chains}{$chain};
@@ -221,7 +227,9 @@ sub apply_record {
       $run->{decision} && $r->{event} eq ($run->{decision}{event}//'') && $r->{after}==$run->{intent}{seq_before} && $r->{attempt}==@{$run->{handoffs}}+1 or fail('handoff requires decision and next attempt');
       push @{$run->{handoffs}},$r;
     } else {
-      !exists($run->{$k}) or fail("duplicate $k record");
+      # Each flagged clear may adopt another immutable snapshot of this run.
+      # Earlier snapshots remain in records; ordinary duplicates still fail.
+      !exists($run->{$k}) || ($k eq 'salvage' && exists($r->{rebaseline})) or fail("duplicate $k record");
       # Record captured ids before the station, including confirmation that
       # Claude actually started the caller-chosen session.
       if ($k eq 'session') { !$run->{station} or fail('session must precede station'); }
