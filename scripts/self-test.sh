@@ -349,10 +349,10 @@ assert_cost_budget() { # <event-file> <fast|full>
     # snapshot. The approved full-copy limits describe scaffold verification.
     [ "$(cost_count "$events" source_snapshot_copy)" -eq 1 ] || fail 'full mode did not reuse one source snapshot'
     [ "$(cost_count "$events" fixture_tree_copy)" -le 1 ] || fail 'full mode exceeded one fixture tree copy'
-    # Approved 2026-11-18: 325 copies at 7599d61 minus 141 snapshot files
-    # leaves 184 test copies, plus four station copies added by h-4 = 188.
+    # Approved 2026-11-18: the first full run with the snapshot uncounted
+    # (989e849) measured 190 test copies; the derived 188 was two short.
     # The snapshot is counted once above; retain the one-tree and fast limits.
-    [ "$file_copies" -le 188 ] || fail "full mode made $file_copies fixture file copies; limit 188"
+    [ "$file_copies" -le 190 ] || fail "full mode made $file_copies fixture file copies; limit 190"
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
@@ -2486,17 +2486,17 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
     || fail 'fixture budget did not identify repeated tree copying'
   printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
-  for ((copy_i=0; copy_i<189; copy_i++)); do
+  for ((copy_i=0; copy_i<191; copy_i++)); do
     printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   done
   ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
     > "$MEASURE_FIX/full-files.out" 2>&1 \
-    && fail 'full fixture budget accepted 189 copies'
-  grep -q 'full mode made 189 fixture file copies; limit 188' "$MEASURE_FIX/full-files.out" \
+    && fail 'full fixture budget accepted 191 copies'
+  grep -q 'full mode made 191 fixture file copies; limit 190' "$MEASURE_FIX/full-files.out" \
     || fail 'full fixture copy failure did not name the count and approved limit'
   sed '$d' "$MEASURE_FIX/full-files.events" > "$MEASURE_FIX/full-boundary.events"
   assert_cost_budget "$MEASURE_FIX/full-boundary.events" full \
-    || fail 'full fixture budget rejected its approved 188-copy boundary'
+    || fail 'full fixture budget rejected its approved 190-copy boundary'
 fi
 : > "$MEASURE_FIX/fast-files.events"
 for ((copy_i=0; copy_i<34; copy_i++)); do
