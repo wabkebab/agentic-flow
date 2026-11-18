@@ -7,7 +7,10 @@
 
 ## Tracker
 <!-- Filled in when the brief is approved and plan-to-issues runs. -->
-- [ ] Brief drafted 2026-11-17; awaiting approval. Steps h-1 to h-8 are listed in Part B.
+- [x] Brief drafted and approved 2026-11-17; h-9 and h-10 added 2026-11-18. Tracker #150, steps #151 to #160, all approved and closed.
+- [x] Close-out gate: `make check && make test` green on `phase-2b` at `0a85379` (2026-11-18, about 80 minutes). Release notes `0.17.0` in `0258be2`.
+- [x] Accepted by the owner (2026-11-17, P3 from the h-2 review): h-1's per-scenario timing profile was never captured, so the DoD's before-and-after controller-group times per step are not reported. The only comparison is the full `make test`: about 32 minutes at `b6c1962`, about 80 minutes at `0a85379`.
+- [ ] The human runs `ship` and `doctor --stations`; Claude updates the roadmap.
 
 ---
 
