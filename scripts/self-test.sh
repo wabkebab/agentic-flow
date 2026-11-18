@@ -1654,6 +1654,54 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     "$TMP/inventory-missing.out" \
     || fail "recordless inventory did not check mapped destinations"
 
+  if command -v shellcheck >/dev/null 2>&1; then
+    lint_fix="$TMP/shell-lint-fixture"
+    mkdir -p "$lint_fix/config" "$lint_fix/scripts" "$lint_fix/fixtures" "$lint_fix/bin"
+    touch "$lint_fix/scripts/export.sh"
+    printf 'fixtures\tscripts\tcore\tpreserve\texport\n' > "$lint_fix/config/payload.tsv"
+    # shellcheck disable=SC2016 # Deliberate unquoted expansion for the failure fixture.
+    printf '#!/usr/bin/env bash\nprintf %%s $unquoted\n' > "$lint_fix/fixtures/01-bad.sh"
+    printf '#!/usr/bin/env bash\nprintf clean\n' > "$lint_fix/fixtures/02-clean file.sh"
+    cat > "$lint_fix/bin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' call "$@" >> "$SHELLCHECK_CALL_LOG"
+exec "$REAL_SHELLCHECK" "$@"
+SH
+    chmod +x "$lint_fix/bin/shellcheck"
+    real_shellcheck=$(command -v shellcheck)
+    printf '%s\n' call -x "$lint_fix/fixtures/01-bad.sh" call -x "$lint_fix/fixtures/02-clean file.sh" \
+      > "$lint_fix/expected-calls"
+    PATH="$lint_fix/bin:$PATH" REAL_SHELLCHECK="$real_shellcheck" \
+      SHELLCHECK_CALL_LOG="$lint_fix/calls" AGENTIC_PROJECT_ROOT="$lint_fix" \
+      "$ROOT/scripts/shell-inventory.sh" --lint > "$lint_fix/out" 2>&1 \
+      && fail "ShellCheck gate accepted a fixture with a finding"
+    grep -Fq "$lint_fix/fixtures/01-bad.sh" "$lint_fix/out" \
+      || fail "ShellCheck gate lost the failing file's path"
+    grep -q SC2086 "$lint_fix/out" \
+      || fail "ShellCheck gate lost the failing file's diagnostic"
+    cmp -s "$lint_fix/expected-calls" "$lint_fix/calls" \
+      || fail "ShellCheck must lint every file separately with -x, in inventory order, after a failure"
+
+    printf '#!/usr/bin/env bash\nprintf clean\n' > "$lint_fix/fixtures/01-bad.sh"
+    cat > "$lint_fix/fixtures/02-clean file.sh" <<'SH'
+#!/usr/bin/env bash
+helper_value=used
+# shellcheck source-path=SCRIPTDIR
+. ./helper.sh
+SH
+    # No shebang: this helper is followed through source, not linted as an inventory file.
+    # shellcheck disable=SC2016 # The generated helper consumes the caller's variable.
+    printf 'printf "%%s\\n" "$helper_value"\n' > "$lint_fix/fixtures/helper.sh"
+    : > "$lint_fix/calls"
+    PATH="$lint_fix/bin:$PATH" REAL_SHELLCHECK="$real_shellcheck" \
+      SHELLCHECK_CALL_LOG="$lint_fix/calls" AGENTIC_PROJECT_ROOT="$lint_fix" \
+      "$ROOT/scripts/shell-inventory.sh" --lint > "$lint_fix/out" 2>&1 \
+      || { cat "$lint_fix/out" >&2; fail "ShellCheck gate rejected clean files with a sourced helper"; }
+    [ ! -s "$lint_fix/out" ] || fail "ShellCheck gate reported findings for clean files"
+    cmp -s "$lint_fix/expected-calls" "$lint_fix/calls" \
+      || fail "ShellCheck omitted or combined clean inventory files"
+  fi
+
   shell_fix="$TMP/shell-inventory-fixture"
   mkdir -p "$shell_fix/source/config" "$shell_fix/source/scripts" \
     "$shell_fix/source/harness-src" "$shell_fix/source/scoped-src"
