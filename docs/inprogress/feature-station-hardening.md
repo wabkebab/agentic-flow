@@ -10,6 +10,7 @@
 - [x] Brief drafted and approved 2026-11-17; h-9 and h-10 added 2026-11-18. Tracker #150, steps #151 to #160, all approved and closed.
 - [x] Close-out gate: `make check && make test` green on `phase-2b` at `0a85379` (2026-11-18, about 80 minutes). Release notes `0.17.0` in `0258be2`.
 - [x] Accepted by the owner (2026-11-17, P3 from the h-2 review): h-1's per-scenario timing profile was never captured, so the DoD's before-and-after controller-group times per step are not reported. The only comparison is the full `make test`: about 32 minutes at `b6c1962`, about 80 minutes at `0a85379`.
+- [ ] PR #161's CI killed `make test` twice with SIGTERM after the self-test passed (2026-11-18). h-11 (#162, added 2026-11-18) fixes a watchdog leak found while investigating; a temporary CI diagnostic follows it. The close-out gate is re-run after both.
 - [ ] The human runs `ship` and `doctor --stations`; Claude updates the roadmap.
 
 ---
@@ -204,7 +205,7 @@ id: station-hardening
 profile: strict
 tracking: Plan: Station hardening
 branch: phase-2b
-steps: h-1 h-2 h-3 h-4 h-5 h-6 h-7 h-8 h-9 h-10
+steps: h-1 h-2 h-3 h-4 h-5 h-6 h-7 h-8 h-9 h-10 h-11
 ```
 
 ## Prerequisite
@@ -239,7 +240,7 @@ Do not raise a ceiling. Only h-4 edits a contract: the reviewer skill, which is 
 - `make check`, `make test`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
 - All 22 acceptance scenarios below pass as tests.
 - The human has run `agentic-flow doctor --stations` once on the operator machine against the real Codex and OpenCode CLIs and it passed, or each failure is a recorded finding. The executor cannot do this: a station sandbox has no network.
-- Steps h-3 to h-10 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
+- Steps h-3 to h-11 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
 
 ## Acceptance scenarios (written at Spec; the executor does not edit these)
 
@@ -495,6 +496,24 @@ scripts/doctor.sh --check
 
 ---
 
+## h-11 — Stop review_bounded leaking its watchdog sleep (#162)
+**Why eleventh:** found while investigating PR #161's CI failure (2026-11-18), filed as #162 and added here by the owner so the fix ships in this PR. `review_bounded` (`scripts/lib/review-policy.sh:17-25`) runs its watchdog as `( sleep 20; kill "$pid" )` and, when the command finishes first, kills the subshell but not its `sleep`. A full Linux test run ended with 279 orphaned `sleep 20` processes in the suite's own process group. They are harmless today, but every policy-bounded `gh` call leaves one behind, and they cloud the open investigation of the SIGTERM that kills `make test` on CI.
+
+**Approach:**
+1. Make the watchdog leave no process behind when the command finishes first, and still kill the command when it outlives the limit. One process that both sleeps and kills (for example a short `perl` timer that is itself killed on the normal path), or a subshell that kills its own `sleep` on TERM, are both acceptable. Keep Bash 3.2 compatibility and the 20-second limit.
+2. Let a test lower the limit through an environment variable read only by `review_bounded`, defaulting to 20.
+3. The commit body says `Fixes #162` as well as fixing this step's issue.
+
+**Test:** in `scripts/tests/stations.sh`. Failure path first: `review_bounded` on a command that outlives a lowered limit is killed and returns non-zero, and the watchdog leaves nothing behind. Then `review_bounded true` returns 0 and leaves no watchdog process alive: check the processes this call started, by their parent or a marker, never with a global `pgrep`, because other tests run in parallel.
+
+**DoD:** after a bounded command finishes first, no watchdog process remains; a command over the limit is still killed; #162 is closed by the commit.
+**Verify:** `make check` and `make test-one F=stations`
+**Risks:** a watchdog that no longer kills an over-limit command; a timer that kills a PID reused after the command exited (kill only while the command is known to be running); breaking `andon`, `identity` or `handoff`, which all call `review_bounded`; a test that counts processes globally and flakes.
+**Red-first:** `scripts/self-test.sh --only stations` — scripts/self-test.sh scripts/tests/stations.sh
+**Commit:** `Stop review_bounded leaking its watchdog sleep`
+
+---
+
 # Close-out
 
 Claude, on `phase-2b`, after the last approval, and before the human merges:
@@ -510,7 +529,7 @@ Claude, on `phase-2b`, after the last approval, and before the human merges:
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/150
-- **Approval:** status=approved; by=wabkebab; at=2026-11-17; rev=bd551803dcf8876eb8d6d2ff37c76443eddb30b8
+- **Approval:** status=approved; by=wabkebab; at=2026-11-17; rev=d65bbc9a705be1622403ca16c4ee560462745ed3
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
