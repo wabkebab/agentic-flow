@@ -236,7 +236,7 @@ Do not raise a ceiling. Only h-4 edits a contract: the reviewer skill, which is 
 - `make check`, `make test`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
 - All 22 acceptance scenarios below pass as tests.
 - The human has run `agentic-flow doctor --stations` once on the operator machine against the real Codex and OpenCode CLIs and it passed, or each failure is a recorded finding. The executor cannot do this: a station sandbox has no network.
-- Steps h-3 to h-8 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
+- Steps h-3 to h-9 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
 
 ## Acceptance scenarios (written at Spec; the executor does not edit these)
 
@@ -454,12 +454,31 @@ scripts/doctor.sh --check
 
 ---
 
+## h-9 — Count only test copies in the full-mode copy budget
+**Why ninth:** found at close-out (2026-11-18). The first full `make test` on `phase-2b` at `21ef179` failed only at its last check: "full mode exceeded 325 fixture file copies". All nine extra copies are needed single files, and five of them are files added to the repo: the export suite's source snapshot copies every tracked file through the counting `cp` (`self-test.sh:638-642`), so the budget grows with the repo, not with the tests.
+
+**Approach:**
+1. Copy the source snapshot with `command cp`, not the counting `cp`. The snapshot is already counted once as `source_snapshot_copy` and asserted exactly once (`self-test.sh:349`). The five mutable files copied after it (`:647-650`) stay counted.
+2. Set the full-mode limit to 188 fixture file copies (decided 2026-11-18): the approved 325, measured at `7599d61` with 141 snapshot files, is 184 test copies, plus the four `cp` lines h-4 added in `scripts/tests/stations.sh`. Update the comment at `:351-353` with this reason and move the boundary test (`:2487-2497`) to 188 passes and 189 fails. Leave the fast-mode limit and the one-tree limit as they are.
+3. Make both budget failures name the count: "full mode made <n> fixture file copies; limit 188", and the same shape for fast mode, so a miss is read from the log, not measured again.
+4. Do not change any test's `cp` to `cat` or another way around the counter.
+
+**Test:** failure path first: a full-mode events file at 189 copies fails and its message names 189 and 188; at 188 it passes.
+
+**DoD:** the snapshot no longer counts toward the file limit, the limit is 188, and a budget failure names the count. The close-out `make test` passes the budget at the h-9 head.
+**Verify:** `make check`
+**Risks:** a derived limit that is off by a few copies (the count in the message makes that a one-line fix); uncounting a copy that is not the snapshot; a test edited to dodge the counter.
+**Red-first:** none
+**Commit:** `Count only test copies in the full-mode copy budget`
+
+---
+
 # Close-out
 
 Claude, on `phase-2b`, after the last approval, and before the human merges:
 
 1. Close-out commits: `VERSION` 0.17.0 and a `CHANGELOG.md` entry with migration notes: `agentic-flow doctor --stations` and when `run` probes; the `station-infrastructure` hold and `hold clear --rebaseline`; `verify-step --force` and the reuse rule; `S=` on `make test-one` (copy the Makefile change by hand); `AGENTIC_TEST_TIMING`; the reviewer contract change.
-2. Claude runs `make check && make test` on `phase-2b` at the close-out head (about 32 minutes; decided 2026-11-17), before any push or PR, and records the result and the head it ran on in the close-out commit message. Only a green run goes on to the next item. A red run is fixed or escalated to the human; nothing is pushed, and `ship` is not run, until it is green. CI then repeats it on the pushed head.
+2. Claude runs `make check && make test` on `phase-2b` at the close-out head (about 64 minutes, measured 2026-11-18; decided 2026-11-17), before any push or PR, and records the result and the head it ran on in the close-out commit message. Only a green run goes on to the next item. A red run is fixed or escalated to the human; nothing is pushed, and `ship` is not run, until it is green. CI then repeats it on the pushed head.
 3. The human runs `agentic-flow ship docs/inprogress/feature-station-hardening.md`. Claude commits the staged prep. The human runs `ship` again. The CHANGELOG makes the delta non-bookkeeping, so `ship` exits 11 until the reviewer runs `agentic-flow final-approve` for the final head; then `ship` runs `finish`. **Do not merge before `ship` reports READY** (see accepted risk C-8).
 4. The human runs `agentic-flow doctor --stations` once against the real CLIs and the result is recorded.
 5. Update `product-harness-factory-optimization.md` (the Phase 2b and Phase 3 tables, and the next-docs list) and record the human `resume` count and the before and after controller-group times against the analysis's "Expected effect" table.
