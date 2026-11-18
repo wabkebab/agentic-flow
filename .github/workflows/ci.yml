@@ -149,8 +149,33 @@ jobs:
           sudo auditctl -a always,exit -F arch=b64 -S tkill -F a1=15 -k term || true
           sudo auditctl -a always,exit -F arch=b64 -S tgkill -F a2=15 -k term || true
           sudo auditctl -l || true
+      # The diagnostic monitor below streams into this step's own log, so it survives
+      # a runner-level cancel, which skips every later step (run 44389170564).
       - name: Test suite
-        run: bash -c 'printf "%s %s\n" "$$" "$(ps -o pgid= -p $$ | tr -d " ")" > "$RUNNER_TEMP/make.pid"; exec make test'
+        run: |
+          set +e
+          (
+            while :; do
+              echo "[monitor $(date -u +%H:%M:%S)] $(free -m | awk '/^Mem:/{print "mem used=" $3 "M avail=" $7 "M"}')$(free -m | awk '/^Swap:/{print " swap used=" $3 "M"}') $(df -m / /tmp | awk 'NR>1{printf "%s used=%sM avail=%sM ", $6, $3, $4}')"
+              ps -eo rss=,pid=,ppid=,comm= --sort=-rss | head -3 | awk '{printf "[monitor]   top %dM pid=%s ppid=%s %s\n", $1/1024, $2, $3, $4}'
+              sleep 15
+            done
+          ) &
+          monitor=$!
+          sudo dmesg -w 2>/dev/null | grep --line-buffered -iE 'oom|out of memory|killed process' | sed -u 's/^/[kernel] /' &
+          kernel=$!
+          sudo tail -n0 -F /var/log/audit/audit.log 2>/dev/null \
+            | grep --line-buffered -E 'type=OBJ_PID .*ocomm="(make|shellcheck|shell-inventory|Runner\.Worker|Runner\.Listener)"' \
+            | while IFS= read -r line; do
+                serial=$(printf '%s\n' "$line" | sed -n 's/.*msg=audit([0-9.]*:\([0-9]*\)).*/\1/p')
+                echo "[term] $line"
+                [ -n "$serial" ] && sudo ausearch -a "$serial" -i 2>/dev/null | grep -E 'type=SYSCALL|type=PROCTITLE' | sed 's/^/[term]   /'
+              done &
+          audit=$!
+          bash -c 'printf "%s %s\n" "$$" "$(ps -o pgid= -p $$ | tr -d " ")" > "$RUNNER_TEMP/make.pid"; exec make test'
+          status=$?
+          kill "$monitor" "$kernel" "$audit" 2>/dev/null
+          exit "$status"
       - name: Show SIGTERM senders (diagnostic)
         if: always()
         run: |
