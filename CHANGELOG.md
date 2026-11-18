@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.17.0
+
+Station hardening, phase 2b (tracker #150). Controller-run stations now fail before
+launch instead of mid-step, failures are cheap to diagnose, and a step verifies only
+the controller scenarios it touched.
+
+- `agentic-flow doctor --stations [--station executor|reviewer]` probes each station
+  CLI through the real launcher in a throwaway worktree: the sandbox boundary, the
+  allowed and denied writes, session ids and the result format. An unattended `run`
+  probes again only when `launch.sh`, the station profile, the roles row or the CLI
+  version changed; `run --once` never probes. A failed probe raises the
+  `station-infrastructure` hold and starts no station.
+- A station that dies before it starts (non-zero exit, no session, no tokens, under
+  5 s) raises the `station-infrastructure` hold instead of costing an approver
+  `resume`, and does not count toward the invalid-result cap. Its note carries the exit
+  code, the seconds and a redacted stderr tail. A retry after a dead session starts a
+  fresh one instead of resuming the session the CLI already rejected.
+- `agentic-flow hold clear <doc> <hold-id> --rebaseline` saves a salvage ref and takes
+  the new plan-branch HEAD as the baseline, so a fix committed during a pending salvage
+  no longer forces a reset. A resumed step keeps the red-first base of its first
+  attempt.
+- `verify-step` reuses a passing record for the same commit, tree, step, red base,
+  command list and verifier digest, and says "reused". `--force` runs it again. The
+  reviewer packet carries the record through the same freshness check.
+- An invalid station result keeps `events.tail` and `stderr.tail` under the run's
+  ledger directory, and the andon comment names the path and the reason.
+- Verdict format: a CLI that cannot enforce the result schema (OpenCode) is told to end
+  with only the result JSON. The stated limits are 2000 characters for `summary` and
+  1200 for a question or finding. Longer text up to 8000 and 4000 is accepted with a
+  recorded warning; a refused result names the rule and the measured value.
+- `metrics` reports known token usage with a count of the runs whose usage is unknown,
+  and `run` no longer repairs the hold projection when it is already correct.
+- Tests: `make test-one F=controller S=launch,ledger,recovery,ship,andon` selects
+  controller scenarios by tag, and `AGENTIC_TEST_TIMING=1` prints per-block and
+  slowest-call timings. The full-mode copy budget no longer counts the source snapshot;
+  its limit is 190 test copies, and a failure prints the count. A full `make test`
+  takes about 80 minutes.
+
+Migration: run `scripts/agentic-flow upgrade` and copy the `test-one` recipe (`S=`)
+from `templates/harness/Makefile` into your `Makefile` by hand. Run
+`agentic-flow doctor --stations` once on the operator machine against the real CLIs
+before the next unattended `run`. The reviewer contract now names both verifier files
+(`verify-step.sh` and `verify-record.sh`) in the freshness digest.
+
 ## 0.16.0
 
 Line controller, phase 2 (tracker #138). A local controller starts each LLM station
