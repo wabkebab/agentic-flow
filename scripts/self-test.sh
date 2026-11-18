@@ -338,20 +338,21 @@ cost_count() { # <event-file> <event>
 }
 
 assert_cost_budget() { # <event-file> <fast|full>
-  local events="$1" mode="$2"
+  local events="$1" mode="$2" file_copies
+  file_copies=$(cost_count "$events" fixture_file_copy)
   if [ "$mode" = fast ]; then
     [ "$(cost_count "$events" source_snapshot_copy)" -eq 0 ] || fail 'fast mode built a source snapshot'
     [ "$(cost_count "$events" fixture_tree_copy)" -eq 0 ] || fail 'fast mode copied a fixture tree'
-    [ "$(cost_count "$events" fixture_file_copy)" -le 33 ] || fail 'fast mode exceeded 33 fixture file copies'
+    [ "$file_copies" -le 33 ] || fail "fast mode made $file_copies fixture file copies; limit 33"
   elif [ -f "$ROOT/scripts/export.sh" ]; then
     # Exported projects omit the source-only exporter and never build this
     # snapshot. The approved full-copy limits describe scaffold verification.
     [ "$(cost_count "$events" source_snapshot_copy)" -eq 1 ] || fail 'full mode did not reuse one source snapshot'
     [ "$(cost_count "$events" fixture_tree_copy)" -le 1 ] || fail 'full mode exceeded one fixture tree copy'
-    # C-1 expanded the source snapshot and station fixtures (311); C-2..C-6 added
-    # scenarios that reuse the copying resets. Human-approved measured baseline
-    # 2026-11-17: 325 copies; retain the one-tree and fast-mode limits.
-    [ "$(cost_count "$events" fixture_file_copy)" -le 325 ] || fail 'full mode exceeded 325 fixture file copies'
+    # Approved 2026-11-18: 325 copies at 7599d61 minus 141 snapshot files
+    # leaves 184 test copies, plus four station copies added by h-4 = 188.
+    # The snapshot is counted once above; retain the one-tree and fast limits.
+    [ "$file_copies" -le 188 ] || fail "full mode made $file_copies fixture file copies; limit 188"
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
@@ -638,7 +639,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   while IFS= read -r -d '' tracked; do
     [ -e "$ROOT/$tracked" ] || continue
     mkdir -p "$SOURCE_SNAPSHOT/$(dirname "$tracked")"
-    cp -p "$ROOT/$tracked" "$SOURCE_SNAPSHOT/$tracked"
+    command cp -p "$ROOT/$tracked" "$SOURCE_SNAPSHOT/$tracked"
   done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
   snapshot_digest=$(tree_digest "$SOURCE_SNAPSHOT")
   SOURCE_FIXTURE="$TMP/source"
@@ -2485,18 +2486,27 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
     || fail 'fixture budget did not identify repeated tree copying'
   printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
-  for ((copy_i=0; copy_i<325; copy_i++)); do
+  for ((copy_i=0; copy_i<189; copy_i++)); do
     printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   done
-  assert_cost_budget "$MEASURE_FIX/full-files.events" full \
-    || fail 'full fixture budget rejected its approved 325-copy boundary'
-  printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
     > "$MEASURE_FIX/full-files.out" 2>&1 \
-    && fail 'full fixture budget accepted 326 copies'
-  grep -q 'exceeded 325 fixture file copies' "$MEASURE_FIX/full-files.out" \
-    || fail 'full fixture copy failure did not name the approved limit'
+    && fail 'full fixture budget accepted 189 copies'
+  grep -q 'full mode made 189 fixture file copies; limit 188' "$MEASURE_FIX/full-files.out" \
+    || fail 'full fixture copy failure did not name the count and approved limit'
+  sed '$d' "$MEASURE_FIX/full-files.events" > "$MEASURE_FIX/full-boundary.events"
+  assert_cost_budget "$MEASURE_FIX/full-boundary.events" full \
+    || fail 'full fixture budget rejected its approved 188-copy boundary'
 fi
+: > "$MEASURE_FIX/fast-files.events"
+for ((copy_i=0; copy_i<34; copy_i++)); do
+  printf 'fixture_file_copy\n' >> "$MEASURE_FIX/fast-files.events"
+done
+( assert_cost_budget "$MEASURE_FIX/fast-files.events" fast ) \
+  > "$MEASURE_FIX/fast-files.out" 2>&1 \
+  && fail 'fast fixture budget accepted 34 copies'
+grep -q 'fast mode made 34 fixture file copies; limit 33' "$MEASURE_FIX/fast-files.out" \
+  || fail 'fast fixture copy failure did not name the count and approved limit'
 ( PATH='' path_without_tools "$MEASURE_FIX/missing-tools" jq ) \
   > "$MEASURE_FIX/missing-tools.out" 2>&1 \
   && fail 'fixture PATH accepted missing required tools'
