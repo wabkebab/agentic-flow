@@ -96,7 +96,7 @@ sub result_valid {
   my ($r,$station)=@_;
   object($r) && integer($r->{v},1) && $r->{v}==1 && ($r->{station}//'') eq $station or fail('invalid station result');
   member($r->{outcome},$station eq 'executor' ? qw(submitted ask) : qw(approve bounce ask)) or fail('invalid station outcome');
-  string($r->{summary},1200) or fail('invalid result summary');
+  string($r->{summary},2000) or fail('invalid result summary');
   if ($r->{outcome} eq 'ask') { string($r->{question},1200) && length($r->{question}) or fail('ask requires question'); }
   else { sha($r->{head},40) or fail('result requires head'); }
   if (exists($r->{findings})) {
@@ -357,10 +357,16 @@ sub diagnostic_note {
   my ($intent,$station,$verify);
   for my $r (@$records) { next unless ($r->{run}//'') eq $run;
     $intent=$r if $r->{kind} eq 'intent'; $station=$r if $r->{kind} eq 'station'; $verify=$r if $r->{kind} eq 'verify'; }
-  my $cause=utf8_text(redact(read_path($cause_file,256*1024))); $cause =~ s/\s+/ /g;
+  my $cause=utf8_text(redact(read_path($cause_file,256*1024)));
+  my ($preflight_exit,$preflight_seconds,$preflight_tail);
+  if ($cause =~ /\A(station-infrastructure: Launch preflight failed before station start\. Exit: (\d+); seconds: (\d+)\.)\n(.*)\z/s) {
+    ($cause,$preflight_exit,$preflight_seconds,$preflight_tail)=($1,$2,$3,$4);
+  }
+  $cause =~ s/\s+/ /g;
   my $header=clip_text($cause,300)."\nStation: ".($intent->{station}//'none')."; step: ".($intent->{step}//'none')."; run: $run; head: ".($station->{result}{head}//$intent->{base_head}//'none')."\n";
-  $header.='Exit: '.($station->{exit}//'n/a').'; seconds: '.($station->{seconds}//'n/a').'; usage: '.$json->encode($station->{usage}//{input=>undef,output=>undef,cost_usd=>undef})."\n";
+  $header.='Exit: '.($preflight_exit//$station->{exit}//'n/a').'; seconds: '.($preflight_seconds//$station->{seconds}//'n/a').'; usage: '.$json->encode($station->{usage}//{input=>undef,output=>undef,cost_usd=>undef})."\n";
   my @sections; my @paths=(File::Spec->catfile($base,"$plan.jsonl"));
+  push @sections,['Launch stderr',$preflight_tail,20] if defined($preflight_tail);
   if ($verify) {
     my $path=$verify->{record}//'';
     my $dir=File::Spec->catdir(dirname($base),'verify');
@@ -502,19 +508,24 @@ sub cache_rows {
 }
 sub within { my ($at,$since)=@_; return !defined($since) || (defined($at) && epoch($at)>=$since); }
 sub usage_sum {
-  my ($stations)=@_; my %usage;
+  my ($stations)=@_; my (%usage,%unknown);
   for my $field (qw(input output cost_usd)) {
-    my $sum=0; my $known=@$stations>0;
-    for my $s (@$stations) { if (defined($s->{usage}{$field})) { $sum+=$s->{usage}{$field}; } else { $known=0; } }
+    my ($sum,$known,$missing)=(0,0,0);
+    for my $s (@$stations) {
+      if (defined($s->{usage}{$field})) { $sum+=$s->{usage}{$field}; $known++; }
+      else { $missing++; }
+    }
     $usage{$field}=$known ? $sum : undef;
+    $unknown{$field}=$missing;
   }
-  return \%usage;
+  return (\%usage,\%unknown);
 }
 sub breakdown {
   my ($runs)=@_; my @stations=map { $_->{station} ? ($_->{station}) : () } @$runs;
   my @usage=map { $_->{station}//{usage=>{input=>undef,output=>undef,cost_usd=>undef}} } @$runs;
   my $seconds=0; $seconds+=$_->{seconds} for @stations;
-  return {runs=>scalar(@$runs),completed=>scalar(@stations),wall_seconds=>$seconds,usage=>usage_sum(\@usage)};
+  my ($usage,$unknown)=usage_sum(\@usage);
+  return {runs=>scalar(@$runs),completed=>scalar(@stations),wall_seconds=>$seconds,usage=>$usage,usage_unknown=>$unknown};
 }
 sub plan_metrics {
   my ($plan,$state,$rows,$since)=@_; my @runs; my %station_runs; my %step_runs; my %station_issues; my %issue_quality;
@@ -614,10 +625,10 @@ sub metrics {
     print "Plan $m->{plan}\n";
     print "  Lead seconds: ",show($m->{lead_seconds}),"; first-pass yield: ",show($m->{first_pass_yield}),"; bounce rate: ",show($m->{bounce_rate}),"\n";
     print "  Human touches: ",show($m->{human_touches}{total}),"; runs: $m->{runs}; wall seconds: $m->{wall_seconds}\n";
-    print "  Tokens input/output: ",show($m->{usage}{input}),"/",show($m->{usage}{output}),"; cost USD: ",show($m->{usage}{cost_usd}),"\n";
+    print "  Tokens input/output: ",show($m->{usage}{input}),"/",show($m->{usage}{output}),"; cost USD: ",show($m->{usage}{cost_usd}),"; unknown runs input/output/cost: ",join('/',@{$m->{usage_unknown}}{qw(input output cost_usd)}),"\n";
     print encode('UTF-8',"  Andon: ".join(', ',map { "$_=$m->{andon}{$_}" } sort keys %{$m->{andon}})),"\n";
     for my $step (@{$m->{steps}}) {
-      print "  $step->{step} $step->{station}: runs=$step->{runs} wall=$step->{wall_seconds} input=",show($step->{usage}{input})," output=",show($step->{usage}{output})," cost=",show($step->{usage}{cost_usd}),"\n";
+      print "  $step->{step} $step->{station}: runs=$step->{runs} wall=$step->{wall_seconds} input=",show($step->{usage}{input})," output=",show($step->{usage}{output})," cost=",show($step->{usage}{cost_usd})," unknown runs input/output/cost: ",join('/',@{$step->{usage_unknown}}{qw(input output cost_usd)}),"\n";
     }
   }
 }

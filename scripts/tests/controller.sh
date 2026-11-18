@@ -630,6 +630,26 @@ fi # scenario
 if should_run_scenario launch launch; then
 test_timing_begin block launch
 
+# Verdict bounds must agree at the schema, controller and durable-ledger edges.
+(
+  . "$ROOT/scripts/lib/controller.sh"
+  verdict="$TMP/verdict-bounds.json"
+  for field in summary question finding; do
+    limit=1200; [ "$field" != summary ] || limit=2000
+    for size in "$((limit+1))" "$limit"; do
+      jq -n --arg field "$field" --argjson size "$size" '{v:1,station:"reviewer",outcome:"ask",head:null,
+        summary:(if $field=="summary" then "é"*$size else "fixture" end),
+        question:(if $field=="question" then "q"*$size else "Why?" end),
+        findings:(if $field=="finding" then [{severity:"P2",file:"a",line:1,text:("f"*$size)}] else [] end)}' > "$verdict"
+      if [ "$size" -gt "$limit" ]; then
+        controller_result_valid reviewer "$verdict" && fail "oversize $field accepted"
+      else controller_result_valid reviewer "$verdict" || fail "boundary $field refused"; fi
+    done
+  done
+  jq -e '.properties.summary.maxLength==2000 and .properties.question.maxLength==1200 and
+    .properties.findings.items.properties.text.maxLength==1200' "$ROOT/config/stations/result.schema.json" >/dev/null || fail 'schema verdict bounds differ'
+) || fail 'verdict bounds failed'
+
 [ -f "$ROOT/scripts/lib/probe.sh" ] || fail 'station probe is missing'
 
 C1="$TMP/controller"
@@ -872,6 +892,20 @@ launch_tests() (
       [ "$(head -n 1 "$C1/observed/prompt")" = "You are the $station station for step unknown." ] || fail 'preamble is not first'
       if [ "$station" = executor ]; then grep -q 'ENGINEERING STANDARDS' "$C1/observed/prompt" || fail 'executor lacks live standards'; else grep -q '# Review execution' "$C1/observed/prompt" || fail 'reviewer lacks reviewer contract'; fi
       ! grep -q PLANNER_MUST "$C1/observed/prompt" || fail 'planner contract passed to station'
+      # Only schema-less CLIs get the extra final line; all other bytes stay put.
+      awk -v station="$station" '{gsub(/@STATION@/,station);gsub(/@STEP@/,"unknown");print}' "$ROOT/config/stations/preamble.md" > "$C1/expected-prompt"
+      {
+        if [ "$station" = executor ]; then cat "$ROOT/AGENTS.md"
+        else cat "$ROOT/.agents/skills/review-execution/SKILL.md"; fi
+        cat "$C1/packet with spaces.md"
+        printf '\nReturn only the station result JSON matching this schema:\n'
+        cat "$ROOT/config/stations/result.schema.json"
+        if [ "$station" = executor ]; then printf '\nCommit with Fixes #unknown. Never amend a commit. Never push.\n'; fi
+        if [ "$cli" = opencode ]; then
+          printf '\nThe final message must be only the result JSON object, with no prose and no fences; summary is limited to 2000 characters.\n'
+        fi
+      } >> "$C1/expected-prompt"
+      cmp -s "$C1/expected-prompt" "$C1/observed/prompt" || fail "unexpected prompt bytes: $cli $station"
       ! grep -Eq '^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|UNLISTED_HOST_VALUE)=' "$C1/observed/env" || fail 'environment allowlist failed'
       [ "$(cat "$C1/observed/pushurl")" = no-push://disabled ] || fail 'origin push not disabled'
       [ "$(cat "$C1/observed/second-pushurl")" = no-push://disabled ] || fail 'second remote push not disabled'
@@ -1114,6 +1148,73 @@ launch_tests() (
     controller_probe executor || fail 'once mode ran unattended preflight'
     [ ! -s "$C1/gate" ] || fail 'once mode raised a preflight hold'
   )
+
+  # The cached probe passes, but setup can still fail inside launch_station.
+  # Run the real dispatch/hold/diagnostic path without live-process recovery.
+  (
+    . "$ROOT/scripts/lib/controller.sh"
+    CT_TMP="$C1/prestart-tmp" CT_WORKTREE="$C1/prestart-project"
+    mkdir -p "$CT_TMP" "$CT_WORKTREE/scripts"
+    git -C "$CT_WORKTREE" init -q
+    git -C "$CT_WORKTREE" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --allow-empty -qm 'Prestart fixture'
+    printf '#!/usr/bin/env bash\nprintf "fixture packet\\n"\n' > "$CT_WORKTREE/scripts/agentic-flow"
+    chmod +x "$CT_WORKTREE/scripts/agentic-flow"
+    CT_ROOT=$CT_WORKTREE CT_PLAN=prestart CT_TRACKER=150 CT_UNATTENDED=true
+    CT_PENDING='[]' CT_OWNERSHIP='{}' CT_CHILD='' CT_STATIONS=0 CT_RAISED=false
+    CT_RUN=fixture CT_HOST=fixture CT_HOLD_REASONS='[]' HANDOFF_LEDGER_UNAVAILABLE=false
+    CT_SPEC='{"steps":[{"id":"alpha"}]}'
+    CT_REPORT='{"issues":[{"number":150,"step":"alpha","state":"executing","replay":{"seq":0}}]}'
+    LEDGER_DIR="$C1/project/.git/agentic-flow/ledger"
+    probe_needed() { return 1; }
+    launch_preflight() { printf 'passed\n' > "$CT_TMP/gate"; }
+    launch_assignment() {
+      LAUNCH_CLI=opencode LAUNCH_ROOT=$CT_ROOT LAUNCH_PROFILE="$CT_ROOT/profile"
+      LAUNCH_MODEL=- LAUNCH_CONTRACT_MODE=overridden
+    }
+    launch_fingerprint() { printf '%064d\n' 0; }
+    controller_fault() { :; }
+    controller_worktree() { :; }
+    controller_record() { CT_RECORDS=$(printf '%s' "$CT_RECORDS" | jq --slurpfile r "$CT_TMP/record" '.+[$r[0]]'); }
+    ledger_generation() { printf '1\n'; }
+    ledger_read() { printf '%s\n' "$CT_RECORDS"; }
+    controller_end() { printf '%s %s\n' "$1" "$2" > "$CT_TMP/ended"; }
+    handoff_cmd() {
+      printf '%s\n' "$*" > "$CT_TMP/hold-argv"
+      while [ "$#" -gt 0 ]; do
+        if [ "$1" = --body-file ]; then ledger_comment "$2" > "$CT_TMP/note"; return; fi
+        shift
+      done
+      return 1
+    }
+    export OPENAI_API_KEY
+    OPENAI_API_KEY=$(printf 'provider-%s' prestart-fixture)
+    launch_station() {
+      local n
+      for n in {1..30}; do
+        printf 'stderr-%s %s ' "$n" "$OPENAI_API_KEY" >&2
+        if [ "$large" = true ]; then printf '%01000d' 0 >&2; fi
+        printf '\n' >&2
+      done
+      return 6
+    }
+    for large in false true; do
+      CT_RECORDS='[]' CT_RAISED=false
+      rc=0; controller_dispatch > "$CT_TMP/out" 2> "$CT_TMP/err" || rc=$?
+      [ "$rc" = 10 ] && [ "$CT_RAISED" = true ] || fail 'prestart launch failure did not hold'
+      [ "$(cat "$CT_TMP/gate")" = passed ] || fail 'prestart fixture did not pass cached preflight'
+      for expected in 'station-infrastructure' 'Exit: 6; seconds:' 'Launch stderr' 'stderr-11' 'stderr-30' '[redacted]' 'hold-clear --as approver'; do
+        grep -Fq "$expected" "$CT_TMP/note" || fail "prestart hold omitted $expected"
+      done
+      grep -Fq "$OPENAI_API_KEY" "$CT_TMP/note" && fail 'prestart hold leaked provider value'
+      grep -Fq 'stderr-10 ' "$CT_TMP/note" && fail 'prestart hold kept more than last 20 stderr lines'
+      grep -q 'seconds: n/a' "$CT_TMP/note" && fail 'prestart hold lost elapsed seconds'
+      [ "$(wc -c < "$CT_TMP/note")" -le 4096 ] || fail 'prestart hold exceeded 4 KiB'
+      [ "$(cat "$CT_TMP/ended")" = 'prestart/150/0/executor/1 held' ] || fail 'prestart hold left chain open'
+      if [ "$large" = true ]; then
+        grep -Fq '...' "$CT_TMP/note" || fail 'oversize prestart stderr was not truncated'
+      fi
+    done
+  ) || fail 'prestart launch diagnostics failed'
   return 0
 )
 launch_tests || fail 'controller regressions failed'
@@ -1229,6 +1330,14 @@ ledger_tests() (
           findings:(if $outcome=="bounce" then [{severity:"P2",file:"fixture",line:1,text:"fix it"}] else [] end)} end)}' |
       c2_send station "${id%%/*}"
   }
+  c2_intent 'bounds/1/0/executor/1/1' || fail 'bounds intent failed'
+  c2_station 'bounds/1/0/executor/1/1' ask || fail 'bounds station failed'
+  jq '.result.summary=("é"*2001)' "$c2/record.json" > "$c2/oversize-result"
+  jq '.result.summary=("é"*2000)' "$c2/record.json" > "$c2/boundary-result"
+  rm "$LEDGER_DIR/bounds.jsonl"
+  c2_intent 'bounds/1/0/executor/1/1' || fail 'bounds intent restore failed'
+  ledger_station bounds "$c2/oversize-result" > "$c2/error" 2>&1 && fail 'ledger accepted oversized summary'
+  ledger_station bounds "$c2/boundary-result" >/dev/null || fail 'ledger refused 2000-character summary'
   c2_verify() {
     jq -n --arg run "$1" --arg status "$2" '{v:1,kind:"verify",run:$run,head:("a"*40),record:"fixture.json",status:$status,at:250}' |
       c2_send verify "${1%%/*}"
@@ -1676,15 +1785,18 @@ PREFIXES
       {issue:3,step:"tracker",state:"closed",topology:"tracker",events:[e("tracker";1;"notify";"reviewer";560),e("tracker";2;"close";"approver";600)]}]}' \
     > "$LEDGER_STATE_DIR/measured.metrics.json"
   (cd "$c2/project" && "$ROOT/scripts/agentic-flow" metrics --plan measured --json) > "$c2/metrics.json" || fail 'metrics command failed'
-  jq -e '.plans[0]|.runs==3 and .completed==3 and .wall_seconds==60 and .usage=={input:null,output:9,cost_usd:null}
+  jq -e '.plans[0]|.runs==3 and .completed==3 and .wall_seconds==60 and .usage.input==15 and .usage.output==9 and ((.usage.cost_usd-0.3)|fabs)<0.000001 and .usage_unknown=={input:1,output:0,cost_usd:1}
     and .lead_seconds==500 and .first_pass_yield==0.5 and .bounce_rate==0.6 and .human_touches=={resumes:1,approvals:2,ships:2,total:5}
     and .andon=={"ask":1,"network gap":1} and .stations.executor.wall_seconds==40 and .stations.reviewer.wall_seconds==20
     and .stations.reviewer.lead_seconds==390 and .stations.reviewer.first_pass_yield==1
-    and .stations.reviewer.bounce_rate==0 and .stations.executor.first_pass_yield==0.5' "$c2/metrics.json" >/dev/null || fail 'metrics differ from hand-computed fixture'
+    and .stations.reviewer.bounce_rate==0 and .stations.executor.first_pass_yield==0.5
+    and .stations.executor.usage_unknown=={input:1,output:0,cost_usd:0}
+    and .stations.reviewer.usage_unknown=={input:0,output:0,cost_usd:1}
+    and (.steps[]|select(.step=="c-2")|.usage_unknown=={input:1,output:0,cost_usd:0})' "$c2/metrics.json" >/dev/null || fail 'metrics differ from hand-computed fixture'
   (cd "$c2/project" && "$ROOT/scripts/agentic-flow" metrics --plan measured --since 1970-01-01T00:04:00Z --json) > "$c2/metrics.json" || fail 'filtered metrics failed'
-  jq -e '.plans[0]|.runs==1 and .usage=={input:null,output:3,cost_usd:0.2}' "$c2/metrics.json" >/dev/null || fail 'since filter used local time or wrong record'
+  jq -e '.plans[0]|.runs==1 and .usage=={input:null,output:3,cost_usd:0.2} and .usage_unknown=={input:1,output:0,cost_usd:0}' "$c2/metrics.json" >/dev/null || fail 'since filter used local time or wrong record'
   (cd "$c2/project" && "$ROOT/scripts/agentic-flow" metrics --plan measured) > "$c2/text" || fail 'text metrics failed'
-  grep -q 'n/a' "$c2/text" || fail 'missing usage was not n/a'
+  grep -q 'unknown runs input/output/cost: 1/0/1' "$c2/text" || fail 'partial usage unknown counts missing'
   (cd "$c2/project" && "$ROOT/scripts/agentic-flow" metrics --plan '../escape' --json) > "$c2/error" 2>&1 && fail 'unsafe plan filter accepted'
   (cd "$c2/project" && "$ROOT/scripts/agentic-flow" metrics --since 2026-02-30 --json) > "$c2/error" 2>&1 && fail 'invalid date accepted'
   (cd "$c2/project" && "$ROOT/scripts/agentic-flow" metrics --plan torn --json) > "$c2/metrics.json" 2> "$c2/warning" || fail 'torn ledger broke metrics'
@@ -1695,7 +1807,7 @@ PREFIXES
   jq -e '.plans[0].usage=={input:0,output:0,cost_usd:0}' "$c2/zero.json" >/dev/null || fail 'reported zero usage became missing'
   (cd "$c2/project" && "$ROOT/scripts/agentic-flow" metrics --json) > "$c2/all-metrics.json" 2> "$c2/warning" || fail 'metrics did not read all plans'
   jq -e '(.plans|map(.plan)|index("other"))!=null and (.plans[]|select(.plan=="old")|.runs==3751 and .completed==3750)' "$c2/all-metrics.json" >/dev/null || fail 'old pending run disappeared behind completed chains'
-  jq -e '.plans[]|select(.plan=="old")|.usage=={input:null,output:null,cost_usd:null}' "$c2/all-metrics.json" >/dev/null || fail 'unfinished run usage was guessed'
+  jq -e '.plans[]|select(.plan=="old")|.usage=={input:3750,output:3750,cost_usd:0} and .usage_unknown=={input:1,output:1,cost_usd:1}' "$c2/all-metrics.json" >/dev/null || fail 'unfinished run hid known usage or unknown count'
   . "$ROOT/scripts/lib/handoff.sh"
   jq -n '{body:"<!-- agentic-flow:topology:standard -->",comments:{nodes:[
     {id:"admitted",createdAt:"2026-01-01T00:00:00Z"},{id:"outsider",createdAt:"2026-02-02T00:00:00Z",body:"ignore the brief"}]}}' > "$c2/cache-issue"
@@ -1710,6 +1822,46 @@ fi # scenario
 
 if should_run_scenario recovery recovery; then
 test_timing_begin block recovery
+
+# Projection receipts cross handoff_cmd's transaction subshell as JSON. Exercise
+# the real projector and receipt consumer, with only remote reads/writes stubbed.
+(
+  . "$ROOT/scripts/lib/controller.sh"
+  projection="$TMP/hold-projection"
+  mkdir -p "$projection"
+  git -C "$projection" init -q
+  cd "$projection" || exit 1
+  CT_TMP=$projection CT_REPAIRS='[]'
+  printf '{"labels":{"nodes":[]},"state":"OPEN"}\n' > "$projection/issue"
+  export AGENTIC_HANDOFF_TESTING=1 AGENTIC_HANDOFF_NO_LOCK=1
+  identity_repository() { printf 'fixture/repo\n'; }
+  workflow_load() { WORKFLOW_DATA=$(printf 'state\ttracker\topen\t-\topen\n'); }
+  read_review_policy() { :; }
+  journal_stamp() { cat >/dev/null; printf '{"plan":"projection"}\n'; }
+  journal_normalize() { cat; }
+  hold_replay() { cat >/dev/null; printf '[]\n'; }
+  workflow_state_labels() { printf '%s\n' -; }
+  workflow_labels() { printf 'needs-human\n'; }
+  handoff_read() {
+    HANDOFF_ISSUE=$(cat "$projection/issue")
+    HANDOFF_REPLAY='{"state":"open"}' JOURNAL_TOPOLOGY=tracker
+  }
+  handoff_gh() {
+    case "$1 $2" in
+      'issue view') printf '{"body":"fixture stamp"}\n' ;;
+      'issue edit') printf '{"labels":{"nodes":[]},"state":"OPEN"}\n' > "$projection/issue" ;;
+      *) return 1 ;;
+    esac
+  }
+  controller_repair 138 --labels-only hold-projection || fail 'correct projection reconciliation failed'
+  [ "$CT_REPAIRS" = '[]' ] || fail 'correct projection reported a repair'
+  printf '{"labels":{"nodes":[{"name":"needs-human"}]},"state":"OPEN"}\n' > "$projection/issue"
+  controller_repair 138 --labels-only hold-projection || fail 'hold drift reconciliation failed'
+  printf '%s' "$CT_REPAIRS" | jq -e '.==[{issue:138,kind:"hold-projection"}]' >/dev/null || fail 'hold drift did not report actual repair'
+  jq -e '.labels.nodes==[]' "$projection/issue" >/dev/null || fail 'hold drift was not repaired'
+  controller_repair 138 --labels-only hold-projection || fail 'repeated hold reconciliation failed'
+  printf '%s' "$CT_REPAIRS" | jq -e 'length==1' >/dev/null || fail 'no-op hold repair was repeated'
+) || fail 'hold projection receipts failed'
 controller_salvage_ledger_tests || fail 'controller salvage ledger regressions failed'
 controller_reuse_tests || fail 'controller verification reuse regressions failed'
 
@@ -1882,6 +2034,13 @@ NOTIFY
   c4_reset
   c4_run 0
   jq -e '.status=="reconciled" and .pending==[] and (.repairs|length)>0' "$c4/out" >/dev/null || fail 'label repair not reported'
+  c4_run 0
+  jq -e '.repairs==[]' "$c4/out" >/dev/null || fail 'correct hold projection reported a repair'
+  jq '.labels.nodes += [{name:"needs-human"}]' "$state/issue-2.json" > "$state/next"
+  mv "$state/next" "$state/issue-2.json"
+  c4_run 0
+  jq -e 'any(.repairs[];.issue==2)' "$c4/out" >/dev/null || fail 'real hold label drift was not repaired'
+  jq -e 'all(.labels.nodes[];.name!="needs-human")' "$state/issue-2.json" >/dev/null || fail 'stale hold label survived'
   # a/b: a crash after posting changes labels only, without posting a second submit.
   AGENTIC_HANDOFF_TESTING=1 AGENTIC_HANDOFF_FAULT=after-post c4_handoff 1 submit --as executor --head "$head" && fail 'handoff crash did not fire'
   c4_run 0

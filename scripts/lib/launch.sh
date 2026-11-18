@@ -251,6 +251,9 @@ launch_bundle() { # station step packet scratch
   if [ "$station" = executor ]; then
     printf '\nCommit with Fixes #%s. Never amend a commit. Never push.\n' "${LAUNCH_ISSUE:-unknown}" >> "$scratch/prompt.md"
   fi
+  if [ "$LAUNCH_CLI" = opencode ]; then
+    printf '\nThe final message must be only the result JSON object, with no prose and no fences; summary is limited to 2000 characters.\n' >> "$scratch/prompt.md"
+  fi
 }
 
 launch_station() { # station worktree packet result [--resume session | --probe]

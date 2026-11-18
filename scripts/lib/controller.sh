@@ -158,8 +158,9 @@ controller_holds() { # import authorized remote clears, including a crash before
 }
 controller_repair() { # issue projection flag description
   local rc=0
-  handoff_cmd "$1" reconcile "$2" > "$CT_TMP/repair-output" || rc=$?
+  handoff_cmd "$1" reconcile "$2" --json > "$CT_TMP/repair-output" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
+  jq -e '.changed==true' "$CT_TMP/repair-output" >/dev/null || return 0
   CT_REPAIRS=$(printf '%s' "$CT_REPAIRS" | jq --argjson issue "$1" --arg kind "$3" '.+[{issue:$issue,kind:$kind}]')
 }
 controller_labels() { # Rule b; never changes open/closed status or posts notify.
@@ -586,7 +587,7 @@ controller_interrupt() {
 controller_result_valid() {
   jq -e --arg station "$1" '
     type=="object" and (keys|sort)==(["v","station","outcome","head","summary","findings","question"]|sort) and
-    .v==1 and .station==$station and (.summary|type=="string" and length<=1200) and
+    .v==1 and .station==$station and (.summary|type=="string" and length<=2000) and
     (.question==null or (.question|type=="string" and length<=1200)) and
     (.head==null or (.head|type=="string" and test("^[a-f0-9]{40}$"))) and
     (.findings|type=="array" and length<=100 and all(.[];
@@ -726,17 +727,23 @@ controller_dispatch() {
   rm -f "$LAUNCH_PGID_FILE"
   : > "$CT_TMP/result"
   launch_started=$(date +%s)
-  if [ -n "$resume" ]; then launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" --resume "$resume" > "$CT_TMP/launched" &
-  else launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" > "$CT_TMP/launched" & fi
+  if [ -n "$resume" ]; then launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" --resume "$resume" > "$CT_TMP/launched" 2> "$CT_TMP/launch-stderr" &
+  else launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" > "$CT_TMP/launched" 2> "$CT_TMP/launch-stderr" & fi
   CT_CHILD=$!
   wait "$CT_CHILD" || rc=$?
   CT_CHILD=''
+  cat "$CT_TMP/launch-stderr" >&2
   CT_STATIONS=$((CT_STATIONS+1))
   # A supervised preflight refusal keeps its historical exit 6. An actual
   # station exit (which has metadata) must still be classified below.
   if [ "$rc" -eq 6 ] && [ ! -s "$CT_TMP/launched" ]; then
     [ "$CT_UNATTENDED" = true ] || return 6
-    controller_hold "$number" station-infrastructure 'Launch preflight failed before station start.' "$run" || return $?
+    # Keep stderr bounded and redact before selecting the last lines. The
+    # diagnostic formatter retains the cause, timing, tail and hold-clear path.
+    ledger_output_tail "$CT_TMP/launch-stderr" 65536 > "$CT_TMP/preflight-tail" || return 5
+    printf 'Launch preflight failed before station start. Exit: %s; seconds: %s.\n' "$rc" "$(($(date +%s)-launch_started))" > "$CT_TMP/preflight-cause"
+    tail -n 20 "$CT_TMP/preflight-tail" >> "$CT_TMP/preflight-cause"
+    controller_hold "$number" station-infrastructure "$(cat "$CT_TMP/preflight-cause")" "$run" || return $?
     return 10
   fi
   # A failed session callback aborts before any station record is published.

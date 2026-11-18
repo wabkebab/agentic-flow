@@ -32,7 +32,7 @@
     },
     "summary": {
       "type": "string",
-      "maxLength": 1200
+      "maxLength": 2000
     },
     "findings": {
       "type": "array",
