@@ -236,7 +236,7 @@ Do not raise a ceiling. Only h-4 edits a contract: the reviewer skill, which is 
 - `make check`, `make test`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
 - All 22 acceptance scenarios below pass as tests.
 - The human has run `agentic-flow doctor --stations` once on the operator machine against the real Codex and OpenCode CLIs and it passed, or each failure is a recorded finding. The executor cannot do this: a station sandbox has no network.
-- Steps h-3 to h-9 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
+- Steps h-3 to h-10 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
 
 ## Acceptance scenarios (written at Spec; the executor does not edit these)
 
@@ -470,6 +470,25 @@ scripts/doctor.sh --check
 **Risks:** a derived limit that is off by a few copies (the count in the message makes that a one-line fix); uncounting a copy that is not the snapshot; a test edited to dodge the counter.
 **Red-first:** none
 **Commit:** `Count only test copies in the full-mode copy budget`
+
+---
+
+## h-10 — Warn on an over-length verdict instead of refusing it
+**Why tenth:** found at close-out (2026-11-18). Three of eight reviewer verdicts (h-4, h-6 and h-8) were right and were refused as "malformed station result", and each needed a hand approval. The parser was not the cause: it already takes the last line-leading JSON object, fenced or not (`station-output.jq`). Every refusal was a length check (`controller_result_valid`, `controller.sh:587-597`, and `ledger.pl:99-105`), plus one invented head in h-6. On each retry the station was told only "malformed station result", guessed the wrong cause, and repeated the same text.
+
+**Approach:**
+1. Make the stated limits advisory. Keep 2000 for `summary` and 1200 for `question` and each finding's `text` in `result.schema.json` and in the prompt line from h-8 step 1, so a CLI that enforces the schema still stays inside them. In `controller_result_valid` and `ledger.pl`, accept longer text up to a hard bound of 8000 characters for `summary` and 4000 for `question` and each finding's `text`, which keeps the issue comment far under GitHub's size limit. Text over the hard bound is still refused, never truncated.
+2. Record each advisory overrun as a warning: the `station` ledger record gets a `warnings` list (for example `summary 2311 > 2000`), and the journal comment that carries the verdict shows it in one line. A warning never changes the outcome.
+3. Make the refusal name its cause. When a result is refused, `invalid_reason` names the failed rule and the measured value (for example `head is not 40 hex characters`, or `summary 8312 > 8000`), and the retry prompt and the andon comment carry that reason instead of only "malformed station result".
+4. Keep every other check a hard failure: missing or extra keys, a wrong `station` or `outcome`, a head that is not 40 hex characters, and a finding without severity or file.
+
+**Test:** failure path first: a summary of 8001 characters is refused and the reason names both numbers; a 44-character head is refused and the reason names the head rule; the retry prompt after a refusal carries that reason. Then a 2311-character summary and a 1500-character finding text are accepted, the outcome is unchanged, and the ledger record and the journal comment carry the warnings. h-8's test that refuses a 2001-character summary becomes this warning test.
+
+**DoD:** a verdict over the stated limits but under the hard bounds is accepted with a recorded warning; a refused verdict's andon comment and retry prompt name the exact rule and value.
+**Verify:** `make test-one F=controller S=launch,ledger`
+**Risks:** accepting a verdict whose head or keys are wrong (only the length rules change); a ledger record the old reader refuses (old records have no `warnings` field and must still read); an issue comment that grows past GitHub's limit (the hard bounds keep it well under); the schema and the validator disagreeing on which limit is advisory; a warning that hides a lost finding (nothing is truncated).
+**Red-first:** `scripts/self-test.sh --only controller --scenario launch,ledger` — scripts/self-test.sh scripts/tests/controller.sh
+**Commit:** `Warn on an over-length verdict and name the reason a result is refused`
 
 ---
 
