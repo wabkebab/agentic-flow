@@ -7,7 +7,10 @@
 
 ## Tracker
 <!-- Filled in when the brief is approved and plan-to-issues runs. -->
-- [ ] Brief drafted 2026-11-17; awaiting approval. Steps h-1 to h-8 are listed in Part B.
+- [x] Brief drafted and approved 2026-11-17; h-9 and h-10 added 2026-11-18. Tracker #150, steps #151 to #160, all approved and closed.
+- [x] Close-out gate: `make check && make test` green on `phase-2b` at `0a85379` (2026-11-18, about 80 minutes). Release notes `0.17.0` in `0258be2`.
+- [x] Accepted by the owner (2026-11-17, P3 from the h-2 review): h-1's per-scenario timing profile was never captured, so the DoD's before-and-after controller-group times per step are not reported. The only comparison is the full `make test`: about 32 minutes at `b6c1962`, about 80 minutes at `0a85379`.
+- [ ] The human runs `ship` and `doctor --stations`; Claude updates the roadmap.
 
 ---
 
@@ -201,7 +204,7 @@ id: station-hardening
 profile: strict
 tracking: Plan: Station hardening
 branch: phase-2b
-steps: h-1 h-2 h-3 h-4 h-5 h-6 h-7 h-8
+steps: h-1 h-2 h-3 h-4 h-5 h-6 h-7 h-8 h-9 h-10
 ```
 
 ## Prerequisite
@@ -236,7 +239,7 @@ Do not raise a ceiling. Only h-4 edits a contract: the reviewer skill, which is 
 - `make check`, `make test`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
 - All 22 acceptance scenarios below pass as tests.
 - The human has run `agentic-flow doctor --stations` once on the operator machine against the real Codex and OpenCode CLIs and it passed, or each failure is a recorded finding. The executor cannot do this: a station sandbox has no network.
-- Steps h-3 to h-8 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
+- Steps h-3 to h-10 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
 
 ## Acceptance scenarios (written at Spec; the executor does not edit these)
 
@@ -247,7 +250,7 @@ Do not raise a ceiling. Only h-4 edits a contract: the reviewer skill, which is 
 4. **Make surface.** `make test-one F=controller S=launch` works, root and `templates/harness/Makefile` agree, the usage text names `S=`, and `make test-one F=hooks S=launch` exits 2.
 
 **P-1**
-5. **The probe catches the historical defects.** With strict stubs, the probe fails and names the cause for each of: a quoted `-c` key, a commit path outside the sandbox, a sandbox where objects and the worktree's Git directory are writable but the shared `refs/heads` is denied (the commit leaves the probe branch's ref where it was), a read-only `.agents/`, a file-size cap that makes the CLI exit 153, a caller-chosen OpenCode session id, and an OpenCode session id the ledger rejects.
+5. **The probe catches the historical defects.** With strict stubs, the probe fails and names the cause for each of: a quoted `-c` key, a commit path outside the sandbox, a sandbox where objects and the worktree's Git directory are writable but the shared `refs/heads` is denied (the commit leaves the probe branch's ref where it was), a read-only `.agents/`, a file-size cap that makes the CLI exit 153, a caller-chosen OpenCode session id, an OpenCode session id the ledger rejects, and a Codex station whose `CODEX_HOME` is unset, holds an instruction file other than the empty `AGENTS.md`, or holds a copied rather than linked `auth.json`.
 6. **Boundary property, with evidence.** A stub sandbox that lets the model write the verify or ledger directory fails the probe with `denied.verify_dir` or `denied.ledger_dir` false. A stub that returns valid result JSON but skips the forbidden writes (no attempt entry, no file) fails with "attempt not made", never as a pass. An attempt entry that claims denial with exit 0, or without a permission-class error, fails. The same holds for each allowed write: an entry without the file, or a file without an entry, fails. For OpenCode the report says `"unenforced"`, which is neither a pass nor a failure.
 7. **Probe only on change.** After a pass, `run` does not probe again. Changing `launch.sh`, the profile, the roles row or the CLI's `--version` output makes the next unattended `run` probe. `doctor --stations` always probes. `run --once` never auto-probes.
 8. **The probe leaves nothing behind.** The throwaway worktree and the temporary probe branch (its ref and reflog) are gone after a pass, after a failure and after a kill. HEAD, branches, status, the verify directory and the ledger are unchanged. Each property is decided from the attempt log together with the filesystem, never from the model's reply, and an absent file alone never proves a denial.
@@ -341,12 +344,13 @@ scripts/doctor.sh --check
 5. Add `launch_fingerprint` per the Interface, and the state file under `<common>/agentic-flow/probe/`. In an unattended `run`, probe a station whose fingerprint differs from its last passing probe before its first launch; `run --once` does not. A failed probe raises the `station-infrastructure` hold (the controller's hold path) and starts no station.
 6. Report `denied` as `"unenforced"` for a CLI without an OS sandbox (OpenCode). Add one paragraph to `docs/accepted_risks.md#opencode-station-network` saying OpenCode can write the verify and ledger directories and why that is acceptable (Part A, Threat model). Add the `launch` tag to the new tests.
 7. Make the stub CLIs strict (Invariants). Add one stub failure mode per historical defect.
+8. Isolate a Codex station from the operator's global Codex files (decided 2026-11-17). Today a station keeps `HOME`, so the operator's `~/.codex/AGENTS.md` reaches it; one such file tells Codex to prefix every command with `rtk`, which the Git hooks cannot parse and refuse. Set `CODEX_HOME` in the launcher environment to `<common>/agentic-flow/codex-home/`, shared by the probe and a real launch. It holds only a copy of the installed `agentic-station.config.toml` (still checked against the station profile as today), an empty `AGENTS.md`, and a symlink `auth.json` to the operator's login. Never copy `auth.json`: a refreshed token would go stale. Keep the directory between runs, because Codex keeps its sessions there and `resume` needs them. A missing login target is a pre-launch failure that names the path. Add the directory's contents to `launch_fingerprint`.
 
 **Test:** scenarios 5 to 9. Failure path first: each historical defect, the sandbox-escape stub, and a probe that times out at 120 s.
 
-**DoD:** scenarios 5 to 9 pass. `agentic-flow doctor --stations --json` against the strict stubs reports every property. The accepted-risk entry carries the new paragraph.
+**DoD:** scenarios 5 to 9 pass. `agentic-flow doctor --stations --json` against the strict stubs reports every property. The accepted-risk entry carries the new paragraph. A Codex station sees no file from the operator's `~/.codex` except through the linked login.
 **Verify:** `make test-one F=controller S=launch`
-**Risks:** the probe and a real launch diverging (one code path); a probe that leaves a worktree, branch or file when killed (trap on every exit, and a leftover-detection test); committing on a detached HEAD, which never exercises `refs/heads` (use a named branch and check its ref moved); a probe branch name that collides with a real branch (a nonce, and refuse if it exists); a probe that touches the real verify or ledger directory (it must only attempt, and the harness removes any file it finds); trusting the model's account of what it wrote, or reading an absent file as a denial (the attempt log is the evidence); real model calls leaking into `make test`; a fingerprint that misses the CLI version; probing before every station (change only); claiming a tested boundary for OpenCode.
+**Risks:** a station home that loses its sessions between runs and breaks `resume`; a copied login that goes stale; the symlink target missing or the home wiped without a clear failure; the station reading `~/.codex` by absolute path anyway (the strict stub must fail on it); the probe and a real launch diverging (one code path); a probe that leaves a worktree, branch or file when killed (trap on every exit, and a leftover-detection test); committing on a detached HEAD, which never exercises `refs/heads` (use a named branch and check its ref moved); a probe branch name that collides with a real branch (a nonce, and refuse if it exists); a probe that touches the real verify or ledger directory (it must only attempt, and the harness removes any file it finds); trusting the model's account of what it wrote, or reading an absent file as a denial (the attempt log is the evidence); real model calls leaking into `make test`; a fingerprint that misses the CLI version; probing before every station (change only); claiming a tested boundary for OpenCode.
 **Red-first:** `scripts/self-test.sh --only controller --scenario launch` — scripts/self-test.sh scripts/tests/controller.sh
 **Commit:** `Probe each station CLI through the real launcher before it runs a plan`
 
@@ -361,12 +365,13 @@ scripts/doctor.sh --check
 3. In `verify-step`, after the step is selected and the command list is known and before any worktree is created, look up `<common>/agentic-flow/verify/<sha>.json`. Reuse only a record whose own contents show it passed: `passed` is true, every `green` and `prepare` entry exited 0, and every `red-first` entry exited nonzero with its `red_first` status `red` (not `invalid`, not `green`). The key must also equal the current call's. Anything else, including a read error or a record over 256 KiB, runs the full verification. `--force` skips the lookup.
 4. `controller_verify` records reuse in its `verify` ledger record and launches nothing for a reused record.
 5. Edit `.agents/skills/review-execution/SKILL.md` (lines 46-47 and 75; line 75 names `verify-step.sh` alone as the hash source and must say verifier digest) so the reviewer reads the packet's record first and re-runs only a narrower command it names and records, per the 2026-11-17 decision. Stay at or below 1000 words; trim as you add. Run the contract and sync checks.
+6. Take `S` from the command line only (found in h-2's review). The `test-one` recipe's `origin S` check also matches an exported `S`, so with `S` exported `make test-one F=hooks` fails with "S= is valid only with F=controller" and `make test-one F=controller` silently runs one tag, not the group. Treat `S` as unset when its origin is `undefined` or `environment`, in the root `Makefile` and `templates/harness/Makefile` alike.
 
-**Test:** scenarios 10 to 14, in `scripts/tests/stations.sh` (verify and packet) and the controller's verify path. Failure path first: each key part differing, a failed record, a corrupt record, an oversized one, and the record from a call without `--step`.
+**Test:** scenarios 10 to 14, in `scripts/tests/stations.sh` (verify and packet) and the controller's verify path, plus an exported `S` against `F=hooks` and `F=controller`, and `S` on the command line, in the root and template Makefiles. Failure path first: each key part differing, a failed record, a corrupt record, an oversized one, and the record from a call without `--step`.
 
-**DoD:** scenarios 10 to 14 pass. The reviewer skill is at most 1000 words. A second `verify-step` on an unchanged head runs nothing.
+**DoD:** scenarios 10 to 14 pass. The reviewer skill is at most 1000 words. A second `verify-step` on an unchanged head runs nothing. An exported `S` changes neither `F=hooks` nor `F=controller`.
 **Verify:** `make test-one F=stations`, `make test-one F=contracts`, and `make test-one F=controller S=recovery`
-**Risks:** reusing a record made for a weaker call (scenario 12 is the guard); reusing a failed record and hiding a flaky pass; a key that misses the tree and treats an amended commit as verified; the verifier or its helper editing itself without invalidating records (the digest covers both files); rejecting a good record because red-first runs exit nonzero; packet and verify-step predicates drifting (one function); a stale record that blocks forever (`--force` and the full-run fallback); the skill edit pushing the reviewer bundle over its ceiling.
+**Risks:** reusing a record made for a weaker call (scenario 12 is the guard); reusing a failed record and hiding a flaky pass; a key that misses the tree and treats an amended commit as verified; the verifier or its helper editing itself without invalidating records (the digest covers both files); rejecting a good record because red-first runs exit nonzero; packet and verify-step predicates drifting (one function); a stale record that blocks forever (`--force` and the full-run fallback); the skill edit pushing the reviewer bundle over its ceiling; the two Makefiles drifting on the `S` rule; a command-line `S` that stops working when the environment check is added.
 **Red-first:** `scripts/self-test.sh --only stations` — scripts/self-test.sh scripts/tests/stations.sh
 **Commit:** `Reuse a passing verify record for the same commit, tree, step and commands`
 
@@ -379,13 +384,14 @@ scripts/doctor.sh --check
 1. After a station returns an invalid result, write bounded `events.tail` and `stderr.tail` into the run's ledger directory through a new `ledger.pl` helper, so the existing directory checks apply (no symlinks, ancestry cap, size caps).
 2. Take the last 256 KiB of events and 64 KiB of stderr, not the first. Redact the exact values of the provider keys in the launch environment before writing. Write nothing for a valid result.
 3. `launch_station` currently deletes its scratch directory before the caller sees it (`launch.sh:307`). Return the tails to the caller, or hand over the scratch files, without keeping a second copy on disk.
-4. Name the path in the andon comment the controller posts for an invalid result.
+4. Make every andon comment self-explaining (the owner's rule of 2026-11-17: a `needs-human` ticket must say what failed without a trip into the ledger). Each comment states, in order: the cause in one line; the station, step, run id and head; the exit code, seconds and usage; for a red gate, every failing command with its exit code and the last 30 lines of its output; the last 20 lines of the station's `events.tail` and `stderr.tail` for an invalid result; the ledger paths that hold the full tails; and the exact `handoff <issue> resume` line that retries. Redact before posting, cap the whole comment at 4 KiB, and never post the full tails.
+5. Keep the output a red gate needs for step 4. `verify-step` stores only an output hash per command today, so store a bounded tail (64 KiB, redacted) of each failing command's output in the verify record, beside the hash, without changing any field `packet.sh` reads.
 
-**Test:** scenario 15, in the `ledger` and `recovery` tags. Failure path first: output over the caps, a redaction case built with `printf`, a symlinked run directory, and a valid result that must store nothing.
+**Test:** scenario 15, in the `ledger` and `recovery` tags. Failure path first: output over the caps, a redaction case built with `printf`, a symlinked run directory, and a valid result that must store nothing. Then each andon cause (timeout, invalid result, red gate, bounce limit) posts a comment with every item in step 4, under 4 KiB, with no unredacted key.
 
-**DoD:** scenario 15 passes. A deliberately malformed station run leaves both tails and the andon comment names them.
+**DoD:** scenario 15 passes. A deliberately malformed station run leaves both tails. The andon comment for a timeout, an invalid result and a red gate each names the cause, the failing command or output excerpt, the ledger path and the resume line.
 **Verify:** `make test-one F=controller S=ledger,recovery`
-**Risks:** writing outside the ledger tree; unbounded tails; a provider key stored in the clear; a redaction that misses a value split across lines; keeping scratch files after the run; the andon comment quoting the content instead of naming the path.
+**Risks:** writing outside the ledger tree; unbounded tails; a provider key stored in the clear; a redaction that misses a value split across lines; keeping scratch files after the run; an andon comment that is too long or leaks a key (cap and redact); a comment that quotes so little that the owner must open the ledger anyway; a verify record that grows without bound.
 **Red-first:** `scripts/self-test.sh --only controller --scenario ledger,recovery` — scripts/self-test.sh scripts/tests/controller.sh
 **Commit:** `Keep bounded output from a station that returned an invalid result`
 
@@ -419,12 +425,13 @@ scripts/doctor.sh --check
 2. In `controller_holds`, import the flag with the clear. At the next reconcile (`controller.sh:267-280`), when a clear carried it, save a salvage ref of the current state and use the new HEAD as the baseline, instead of raising `worktree-changed-after-salvage`. Without the flag, behavior is unchanged.
 3. Only an authorized approver's clear counts, as today. A crash between posting the clear and recording the salvage replays on the next reconcile and records one salvage, not two.
 4. Update `hold clear` usage text and `docs/` where it is described.
+5. Keep the red base of a resumed step (found on #154, 2026-11-17). After a `handoff resume`, the next executor chain's `base_head` is the previous attempt's head, and `controller_verify` passes it as `--red-base`. The red-first command then runs against code that already holds the step's tests, passes, and marks the record failed, so no fix on top of a green step can ever pass the gate. Pass the base of the step's first attempt (chain 0) as the red base for every later attempt of that step, and keep `base_head` for what the executor diffs against. Take it from the first `intent` record of the step in the ledger, never from the issue or the station's reply.
 
-**Test:** scenario 20, in the `recovery` tag and the stations group's hold tests. Failure path first: an unauthorized clear carrying the flag, a replay after a crash, and a clear without the flag.
+**Test:** scenario 20, in the `recovery` tag and the stations group's hold tests. Failure path first: an unauthorized clear carrying the flag, a replay after a crash, and a clear without the flag. Then a step that went green, was escalated and resumed: its second attempt's red-first runs against the first attempt's base and can fail, and a step with no earlier attempt is unchanged.
 
-**DoD:** scenario 20 passes. A commit on the plan branch during a pending salvage no longer forces `reset --hard`.
+**DoD:** scenario 20 passes. A commit on the plan branch during a pending salvage no longer forces `reset --hard`. A resumed step is verified against the base of its first attempt.
 **Verify:** `make test-one F=stations` and `make test-one F=controller S=recovery`
-**Risks:** a flag that re-baselines over edits nobody saved (the salvage ref is saved first, always); an unauthorized marker honored; the flag lost when the clear is imported from the journal on another host; two salvages on a replay; the hold re-raised on the very next reconcile.
+**Risks:** a flag that re-baselines over edits nobody saved (the salvage ref is saved first, always); an unauthorized marker honored; the flag lost when the clear is imported from the journal on another host; two salvages on a replay; the hold re-raised on the very next reconcile; a red base taken from anything but the ledger's first intent; a fix commit that passes only because the base already holds the tests (the original base is what keeps red-first honest); a resumed step whose first intent is missing or from another plan.
 **Red-first:** `scripts/self-test.sh --only controller --scenario recovery` — scripts/self-test.sh scripts/tests/controller.sh
 **Commit:** `Add hold clear --rebaseline so a fix on the plan branch survives a salvage`
 
@@ -437,14 +444,54 @@ scripts/doctor.sh --check
 1. **P-6.** For a CLI that cannot enforce an output schema (OpenCode), end the prompt `launch_bundle` builds with one explicit line: the final message is only the result JSON object, with no prose and no fences. Claude and Codex prompts stay byte-identical. Keep the parser lenient (`station-output.jq`).
 2. **P-7a.** Find why `repaired #138: hold-projection` prints on every `run` (`controller.sh:730`). Fix it with a test, or record the cause in the commit body if it is intended.
 3. **P-7b.** Find why `metrics` reports tokens as `n/a` when the ledger holds Codex usage. Check `usage_sum` and `breakdown` (`ledger.pl:379-393`) first: one run with no station record or a null field makes the whole plan unknown. Fix it so known usage is reported with a count of the runs that were unknown, or record why not.
+4. **Summary cap** (decided 2026-11-17, from #154). The OpenCode reviewer approved h-4 twice with a 1513-character `summary`, and the controller refused both as "malformed station result" because the schema allows 1200. Raise the `summary` cap to 2000 characters in `result.schema.json` and in `controller_result_valid` (`controller.sh:514`), and in any other copy of the schema. Leave `question` and each finding's `text` at 1200. State the 2000 limit on the verdict-format line from step 1, so a station is told it. Keep the limit a hard failure: an over-length verdict is still refused, never truncated.
+5. **Preflight hold detail** (h-6 review, P3, accepted 2026-11-17). The hold the controller raises when a launch fails before the station starts (`station-infrastructure`, note `Launch preflight failed before station start.`, `controller.sh:736`) carries no cause. Capture `launch_station`'s stderr on that branch and put the exit code, the seconds since launch start and the last 20 lines of stderr (redacted, the whole note capped at 4 KiB by truncation) in the hold note, as the probe-path hold already does with the captured preflight output. Keep the retry instruction as `hold clear`. Add no new hold reason.
 
-**Test:** scenarios 21 and 22. Failure path first: prose followed by JSON, fenced JSON, a plan where one run has null usage, and a hold projection that is already correct.
+**Test:** scenarios 21 and 22. Failure path first: prose followed by JSON, fenced JSON, a plan where one run has null usage, and a hold projection that is already correct. Then a summary of 2000 characters passes, one of 2001 is refused as malformed, and a `question` of 1201 is still refused. For step 5, a launch that fails after the probe passes (extend the cached-preflight test) raises a hold whose note holds the exit code, the seconds and the stderr tail, and a stderr over 4 KiB is truncated, not refused.
 
-**DoD:** scenarios 21 and 22 pass, and the commit body states each P-7 outcome.
-**Verify:** `make test-one F=controller S=launch,ledger`
-**Risks:** changing a prompt for the CLIs that enforce the schema; tightening the parser and rejecting a real reviewer message; a metrics change that reports a partial total as a complete one (show the unknown count); a "fix" to the repair that stops it repairing a real drift.
-**Red-first:** `scripts/self-test.sh --only controller --scenario launch,ledger` — scripts/self-test.sh scripts/tests/controller.sh
+**DoD:** scenarios 21 and 22 pass, and the commit body states each P-7 outcome. A 2000-character summary is accepted and the limit is in the station's prompt. A pre-start launch failure's hold names the exit code, the seconds and the stderr tail.
+**Verify:** `make test-one F=controller S=launch,ledger,recovery`
+**Risks:** changing a prompt for the CLIs that enforce the schema; tightening the parser and rejecting a real reviewer message; a metrics change that reports a partial total as a complete one (show the unknown count); a "fix" to the repair that stops it repairing a real drift; raising the cap in the schema but not the validator (or the reverse), so a verdict the schema allows is still refused; truncating an over-length summary and hiding a lost finding; the new limit missing from a CLI's prompt; a stderr tail that leaks a provider key (redact first); an oversized stderr that aborts the hold again (truncate); the preflight hold gaining a new reason or changing how it is cleared.
+**Red-first:** `scripts/self-test.sh --only controller --scenario launch,ledger,recovery` — scripts/self-test.sh scripts/tests/controller.sh
 **Commit:** `State the verdict format for schema-less CLIs and fix the two unexplained controller faults`
+
+---
+
+## h-9 — Count only test copies in the full-mode copy budget
+**Why ninth:** found at close-out (2026-11-18). The first full `make test` on `phase-2b` at `21ef179` failed only at its last check: "full mode exceeded 325 fixture file copies". All nine extra copies are needed single files, and five of them are files added to the repo: the export suite's source snapshot copies every tracked file through the counting `cp` (`self-test.sh:638-642`), so the budget grows with the repo, not with the tests.
+
+**Approach:**
+1. Copy the source snapshot with `command cp`, not the counting `cp`. The snapshot is already counted once as `source_snapshot_copy` and asserted exactly once (`self-test.sh:349`). The five mutable files copied after it (`:647-650`) stay counted.
+2. Set the full-mode limit to 188 fixture file copies (decided 2026-11-18): the approved 325, measured at `7599d61` with 141 snapshot files, is 184 test copies, plus the four `cp` lines h-4 added in `scripts/tests/stations.sh`. Update the comment at `:351-353` with this reason and move the boundary test (`:2487-2497`) to 188 passes and 189 fails. Leave the fast-mode limit and the one-tree limit as they are.
+3. Make both budget failures name the count: "full mode made <n> fixture file copies; limit 188", and the same shape for fast mode, so a miss is read from the log, not measured again.
+4. Do not change any test's `cp` to `cat` or another way around the counter.
+
+**Test:** failure path first: a full-mode events file at 189 copies fails and its message names 189 and 188; at 188 it passes.
+
+**DoD:** the snapshot no longer counts toward the file limit, the limit is 188, and a budget failure names the count. The close-out `make test` passes the budget at the h-9 head.
+**Verify:** `make check`
+**Risks:** a derived limit that is off by a few copies (the count in the message makes that a one-line fix); uncounting a copy that is not the snapshot; a test edited to dodge the counter.
+**Red-first:** none
+**Commit:** `Count only test copies in the full-mode copy budget`
+
+---
+
+## h-10 — Warn on an over-length verdict instead of refusing it
+**Why tenth:** found at close-out (2026-11-18). Three of eight reviewer verdicts (h-4, h-6 and h-8) were right and were refused as "malformed station result", and each needed a hand approval. The parser was not the cause: it already takes the last line-leading JSON object, fenced or not (`station-output.jq`). Every refusal was a length check (`controller_result_valid`, `controller.sh:587-597`, and `ledger.pl:99-105`), plus one invented head in h-6. On each retry the station was told only "malformed station result", guessed the wrong cause, and repeated the same text.
+
+**Approach:**
+1. Make the stated limits advisory. Keep 2000 for `summary` and 1200 for `question` and each finding's `text` in `result.schema.json` and in the prompt line from h-8 step 1, so a CLI that enforces the schema still stays inside them. In `controller_result_valid` and `ledger.pl`, accept longer text up to a hard bound of 8000 characters for `summary` and 4000 for `question` and each finding's `text`, which keeps the issue comment far under GitHub's size limit. Text over the hard bound is still refused, never truncated.
+2. Record each advisory overrun as a warning: the `station` ledger record gets a `warnings` list (for example `summary 2311 > 2000`), and the journal comment that carries the verdict shows it in one line. A warning never changes the outcome.
+3. Make the refusal name its cause. When a result is refused, `invalid_reason` names the failed rule and the measured value (for example `head is not 40 hex characters`, or `summary 8312 > 8000`), and the retry prompt and the andon comment carry that reason instead of only "malformed station result".
+4. Keep every other check a hard failure: missing or extra keys, a wrong `station` or `outcome`, a head that is not 40 hex characters, and a finding without severity or file.
+
+**Test:** failure path first: a summary of 8001 characters is refused and the reason names both numbers; a 44-character head is refused and the reason names the head rule; the retry prompt after a refusal carries that reason. Then a 2311-character summary and a 1500-character finding text are accepted, the outcome is unchanged, and the ledger record and the journal comment carry the warnings. h-8's test that refuses a 2001-character summary becomes this warning test.
+
+**DoD:** a verdict over the stated limits but under the hard bounds is accepted with a recorded warning; a refused verdict's andon comment and retry prompt name the exact rule and value.
+**Verify:** `make test-one F=controller S=launch,ledger`
+**Risks:** accepting a verdict whose head or keys are wrong (only the length rules change); a ledger record the old reader refuses (old records have no `warnings` field and must still read); an issue comment that grows past GitHub's limit (the hard bounds keep it well under); the schema and the validator disagreeing on which limit is advisory; a warning that hides a lost finding (nothing is truncated).
+**Red-first:** `scripts/self-test.sh --only controller --scenario launch,ledger` — scripts/self-test.sh scripts/tests/controller.sh
+**Commit:** `Warn on an over-length verdict and name the reason a result is refused`
 
 ---
 
@@ -453,16 +500,17 @@ scripts/doctor.sh --check
 Claude, on `phase-2b`, after the last approval, and before the human merges:
 
 1. Close-out commits: `VERSION` 0.17.0 and a `CHANGELOG.md` entry with migration notes: `agentic-flow doctor --stations` and when `run` probes; the `station-infrastructure` hold and `hold clear --rebaseline`; `verify-step --force` and the reuse rule; `S=` on `make test-one` (copy the Makefile change by hand); `AGENTIC_TEST_TIMING`; the reviewer contract change.
-2. The human runs `agentic-flow ship docs/inprogress/feature-station-hardening.md`. Claude commits the staged prep. The human runs `ship` again. The CHANGELOG makes the delta non-bookkeeping, so `ship` exits 11 until the reviewer runs `agentic-flow final-approve` for the final head; then `ship` runs `finish`. **Do not merge before `ship` reports READY** (see accepted risk C-8).
-3. The human runs `agentic-flow doctor --stations` once against the real CLIs and the result is recorded.
-4. Update `product-harness-factory-optimization.md` (the Phase 2b and Phase 3 tables, and the next-docs list) and record the human `resume` count and the before and after controller-group times against the analysis's "Expected effect" table.
+2. Claude runs `make check && make test` on `phase-2b` at the close-out head (about 64 minutes, measured 2026-11-18; decided 2026-11-17), before any push or PR, and records the result and the head it ran on in the close-out commit message. Only a green run goes on to the next item. A red run is fixed or escalated to the human; nothing is pushed, and `ship` is not run, until it is green. CI then repeats it on the pushed head.
+3. The human runs `agentic-flow ship docs/inprogress/feature-station-hardening.md`. Claude commits the staged prep. The human runs `ship` again. The CHANGELOG makes the delta non-bookkeeping, so `ship` exits 11 until the reviewer runs `agentic-flow final-approve` for the final head; then `ship` runs `finish`. **Do not merge before `ship` reports READY** (see accepted risk C-8).
+4. The human runs `agentic-flow doctor --stations` once against the real CLIs and the result is recorded.
+5. Update `product-harness-factory-optimization.md` (the Phase 2b and Phase 3 tables, and the next-docs list) and record the human `resume` count and the before and after controller-group times against the analysis's "Expected effect" table.
 
 ---
 
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/150
-- **Approval:** status=approved; by=wabkebab; at=2026-11-17; rev=649cb707f548a70075d98e6f56fb32526a8ac85a
+- **Approval:** status=approved; by=wabkebab; at=2026-11-17; rev=bd551803dcf8876eb8d6d2ff37c76443eddb30b8
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run

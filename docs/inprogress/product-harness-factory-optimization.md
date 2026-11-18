@@ -314,6 +314,8 @@ Renumbered from Phase 3 on 2026-11-17, when test streamlining became Phase 3 and
 | R-16 | Docs diet: one reviewer contract, `METHODOLOGY.md` §9–§11 moved to reference files, roadmap cut to the open queue, the HTML explainer generated or dropped. | B-4, B-6, E-4 |
 | R-17 | Scenario-first brief template with a word cap. Acceptance scenarios are written at Spec and the executor cannot edit them. | F-1, F-2 |
 | R-22 | Role-neutral roles (added 2026-11-15, split from the signing follow-up). Role contracts move to role-named files, and `CLAUDE.md` and `AGENTS.md` become thin routers that load the session's role, so any vendor can plan, execute, review or close. Workflow labels become role-named (`role:executor` and the like, instead of `agent:codex`), which is a breaking change with a migration. Plan it with R-14b, since both rework the same files. This supersedes the line in `feature-line-controller.md`'s out-of-scope list that sends this work to the signing pass. | F-4 |
+| R-23 | One record of step state (added 2026-11-18, from the Phase 2b close-out review). A step's state lives in the issue-comment journal, the ledger (11 record kinds, 170 records for Phase 2b's 8 steps), the labels, the state cache, the verify records and the doc's Status block. They drift: the controller prints `repaired #150: hold-projection` two or three times per run. Keep the journal and the ledger as the only written records; derive the labels, the cache and the Status fields from them on read, or drop them. | Phase 2b close-out |
+| R-24 | Red-first only where it proves something (added 2026-11-18, from the Phase 2b close-out review). Red-first runs on every step and roughly doubles verify time. It broke on a resumed step (#154) and needed its own fix (h-7 step 5), and it proves something only when a step adds a regression test. Make it opt-in per step: a step that adds a regression test names its red-first command, and other steps say `none`. | Phase 2b close-out |
 
 ### Expected effect
 
@@ -371,7 +373,7 @@ One cost follows from the R-4 correction: a clean worktree has no installed depe
 - [ ] `docs/inprogress/feature-role-signing.md` — role-signed commits, part 1 of the signing follow-up (Strict). Drafted 2026-11-15; awaiting review. Runs after Phase 2. Part 2 is R-22 in Phase 4.
 - [ ] `docs/inprogress/feature-station-hardening.md` — Phase 2b (Strict). Part A drafted 2026-11-17 from the C-6 and C-7 controller runs; covers P-1 to P-7, plus T-1, T-3 and T-4 (controller group) moved in from Phase 3 on 2026-11-17. Brief drafted 2026-11-17 (steps h-1 to h-8); awaiting approval. Phase 2 has merged.
 - [ ] `docs/inprogress/feature-test-streamlining.md` — Phase 3 (Strict). Part A drafted 2026-11-17; covers T-1 to T-8 and R-15; T-1, T-3 and T-4 (controller group) moved to Phase 2b on 2026-11-17. Brief not drafted. Runs after Phase 2b.
-- [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 4 (Strict; R-14 is a public compatibility change). Not drafted. Covers R-12, R-13, R-14a, R-14b, R-16, R-17 and R-22.
+- [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 4 (Strict; R-14 is a public compatibility change). Not drafted. Covers R-12, R-13, R-14a, R-14b, R-16, R-17, R-22, R-23 and R-24.
 
 ## Sources
 
