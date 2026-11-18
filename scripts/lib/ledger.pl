@@ -114,6 +114,10 @@ sub validate {
   member($k,qw(intent session station verify decision handoff salvage end hold clear ship takeover)) or fail('unknown record kind');
   exists($r->{plan}) && ($r->{plan}//'') ne $plan and fail('record belongs to another plan');
   !exists($r->{orphan}) || JSON::PP::is_bool($r->{orphan}) or fail('invalid unowned salvage flag');
+  if (exists($r->{rebaseline})) {
+    ($k eq 'clear' && JSON::PP::is_bool($r->{rebaseline})) ||
+      ($k eq 'salvage' && hold_id($r->{rebaseline})) or fail('invalid rebaseline');
+  }
   my $orphan=$k eq 'salvage' && $r->{orphan};
   if ($orphan) { ($r->{run}//'') =~ m{^\Q$plan\E/unowned/[a-f0-9]{24}$} && !defined($r->{chain}) or fail('invalid unowned salvage'); }
   run_parts($r->{run},$plan) if !$orphan && $k =~ /^(intent|session|station|verify|decision|handoff|salvage)$/;

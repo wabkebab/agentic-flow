@@ -26,10 +26,12 @@ hold_replay() { # normalized comments on stdin; plan -> open authorized markers
             if any(.holds[];.id==$h.id) then . else .holds+=[$h] end
           end
         elif ($line|startswith("agentic-flow-hold-clear: id=")) then
-          ($line|ltrimstr("agentic-flow-hold-clear: id=")) as $id |
-          if any(.holds[];.id==$id) then .cleared+=[$id] else . end
+          ([try ($line|capture("^agentic-flow-hold-clear: id=(?<id>[a-z0-9][a-z0-9._-]*/hold/[1-9][0-9]{0,5})(?<flag>; rebaseline=true)?$"))]|first) as $clear |
+          if $clear!=null and any(.holds[];.id==$clear.id) and all(.cleared[];.id!=$clear.id)
+          then .cleared+=[{id:$clear.id,rebaseline:($clear.flag=="; rebaseline=true")}] else . end
         else . end
-      end) | . as $s | [.holds[]|. + {cleared:(.id as $id|($s.cleared|index($id))!=null)}|select($mode=="all" or (.cleared|not))]'
+      end) | . as $s | [.holds[]|.id as $id|([$s.cleared[]|select(.id==$id)]|first) as $clear |
+        . + {cleared:($clear!=null),rebaseline:($clear.rebaseline//false)}|select($mode=="all" or (.cleared|not))]'
 }
 
 hold_snapshot() { # remote issue JSON -> remote and local-only open holds
@@ -73,8 +75,8 @@ hold_record() { # plan id issue reason run comment_id; imports journal holds bef
   fi
 }
 
-hold_transition() { # affected issue event reason run hold-id note
-  local issue=$1 event=$2 reason=$3 run=$4 id=$5 note=$6 tracker holds match n file="$HANDOFF_TMP/hold-comment" records
+hold_transition() { # affected issue event reason run hold-id note [rebaseline]
+  local issue=$1 event=$2 reason=$3 run=$4 id=$5 note=$6 rebaseline=${7:-false} tracker holds match n file="$HANDOFF_TMP/hold-comment" records marker=''
   handoff_plan_read || return $?
   tracker=$HANDOFF_TRACKER
   if [ -z "$tracker" ]; then
@@ -129,13 +131,19 @@ hold_transition() { # affected issue event reason run hold-id note
       fi
     fi
     handoff_identity approver || return 5
-    printf 'agentic-flow-hold-clear: id=%s\n%s\n' "$id" "$note" > "$file"
-    if [ "$(printf '%s' "$match" | jq -r '.cleared//false')" = false ]; then handoff_comment "$tracker" "$file" || return $?; fi
+    if [ "$(printf '%s' "$match" | jq -r '.cleared//false')" = true ]; then
+      rebaseline=$(printf '%s' "$match" | jq -r '.rebaseline//false')
+    else
+      [ "$rebaseline" = false ] || marker='; rebaseline=true'
+      printf 'agentic-flow-hold-clear: id=%s%s\n%s\n' "$id" "$marker" "$note" > "$file"
+      handoff_comment "$tracker" "$file" || return $?
+      handoff_fault after-hold-clear-post || return 5
+    fi
     hold_record "$HANDOFF_PLAN" "$id" "$(printf '%s' "$match" | jq .issue)" "$(printf '%s' "$match" | jq -r .reason)" "$(printf '%s' "$match" | jq -r .run)" "$(printf '%s' "$match" | jq -r .comment_id)" || return 5
     if [ "${HANDOFF_LEDGER_UNAVAILABLE:-false}" = true ]; then records='[]'; else records=$(ledger_read "$HANDOFF_PLAN") || return 5; fi
     if ! printf '%s' "$records" | jq -e --arg id "$id" 'any(.[];.kind=="clear" and .hold==$id)' >/dev/null; then
-      jq -n --arg plan "$HANDOFF_PLAN" --arg id "$id" --arg by "$HANDOFF_LOGIN" --arg note "$note" '
-        {v:1,kind:"clear",plan:$plan,hold:$id,by:$by,note:$note,at:(now|floor)}' > "$HANDOFF_TMP/clear-record"
+      jq -n --arg plan "$HANDOFF_PLAN" --arg id "$id" --arg by "$HANDOFF_LOGIN" --arg note "$note" --argjson rebaseline "$rebaseline" '
+        {v:1,kind:"clear",plan:$plan,hold:$id,by:$by,note:$note,rebaseline:$rebaseline,at:(now|floor)}' > "$HANDOFF_TMP/clear-record"
       ledger_clear "$HANDOFF_PLAN" "$HANDOFF_TMP/clear-record" || return 5
     fi
   fi

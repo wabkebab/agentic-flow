@@ -395,9 +395,16 @@ andon (C-3, C-4)   two mechanisms; the affected issue's journal state picks one
     approver identity absent on this machine: no comment; a ledger `hold` with
       comment_id null, the desktop notification, and exit 10 naming the command to
       run where the identity exists
-  agentic-flow hold clear <doc> <hold-id> [--note <text>]   human only; hook-blocked
+  agentic-flow hold clear <doc> <hold-id> [--rebaseline] [--note <text>]   human only; hook-blocked
     for agents. Posts the clear and a ledger `clear`. Clearing does not repair the
     cause: the next reconcile re-checks it and raises a new hold if it persists.
+    With --rebaseline, the authorized clear carries `; rebaseline=true`. The next
+    reconcile first saves an immutable salvage of the current HEAD, index and
+    worktree, then adopts it as the salvage baseline. Use this after committing
+    a fix on the plan branch during pending salvage recovery; no reset is needed.
+    The clear id names the new snapshot, so journal import on another machine
+    and a crash before its ledger append replay it once. A later edit requires
+    another explicit clear; retrying a plain clear cannot upgrade it to flagged.
     A reopened approved step is never re-executed by the controller: the human
     closes it again, or re-plans it as a new step through `approve`.
   notify, both mechanisms: the comment ends with "@<owner> needs a decision: <reason>"

@@ -147,11 +147,12 @@ controller_holds() { # import authorized remote clears, including a crash before
       if [ "$(printf '%s' "$item" | jq .cleared)" = true ]; then
         records=$(ledger_read "$CT_PLAN") || return 5
         if ! printf '%s' "$records" | jq -e --arg id "$id" 'any(.[];.kind=="clear" and .hold==$id)' >/dev/null; then
-          jq -n --arg plan "$CT_PLAN" --arg id "$id" '{v:1,kind:"clear",plan:$plan,hold:$id,by:"journal",note:"Recovered authorized clear",at:(now|floor)}' > "$CT_TMP/record"
+          jq -n --arg plan "$CT_PLAN" --arg id "$id" --argjson rebaseline "$(printf '%s' "$item" | jq '.rebaseline//false')" '{v:1,kind:"clear",plan:$plan,hold:$id,by:"journal",note:"Recovered authorized clear",rebaseline:$rebaseline,at:(now|floor)}' > "$CT_TMP/record"
           ledger_clear "$CT_PLAN" "$CT_TMP/record" >/dev/null || return 5
         fi
       fi
     done < <(printf '%s' "$history" | jq -c '.[]')
+    CT_RECORDS=$(ledger_read "$CT_PLAN") || return 5
   fi
   CT_HOLDS=$(hold_snapshot "$HANDOFF_ISSUE") || return 5
 }
@@ -227,7 +228,7 @@ controller_preserve_divergence() { # Never overwrite the owning run's immutable 
   CT_OWNERSHIP=$(printf '%s' "$saved" | jq --arg run "$run" '{run:$run,ref,paths,restore_required:false}')
 }
 controller_worktree() { # Salvage before any repair; reconciliation never restores it.
-  local actual common branch owner run chain recorded snapshot saved count row result orphan=false hold_run=none
+  local actual common branch owner run chain recorded snapshot saved count row result orphan=false hold_run=none rebaselines clear salvage_run
   CT_WORKTREE="${AGENTIC_WORKTREE_ROOT:-$CT_COMMON/agentic-flow/worktrees}/$CT_PLAN"
   CT_CONTEXT='{}' CT_OWNERSHIP=null
   [ -e "$CT_WORKTREE" ] || return 0
@@ -257,7 +258,10 @@ controller_worktree() { # Salvage before any repair; reconciliation never restor
     fi
     CT_CONTEXT=$(printf '%s' "$CT_CONTEXT" | jq --arg run "$run" --argjson dirty "$(printf '%s' "$snapshot" | jq .dirty)" --argjson commit "$result" '.+{($run):{dirty:$dirty,commit:$commit}}')
   done < <(printf '%s' "$CT_RECORDS" | jq -c --slurpfile chains "$CT_TMP/chains" '$chains[0] as $chains | [$chains[]|select(.head!=null)|.head] as $heads|.[]|select(.kind=="intent" and (.run as $run|$heads|index($run))!=null)')
-  [ "$(printf '%s' "$snapshot" | jq .dirty)" = true ] || return 0
+  rebaselines=$(printf '%s' "$CT_RECORDS" | jq -c '
+    [.[]|select(.kind=="salvage")|.rebaseline//empty] as $saved |
+    [.[]|select(.kind=="clear" and .rebaseline==true)|.hold|select(. as $id|($saved|index($id))==null)]') || return 5
+  [ "$(printf '%s' "$snapshot" | jq .dirty)" = true ] || [ "$rebaselines" != '[]' ] || return 0
   printf '%s\n' "$CT_CONTEXT" > "$CT_TMP/context"
   if [ "$HANDOFF_LEDGER_UNAVAILABLE" = true ]; then CT_CHAINS='[]'; else CT_CHAINS=$(ledger_chains "$CT_PLAN" "$CT_TMP/context") || return 5; fi
   printf '%s\n' "$CT_RECORDS" > "$CT_TMP/records"
@@ -287,6 +291,20 @@ controller_worktree() { # Salvage before any repair; reconciliation never restor
   else run=$(printf '%s' "$owner" | jq -r .run); chain=$(printf '%s' "$owner" | jq -r .chain); fi
   [ "$owner" = null ] || hold_run=$run
   printf '%s\n' "$snapshot" > "$CT_TMP/snapshot"
+  # A clear is a one-shot authorization. Its id, rather than this controller's
+  # invocation id, names the immutable ref, so a crash before the ledger append
+  # recovers exactly that snapshot. Save it before adopting its HEAD/trees.
+  while IFS= read -r clear; do
+    salvage_run="$CT_PLAN/unowned/$(printf '%s' "$clear" | shasum -a 256 | cut -c1-24)"
+    saved=$(perl "$CONTROLLER_RECOVERY" salvage "$CT_WORKTREE" "$salvage_run" "$CT_TMP/snapshot") || return 9
+    controller_fault after-rebaseline-ref || return $?
+    [ "$owner" != null ] || run=$salvage_run
+    printf '%s' "$saved" | jq --arg run "$run" --arg chain "$chain" --argjson orphan "$orphan" --arg clear "$clear" '
+      .+{v:1,kind:"salvage",run:$run,chain:(if $chain=="null" then null else $chain end),orphan:$orphan,rebaseline:$clear,at:(now|floor)}|del(.dirty)' > "$CT_TMP/record"
+    controller_record salvage || return 5
+    CT_RECORDS=$(ledger_read "$CT_PLAN") || return 5
+  done < <(printf '%s' "$rebaselines" | jq -r '.[]')
+  [ "$(printf '%s' "$snapshot" | jq .dirty)" = true ] || return 0
   recorded=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '[.[]|select(.kind=="salvage" and .run==$run)]|last//null')
   if [ "$recorded" != null ]; then
     if ! jq -en --argjson old "$recorded" --argjson now "$snapshot" '$old.head==$now.head and $old.index_tree==$now.index_tree and $old.worktree_tree==$now.worktree_tree' >/dev/null; then
@@ -311,6 +329,9 @@ controller_worktree() { # Salvage before any repair; reconciliation never restor
   CT_OWNERSHIP=$(printf '%s' "$saved" | jq --arg run "$run" '{run:$run,ref,paths,restore_required:false}')
   [ "$CT_SALVAGE_ONLY" = false ] || return 0
   if [ "$owner" = null ]; then
+    # The approver explicitly adopted this unowned snapshot. New edits will
+    # need a new clear, but replaying this baseline must not raise another hold.
+    [ "$(printf '%s' "$saved" | jq -r '.rebaseline//empty')" = '' ] || return 0
     [ "$(printf '%s' "$CT_HOLDS" | jq length)" -eq 0 ] || return 0
     controller_hold "$CT_TRACKER" unexplained-worktree-changes "Unowned edits saved at $(printf '%s' "$saved" | jq -r .ref): $(printf '%s' "$saved" | jq -c '[.paths[:20][]|{path:(.path[0:200]),status}]') (full paths are in the salvage record)" || return $?
     return 0
@@ -527,7 +548,7 @@ controller_verify() {
   # intent base still governs ownership and whether the station advanced HEAD.
   red_base=$(printf '%s' "$CT_RECORDS" | jq -er --argjson intent "$intent" '
     [.[]|select(.kind=="intent" and .station=="executor" and
-      .issue==$intent.issue and .step==$intent.step)]|first|.base_head // empty') || return 5
+      .plan==$intent.plan and .issue==$intent.issue and .step==$intent.step)]|first|.base_head // empty') || return 5
   selected=$(printf '%s' "$CT_SPEC" | jq -c --arg s "$(printf '%s' "$intent" | jq -r .step)" '.steps[]|select(.id==$s)') || return 5
   command_plan=$(verify_record_plan "$selected") || return 5
   if key=$(cd "$CT_WORKTREE" && verify_record_key "$head" "$CT_DOC" "$(printf '%s' "$intent" | jq -r .step)" "$red_base" "$command_plan") &&

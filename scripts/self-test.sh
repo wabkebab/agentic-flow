@@ -241,7 +241,9 @@ controller_reuse_tests() (
     {kind:"intent",run:"fixture/1/0/reviewer/1/1",issue:1,station:"reviewer",step:"alpha",base_head:$resumed_base},
     {kind:"intent",run:"fixture/1/0/executor/1/1",issue:1,station:"executor",step:"alpha",base_head:$base},
     {kind:"intent",run:$run,issue:1,station:"executor",step:"alpha",base_head:$resumed_base},
-    {kind:"station",run:$run,result:{outcome:"submitted",head:$head}}]')
+    {kind:"station",run:$run,result:{outcome:"submitted",head:$head}}] |
+    map(if .kind=="intent" then .+{plan:"fixture"} else . end) |
+    [{kind:"intent",plan:"foreign",run:"foreign/1/0/executor/1/1",issue:1,station:"executor",step:"alpha",base_head:$resumed_base}] + .')
   CT_REPORT='{"issues":[{"number":1}]}'
   plan=$(verify_record_plan "$(printf '%s' "$CT_SPEC" | jq -c '.steps[0]')")
   key=$(cd "$fixture" && verify_record_key "$head" "$CT_DOC" alpha "$base" "$plan") || fail 'controller cache key failed'
@@ -278,6 +280,10 @@ VERIFY_STUB
   controller_verify "$verify_run" || fail 'controller failed record path failed'
   [ -f "$fixture/verifier-launched" ] || fail 'controller reused failed record'
   printf '%s' "$recorded_verification" | jq -e '.status=="red" and .reused==false' >/dev/null || fail 'controller fallback not recorded'
+  # With no earlier attempt of this plan/step, its own base remains authoritative.
+  CT_RECORDS=$(printf '%s' "$CT_RECORDS" | jq --arg run "$verify_run" '[.[]|select(.kind!="intent" or .plan!="fixture" or .issue!=1 or .station!="executor" or .run==$run)]')
+  controller_verify "$verify_run" || fail 'first attempt verification failed'
+  [ "$(sed -n '/^--red-base$/{n;p;}' "$fixture/verifier-args")" = "$resumed_base" ] || fail 'first attempt borrowed another plan base'
 )
 
 cost_count() { # <event-file> <event>

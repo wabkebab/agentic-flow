@@ -260,7 +260,7 @@ handoff_write_cache() { # common-dir issue-numbers; shared by handoff and contro
 handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   set +x
   local requested_return='' HANDOFF_LABELS_ONLY=false
-  local number=${1:-} event=${2:-} role='' head=none after='' body_file='' json=false check=false project_only=false reason='' run=none hold_id=''
+  local number=${1:-} event=${2:-} role='' head=none after='' body_file='' json=false check=false project_only=false reason='' run=none hold_id='' rebaseline=false
   [[ "$number" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$#" -ge 2 ] || { handoff_error 'usage: handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]'; return 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -270,6 +270,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
         case "$1" in --return) requested_return=$2 ;; --reason) reason=$2 ;; --run) run=$2 ;; --hold-id) hold_id=$2 ;; --as) role=$2 ;; --head) head=$2 ;; --after) after=$2 ;; --body-file) body_file=$2 ;; esac
         shift 2 ;;
       --check) check=true; shift ;;
+      --rebaseline) rebaseline=true; shift ;;
       --labels-only) HANDOFF_LABELS_ONLY=true; project_only=true; shift ;;
       --project-only) project_only=true; shift ;;
       --json) json=true; shift ;;
@@ -278,6 +279,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   done
   case "$event" in submit|bounce|resume|approve|notify|close|ask|hold|hold-clear) [ "$json" = false ] && [ -n "$role" ] || return 2 ;; reconcile) [ -z "$role" ] && [ "$head" = none ] && [ -z "$after" ] && [ -z "$body_file" ] || return 2 ;; *) return 2 ;; esac
   if [ "$check" = true ] || [ "$project_only" = true ]; then [ "$event" = reconcile ] || return 2; fi
+  [ "$rebaseline" = false ] || [ "$event" = hold-clear ] || return 2
   case "$event" in
     hold) [ "$head" = none ] && [ -z "$after$hold_id$requested_return" ] || return 2 ;;
     hold-clear) [ "$head" = none ] && [ -z "$after$reason$requested_return" ] && [ "$run" = none ] || return 2 ;;
@@ -341,7 +343,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   if [ "$event" = hold ] || [ "$event" = hold-clear ]; then
     [ "$role" = approver ] || return 3
     status=0
-    hold_transition "$number" "$event" "$reason" "$run" "$hold_id" "$note" || status=$?
+    hold_transition "$number" "$event" "$reason" "$run" "$hold_id" "$note" "$rebaseline" || status=$?
     if [ "$status" -ne 0 ]; then
       [ "$status" -ne 10 ] || hold_cache "$common" || return 5
       return "$status"

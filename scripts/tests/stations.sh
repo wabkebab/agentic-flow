@@ -471,11 +471,15 @@ STATION_LOGIN=plan station_run 0 1 hold --as approver --reason reopened --body-f
 [ "$C3_HOLD_COUNT" = "$(station_count 2)" ] || fail 'duplicate hold posted'
 jq -e 'any(.labels.nodes[];.name=="needs-human") and (.comments.nodes[-1].body|endswith("@owner needs a decision: reopened"))' "$STATION_STATE/2.json" >/dev/null || fail 'hold omitted projection/mention'
 C3_HOLD_ID=$(jq -r '.comments.nodes[-1].body|split("; ")[1]|ltrimstr("id=")' "$STATION_STATE/2.json")
-jq --arg id "$C3_HOLD_ID" '.comments.nodes += [{id:"fake-clear",fullDatabaseId:91,author:{login:"stranger",__typename:"User"},body:("agentic-flow-hold-clear: id="+$id),createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' "$STATION_STATE/2.json" > "$STATION_STATE/next"
+jq --arg id "$C3_HOLD_ID" '.comments.nodes += [{id:"fake-clear",fullDatabaseId:91,author:{login:"stranger",__typename:"User"},body:("agentic-flow-hold-clear: id="+$id+"; rebaseline=true"),createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' "$STATION_STATE/2.json" > "$STATION_STATE/next"
 mv "$STATION_STATE/next" "$STATION_STATE/2.json"
 station_run 0 2 reconcile
 jq -e 'any(.labels.nodes[];.name=="needs-human")' "$STATION_STATE/2.json" >/dev/null || fail 'foreign clear accepted'
-STATION_LOGIN=plan station_run 0 2 hold-clear --as approver --hold-id "$C3_HOLD_ID" --body-file "$TMP/c3-question"
+STATION_LOGIN=plan station_run 2 1 hold --as approver --reason reopened --rebaseline
+STATION_LOGIN=plan station_run 2 1 resume --as approver --rebaseline
+STATION_LOGIN=plan station_run 0 2 hold-clear --as approver --hold-id "$C3_HOLD_ID" --body-file "$TMP/c3-question" --rebaseline
+jq -e '.comments.nodes[-1].body|startswith("agentic-flow-hold-clear: id=" ) and contains("; rebaseline=true\n")' "$STATION_STATE/2.json" >/dev/null || fail 'clear omitted rebaseline marker'
+jq -s -e 'any(.[];.kind=="clear" and .rebaseline==true)' "$STATION_FIX/project/.git/agentic-flow/ledger/fixture.jsonl" >/dev/null || fail 'clear lost rebaseline in ledger'
 jq -e 'all(.labels.nodes[];.name!="needs-human")' "$STATION_STATE/2.json" >/dev/null || fail 'clear left needs-human'
 [ "$(jq length "$STATION_FIX/project/.git/agentic-flow/state/fixture.holds.json")" = 0 ] || fail 'clear left cached hold'
 # A clear interrupted after posting is replayable and does not post twice.
@@ -492,6 +496,11 @@ grep -q 'Open hold: .*identity-missing' "$TMP/c3-alerts" || fail 'local hold mis
 STATION_LOGIN=plan station_run 0 1 hold --as approver --reason identity-missing
 C3_LOCAL_HOLD=$(jq -r '.comments.nodes[-1].body|split("; ")[1]|ltrimstr("id=")' "$STATION_STATE/2.json")
 STATION_LOGIN=plan station_run 0 2 hold-clear --as approver --hold-id "$C3_LOCAL_HOLD"
+jq -s -e '[.[]|select(.kind=="clear")]|last|(.rebaseline//false)==false' "$STATION_FIX/project/.git/agentic-flow/ledger/fixture.jsonl" >/dev/null || fail 'plain clear requested rebaseline'
+C3_CLEAR_COUNT=$(station_count 2)
+STATION_LOGIN=plan station_run 0 2 hold-clear --as approver --hold-id "$C3_LOCAL_HOLD" --rebaseline
+[ "$C3_CLEAR_COUNT" = "$(station_count 2)" ] || fail 'clear retry upgraded plain marker'
+jq -s -e '[.[]|select(.kind=="clear")]|last|.rebaseline==false' "$STATION_FIX/project/.git/agentic-flow/ledger/fixture.jsonl" >/dev/null || fail 'clear retry upgraded plain ledger clear'
 [ "$(jq length "$STATION_FIX/project/.git/agentic-flow/state/fixture.holds.json")" = 0 ] || fail 'local hold did not clear'
 # Reset only C-3 fixtures; the original Phase 1 assertions below run unchanged.
 station_issue 1 step:alpha

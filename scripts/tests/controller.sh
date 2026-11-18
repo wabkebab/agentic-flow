@@ -2096,6 +2096,57 @@ NOTIFY
   divergence_ref=$(jq -r .ownership.ref "$c4/out")
   [ "$(git -C "$project" show "$divergence_ref:b")" = 'changed again' ] || fail 'divergent edits were not durably salvaged'
   [ "$(ledger_generation recovery 1 0 executor)" = 2 ] || fail 'held chain did not advance generation'
+  # Scenario 20: a plain clear still holds a changed owned salvage. Only an
+  # authorized flagged clear may adopt a new HEAD, preserving all dirty bytes.
+  c4_reset; c4_intent executor 0 1 initial; c4_station ask ''
+  printf 'question edits\n' > "$wt/b"; c4_run 10
+  printf 'operator fix\n' > "$wt/a"; git -C "$wt" add a
+  git -C "$wt" commit -qm 'Fix on plan branch'
+  local fixed_head rebaseline_ref rebaseline_commit salvage_count original_salvage
+  original_salvage=$(git -C "$wt" rev-parse "refs/agentic-flow/salvage/$run")
+  fixed_head=$(git -C "$wt" rev-parse HEAD)
+  c4_run 10
+  ref=$(jq -r '.holds[]|select(.reason=="worktree-changed-after-salvage")|.id' "$c4/out")
+  c4_handoff 2 hold-clear --as approver --hold-id "$ref"
+  c4_run 10
+  jq -e '.raised|any(.reason=="worktree-changed-after-salvage")' "$c4/out" >/dev/null || fail 'plain clear rebaselined salvage'
+  ref=$(jq -r '.holds[]|select(.reason=="worktree-changed-after-salvage")|.id' "$c4/out")
+  jq --arg id "$ref" '.comments.nodes += [{id:"forged-clear",fullDatabaseId:90,author:{login:"stranger",__typename:"User"},body:("agentic-flow-hold-clear: id="+$id+"; rebaseline=true"),createdAt:(now|todateiso8601),lastEditedAt:null}]' "$state/issue-2.json" > "$state/next"
+  mv "$state/next" "$state/issue-2.json"
+  c4_run 10
+  ledger_read recovery | jq -e 'all(.[];.rebaseline!=true)' >/dev/null || fail 'unauthorized clear rebaselined'
+  # Post the clear, then lose its local append: another host must import the flag.
+  AGENTIC_HANDOFF_TESTING=1 AGENTIC_HANDOFF_FAULT=after-hold-clear-post c4_handoff 2 hold-clear --as approver --hold-id "$ref" --rebaseline && fail 'clear post fault did not fire'
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-rebaseline-ref c4_run 5
+  rebaseline_ref="refs/agentic-flow/salvage/recovery/unowned/$(printf '%s' "$ref" | shasum -a 256 | cut -c1-24)"
+  rebaseline_commit=$(git -C "$wt" rev-parse "$rebaseline_ref")
+  ledger_read recovery | jq -e --arg id "$ref" 'any(.[];.kind=="clear" and .hold==$id and .rebaseline==true) and all(.[];.kind!="salvage" or .rebaseline!=$id)' >/dev/null || fail 'clear import or crash boundary lost'
+  c4_run 10 # The executor question still needs its ordinary human resume.
+  ledger_read recovery | jq -e --arg id "$ref" --arg head "$fixed_head" '[.[]|select(.kind=="salvage" and .rebaseline==$id)]|length==1 and .[0].head==$head' >/dev/null || fail 'rebaseline was not recorded once at new HEAD'
+  [ "$(git -C "$wt" rev-parse "$rebaseline_ref")" = "$rebaseline_commit" ] || fail 'replay duplicated salvage ref'
+  [ "$(git -C "$wt" show "$rebaseline_ref:b")" = 'question edits' ] || fail 'rebaseline lost dirty edits'
+  salvage_count=$(ledger_read recovery | jq '[.[]|select(.kind=="salvage")]|length')
+  printf 'Resolved\n' > "$c4/answer"; c4_handoff 1 resume --as approver --body-file "$c4/answer"
+  c4_run 0; c4_run 0
+  jq -e '.raised==[] and .holds==[]' "$c4/out" >/dev/null || fail 'rebaseline immediately raised hold again'
+  [ "$(ledger_read recovery | jq '[.[]|select(.kind=="salvage")]|length')" = "$salvage_count" ] || fail 'rebaseline replay duplicated ledger salvage'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$fixed_head" ] && [ "$(cat "$wt/b")" = 'question edits' ] || fail 'rebaseline changed worktree'
+  [ "$(git -C "$wt" rev-parse "refs/agentic-flow/salvage/$run")" = "$original_salvage" ] || fail 'rebaseline overwrote original salvage'
+  # An approver can also adopt unowned work, including a now-clean commit.
+  local rebaseline_state
+  for rebaseline_state in dirty clean; do
+    c4_reset
+    printf 'unowned edits\n' > "$wt/b"; c4_run 10
+    printf 'operator fix\n' > "$wt/a"; git -C "$wt" add a
+    [ "$rebaseline_state" != clean ] || git -C "$wt" add b
+    git -C "$wt" commit -qm 'Fix unowned salvage'
+    fixed_head=$(git -C "$wt" rev-parse HEAD)
+    ref=$(jq -r '.holds[0].id' "$c4/out")
+    c4_handoff 2 hold-clear --as approver --hold-id "$ref" --rebaseline
+    c4_run 0; c4_run 0
+    jq -e '.holds==[] and .raised==[]' "$c4/out" >/dev/null || fail 'unowned rebaseline re-raised hold'
+    ledger_read recovery | jq -e --arg id "$ref" --arg head "$fixed_head" '[.[]|select(.kind=="salvage" and .rebaseline==$id)]|length==1 and .[0].head==$head' >/dev/null || fail 'unowned/clean rebaseline not saved once'
+  done
   c4_reset; c4_intent executor 0 1 initial
   jq -n --arg run "$run" '{v:1,kind:"session",run:$run,session:"recorded-codex-session",at:(now|floor)}' | c4_send session
   printf 'committed\n' > "$wt/a"; git -C "$wt" add a; git -C "$wt" commit -qm 'Implement first part. Fixes #1'
@@ -2337,6 +2388,36 @@ MODEL
     jq -e 'all(.comments.nodes[];(.body|contains("event=resume"))|not) and
       any(.comments.nodes[];.body|contains("event=submit; from=executing"))' "$state/issue-1.json" >/dev/null || fail 'infrastructure recovery needed journal resume'
   done
+  # A green step escalated before submit retains its FIRST intent's red base
+  # after a human resume, while the next executor diffs against the green HEAD.
+  local before_red_fixture=$head first_base first_green resumed_head
+  cat > "$project/scripts/step-regression.sh" <<'REGRESSION'
+#!/usr/bin/env bash
+grep -q '^implementation ' a || { echo 'self-test failed: implementation missing'; exit 1; }
+REGRESSION
+  printf '\nRED_FIRST_SIGNATURE := ^self-test failed:[[:space:]]\n' >> "$project/Makefile"
+  sed 's@\*\*Red-first:\*\* none@**Red-first:** `bash scripts/step-regression.sh` — scripts/step-regression.sh@' "$project/docs/inprogress/plan.md" > "$c4/doc"
+  cat "$c4/doc" > "$project/docs/inprogress/plan.md"
+  git -C "$project" add scripts/step-regression.sh Makefile docs/inprogress/plan.md
+  git -C "$project" commit -qm 'Add red-first recovery regression'
+  first_base=$(git -C "$project" rev-parse HEAD)
+  sed -E "s/(rev=)[a-f0-9]{40}/\1$first_base/" "$project/docs/inprogress/plan.md" > "$c4/doc"
+  cat "$c4/doc" > "$project/docs/inprogress/plan.md"
+  git -C "$project" add docs/inprogress/plan.md; git -C "$project" commit -qm 'Approve red-first recovery fixture'
+  head=$(git -C "$project" rev-parse HEAD); first_base=$head
+  c5_reset
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-verify c5_run 5 --once
+  first_green=$(git -C "$wt" rev-parse HEAD)
+  jq -e --arg base "$first_base" '.passed and .red_base==$base and .red_first[0].status=="red"' "$project/.git/agentic-flow/verify/$first_green.json" >/dev/null || fail 'first attempt red base changed'
+  printf 'Operator resolved\n' > "$c4/answer"
+  c4_handoff 1 ask --as executor --body-file "$c4/answer"
+  c4_handoff 1 resume --as approver --body-file "$c4/answer"
+  c5_run 0 --once
+  resumed_head=$(git -C "$wt" rev-parse HEAD)
+  jq -e --arg base "$first_base" '.passed and .red_base==$base and .red_first[0].status=="red"' "$project/.git/agentic-flow/verify/$resumed_head.json" >/dev/null || fail 'resumed attempt red-first used green implementation base'
+  ledger_read recovery | jq -e --arg base "$first_green" '[.[]|select(.kind=="intent" and .station=="executor")]|length==2 and .[1].base_head==$base and .[1].seq_before==2' >/dev/null || fail 'resume lost current diff base'
+  head=$before_red_fixture
+  git -C "$project" reset --hard -q "$head"
   # A live Claude retry preserves its id unless the launcher fingerprint changes.
   c5_reset; printf 'dirty\n' > "$state/mode"
   AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-station c5_run 5 --once
