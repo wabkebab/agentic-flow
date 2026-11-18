@@ -1,6 +1,77 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091,SC2153,SC2034 # ROOT comes from the sourcing test runner.
 # Sourced by self-test.sh. All credentials, GitHub state and faults are fixtures.
+# Track only this call's watchdogs, including the old watchdog's sleep child.
+# shellcheck disable=SC2016 # Perl code uses Perl variables, not shell expansion.
+review_bounded_tests() (
+  local fixture pid status real_perl real_sleep limit watchdog_path
+  fixture=$(mktemp -d "$TMP/review-bounded.XXXXXX")
+  real_perl=$(command -v perl)
+  real_sleep=$(command -v sleep)
+  unset AGENTIC_REVIEW_TIMEOUT
+  mkdir -p "$fixture/bin"
+  export REVIEW_TEST_FIXTURE="$fixture" REVIEW_TEST_PERL="$real_perl" REVIEW_TEST_SLEEP="$real_sleep"
+  cat > "$fixture/bin/perl" <<'PERL_WATCHDOG'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$REVIEW_TEST_FIXTURE/watchdogs"
+printf '%s\n' "$3" > "$REVIEW_TEST_FIXTURE/limit"
+exec "$REVIEW_TEST_PERL" "$@"
+PERL_WATCHDOG
+  cat > "$fixture/bin/sleep" <<'SLEEP_WATCHDOG'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$REVIEW_TEST_FIXTURE/watchdogs"
+exec "$REVIEW_TEST_SLEEP" "$@"
+SLEEP_WATCHDOG
+  chmod +x "$fixture/bin/perl" "$fixture/bin/sleep"
+  watchdog_path="$fixture/bin:$PATH"
+  . "$ROOT/scripts/lib/review-policy.sh"
+  # Clean up only recorded fixture PIDs even when a regression fails an assertion.
+  trap 'while read -r pid; do kill "$pid" 2>/dev/null || true; done < "$REVIEW_TEST_FIXTURE/watchdogs"' EXIT
+  : > "$fixture/watchdogs"
+  status=0
+  PATH="$watchdog_path" AGENTIC_REVIEW_TIMEOUT=1 review_bounded "$real_perl" -e '
+    open my $fh, ">", "$ENV{REVIEW_TEST_FIXTURE}/command" or die $!;
+    print {$fh} "$$\n"; close $fh;
+    sleep 3;
+  ' > "$fixture/out" 2> "$fixture/err" || status=$?
+  [ "$status" -gt 128 ] || fail 'review_bounded did not terminate an over-limit command'
+  pid=$(cat "$fixture/command")
+  kill -0 "$pid" 2>/dev/null && fail 'review_bounded left its timed-out command alive'
+  [ -s "$fixture/watchdogs" ] || fail 'review_bounded timeout watchdog was not observed'
+  while read -r pid; do
+    if kill -0 "$pid" 2>/dev/null; then fail 'review_bounded left a timeout watchdog alive'; fi
+  done < "$fixture/watchdogs"
+  : > "$fixture/watchdogs"
+  for limit in 0 -1 21 invalid; do
+    status=0
+    PATH="$watchdog_path" AGENTIC_REVIEW_TIMEOUT="$limit" review_bounded true 2> "$fixture/err" || status=$?
+    [ "$status" = 2 ] || fail 'review_bounded accepted an invalid timeout'
+  done
+  [ ! -s "$fixture/watchdogs" ] || fail 'review_bounded started a watchdog for invalid input'
+  PATH="$watchdog_path" review_bounded true || fail 'review_bounded true failed'
+  [ "$(cat "$fixture/limit")" = 20 ] || fail 'review_bounded default limit changed'
+  [ -s "$fixture/watchdogs" ] || fail 'review_bounded success watchdog was not observed'
+  while read -r pid; do
+    if kill -0 "$pid" 2>/dev/null; then fail 'review_bounded left a success watchdog alive'; fi
+  done < "$fixture/watchdogs"
+  : > "$fixture/watchdogs"
+  # Preserve the command's streams, arguments and ordinary nonzero exit status.
+  status=0
+  printf 'input\n' | PATH="$watchdog_path" review_bounded "$real_perl" -e \
+    'print STDERR "error\n"; print scalar <STDIN>, $ARGV[0]; exit 7' 'two words' \
+    > "$fixture/out" 2> "$fixture/err" || status=$?
+  [ "$status" = 7 ] && [ "$(cat "$fixture/out")" = "$(printf 'input\ntwo words')" ] && \
+    [ "$(cat "$fixture/err")" = error ] || fail 'review_bounded changed command I/O or status'
+  status=0
+  PATH="$watchdog_path" review_bounded "$fixture/missing-command" 2> "$fixture/err" || status=$?
+  [ "$status" = 127 ] || fail 'review_bounded changed command-not-found status'
+  while read -r pid; do
+    if kill -0 "$pid" 2>/dev/null; then fail 'review_bounded left a failed-command watchdog alive'; fi
+  done < "$fixture/watchdogs"
+  : > "$fixture/watchdogs"
+)
+review_bounded_tests
+
 grep -q "brief)" "$ROOT/scripts/agentic-flow" || fail 'brief command is missing'
 grep -q "close-out)" "$ROOT/scripts/agentic-flow" || fail 'close-out command is missing'
 grep -q "packet)" "$ROOT/scripts/agentic-flow" || fail 'packet command is missing'
