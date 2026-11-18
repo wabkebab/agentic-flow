@@ -386,6 +386,8 @@ controller_decide() { # Rule f: deterministic rendering from durable records onl
     [ "$action" != bounce ] || { printf 'bounce cap reached: ' > "$CT_TMP/bounce-cause"; cat "$CT_TMP/body" >> "$CT_TMP/bounce-cause"; mv "$CT_TMP/bounce-cause" "$CT_TMP/body"; }
     controller_diagnostic "$number" "$run" "$CT_TMP/body" > "$CT_TMP/diagnostic-body" || return 5
     mv "$CT_TMP/diagnostic-body" "$CT_TMP/body"
+  elif printf '%s' "$station" | jq -e '(.warnings//[]|length)>0' >/dev/null; then
+    printf '%s' "$station" | jq -r '"Warnings: " + (.warnings|join("; "))' >> "$CT_TMP/body"
   fi
   if [ "$action" = ask ] && ! printf '%s' "$row" | jq -e '.state=="executing" or .state=="reviewing"' >/dev/null; then
     controller_hold "$number" station-escalation "$(cat "$CT_TMP/body")" "$run" || return $?
@@ -585,19 +587,20 @@ controller_interrupt() {
   exit "$1"
 }
 controller_result_valid() {
-  jq -e --arg station "$1" '
-    type=="object" and (keys|sort)==(["v","station","outcome","head","summary","findings","question"]|sort) and
-    .v==1 and .station==$station and (.summary|type=="string" and length<=2000) and
-    (.question==null or (.question|type=="string" and length<=1200)) and
-    (.head==null or (.head|type=="string" and test("^[a-f0-9]{40}$"))) and
-    (.findings|type=="array" and length<=100 and all(.[];
-      type=="object" and (keys|sort)==(["severity","file","line","text"]|sort) and
-      (.severity=="P1" or .severity=="P2" or .severity=="P3") and
-      (.file|type=="string" and length<=4096) and (.text|type=="string" and length<=1200) and
-      (.line==null or (.line|type=="number" and floor==. and .>=1)))) and
-    (if .outcome=="ask" then (.question|type=="string" and length>0)
-     elif $station=="executor" then .outcome=="submitted" and .head!=null
-     else (.outcome=="approve" or (.outcome=="bounce" and (.findings|length)>0)) and .head!=null end)' "$2" >/dev/null 2>&1
+  local diagnostic
+  CONTROLLER_RESULT_REASON='cannot validate station result'
+  CONTROLLER_RESULT_WARNINGS='[]'
+  diagnostic=$(perl "$LEDGER_HELPER" - result-check "$1" "$2") || return 1
+  CONTROLLER_RESULT_REASON=$(printf '%s' "$diagnostic" | jq -r '.invalid_reason//""') || return 1
+  CONTROLLER_RESULT_WARNINGS=$(printf '%s' "$diagnostic" | jq -c .warnings) || return 1
+  [ -z "$CONTROLLER_RESULT_REASON" ]
+}
+controller_retry_context() { # pending run; evidence is included verbatim in the retry prompt
+  printf '\nRecovery: %s\n' "$1"
+  printf '%s\n' "$CT_RECORDS" | jq --arg run "$2" '
+    [.[]|select(.run==$run and (.kind=="station" or .kind=="verify"))|
+      if .kind=="station" then {invalid_reason,result:(.result|{outcome,head,summary})}
+      else {status,tail} end]'
 }
 controller_probe() { # station; once mode never auto-probes
   [ "$CT_UNATTENDED" = true ] || return 0
@@ -693,11 +696,7 @@ controller_dispatch() {
     chain=$(printf '%s' "$item" | jq -r .chain)
     nth=$(printf '%s' "$CT_RECORDS" | jq --arg chain "$chain" '[.[]|select(.kind=="intent" and .chain==$chain)]|length+1')
     base=$(printf '%s' "$old" | jq -r .base_head)
-    printf '\nRecovery: %s\n' "$pending" >> "$CT_TMP/packet"
-    printf '%s\n' "$CT_RECORDS" | jq --arg run "$replaces" '
-      [.[]|select(.run==$run and (.kind=="station" or .kind=="verify"))|
-        if .kind=="station" then {invalid_reason,result:(.result|{outcome,head,summary})}
-        else {status,tail} end]' >> "$CT_TMP/packet"
+    controller_retry_context "$pending" "$replaces" >> "$CT_TMP/packet"
   else
     gen=$(ledger_generation "$CT_PLAN" "$number" "$seq" "$station") || return 5
     chain="$CT_PLAN/$number/$seq/$station/$gen"
@@ -763,7 +762,7 @@ controller_dispatch() {
     if [ -n "$captured" ]; then launch_session_record "$captured" || return 5; fi
   fi
   if controller_result_valid "$station" "$CT_TMP/result"; then result=$(cat "$CT_TMP/result")
-  else invalid='malformed station result'; fi
+  else invalid=$CONTROLLER_RESULT_REASON; fi
   [ "$rc" -eq 0 ] || invalid="station exit $rc"
   snapshot=$(perl "$CONTROLLER_RECOVERY" snapshot "$CT_WORKTREE") || return 9
   if [ "$result" != null ] && [ "$(printf '%s' "$result" | jq -r .outcome)" = submitted ] && [ "$(printf '%s' "$snapshot" | jq .dirty)" = true ]; then invalid='uncommitted changes after submit'; fi
@@ -773,8 +772,8 @@ controller_dispatch() {
   if controller_prelaunch_failure "$rc" "$metadata" "$captured"; then
     invalid="pre-launch failure: exit $rc; seconds $(printf '%s' "$metadata" | jq .seconds)"
   fi
-  jq -n --arg run "$run" --argjson exit "$rc" --argjson meta "$metadata" --argjson result "$result" --arg invalid "$invalid" \
-    '{v:1,kind:"station",run:$run,exit:$exit,seconds:$meta.seconds,usage:$meta.usage,result:$result,invalid_reason:(if $invalid=="" then null else $invalid end),ended:(now|floor)}' > "$CT_TMP/record"
+  jq -n --arg run "$run" --argjson exit "$rc" --argjson meta "$metadata" --argjson result "$result" --arg invalid "$invalid" --argjson warnings "$CONTROLLER_RESULT_WARNINGS" \
+    '{v:1,kind:"station",run:$run,exit:$exit,seconds:$meta.seconds,usage:$meta.usage,result:$result,warnings:$warnings,invalid_reason:(if $invalid=="" then null else $invalid end),ended:(now|floor)}' > "$CT_TMP/record"
   controller_record station || return 5
   controller_store_output "$run" || return 5
   controller_fault after-station

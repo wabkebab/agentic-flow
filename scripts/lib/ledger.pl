@@ -92,20 +92,51 @@ sub sync_directories {
   }
   fail('ledger directory ancestry exceeds cap');
 }
+# The schema advertises advisory lengths; both durable and launch validation use
+# these hard bounds and preserve the original text. Return advisory warnings.
+sub result_keys {
+  my ($r,$label,@keys)=@_;
+  object($r) or fail("$label is not an object");
+  my %expected=map { $_=>1 } @keys;
+  my @missing=grep { !exists($r->{$_}) } @keys;
+  my $extra=grep { !$expected{$_} } keys %$r;
+  !@missing && !$extra or fail("$label keys (missing ".join(',',@missing)."; extra $extra)");
+}
+sub result_text {
+  my ($value,$label,$hard,$advisory,$warnings)=@_;
+  text($value) or fail("$label is not a string: ".result_value($value));
+  my $size=length($value);
+  $size<=$hard or fail("$label $size > $hard");
+  push @$warnings,"$label $size > $advisory" if $size>$advisory;
+}
+sub result_value { return substr($json->encode($_[0]),0,80); }
 sub result_valid {
-  my ($r,$station)=@_;
-  object($r) && integer($r->{v},1) && $r->{v}==1 && ($r->{station}//'') eq $station or fail('invalid station result');
-  member($r->{outcome},$station eq 'executor' ? qw(submitted ask) : qw(approve bounce ask)) or fail('invalid station outcome');
-  string($r->{summary},2000) or fail('invalid result summary');
-  if ($r->{outcome} eq 'ask') { string($r->{question},1200) && length($r->{question}) or fail('ask requires question'); }
-  else { sha($r->{head},40) or fail('result requires head'); }
-  if (exists($r->{findings})) {
-    ref($r->{findings}) eq 'ARRAY' && @{$r->{findings}}<=100 or fail('invalid findings');
-    for my $f (@{$r->{findings}}) {
-      object($f) && member($f->{severity},qw(P1 P2 P3)) && string($f->{file}) && string($f->{text},1200) && (!defined($f->{line}) || integer($f->{line},1)) or fail('invalid finding');
-    }
+  my ($r,$station)=@_; my @warnings;
+  result_keys($r,'result',qw(v station outcome head summary findings question));
+  integer($r->{v},1) && $r->{v}==1 or fail('v is not 1: '.result_value($r->{v}));
+  member($station,qw(executor reviewer)) && text($r->{station}) && $r->{station} eq $station
+    or fail("station is not $station: ".result_value($r->{station}));
+  member($r->{outcome},$station eq 'executor' ? qw(submitted ask) : qw(approve bounce ask))
+    or fail("outcome is invalid for $station: ".result_value($r->{outcome}));
+  result_text($r->{summary},'summary',8000,2000,\@warnings);
+  !defined($r->{question}) or result_text($r->{question},'question',4000,1200,\@warnings);
+  !defined($r->{head}) || (text($r->{head}) && length($r->{head})==40 && sha($r->{head},40))
+    or fail('head is not 40 hex characters ('.(text($r->{head}) ? 'length '.length($r->{head}) : 'type '.result_value($r->{head})).')');
+  if ($r->{outcome} eq 'ask') { text($r->{question}) && length($r->{question}) or fail('ask requires nonempty question (length 0 or null)'); }
+  else { defined($r->{head}) or fail('head is not 40 hex characters (null)'); }
+  ref($r->{findings}) eq 'ARRAY' or fail('findings is not an array');
+  my $count=@{$r->{findings}};
+  $count<=100 or fail("findings $count > 100");
+  for my $i (0..$count-1) {
+    my $f=$r->{findings}[$i]; my $label="findings[$i]";
+    result_keys($f,$label,qw(severity file line text));
+    member($f->{severity},qw(P1 P2 P3)) or fail("$label.severity is invalid: ".result_value($f->{severity}));
+    result_text($f->{file},"$label.file",4096,4096,\@warnings);
+    result_text($f->{text},"$label.text",4000,1200,\@warnings);
+    !defined($f->{line}) || integer($f->{line},1) or fail("$label.line is not a positive integer or null: ".result_value($f->{line}));
   }
-  $r->{outcome} ne 'bounce' || (ref($r->{findings}) eq 'ARRAY' && @{$r->{findings}}) or fail('bounce requires findings');
+  $r->{outcome} ne 'bounce' || $count or fail('bounce requires findings (count 0)');
+  return \@warnings;
 }
 sub validate {
   my ($r,$plan)=@_;
@@ -146,6 +177,7 @@ sub validate {
     for (qw(input output cost_usd)) {
       exists($r->{usage}{$_}) && (!defined($r->{usage}{$_}) || (number($r->{usage}{$_}) && $r->{usage}{$_}>=0 && $r->{usage}{$_}<=1e12 && ($_ eq 'cost_usd' || integer($r->{usage}{$_})))) or fail('invalid usage');
     }
+    !exists($r->{warnings}) || (ref($r->{warnings}) eq 'ARRAY' && @{$r->{warnings}}<=102 && !grep { !string($_,160) } @{$r->{warnings}}) or fail('invalid result warnings');
     !defined($r->{invalid_reason}) || (string($r->{invalid_reason},1200) && length($r->{invalid_reason})) or fail('invalid failure reason');
     !defined($r->{result}) || object($r->{result}) or fail('invalid result');
     defined($r->{result}) || defined($r->{invalid_reason}) or fail('missing result needs invalid_reason');
@@ -185,7 +217,7 @@ sub generation {
   my ($state,$prefix)=@_; return 1+($state->{generations}{$prefix}//0);
 }
 sub apply_record {
-  my ($state,$r,$plan)=@_; validate($r,$plan);
+  my ($state,$r,$plan,$writing)=@_; validate($r,$plan);
   my $k=$r->{kind}; my $id=$r->{run};
   if ($k eq 'salvage' && exists($r->{rebaseline})) {
     my $hold=$state->{holds}{$r->{rebaseline}};
@@ -233,7 +265,10 @@ sub apply_record {
       # Record captured ids before the station, including confirmation that
       # Claude actually started the caller-chosen session.
       if ($k eq 'session') { !$run->{station} or fail('session must precede station'); }
-      if ($k eq 'station' && defined($r->{result})) { result_valid($r->{result},$run->{intent}{station}); }
+      if ($k eq 'station') {
+        my $warnings=defined($r->{result}) ? result_valid($r->{result},$run->{intent}{station}) : [];
+        $r->{warnings}=$warnings if $writing; # Leave historical records without this field readable.
+      }
       if ($k eq 'verify') { !$run->{decision} && $run->{station} && !defined($run->{station}{invalid_reason}) && ($run->{station}{result}{outcome}//'') eq 'submitted' && $r->{head} eq $run->{station}{result}{head} or fail('verify requires submitted station/head before decision'); }
       if ($k eq 'decision') {
         $run->{station} || member($r->{action},qw(ask hold)) or fail('decision requires station');
@@ -398,10 +433,14 @@ sub diagnostic_note {
   my $retry=$cause =~ /^station-infrastructure:/
     ? "scripts/agentic-flow handoff $issue hold-clear --as approver --hold-id <hold-id>; then run the plan again"
     : "scripts/agentic-flow handoff $issue resume --as approver --body-file $answer";
+  my $warning_line=$station && @{$station->{warnings}//[]}
+    ? 'Warnings: '.join('; ',@{$station->{warnings}})."\n" : '';
   my $footer="Ledger: ".join("\n",@paths)."\nRetry: $retry\n";
   # Leave room for the transition/hold markers and owner mention added by handoff.
   my $budget=3200-length(encode('UTF-8',$header.$footer));
   $budget>=0 or fail('diagnostic identity exceeds comment budget');
+  $budget-=length(encode('UTF-8',$warning_line));
+  $budget=0 if $budget<0; # Advisory warnings cannot turn a verdict into a refusal.
   my $each=@sections ? int($budget/@sections) : 0; my $body='';
   for my $section (@sections) {
     my ($title,$text,$lines)=@$section; my @lines=split /\n/,$text; splice(@lines,0,@lines-$lines) if @lines>$lines;
@@ -412,7 +451,7 @@ sub diagnostic_note {
     my $per=@lines ? int(($remaining>0?$remaining:0)/@lines) : 0;
     $body.=$heading."[last $lines lines; bounded excerpt]\n".join("\n",map { length(encode('UTF-8',$_))<=$per ? $_ : ($per>=3 ? clip_text($_,$per-3).'...' : '') } @lines)."\n";
   }
-  print redact(encode('UTF-8',$header.$body.$footer));
+  print redact(encode('UTF-8',$header.$body.$warning_line.$footer));
 }
 sub store_body {
   my ($r,$plan)=@_; my $body=read_path($r->{body_file},$MAX_LINE);
@@ -441,7 +480,7 @@ sub append_record {
   -f $fh or fail('ledger must be a regular file');
   lock_file($fh,LOCK_EX); sysseek($fh,0,SEEK_SET); my $data=bounded_read($fh,$MAX_BYTES,'ledger too large');
   my ($state,$tail)=decode_ledger($data,$plan);
-  apply_record($state,$r,$plan); store_body($r,$plan) if $kind eq 'decision';
+  apply_record($state,$r,$plan,1); store_body($r,$plan) if $kind eq 'decision';
   if (length($tail)) { $r->{discarded_tail_sha256}=sha256_hex($tail); $r->{discarded_tail_bytes}=length($tail); }
   my $line=$json->encode($r); length($line)<=$MAX_LINE or fail('oversized ledger record');
   my $separator=length($tail) || (length($data) && $data!~/\n\z/) ? "\n" : '';
@@ -469,7 +508,7 @@ sub summaries {
       elsif ($r->{station} && ($r->{station}{invalid_reason}//'') =~ /^pre-launch failure/) { $pending='infrastructure'; }
       elsif ($r->{station} && $r->{station}{exit}==124) { $pending='decide'; $escalation='station timed out'; }
       elsif ($r->{station} && ($r->{station}{invalid_reason}//'') eq 'bad claimed head') { $pending='decide'; $escalation='bad claimed head'; }
-      elsif ($r->{station} && defined($r->{station}{invalid_reason})) { $pending=$invalid<2 ? 'resume-valid' : 'decide'; $escalation='malformed station result' if $invalid>=2; }
+      elsif ($r->{station} && defined($r->{station}{invalid_reason})) { $pending=$invalid<2 ? 'resume-valid' : 'decide'; $escalation='malformed station result: '.$r->{station}{invalid_reason} if $invalid>=2; }
       elsif ($r->{verify}) { $pending=$r->{verify}{status} eq 'red' && !$fixes ? 'fix' : 'decide'; $escalation='gate still red after fix' if $r->{verify}{status} eq 'red' && $fixes; }
       elsif ($r->{station}) { $pending=($r->{station}{result}{outcome}//'') eq 'submitted' ? 'verify' : 'decide'; }
       else {
@@ -638,6 +677,13 @@ my $ok=eval {
     my $bytes=encode('UTF-8',utf8_text(output_tail(@args)));
     if (length($bytes)>$args[1]) { $bytes=substr($bytes,-$args[1]); $bytes =~ s/^[\x80-\xbf]+//; }
     print $bytes;
+  }
+  elsif ($command eq 'result-check' && @args==2) {
+    my $warnings=[];
+    my $valid=eval { $warnings=result_valid(parse_json(read_path($args[1],$MAX_LINE)),$args[0]); 1; };
+    my $reason=$valid ? undef : ($@ || 'cannot validate result');
+    if (defined($reason)) { $reason =~ s/^ledger: //; $reason =~ s/\n\z//; $reason=substr($reason,0,1100); }
+    print $json->encode({invalid_reason=>$reason,warnings=>$valid ? $warnings : []}),"\n";
   }
   elsif ($command eq 'comment' && @args==1) { print bounded_comment($args[0]); }
   elsif ($command eq 'tails' && @args==4) { store_tails(@args); }

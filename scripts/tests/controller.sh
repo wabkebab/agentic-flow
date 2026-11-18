@@ -630,12 +630,12 @@ fi # scenario
 if should_run_scenario launch launch; then
 test_timing_begin block launch
 
-# Verdict bounds must agree at the schema, controller and durable-ledger edges.
+# Advisory verdict lengths warn; hard bounds and structural rules still refuse.
 (
   . "$ROOT/scripts/lib/controller.sh"
   verdict="$TMP/verdict-bounds.json"
   for field in summary question finding; do
-    limit=1200; [ "$field" != summary ] || limit=2000
+    limit=4000; [ "$field" != summary ] || limit=8000
     for size in "$((limit+1))" "$limit"; do
       jq -n --arg field "$field" --argjson size "$size" '{v:1,station:"reviewer",outcome:"ask",head:null,
         summary:(if $field=="summary" then "é"*$size else "fixture" end),
@@ -643,11 +643,45 @@ test_timing_begin block launch
         findings:(if $field=="finding" then [{severity:"P2",file:"a",line:1,text:("f"*$size)}] else [] end)}' > "$verdict"
       if [ "$size" -gt "$limit" ]; then
         controller_result_valid reviewer "$verdict" && fail "oversize $field accepted"
-      else controller_result_valid reviewer "$verdict" || fail "boundary $field refused"; fi
+        case "${CONTROLLER_RESULT_REASON:-}" in
+          *"$size > $limit"*) ;; *) fail "oversize $field reason lost measured bound" ;;
+        esac
+      else controller_result_valid reviewer "$verdict" || fail "hard boundary $field refused"; fi
     done
   done
+  jq -n '{v:1,station:"reviewer",outcome:"bounce",head:("a"*40),summary:("é"*2311),question:null,
+    findings:[{severity:"P2",file:"a",line:1,text:("f"*1500)}]}' > "$verdict"
+  cat "$verdict" > "$TMP/verdict-valid.json"
+  for mutation in '.head=("a"*44)' 'del(.question)' '.extra=true' '.station="executor"' '.outcome="submitted"' \
+    'del(.findings[0].severity)' 'del(.findings[0].file)' '.findings[0].extra=true' '.findings[0].line=0'; do
+    jq "$mutation" "$TMP/verdict-valid.json" > "$verdict"
+    controller_result_valid reviewer "$verdict" && fail "invalid verdict accepted: $mutation"
+    [ -n "$CONTROLLER_RESULT_REASON" ] || fail "invalid verdict reason missing: $mutation"
+    if [ "$mutation" = '.head=("a"*44)' ]; then
+      case "${CONTROLLER_RESULT_REASON:-}" in *'head is not 40 hex characters'*44*) ;; *) fail 'head refusal omitted rule or length' ;; esac
+    fi
+  done
+  cat "$TMP/verdict-valid.json" > "$verdict"
+  controller_result_valid reviewer "$verdict" || fail 'advisory overrun refused'
+  printf '%s' "$CONTROLLER_RESULT_WARNINGS" | jq -e '.==["summary 2311 > 2000","findings[0].text 1500 > 1200"]' >/dev/null || fail 'advisory warnings missing'
+  # Render from durable station evidence; retain all text and the bounce outcome.
+  CT_TMP="$TMP/verdict-render"; mkdir -p "$CT_TMP"
+  CT_REVIEWER_ESCALATE=''; CT_HOST=fixture
+  CT_RECORDS=$(jq -nc --slurpfile result "$verdict" --argjson warnings "$CONTROLLER_RESULT_WARNINGS" '
+    [{kind:"intent",run:"fixture",issue:1,station:"reviewer"},
+     {kind:"station",run:"fixture",result:$result[0],warnings:$warnings,invalid_reason:null}]')
+  CT_REPORT=$(jq -nc '{issues:[{number:1,replay:{submitted_head:("a"*40),bounces:0}}]}')
+  controller_record() { :; }; controller_fault() { :; }
+  controller_decide '{"head":"fixture"}' || fail 'warning decision failed'
+  jq -e '.action=="bounce"' "$CT_TMP/record" >/dev/null || fail 'warning changed verdict outcome'
+  jq -n --rawfile body "$CT_TMP/body" --slurpfile verdict "$verdict" '
+    ($body|contains($verdict[0].summary)) and ($body|contains($verdict[0].findings[0].text)) and
+    ($body|contains("Warnings: summary 2311 > 2000; findings[0].text 1500 > 1200"))' | grep -qx true || fail 'journal lost warning or verdict text'
+  CT_RECORDS='[{"kind":"station","run":"fixture","result":null,"invalid_reason":"summary 8001 > 8000"}]'
+  controller_retry_context resume-valid fixture > "$CT_TMP/retry"
+  grep -Fq 'summary 8001 > 8000' "$CT_TMP/retry" || fail 'retry prompt lost refusal reason'
   jq -e '.properties.summary.maxLength==2000 and .properties.question.maxLength==1200 and
-    .properties.findings.items.properties.text.maxLength==1200' "$ROOT/config/stations/result.schema.json" >/dev/null || fail 'schema verdict bounds differ'
+    .properties.findings.items.properties.text.maxLength==1200' "$ROOT/config/stations/result.schema.json" >/dev/null || fail 'schema advisory bounds changed'
 ) || fail 'verdict bounds failed'
 
 [ -f "$ROOT/scripts/lib/probe.sh" ] || fail 'station probe is missing'
@@ -1332,12 +1366,28 @@ ledger_tests() (
   }
   c2_intent 'bounds/1/0/executor/1/1' || fail 'bounds intent failed'
   c2_station 'bounds/1/0/executor/1/1' ask || fail 'bounds station failed'
-  jq '.result.summary=("é"*2001)' "$c2/record.json" > "$c2/oversize-result"
-  jq '.result.summary=("é"*2000)' "$c2/record.json" > "$c2/boundary-result"
+  jq '.result.summary=("é"*8001)' "$c2/record.json" > "$c2/oversize-result"
+  jq '.result.summary=("é"*2311)|.result.findings=[{severity:"P2",file:"fixture",line:1,text:("f"*1500)}]' "$c2/record.json" > "$c2/warning-result"
   rm "$LEDGER_DIR/bounds.jsonl"
   c2_intent 'bounds/1/0/executor/1/1' || fail 'bounds intent restore failed'
   ledger_station bounds "$c2/oversize-result" > "$c2/error" 2>&1 && fail 'ledger accepted oversized summary'
-  ledger_station bounds "$c2/boundary-result" >/dev/null || fail 'ledger refused 2000-character summary'
+  grep -Fq 'summary 8001 > 8000' "$c2/error" || fail 'ledger refusal lost measured bound'
+  for mutation in '.result.head=("a"*44)' 'del(.result.question)' '.result.extra=true' \
+    '.result.station="reviewer"' '.result.outcome="approve"' 'del(.result.findings[0].severity)' 'del(.result.findings[0].file)'; do
+    jq "$mutation" "$c2/warning-result" > "$c2/invalid-result"
+    ledger_station bounds "$c2/invalid-result" > "$c2/error" 2>&1 && fail "ledger accepted $mutation"
+  done
+  ledger_station bounds "$c2/warning-result" >/dev/null || fail 'ledger refused advisory overrun'
+  ledger_read bounds | jq -e '.[-1]|.result.outcome=="ask" and (.result.summary|length)==2311 and
+    (.result.findings[0].text|length)==1500 and .warnings==["summary 2311 > 2000","findings[0].text 1500 > 1200"]' >/dev/null || fail 'ledger lost warnings or result text'
+  ledger_read bounds > "$c2/warning-records"
+  perl -e 'print "q" x 1500' > "$c2/warning-cause"
+  ledger_backend diagnostic bounds 'bounds/1/0/executor/1/1' 1 "$c2/warning-cause" "$c2/warning-records" > "$c2/warning-note" || fail 'warning diagnostic failed'
+  grep -Fqx 'Warnings: summary 2311 > 2000; findings[0].text 1500 > 1200' "$c2/warning-note" || fail 'andon formatter lost advisory warnings'
+  # Old records have no warnings property and must remain readable.
+  jq -c 'del(.warnings)' "$LEDGER_DIR/bounds.jsonl" > "$c2/old-ledger"
+  cat "$c2/old-ledger" > "$LEDGER_DIR/bounds.jsonl"
+  ledger_read bounds >/dev/null || fail 'legacy record without warnings refused'
   c2_verify() {
     jq -n --arg run "$1" --arg status "$2" '{v:1,kind:"verify",run:$run,head:("a"*40),record:"fixture.json",status:$status,at:250}' |
       c2_send verify "${1%%/*}"
@@ -1590,7 +1640,7 @@ PREFIXES
   c2_expect demo '.[0]|.pending=="resume-valid" and .counts.invalid_results==1 and .remaining.resume_valid==1'
   c2_intent 'demo/1/0/executor/1/3' resume-valid 'demo/1/0/executor/1/2' || fail 'validity retry failed'
   c2_station 'demo/1/0/executor/1/3' ask malformed || fail 'second invalid station failed'
-  c2_expect demo '.[0]|.pending=="decide" and .escalation=="malformed station result" and .remaining.resume_valid==0 and (.closed_runs|length)==2'
+  c2_expect demo '.[0]|.pending=="decide" and .escalation=="malformed station result: malformed" and .remaining.resume_valid==0 and (.closed_runs|length)==2'
   c2_intent 'demo/2/0/executor/1/1' || fail 'red-chain intent failed'
   c2_station 'demo/2/0/executor/1/1' submitted || fail 'red-chain station failed'
   c2_verify 'demo/2/0/executor/1/1' red || fail 'red-chain verify failed'
@@ -2478,6 +2528,13 @@ head=$(git rev-parse HEAD)
 if [ "$mode" = bad-head ]; then head=$(git rev-list --max-parents=0 HEAD); fi
 result=$(jq -nc --arg station "$station" --arg outcome "$outcome" --arg head "$head" --argjson question "$question" --argjson findings "$findings" \
   '{v:1,station:$station,outcome:$outcome,head:(if $outcome=="ask" then null else $head end),summary:"Fixture result",findings:$findings,question:$question}')
+case "$mode" in
+  oversize-result) result=$(printf '%s' "$result" | jq -c '.summary=("s"*8001)') ;;
+  long-head) result=$(printf '%s' "$result" | jq -c '.head=("a"*44)') ;;
+esac
+if [ "$mode" = advisory ] && [ "$station" = reviewer ]; then
+  result=$(printf '%s' "$result" | jq -c '.outcome="bounce"|.summary=("é"*2311)|.findings=[{severity:"P2",file:"a",line:1,text:("f"*1500)}]')
+fi
 case "$cli" in
   claude) jq -nc --argjson result "$result" '{type:"result",session_id:"fixture-session",structured_output:$result,usage:{input_tokens:10,output_tokens:5}}' ;;
   codex)
@@ -2668,6 +2725,12 @@ REGRESSION
   # so no session exists to be reassigned from. The retry must still start fresh on the new CLI.
   ledger_read recovery | jq -e '[.[]|select(.kind=="intent")]|last|.cli=="claude" and .resume_of==null and .session_mode!="resume"' >/dev/null || fail 'reviewer reassignment reused stale session'
   if grep -q 'ses_fixture' "$state/args-4"; then fail 'Claude reviewer received OpenCode session'; fi
+  c5_reset; printf 'advisory\n' > "$state/mode"
+  c5_run 0 --once; c5_run 0 --once
+  ledger_read recovery | jq -e '[.[]|select(.kind=="station")]|last|
+    .result.outcome=="bounce" and .invalid_reason==null and
+    .warnings==["summary 2311 > 2000","findings[0].text 1500 > 1200"]' >/dev/null || fail 'advisory verdict was refused or changed'
+  jq -e 'any(.comments.nodes[]; .body|contains("Warnings: summary 2311 > 2000; findings[0].text 1500 > 1200"))' "$state/issue-1.json" >/dev/null || fail 'advisory journal omitted warnings'
   c5_reset; printf 'bounce\n' > "$state/mode"
   for n in 1 2 3 4 5; do c5_run 0 --once; done
   c5_run 10 --once
@@ -2679,7 +2742,7 @@ REGRESSION
   local diagnostic_secret
   diagnostic_secret=$(printf 'provider-%s\n%s' value split)
   export OPENAI_API_KEY="${diagnostic_secret}"
-  for mode in bad-head malformed timeout red dirty ask branch; do
+  for mode in oversize-result long-head bad-head malformed timeout red dirty ask branch; do
     c5_reset; printf '%s\n' "$mode" > "$state/mode"
     if [ "$mode" = timeout ]; then
       sed 's/10\tconfig/1\tconfig/g' "$project/.agentic-flow-roles" > "$c4/roles"
@@ -2694,9 +2757,16 @@ REGRESSION
           [ ! -e "$verification_record" ] || fail 'bad head wrote a verification record'
         done
         ledger_read recovery | jq -e 'all(.[];.kind!="verify")' >/dev/null || fail 'bad head was verified' ;;
-      malformed|red|dirty) [ "$(cat "$state/launches")" = 2 ] || fail "$mode exceeded chain retry limit" ;;
+      oversize-result|long-head|malformed|red|dirty) [ "$(cat "$state/launches")" = 2 ] || fail "$mode exceeded chain retry limit" ;;
       timeout|ask|branch) [ "$(cat "$state/launches")" = 1 ] || fail "$mode relaunched" ;;
     esac
+    if [ "$mode" = oversize-result ] || [ "$mode" = long-head ]; then
+      expected='summary 8001 > 8000'
+      [ "$mode" != long-head ] || expected='head is not 40 hex characters (length 44)'
+      grep -Fq "$expected" "$state/prompt-2" || fail "$mode retry prompt lost reason"
+      jq -r '[.comments.nodes[].body|select(contains("needs a decision"))]|last' "$state/issue-1.json" > "$c4/andon-comment"
+      grep -Fq "$expected" "$c4/andon-comment" || fail "$mode andon lost reason"
+    fi
     if [ "$mode" = malformed ] || [ "$mode" = timeout ] || [ "$mode" = red ]; then
       jq -r '[.comments.nodes[].body|select(contains("needs a decision"))]|last' "$state/issue-1.json" > "$c4/andon-comment"
       [ "$(wc -c < "$c4/andon-comment")" -le 4097 ] || fail "$mode andon exceeded 4 KiB"
