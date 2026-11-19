@@ -15,6 +15,8 @@ fail	"stations markers '$actual', expected '$1'"
 fail	"stations scenario block '$block' never executed"
 fail	"stations selector returned $status expected $expected: $(cat "$fixture/err")"
 fail	"unknown stations scenario block at call site: $2:$1"
+fail	'Codex home config.toml must stay empty'
+fail	'Codex home profile file differs from the installed profile'
 fail	'Makefile accepted an empty stations selector'
 fail	'Makefile did not forward stations union'
 fail	'adopter twin Stop hook allowed a failing customized check'
