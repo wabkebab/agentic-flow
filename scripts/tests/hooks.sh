@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
-# Run installed guards with adopter commands and a real staged diff. The full
-# suite reuses export's twin; standalone hook runs build the same fixture once.
+# Run installed guards with adopter commands and a real staged diff in this shard's twin.
 if [ -f "$ROOT/scripts/export.sh" ]; then
   adopter_twin_build
   (

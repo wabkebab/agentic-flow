@@ -112,9 +112,15 @@ station_run() { # expected status, then handoff args
 station_count() { jq '.comments.nodes|length' "$STATION_STATE/$1.json"; }
 
 stations_red_fixture() {
+  local library
   stations_verify_base
   mkdir -p "$VERIFY_FIX/scripts/lib" "$VERIFY_FIX/config" "$VERIFY_FIX/docs"
-  cp "$ROOT/scripts/lib/"* "$VERIFY_FIX/scripts/lib/"
+  for library in "$ROOT/scripts/lib/"*; do
+    case "${library##*/}" in
+      verify-step.sh|verify-record.sh) cp "$library" "$VERIFY_FIX/scripts/lib/" ;;
+      *) ln "$library" "$VERIFY_FIX/scripts/lib/" ;;
+    esac
+  done
   cp "$ROOT/config/workflow.tsv" "$VERIFY_FIX/config/workflow.tsv"
   cp "$STATION_FIX/project/.agentic-flow-review-policy" "$VERIFY_FIX/"
   git -C "$VERIFY_FIX" remote add origin https://github.com/owner/repo.git

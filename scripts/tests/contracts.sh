@@ -2,6 +2,118 @@
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
 
+# Scenario 10: exercise the full dispatcher with small, independent shard bodies.
+parallel_shard_tests() (
+  local fixture="$TMP/parallel-shards" status=0 group shard count selection actual expected
+  mkdir -p "$fixture/scripts/tests" "$fixture/bin" "$fixture/roots"
+  cat "$ROOT/scripts/self-test.sh" > "$fixture/scripts/self-test.sh"
+  chmod +x "$fixture/scripts/self-test.sh"
+  printf '#!/usr/bin/env bash\necho 2\n' > "$fixture/bin/nproc"
+  chmod +x "$fixture/bin/nproc"
+  for group in $SELF_TEST_GROUPS; do
+    case "$group" in
+      controller|stations)
+        awk '
+          /^if should_run_scenario / { print; print "  record_fixture"; next }
+          /^fi # scenario$/ { print }
+        ' "$ROOT/scripts/tests/$group.sh" > "$fixture/scripts/tests/$group.sh"
+        ;;
+      *) printf 'record_fixture\n' > "$fixture/scripts/tests/$group.sh" ;;
+    esac
+  done
+  cat "$ROOT/scripts/tests/helpers.sh" > "$fixture/scripts/tests/helpers.sh"
+  cat >> "$fixture/scripts/tests/helpers.sh" <<'SHARD_PROBE'
+record_fixture() {
+  local shard="$ONLY_GROUP${SCENARIOS:+/$SCENARIOS}" i
+  printf '%s\t%s\t%s\t%s\n' "$TMP" "$HOME" "$XDG_CONFIG_HOME" "$$" \
+    > "$ROOT/roots/${shard//\//-}"
+  echo "fixture shard $shard started"
+  case "${SHARD_PROBE:-}:$shard" in
+    failure:export)
+      # The second shard must reach its body while the first is still running.
+      for ((i=0; i<100; i++)); do
+        if [ -s "$ROOT/roots/contracts" ]; then
+          sleep 0.2
+          [ ! -e "$ROOT/roots/upgrade" ] || fail 'parallel dispatcher exceeded two CPUs'
+          touch "$ROOT/roots/released"
+          fail 'injected export shard failure'
+        fi
+        sleep 0.05
+      done
+      fail 'contracts shard did not overlap export'
+      ;;
+    failure:contracts)
+      for ((i=0; i<100; i++)); do
+        [ ! -f "$ROOT/roots/released" ] || break
+        sleep 0.05
+      done
+      ;;
+    failure:hooks) fail 'injected hooks shard failure' ;;
+    budget:export|budget:contracts|budget:hooks)
+      for ((i=0; i<80; i++)); do measure_event fixture_file_copy; done
+      ;;
+  esac
+  echo "fixture shard $shard finished"
+}
+SHARD_PROBE
+  parallel_probe() { # <expected status> <probe mode> [full-mode options]
+    local want="$1" mode="$2"
+    shift 2
+    rm -f "$fixture/roots/"*
+    : > "$fixture/events"
+    status=0
+    PATH="$fixture/bin:$PATH" SHARD_PROBE="$mode" AGENTIC_TEST_JOBS='' AGENTIC_MEASURE_EVENTS="$fixture/events" \
+      "$fixture/scripts/self-test.sh" --full "$@" > "$fixture/out" 2>&1 || status=$?
+    [ "$status" = "$want" ] || fail "parallel dispatcher returned $status expected $want: $(cat "$fixture/out")"
+  }
+  for selection in 999999999999999999999 default; do
+    if [ "$selection" = default ]; then parallel_probe 1 failure
+    else parallel_probe 1 failure --jobs "$selection"; fi
+    grep -q 'injected export shard failure' "$fixture/out" || fail 'parallel dispatcher did not overlap the first two shards within the CPU limit'
+    grep -q 'injected hooks shard failure' "$fixture/out" || fail 'parallel dispatcher omitted another failing shard'
+    grep -q 'fixture shard controller/recovery finished' "$fixture/out" || fail 'parallel dispatcher stopped after a failed shard'
+    for shard in export hooks; do
+      grep -q "shard $shard exited" "$fixture/out" || fail "parallel dispatcher omitted failed shard status for $shard"
+    done
+    # Cover the macOS probe when nproc is absent.
+    printf '#!/usr/bin/env bash\nexit 127\n' > "$fixture/bin/nproc"
+    printf '#!/usr/bin/env bash\necho 2\n' > "$fixture/bin/getconf"
+    chmod +x "$fixture/bin/getconf"
+  done
+
+  # A worker can exit zero despite an absent group marker. Another shard's
+  # marker must never stand in for its own.
+  # shellcheck disable=SC2016 # The sed script edits a literal shell expression.
+  sed '/measure_event "group:\$1"/s/^  /  [ "$1" = hooks ] || /' \
+    "$ROOT/scripts/self-test.sh" > "$fixture/scripts/self-test.sh"
+  parallel_probe 1 missing --jobs 2
+  grep -q "shard 'hooks' never executed" "$fixture/out" || fail 'parallel dispatcher accepted a missing group marker'
+  cat "$ROOT/scripts/self-test.sh" > "$fixture/scripts/self-test.sh"
+
+  # Individual copy counts fit within budget. The merged count does not.
+  git -C "$fixture" init -q
+  : > "$fixture/scripts/export.sh"
+  parallel_probe 1 budget --jobs 2
+  grep -q 'full mode made 240 fixture file copies; limit 190' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
+  [ "$(cost_count "$fixture/events" source_snapshot_copy)" -eq 1 ] || fail 'parallel dispatcher duplicated the source snapshot'
+
+  expected='export contracts upgrade hooks plan-to-issues lifecycle stations/launch stations/verify stations/handoff stations/packet controller/launch controller/ship controller/andon controller/ledger controller/recovery '
+  for selection in 1 default; do
+    if [ "$selection" = 1 ]; then parallel_probe 0 pass --jobs 1
+    else parallel_probe 0 pass; fi
+    actual=$(sed -n 's/^--- self-test shard: \(.*\) ---$/\1/p' "$fixture/out" | tr '\n' ' ')
+    [ "$actual" = "$expected" ] || fail "parallel shard logs out of order: $actual"
+    count=$(printf '%s\n' "$expected" | wc -w | tr -d ' ')
+    for group in 1 2 3 4; do
+      [ "$(cut -f "$group" "$fixture/roots/"* | sort -u | wc -l | tr -d ' ')" = "$count" ] \
+        || fail "parallel shards shared a fixture directory or process (field $group)"
+    done
+  done
+  for selection in 0 -1 '' 1x; do parallel_probe 2 invalid --jobs "$selection"; done
+  parallel_probe 2 invalid --jobs
+)
+parallel_shard_tests
+
 # Scenario 9: exercise the real dispatcher with only station block bodies inert.
 stations_selector_tests() (
   local fixture selection status expected actual group mf
@@ -141,7 +253,7 @@ split_regression_tests() (
     || fail 'dispatcher did not name the missing group file'
   perl "$ROOT/scripts/tests/assertion-messages.pl" "$ROOT" --check \
     || fail 'assertion inventory differs after the split'
-  [ "$SELF_TEST_GROUPS" = 'export contracts hooks plan-to-issues lifecycle upgrade stations controller' ] \
+  [ "$SELF_TEST_GROUPS" = 'export contracts upgrade hooks plan-to-issues lifecycle stations controller' ] \
     || fail 'split changed the self-test group names'
   # Exercise the real dispatcher with inert bodies to check order and completion
   # without recursively executing the suite. Each file has a private inode.
@@ -151,17 +263,17 @@ split_regression_tests() (
   done
   cat > "$fixture/scripts/tests/controller.sh" <<'BLOCKS'
 for block in $CONTROLLER_BLOCKS; do
-  should_run_scenario "${block#*:}" "${block%:*}"
+  should_run_scenario "${block#*:}" "${block%:*}" || continue
 done
 BLOCKS
   cat > "$fixture/scripts/tests/stations.sh" <<'BLOCKS'
 for block in $STATIONS_BLOCKS; do
-  should_run_scenario "${block#*:}" "${block%:*}"
+  should_run_scenario "${block#*:}" "${block%:*}" || continue
 done
 BLOCKS
   AGENTIC_MEASURE_EVENTS="$fixture/events" "$fixture/scripts/self-test.sh" --full \
     > "$TMP/split-full.out" 2>&1 || fail 'split full dispatcher failed'
-  [ "$(sed -n 's/^group://p' "$fixture/events" | tr '\n' ' ')" = \
+  [ "$(sed -n 's/^group://p' "$fixture/events" | awk '!seen[$0]++' | tr '\n' ' ')" = \
     'export contracts upgrade hooks plan-to-issues lifecycle stations controller ' ] \
     || fail 'split changed the full-suite group order'
   grep -qx 'self-test passed.' "$TMP/split-full.out" \
@@ -176,11 +288,12 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   SCOPE_FIX="$TMP/group-scope"
   mkdir -p "$SCOPE_FIX/scripts/tests" "$SCOPE_FIX/config" "$SCOPE_FIX/bin"
   ln "$ROOT/scripts/tests/helpers.sh" "$SCOPE_FIX/scripts/tests/helpers.sh"
-  awk '/^# --- export invariants / { exit } { print }' "$ROOT/scripts/self-test.sh" \
+  awk '/^FULL_FAILED=0$/ { exit } { print }' "$ROOT/scripts/self-test.sh" \
     > "$SCOPE_FIX/scripts/self-test.sh"
   cat >> "$SCOPE_FIX/scripts/self-test.sh" <<'SELECTOR'
 fast_check_group() { :; }
 assert_cost_budget() { :; }
+FULL_FAILED=0
 for scope_group in $SELF_TEST_GROUPS; do
   if should_run "$scope_group"; then :; fi
 done
@@ -1001,7 +1114,7 @@ fi
 
 # A generated consumer must match its complete canonical body. A malformed render
 # graph must leave every consumer untouched, including those before the bad one.
-if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
+if [ -d "$ROOT/templates/shared" ]; then
   RENDER="$ROOT/scripts/render-shared.sh"
   RENDER_FIX="$TMP/shared-render-fixture"
   mkdir -p "$RENDER_FIX/templates"

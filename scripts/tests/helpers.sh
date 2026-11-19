@@ -323,9 +323,9 @@ fresh_export() { # <source checkout> <destination>
   "$1/scripts/export.sh" "$2" >/dev/null
 }
 
-# Source-only holdout: full runs reuse the last pristine export; focused groups
-# build it once. Resets use Git, never another tree copy. The local upgrade source
-# shares the suite's immutable snapshot but owns its Git metadata.
+# Source-only holdout: the export group reuses its last pristine export. Other
+# groups build a private twin. The upgrade source shares the suite's immutable
+# snapshot and owns its Git metadata. Resets use Git.
 adopter_twin_build() { # [existing pristine export]
   local copies_before
   copies_before=$(cost_count "$LOCAL_EVENTS" fixture_file_copy)

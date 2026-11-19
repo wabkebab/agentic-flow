@@ -95,7 +95,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # Removing only SessionStart must fail with that adapter's diagnostic.
   for session_adapter in .claude/settings.json .codex/hooks.json; do
     cp "$SOURCE_FIXTURE/$session_adapter" "$TMP/session-hooks.orig"
-    jq 'del(.hooks.SessionStart)' "$TMP/session-hooks.orig" > "$SOURCE_FIXTURE/$session_adapter"
+    # Replace the directory entry so a hard link cannot expose the mutation.
+    jq 'del(.hooks.SessionStart)' "$TMP/session-hooks.orig" > "$TMP/session-unwired.json"
+    mv "$TMP/session-unwired.json" "$SOURCE_FIXTURE/$session_adapter"
     (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo --skip-make-check) \
       > "$TMP/session-unwired.out" 2>&1 \
       && fail "doctor accepted missing SessionStart in $session_adapter"

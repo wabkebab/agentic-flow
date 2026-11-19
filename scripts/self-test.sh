@@ -4,7 +4,8 @@
 # --full runs every group in the scaffold source (scripts/export.sh present). In an
 # exported project it runs local groups, adding scaffold groups on payload-destination
 # changes against the integration base (or when Git cannot compute that changed set).
-# --full --all-groups forces every group; --fast keeps the smoke gate unchanged.
+# --full --all-groups forces every group. --jobs or AGENTIC_TEST_JOBS sets the
+# full-run worker limit, capped at the available CPUs. --fast runs the smoke gate.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -24,6 +25,8 @@ SELF_TEST_MODE=fast
 ONLY_GROUP=""
 SHIP_GATE=0
 ALL_GROUPS=0
+JOBS_SET=0
+REQUESTED_JOBS=""
 SCENARIO_SET=0
 SCENARIOS=""
 while [ "$#" -gt 0 ]; do
@@ -44,6 +47,12 @@ while [ "$#" -gt 0 ]; do
       ALL_GROUPS=1
       shift
       ;;
+    --jobs)
+      [ "$#" -ge 2 ] || { echo "error: --jobs requires a positive integer" >&2; exit 2; }
+      JOBS_SET=1
+      REQUESTED_JOBS="$2"
+      shift 2
+      ;;
     --only)
       [ "$#" -ge 2 ] || { echo "error: --only requires a group" >&2; exit 2; }
       ONLY_GROUP="$2"
@@ -56,7 +65,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--ship-gate|--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--all-groups] [--scenario TAG[,TAG] (controller: launch,ledger,recovery,ship,andon; stations: launch,packet,verify,handoff)]" >&2
+      echo "usage: $0 [--ship-gate|--fast|--full [--jobs N] [--all-groups]|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario TAG[,TAG] (controller: launch,ledger,recovery,ship,andon; stations: launch,packet,verify,handoff)]" >&2
       exit 0
       ;;
     *)
@@ -65,8 +74,21 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-# The one list both the flag parser and every `should_run` call site are checked against.
-SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade stations controller"
+if [ "$JOBS_SET" = 1 ]; then
+  [ "$SELF_TEST_MODE" = full ] && [ -z "$ONLY_GROUP" ] && [ "$SHIP_GATE" = 0 ] \
+    || { echo 'error: --jobs requires --full' >&2; exit 2; }
+elif [ "$SELF_TEST_MODE" = full ] && [ -z "$ONLY_GROUP" ]; then
+  REQUESTED_JOBS=${AGENTIC_TEST_JOBS:-}
+fi
+if [ "$JOBS_SET" = 1 ] || [ -n "$REQUESTED_JOBS" ]; then
+  case "$REQUESTED_JOBS" in
+    *[!0-9]*) echo 'error: self-test jobs must be a positive integer' >&2; exit 2 ;;
+  esac
+  REQUESTED_JOBS=${REQUESTED_JOBS#"${REQUESTED_JOBS%%[!0]*}"}
+  [ -n "$REQUESTED_JOBS" ] || { echo 'error: self-test jobs must be a positive integer' >&2; exit 2; }
+fi
+# Use the historical serial order for the full run and its log report.
+SELF_TEST_GROUPS="export contracts upgrade hooks plan-to-issues lifecycle stations controller"
 # Groups inspecting installed contracts/wiring stay local; fixture regressions are scaffold.
 SELF_TEST_GROUP_SCOPES="export:scaffold contracts:local hooks:local plan-to-issues:scaffold lifecycle:scaffold upgrade:scaffold stations:scaffold controller:scaffold"
 # GROUP SCOPE VALIDATION BEGIN: also runs in --fast, before any fixtures.
@@ -100,9 +122,10 @@ case " $SELF_TEST_GROUPS " in
   *) [ -z "$ONLY_GROUP" ] || { echo "unknown self-test group: $ONLY_GROUP" >&2; exit 2; } ;;
 esac
 # SCENARIO DISPATCH BEGIN: validate before fixtures or group checks run.
-CONTROLLER_SCENARIOS="launch ledger recovery ship andon"
+# Order tags by the first block that uses each tag in the serial runner.
+CONTROLLER_SCENARIOS="launch ship andon ledger recovery"
 CONTROLLER_BLOCKS="timing:launch ship:ship andon:andon launch:launch ledger:ledger recovery:recovery"
-STATIONS_SCENARIOS="launch packet verify handoff"
+STATIONS_SCENARIOS="launch verify handoff packet"
 STATIONS_BLOCKS="watchdogs:launch cache:verify slice:launch journal:handoff cli:handoff interrupt:verify red-first:verify packet:packet closeout:handoff settings:launch"
 SCENARIO_BLOCKS_RAN=" "
 if [ "$SCENARIO_SET" = 1 ]; then
@@ -130,7 +153,9 @@ fi
 # SCENARIO DISPATCH END
 TMPDIR_ROOT=${TMPDIR:-/tmp}
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
-LOCAL_EVENTS="$TMP/local-events"
+SHARD_DIR=${AGENTIC_SELF_TEST_SHARD_DIR:-}
+unset AGENTIC_SELF_TEST_SHARD_DIR
+LOCAL_EVENTS="${SHARD_DIR:-$TMP}/local-events"
 : > "$LOCAL_EVENTS"
 REPORT_EVENTS=${AGENTIC_MEASURE_EVENTS:-}
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
@@ -191,6 +216,13 @@ test_timing_report() {
 }
 trap 'test_timing_report; rm -rf "$TMP"' EXIT
 # TIMING END
+
+if [ -n "$SHARD_DIR" ]; then
+  export HOME="$TMP/home" XDG_CONFIG_HOME="$TMP/config-home"
+  mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+  shared_snapshot="${SHARD_DIR%/*}/source-snapshot"
+  if [ -d "$shared_snapshot" ]; then SOURCE_SNAPSHOT="$shared_snapshot"; fi
+fi
 
 # Keep per-process cost evidence even when no external report was requested.
 # An external report also receives nested self-test events.
@@ -450,13 +482,117 @@ if [ "$SHIP_GATE" = 1 ]; then
   gate_events="$TMP/ship-gate.events"
   : > "$gate_events"
   if ! (cd "$TMP/ship-export" && AGENTIC_MEASURE_EVENTS="$gate_events" scripts/self-test.sh --full --all-groups); then
-    gate_group=$(awk '/^group:/ { group=substr($0,7) } END { print (group ? group : "startup") }' "$gate_events")
+    gate_group=$(awk '
+      /^group:/ { group=substr($0,7) }
+      /^shard_failure:/ { failed=failed (failed ? ", " : "") substr($0,15) }
+      END { print (failed ? failed : (group ? group : "startup")) }
+    ' "$gate_events")
     fail "exported full suite failed (group: $gate_group)"
   fi
   echo 'ship-gate passed (exported full suite).'
   exit 0
 fi
 
+# Compare lengths before arithmetic so very large input safely hits the cap.
+limit_jobs() { # <current limit> <positive decimal candidate>
+  local limit="$1" candidate="$2"
+  if [ "${#candidate}" -le "${#limit}" ] && [ "$candidate" -lt "$limit" ]; then
+    printf '%s\n' "$candidate"
+  else
+    printf '%s\n' "$limit"
+  fi
+}
+
+self_test_cpus() {
+  local cpus
+  cpus=$(nproc 2>/dev/null) || cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null) || cpus=1
+  case "$cpus" in
+    ''|0*|*[!0-9]*) cpus=1 ;;
+  esac
+  printf '%s\n' "$cpus"
+}
+
+run_full_shards() {
+  local group tag shard dir report seen jobs running=0 next=0 slot pid status
+  local -a shards=() pids=() statuses=() args
+  for group in $SELECTED_FULL_GROUPS; do
+    case "$group" in
+      controller) for tag in $CONTROLLER_SCENARIOS; do shards+=("$group/$tag"); done ;;
+      stations) for tag in $STATIONS_SCENARIOS; do shards+=("$group/$tag"); done ;;
+      *) shards+=("$group") ;;
+    esac
+  done
+  jobs=$(limit_jobs "${#shards[@]}" "$(self_test_cpus)")
+  if [ -n "$REQUESTED_JOBS" ]; then jobs=$(limit_jobs "$jobs" "$REQUESTED_JOBS"); fi
+  if [ -f "$ROOT/scripts/export.sh" ]; then source_snapshot; fi
+
+  # Bash 3.2 has no wait -n. Reap whichever worker finishes first so a slow
+  # shard cannot keep an otherwise free slot idle. Print logs after collection.
+  for shard in "${shards[@]}"; do
+    while [ "$running" -ge "$jobs" ]; do
+      for ((slot=0; slot<next; slot++)); do
+        pid=${pids[$slot]}
+        if [ "$pid" != 0 ] && ! kill -0 "$pid" 2>/dev/null; then
+          status=0
+          wait "$pid" || status=$?
+          statuses[slot]=$status
+          pids[slot]=0
+          running=$((running-1))
+        fi
+      done
+      if [ "$running" -ge "$jobs" ]; then sleep 0.1; fi
+    done
+    dir="$TMP/$next"
+    mkdir "$dir"
+    # Keep the local budget stream separate from the optional report, which
+    # also includes events emitted by nested self-test invocations.
+    report=""
+    if [ -n "$REPORT_EVENTS" ]; then report="$dir/report-events"; fi
+    args=(--only "${shard%%/*}")
+    case "$shard" in */*) args+=(--scenario "${shard#*/}") ;; esac
+    AGENTIC_SELF_TEST_SHARD_DIR="$dir" AGENTIC_MEASURE_EVENTS="$report" \
+      bash "$ROOT/scripts/self-test.sh" "${args[@]}" > "$dir/log" 2>&1 &
+    pids[next]=$!
+    running=$((running+1))
+    next=$((next+1))
+  done
+
+  for ((slot=0; slot<next; slot++)); do
+    shard=${shards[$slot]}
+    group=${shard%%/*}
+    dir="$TMP/$slot"
+    pid=${pids[$slot]}
+    status=${statuses[$slot]:-0}
+    if [ "$pid" != 0 ]; then wait "$pid" || status=$?; fi
+    printf '%s\n' "--- self-test shard: $shard ---"
+    cat "$dir/log"
+    seen=""
+    if [ -f "$dir/local-events" ]; then
+      cat "$dir/local-events" >> "$LOCAL_EVENTS"
+      seen=$(sed -n 's/^group://p' "$dir/local-events")
+    fi
+    if [ -n "$REPORT_EVENTS" ] && [ -f "$dir/report-events" ]; then
+      cat "$dir/report-events" >> "$REPORT_EVENTS"
+    fi
+    if [ "$status" != 0 ]; then
+      echo "self-test failed: shard $shard exited $status" >&2
+    fi
+    if [ "$seen" = "$group" ]; then
+      GROUPS_RAN="$GROUPS_RAN $group "
+    else
+      echo "self-test failed: shard '$shard' never executed group '$group' exactly once" >&2
+    fi
+    if [ "$status" != 0 ] || [ "$seen" != "$group" ]; then
+      measure_event "shard_failure:$shard"
+      FULL_FAILED=1
+    fi
+  done
+}
+
+FULL_FAILED=0
+if [ "$SELF_TEST_MODE" = full ] && [ -z "$ONLY_GROUP" ]; then
+  run_full_shards
+else
 # --- export invariants (scaffold repo only, full suite only) -----------------------------
 if should_run export; then
   [ -f "$ROOT/scripts/tests/export.sh" ] || fail "missing self-test group file: export"
@@ -509,6 +645,7 @@ if should_run controller; then
   . "$ROOT/scripts/tests/controller.sh"
   assert_scenarios_ran
 fi
+fi
 
 # --- the run did what the mode promised --------------------------------------------------
 # Without this, deleting or mis-guarding a group's `if should_run` block still prints
@@ -540,4 +677,5 @@ if [ -z "$ONLY_GROUP" ]; then
   assert_cost_budget "$LOCAL_EVENTS" "$SELF_TEST_MODE"
 fi
 
-echo "self-test passed."
+[ "$FULL_FAILED" = 0 ] || exit 1
+if [ -z "$SHARD_DIR" ]; then echo "self-test passed."; fi
