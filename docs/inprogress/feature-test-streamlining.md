@@ -365,7 +365,7 @@ scripts/doctor.sh --check
 **Test:** scenario 9, failure path first: unknown tag exits 2; a tag that selects no block fails; each tag alone in a fresh checkout. The selector regression tests (unknown tag, empty selection, union, `--scenario` invalid for other groups) live in `scripts/tests/contracts.sh`; the tagged station blocks stay in `stations.sh`, and the red-first run copies only the contracts tests and helpers, so the dispatcher stays at the base version.
 
 **DoD:** scenario 9 passes; whole-group behaviour and CI are unchanged.
-**Verify:** `make test-one F=stations` and `make test-one F=stations S=<each tag>`
+**Verify:** `make test-one F=contracts`, `make test-one F=stations`, `make test-one F=stations S=launch`, `make test-one F=stations S=verify`, `make test-one F=stations S=handoff`, and `make test-one F=stations S=packet`
 **Risks:** a block relying on state another tag creates (scenario 9's fresh-checkout run is the guard); drift between the controller and stations selection code (shared function); the root and template Makefile `S` rules drifting.
 **Red-first:** `scripts/self-test.sh --only contracts` — scripts/tests/contracts.sh scripts/tests/helpers.sh
 **Commit:** `Select stations scenarios by tag, sharing the controller group's selector`
