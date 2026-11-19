@@ -365,7 +365,7 @@ scripts/doctor.sh --check
 **Test:** scenario 9, failure path first: unknown tag exits 2; a tag that selects no block fails; each tag alone in a fresh checkout. The selector regression tests (unknown tag, empty selection, union, `--scenario` invalid for other groups) live in `scripts/tests/contracts.sh`; the tagged station blocks stay in `stations.sh`, and the red-first run copies only the contracts tests and helpers, so the dispatcher stays at the base version.
 
 **DoD:** scenario 9 passes; whole-group behaviour and CI are unchanged.
-**Verify:** `make test-one F=stations` and `make test-one F=stations S=<each tag>`
+**Verify:** `make test-one F=contracts`, `make test-one F=stations`, `make test-one F=stations S=launch`, `make test-one F=stations S=verify`, `make test-one F=stations S=handoff`, and `make test-one F=stations S=packet`
 **Risks:** a block relying on state another tag creates (scenario 9's fresh-checkout run is the guard); drift between the controller and stations selection code (shared function); the root and template Makefile `S` rules drifting.
 **Red-first:** `scripts/self-test.sh --only contracts` — scripts/tests/contracts.sh scripts/tests/helpers.sh
 **Commit:** `Select stations scenarios by tag, sharing the controller group's selector`
@@ -420,7 +420,7 @@ Claude, on `phase-3`, after the last approval, and before the human merges:
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/165
-- **Approval:** status=approved; by=wabkebab; at=2026-11-19; rev=22aef9810f83430637cb8a01aae3c0c7d6db268c
+- **Approval:** status=approved; by=wabkebab; at=2026-11-19; rev=dd09d82350090b82ae0debe5d8e2e55b8e4fa406
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
