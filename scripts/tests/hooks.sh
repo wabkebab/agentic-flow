@@ -1,6 +1,63 @@
 #!/usr/bin/env bash
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
+# Run installed guards with adopter commands and a real staged diff. The full
+# suite reuses export's twin; standalone hook runs build the same fixture once.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  adopter_twin_build
+  (
+    cd "$ADOPTER_TWIN"
+    twin_hooks="$ADOPTER_TWIN/scripts/hooks"
+    for twin_adapter in .claude/settings.json .codex/hooks.json; do
+      jq -e 'any(.hooks.PreToolUse[]?.hooks[]?; .command=="test -f CLAUDE.md") and
+        any(.hooks.Stop[]?.hooks[]?; .command=="test -f Makefile")' "$twin_adapter" >/dev/null \
+        || fail "adopter twin lost extra hooks in $twin_adapter"
+    done
+    must_block "$twin_hooks/block-git-add-all.sh" 'git add -A'
+    must_allow "$twin_hooks/block-git-add-all.sh" 'git add CLAUDE.md Makefile'
+    must_block "$twin_hooks/block-push.sh" 'git push origin main'
+    must_allow "$twin_hooks/block-push.sh" 'make test-adopter'
+    must_allow "$twin_hooks/require-step-comment.sh" 'make adopter-lint'
+    "$twin_hooks/session-context.sh" > "$TMP/adopter-session.out" 2>&1 \
+      || fail 'adopter twin session hook failed without an active plan'
+
+    touch .adopter-check-fails
+    twin_status=0
+    printf '{"stop_hook_active":false}' | "$twin_hooks/check-gate.sh" \
+      > "$TMP/adopter-stop-red.out" 2>&1 || twin_status=$?
+    [ "$twin_status" -eq 2 ] || fail 'adopter twin Stop hook allowed a failing customized check'
+    rm .adopter-check-fails
+    printf '{"stop_hook_active":false}' | "$twin_hooks/check-gate.sh" \
+      > "$TMP/adopter-stop.out" 2>&1 \
+      || { cat "$TMP/adopter-stop.out" >&2; fail 'adopter twin Stop hook blocked a green customized check'; }
+
+    printf 'aws_key = "%s"\n' "$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')" > .adopter-change
+    git add .adopter-change
+    must_block "$twin_hooks/scan-secrets.sh" 'git -c commit.gpgsign=false commit -F .adopter-commit-message'
+    git reset -q HEAD -- .adopter-change
+    printf 'Reviewed adopter change\n' > .adopter-change
+    git add .adopter-change
+    cat > .adopter-commit-message <<'ADOPTER_COMMIT'
+Document the adopter's release process
+
+Run `make check`, then `make test-adopter` and `make package` before release.
+ADOPTER_COMMIT
+    twin_command='git -c commit.gpgsign=false commit -F .adopter-commit-message'
+    # shellcheck disable=SC2016 # Literal heredoc input exercises historical #110.
+    twin_heredoc=$'git -c commit.gpgsign=false commit -F - <<\'MSG\'\nRun `make check` before release.\nMSG'
+    for twin_guard in block-git-add-all block-push scan-secrets require-step-comment; do
+      must_allow "$twin_hooks/$twin_guard.sh" "$twin_command"
+      must_allow "$twin_hooks/$twin_guard.sh" "$twin_heredoc"
+    done
+    make commit-adopter > "$TMP/adopter-commit.out" 2>&1 \
+      || { cat "$TMP/adopter-commit.out" >&2; fail 'adopter twin could not execute its real commit command'; }
+    git log -1 --format=%B > "$TMP/adopter-commit-body"
+    # shellcheck disable=SC2016 # Assert literal Markdown, never shell expansion.
+    grep -Fq 'Run `make check`, then `make test-adopter` and `make package`' "$TMP/adopter-commit-body" \
+      || fail 'adopter twin commit lost its literal message'
+  )
+fi
+
 # Review #110: closing substitutions and adjacent redirects are verb boundaries.
 # shellcheck disable=SC2016 # Command strings are hook input, never executed.
 for protected_command in 'git push' 'git-claude push' 'gh pr merge'; do

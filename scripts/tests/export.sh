@@ -4,15 +4,7 @@
 if [ -f "$ROOT/scripts/export.sh" ]; then
   # Snapshot once, then hard-link unchanged files into private directory trees.
   # The five existing files mutated by export cases become private copies below.
-  SOURCE_SNAPSHOT="$TMP/source-snapshot"
-  mkdir -p "$SOURCE_SNAPSHOT"
-  measure_event source_snapshot_copy
-  measure_event fixture_tree_copy
-  while IFS= read -r -d '' tracked; do
-    [ -e "$ROOT/$tracked" ] || continue
-    mkdir -p "$SOURCE_SNAPSHOT/$(dirname "$tracked")"
-    command cp -p "$ROOT/$tracked" "$SOURCE_SNAPSHOT/$tracked"
-  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+  source_snapshot
   snapshot_digest=$(tree_digest "$SOURCE_SNAPSHOT")
   SOURCE_FIXTURE="$TMP/source"
   link_snapshot_files "$SOURCE_FIXTURE"
@@ -697,5 +689,10 @@ SH
   grep -q "scaffold source not recorded" "$TMP/no-source-doctor.out" \
     || fail "doctor did not warn about a stamped project with no source"
 
+  # Reuse the final pristine export rather than copy another project tree.
+  adopter_twin_build "$NO_REMOTE_TARGET"
+  adopter_twin_check
+  [ "$snapshot_digest" = "$(tree_digest "$SOURCE_SNAPSHOT")" ] \
+    || fail 'adopter twin mutated the shared source snapshot'
 
 fi

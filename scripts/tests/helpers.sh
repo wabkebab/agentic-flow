@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
+source_snapshot() {
+  [ -z "${SOURCE_SNAPSHOT:-}" ] || return 0
+  SOURCE_SNAPSHOT="$TMP/source-snapshot"
+  mkdir -p "$SOURCE_SNAPSHOT"
+  measure_event source_snapshot_copy
+  measure_event fixture_tree_copy
+  local tracked
+  while IFS= read -r -d '' tracked; do
+    [ -e "$ROOT/$tracked" ] || continue
+    mkdir -p "$SOURCE_SNAPSHOT/$(dirname "$tracked")"
+    command cp -p "$ROOT/$tracked" "$SOURCE_SNAPSHOT/$tracked"
+  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+}
+
 link_snapshot_files() { # <destination>; directories are private, unchanged files share inodes
   local destination="$1" source rel
   mkdir -p "$destination"
@@ -308,3 +322,99 @@ must_allow_nojq() { # <hook> <command>
 fresh_export() { # <source checkout> <destination>
   "$1/scripts/export.sh" "$2" >/dev/null
 }
+
+# Source-only holdout: full runs reuse the last pristine export; focused groups
+# build it once. Resets use Git, never another tree copy. The local upgrade source
+# shares the suite's immutable snapshot but owns its Git metadata.
+adopter_twin_build() { # [existing pristine export]
+  local copies_before
+  copies_before=$(cost_count "$LOCAL_EVENTS" fixture_file_copy)
+  if [ -n "${ADOPTER_TWIN:-}" ]; then
+    git -C "$ADOPTER_TWIN" reset --hard -q HEAD
+    git -C "$ADOPTER_TWIN" clean -fdq
+    return
+  fi
+  source_snapshot
+  ADOPTER_TWIN_SOURCE="$TMP/adopter-twin-source"
+  link_snapshot_files "$ADOPTER_TWIN_SOURCE"
+  local source_file adapter
+  local -a source_files=()
+  while IFS= read -r -d '' source_file; do
+    source_files+=("${source_file#"$ADOPTER_TWIN_SOURCE/"}")
+  done < <(find "$ADOPTER_TWIN_SOURCE" -type f -print0)
+  (
+    cd "$ADOPTER_TWIN_SOURCE"
+    git init -q
+    git config user.name 'Adopter fixture'
+    git config user.email adopter@example.invalid
+    git config commit.gpgsign false
+    git add -- "${source_files[@]}"
+    git commit -qm 'Seed offline adopter upgrade source'
+    git branch -M main
+  )
+  ADOPTER_TWIN=${1:-"$TMP/adopter twin"}
+  if [ ! -d "$ADOPTER_TWIN" ]; then
+    fresh_export "$ADOPTER_TWIN_SOURCE" "$ADOPTER_TWIN"
+  fi
+  sed 's/^test:/test-adopter:/; s/^build:/package:/; s/^run:/serve:/;
+    s/^\.PHONY: check test test-one build run help$/.PHONY: check test-adopter test-one package serve help/' \
+    "$ADOPTER_TWIN/Makefile" > "$TMP/adopter-makefile"
+  cat "$TMP/adopter-makefile" > "$ADOPTER_TWIN/Makefile"
+  cat >> "$ADOPTER_TWIN/Makefile" <<'ADOPTER_MAKE'
+
+.PHONY: test-adopter package serve adopter-lint commit-adopter
+check: adopter-lint
+adopter-lint:
+	@test ! -e .adopter-check-fails
+commit-adopter:
+	@git -c commit.gpgsign=false commit -F .adopter-commit-message
+ADOPTER_MAKE
+  cat >> "$ADOPTER_TWIN/CLAUDE.md" <<'ADOPTER_DOC'
+
+## Adopter stack profile
+Run `make test-adopter` for application tests, `make package` for a release,
+and `make serve` for development. `make check` also runs `adopter-lint`.
+Commit reviewed changes with `make commit-adopter`, reading the message from
+`.adopter-commit-message`. This project keeps its own deployment targets.
+ADOPTER_DOC
+  for adapter in .claude/settings.json .codex/hooks.json; do
+    jq '.hooks.PreToolUse += [{matcher:"Bash",hooks:[{type:"command",command:"test -f CLAUDE.md"}]}] |
+        .hooks.Stop += [{hooks:[{type:"command",command:"test -f Makefile"}]}]' \
+      "$ADOPTER_TWIN/$adapter" > "$TMP/adopter-hooks"
+    cat "$TMP/adopter-hooks" > "$ADOPTER_TWIN/$adapter"
+  done
+  printf 'origin file://%s\nref main\n' "$ADOPTER_TWIN_SOURCE" > "$ADOPTER_TWIN/.agentic-flow-source"
+  printf 'older-adopter\n' > "$ADOPTER_TWIN/.agentic-flow-version"
+  (
+    cd "$ADOPTER_TWIN"
+    git init -q
+    git config user.name 'Adopter fixture'
+    git config user.email adopter@example.invalid
+    git config commit.gpgsign false
+    source_files=()
+    while IFS= read -r -d '' source_file; do source_files+=("$source_file"); done \
+      < <(git ls-files --others --exclude-standard -z)
+    git add -- "${source_files[@]}"
+    git commit -qm 'Seed customized adopter project'
+  )
+  [ "$copies_before" = "$(cost_count "$LOCAL_EVENTS" fixture_file_copy)" ] \
+    || fail 'adopter twin added fixture file copies'
+}
+
+adopter_twin_preserved() (
+  cd "$ADOPTER_TWIN"
+  git diff --exit-code HEAD -- CLAUDE.md Makefile .claude/settings.json .codex/hooks.json \
+    .agentic-flow-version .agentic-flow-installation >/dev/null \
+    || fail 'adopter twin lost project customizations or installed state'
+)
+
+adopter_twin_check() (
+  cd "$ADOPTER_TWIN"
+  # Failure first: the customized prerequisite must actually participate in check.
+  touch .adopter-check-fails
+  make check > "$TMP/adopter-check-red.out" 2>&1 \
+    && fail 'adopter twin make check ignored the customized lint target'
+  rm .adopter-check-fails
+  make check > "$TMP/adopter-check.out" 2>&1 \
+    || { cat "$TMP/adopter-check.out" >&2; fail 'make check failed in the adopter twin'; }
+)

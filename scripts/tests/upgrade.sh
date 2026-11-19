@@ -4,6 +4,13 @@
 AGENTIC_FLOW_CLI="$ROOT/scripts/agentic-flow"
 assert_file "$AGENTIC_FLOW_CLI"
 
+# The red-first overlay contains only this group and helpers. Guard the owning
+# groups' holdout wiring as well, so a pristine-only suite cannot pass scenario 8.
+for twin_group in export hooks; do
+  grep -Eq '^[[:space:]]*adopter_twin_build([[:space:]]|$)' "$ROOT/scripts/tests/$twin_group.sh" \
+    || fail "adopter twin holdout missing from $twin_group group"
+done
+
 # Assurance state is project-owned. Failures must leave both tracked files untouched.
 ASSURANCE="$ROOT/scripts/assurance.sh"
 assert_file "$ASSURANCE"
@@ -410,4 +417,46 @@ grep -q 'read its replacement' "$TMP/self-replace.out" \
   && fail "current upgrader executed its replacement after upgrading"
 cmp -s "$LEGACY_SOURCE/scripts/agentic-flow" "$TMP/legacy-upgrade-default/scripts/agentic-flow" \
   || fail "self-replacing upgrade did not install the new CLI"
+fi
+
+# Customized adopter holdout. Installed projects deliberately omit the exporter
+# and its pristine templates, just as for the export group's source-only cases.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  adopter_twin_build
+  (
+    cd "$ADOPTER_TWIN"
+    twin_before=$(tree_digest "$ADOPTER_TWIN")
+    scripts/agentic-flow upgrade > "$TMP/adopter-upgrade-no-yes.out" 2>&1 \
+      && fail 'adopter twin upgrade wrote without confirmation'
+    [ "$twin_before" = "$(tree_digest "$ADOPTER_TWIN")" ] \
+      || fail 'unconfirmed adopter twin upgrade changed the project'
+    twin_status=0
+    scripts/agentic-flow upgrade --yes > "$TMP/adopter-upgrade.out" 2>&1 || twin_status=$?
+    [ "$twin_status" -eq 0 ] \
+      || { cat "$TMP/adopter-upgrade.out" >&2; fail 'adopter twin upgrade did not report pending merges'; }
+    adopter_twin_preserved
+    for twin_file in CLAUDE.md Makefile .claude/settings.json .codex/hooks.json; do
+      case "$twin_file" in
+        CLAUDE.md|Makefile) twin_source="templates/harness/$twin_file" ;;
+        *) twin_source="$twin_file" ;;
+      esac
+      cmp -s "$twin_file.agentic-new" "$ADOPTER_TWIN_SOURCE/$twin_source" \
+        || fail "adopter twin upgrade omitted the pristine candidate for $twin_file"
+    done
+    assert_file .agentic-flow-candidate-version
+    twin_before=$(tree_digest "$ADOPTER_TWIN")
+    twin_status=0
+    scripts/agentic-flow upgrade --yes > "$TMP/adopter-upgrade-rerun.out" 2>&1 || twin_status=$?
+    [ "$twin_status" -eq 0 ] && [ "$twin_before" = "$(tree_digest "$ADOPTER_TWIN")" ] \
+      || fail 'adopter twin repeated upgrade changed pending files'
+
+    # A pristine-green, adopter-breaking overwrite must trip the holdout.
+    cat "$ADOPTER_TWIN_SOURCE/templates/harness/Makefile" > Makefile
+    (adopter_twin_preserved) > "$TMP/adopter-overwrite.out" 2>&1 \
+      && fail 'adopter twin accepted an overwritten customized Makefile'
+    grep -q 'adopter twin lost project customizations' "$TMP/adopter-overwrite.out" \
+      || fail 'adopter twin overwrite failed for an unrelated reason'
+    git checkout -- Makefile
+    adopter_twin_preserved
+  )
 fi
