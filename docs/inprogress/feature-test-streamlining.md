@@ -88,9 +88,9 @@ The adopter gains almost nothing. These groups drive the harness's own scripts a
 | T-3 | **Moved to Phase 2b (h-1).** **Profile before cutting.** A timing wrapper on `c4_run`, `c5_run` and the resets, enabled by an environment variable, reports per-scenario seconds in one run. | Turns T-4 into a measured decision |
 | T-4 | **Controller group moved to Phase 2b (h-2); the `stations` group's tags stay here.** **Scenario selection.** Split `controller.sh` and `stations.sh` into tagged scenario files (launch, ledger, recovery, ship, andon). `make test-one F=controller S=<tag>`. A step's Verify line names its scenarios; the whole group runs at the end of the plan and in CI. | Likely 10 min down to a few per step; T-3 confirms |
 | T-5 | **Parallel groups in `--full`.** Fixtures are already isolated and concurrent runs are supported. Wall time becomes the slowest shard. | Large once T-4 creates shards |
-| T-6 | **Wall-time budget.** Record seconds per group next to the copy counts and fail when a group exceeds its own approved ceiling (per group, decided 2026-11-17), so the step that grows it is named. | Prevents a repeat of 32 s → 673 s |
+| T-6 | **Wall-time budget.** Record seconds per group next to the copy counts and fail when a group exceeds its own approved ceiling (per group, decided 2026-11-17), so the step that grows it is named. Enforced in `--only` runs too, and per tag for the tagged groups, so a step's own Verify run catches growth and close-out does not discover it. | Prevents a repeat of 32 s → 673 s |
 | T-7 | **Gate cadence in the contracts.** Per step: `make check` and the step's Verify command only. Full `make test` once at the end of the plan. Reviewer: no test runs by default (T-1). | Removes the extra groups executors run today |
-| T-8 | **Adopter test scope.** Each group declares a scope: `local` if it tests the adopter's real files, or `scaffold` if it runs harness scripts against fixtures (controller, stations, lifecycle, plan-to-issues, export, upgrade; contracts and hooks pending the audit under Decisions). In an exported project, `--full` runs the `local` groups, and the `scaffold` groups only when the change touches harness-owned paths from the payload manifest, as an upgrade commit does. The check is a diff against the merge base, so it needs no local state and works the same in CI. `--full --all-groups` forces everything. The export group's assertion changes to match, and the `self-test.sh` header becomes true again. Non-breaking; it does not wait for R-14b. | The controller and stations runtime on every adopter `make test`, locally and in CI |
+| T-8 | **Adopter test scope.** Each group declares a scope: `local` if it tests the adopter's real files, or `scaffold` if it runs harness scripts against fixtures (controller, stations, lifecycle, plan-to-issues, export, upgrade; contracts and hooks pending the audit under Decisions). In an exported project, `--full` runs the `local` groups, and the `scaffold` groups only when the change touches harness-owned paths from the payload manifest, as an upgrade commit does. The check covers uncommitted and untracked edits as well as commits, against a defined base (see Interface), so it needs no local state and works the same in CI. The shipped CI template fetches enough history for it. `--full --all-groups` forces everything. The export group's assertion changes to match, and the `self-test.sh` header becomes true again. Non-breaking; it does not wait for R-14b. | The controller and stations runtime on every adopter `make test`, locally and in CI |
 | R-15 | **Split `self-test.sh` into `tests/<group>.sh`** (moved here from the cleanup list). T-4 and T-5 build on the split. Add an adopter-twin fixture (customized `CLAUDE.md` and `Makefile`, realistic commit commands) and run upgrade, hooks and `make check` against it as holdout scenarios. | Enables T-4/T-5 |
 
 ### Ordering
@@ -112,7 +112,12 @@ agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--f
 make test-one F=<group> [S=<scenario-tag>[,<tag>…]]
 self-test.sh --only <group> [--scenario <tag>]
   AGENTIC_TEST_TIMING=1 → per-scenario seconds on stderr
-  cost events gain group:<name>:seconds; full mode fails over an approved ceiling
+  cost events gain group:<name>:seconds and, for tagged groups, group:<name>:<tag>:seconds
+  ceiling file: one line per group and per tag of the controller and stations groups
+  --only <group> (whole group): fails over the group's ceiling
+  --only <group> --scenario <tags>: fails over each selected tag's ceiling; the group ceiling
+    is not applied to a partial run, and every tag of a tagged group must have a ceiling line
+  --full: every group ceiling; with parallel shards the ceiling is checked against the shard's own seconds
 
 self-test.sh --full [--jobs <n>]          # T-5; default min(groups, CPUs)
 
@@ -126,15 +131,21 @@ ship: non-zero ship-gate → stop before push, print the failing group, exit 1
 local:    groups that test the adopter's real files
 scaffold: export upgrade plan-to-issues lifecycle stations controller (+ contracts, hooks if fixture-only)
 exported project, --full: local groups; + scaffold groups when
-  git diff --name-only <merge-base>...HEAD touches a payload-manifest destination
+  the changed set touches a payload-manifest destination, where the changed set is
+    git diff --name-only <base>              (committed + staged + unstaged vs the base)
+    + git ls-files --others --exclude-standard   (untracked)
+    <base> = git merge-base HEAD <ref>, <ref> = first that resolves of
+      $AGENTIC_BASE_REF, origin/$GITHUB_BASE_REF, @{upstream}, origin/HEAD, origin/main, origin/master
+    no <ref>, no merge base, or any git failure → run every group
 self-test.sh --full --all-groups          # force every group
+make ship-gate                            # always: self-test.sh --full --all-groups in the fresh export
 ```
 
 ## Threat model
 
 Verify reuse turns a stored record into permission to skip a gate. The record is keyed by commit, tree and the verifier's own hash, so a code or verifier change re-runs. The new risk is a forged record. Records live in `.git/agentic-flow/verify/`, which no station may write; T-1 now lands in Phase 2b, after P-1, which makes that a tested property for the CLIs that have an OS sandbox (OpenCode has none; see `feature-station-hardening.md`, Threat model). A human can still edit the record by hand, as they can skip any local gate today. CI does not use local records and runs the full suite.
 
-T-8 lets an adopter skip harness-internal groups. The risk is a harness defect that only shows on the adopter's platform. The scaffold's own CI runs every group, the `scaffold` groups still run on any change to harness-owned files, and Phase 2b's probe exercises the real launcher on the adopter's machine. A hand edit to a harness file is itself a change to a harness-owned path, so it triggers the full run.
+T-8 lets an adopter skip harness-internal groups. The risk is a harness defect that only shows on the adopter's platform. The scaffold's own CI runs every group, the `scaffold` groups still run on any change to harness-owned files, and Phase 2b's probe exercises the real launcher on the adopter's machine. A hand edit to a harness file is itself a change to a harness-owned path, so it triggers the full run, committed or not: the changed set includes staged, unstaged and untracked files, so an adopter who edits a harness script and runs `make test` before committing still gets the scaffold groups. The shipped CI template fetches history and the base ref, so ordinary adopter CI computes a real base; where it cannot, every group runs, which is safe but forfeits the saving, and a test covers each such case.
 
 ## Failure behavior
 
@@ -143,7 +154,7 @@ T-8 lets an adopter skip harness-internal groups. The risk is a harness defect t
 | `verify-step` reuse lookup | n/a (local file) | Unreadable or mismatched record → run the full verification | n/a |
 | Parallel groups (T-5) | Each shard keeps its own timeout | n/a | Any failing shard fails `make test`, and every failing shard is reported |
 | Scenario selection (T-4) | As the group | Unknown tag → exit 2, nothing runs | n/a |
-| Harness-change detection (T-8) | n/a (local git) | Merge base unknown (shallow clone, detached CI checkout) → run every group | n/a |
+| Harness-change detection (T-8) | n/a (local git) | No resolvable base ref, no merge base (shallow clone, detached checkout, missing refs) or any git error → run every group | Uncommitted and untracked files always count as changes |
 
 Bounds: parallel shards capped at the CPU count; each shard keeps the group's existing timeouts.
 
@@ -222,12 +233,12 @@ Do not raise a ceiling. Only t-1 edits contracts. `CLAUDE.md` and `AGENTS.md` ar
 
 **T-2**
 2. **Everyday `make test` runs the exported suite once, not twice.** The export group builds a fresh export, runs its `--fast` suite and `make check` there, and does not run `self-test.sh --full` inside it. A logging wrapper or marker proves the nested `--full` is not invoked from `make test`.
-3. **`make ship-gate`.** It runs the full suite in exported layout (this repo) and exits nonzero on failure. When the Makefile defines `ship-gate`, `ship` runs it on the final head after the close-out commit and before the first push (`ship.sh`, before `git push`); a failing gate stops with exit 1, names the failing group, and a fake `git` records no push. When the target is absent, `ship` prints a notice and continues. When the gate passes, `ship` pushes as before.
+3. **`make ship-gate`.** It runs `self-test.sh --full --all-groups` in a fresh export (this repo), so the exported layout keeps full applicable coverage whatever T-8's filtering decides, and exits nonzero on failure. A test asserts the recipe passes `--all-groups` once t-3 has added the flag. When the Makefile defines `ship-gate`, `ship` runs it on the final head after the close-out commit and before the first push (`ship.sh`, before `git push`); a failing gate stops with exit 1, names the failing group, and a fake `git` records no push. When the target is absent, `ship` prints a notice and continues. When the gate passes, `ship` pushes as before.
 4. **CI keeps it.** This repository's `ci.yml` runs `make test` and `make ship-gate` as separate steps, so the exported layout is still tested before merge. `templates/ci/ci.yml` runs whatever the adopter's `make test` defines and is otherwise unchanged.
 
 **T-8**
 5. **Every group declares a scope.** `SELF_TEST_GROUPS` and a scope list (`local` or `scaffold`) are validated against each other: a group with no scope, a scope for a missing group, or a scope other than the two fails `make check`. Each group's scope is justified in the commit body from what it reads (the audit decided in Part A).
-6. **Exported-project scope.** In an exported project, `self-test.sh --full` runs the `local` groups, and also the `scaffold` groups when `git diff --name-only <merge-base>...HEAD` touches a payload-manifest destination (including a hand edit to a harness file and an upgrade commit). An unknown merge base (shallow clone, detached head, no remote) runs every group. `--all-groups` forces every group. In this source repository `--full` behaves as before. The "run the full suite" assertion in the export group and the `self-test.sh` header comment change to match.
+6. **Exported-project scope.** In an exported project, `self-test.sh --full` runs the `local` groups, and also the `scaffold` groups when the changed set touches a payload-manifest destination (including a hand edit to a harness file and an upgrade commit). The changed set is committed, staged, unstaged and untracked changes against `git merge-base HEAD <ref>`, with `<ref>` chosen as the Interface says. A harness file edited and left uncommitted, staged only, or newly created and untracked triggers the scaffold groups. An unresolvable base (shallow clone with no merge base, missing refs, no remote, any git error) runs every group. A detached PR-merge checkout with `GITHUB_BASE_REF` set and the base fetched computes a real base and, with no harness change, runs only `local`. `--all-groups` forces every group. In this source repository `--full` behaves as before. The "run the full suite" assertion in the export group and the `self-test.sh` header comment change to match.
 
 **R-15**
 7. **The split loses nothing.** After moving each group to `scripts/tests/<group>.sh`, the set of `fail`/assertion message strings found in the files is identical to the set before the move, `SELF_TEST_GROUPS` is unchanged, `--only <group>` passes for every group, and `--full` prints the same "self-test passed." with the same group order. A check compares the message set against a recorded list, so a dropped assertion fails.
@@ -238,7 +249,7 @@ Do not raise a ceiling. Only t-1 edits contracts. `CLAUDE.md` and `AGENTS.md` ar
 10. **Parallel shards.** `self-test.sh --full --jobs <n>` runs groups (and controller/stations tag shards) as concurrent processes, default `min(shards, CPUs)`, capped at the CPU count. Each shard keeps its own timeout and its own fixture root. Output is printed per shard in a stable order. Every failing shard is reported and any failure fails the run. `--jobs 1` is the serial order. The copy-count budget is still enforced on the combined event stream, and the full run still proves every expected group executed.
 
 **T-6**
-11. **Wall-time ceilings.** Each group's seconds are recorded as cost events next to the copy counts. A full run without `--only` fails when a group exceeds its own ceiling, naming the group, its seconds and its ceiling. Ceilings live in one reviewed file, are set from t-7's measured post-split timings with headroom, and a boundary test shows a group at its ceiling passes and one second over fails. A ceiling change is a diff to that file, so it needs review. Ceilings do not apply under `--only` or `--scenario`.
+11. **Wall-time ceilings.** Each group's seconds are recorded as cost events next to the copy counts. A whole-group run (`--only <group>` or `--full`) fails when a group exceeds its own ceiling, naming the group, its seconds and its ceiling. A `--scenario` selection fails when a selected tag exceeds that tag's ceiling and does not apply the group ceiling, so a partial run neither hides growth in the tags it ran nor is failed for tags it did not. Every tag of the controller and stations groups has a ceiling line, and `make check` fails when a group or tag has none. Ceilings live in one reviewed file, are set from t-7's measured post-split timings with headroom, and a boundary test shows a value at its ceiling passes and one second over fails, for a group and for a tag. A ceiling change is a diff to that file, so it needs review.
 
 ## Verification commands
 ```bash
@@ -276,7 +287,7 @@ scripts/doctor.sh --check
 
 **Approach:**
 1. In the export group, replace the nested `self-test.sh --full` with `--fast` plus `make check` in the fresh export (`self-test.sh` near the "full self-test failed in a fresh export" assertion). Keep every other export assertion.
-2. Add `make ship-gate` to the root `Makefile` (and as an optional documented target in `templates/harness/Makefile`): it exports to a temporary directory and runs the full suite in exported layout, reusing the export group's fresh-export helper. A failure names the failing group.
+2. Add `make ship-gate` to the root `Makefile` (and as an optional documented target in `templates/harness/Makefile`): it exports to a temporary directory and runs the full suite in exported layout, reusing the export group's fresh-export helper. Until t-3 adds `--all-groups` the recipe runs `--full`; t-3 changes it to `--full --all-groups` and asserts that. A failure names the failing group.
 3. `ship` runs `make ship-gate` when the target exists, on the final head after the close-out commit and before the first `git push`, and stops with exit 1 on failure. With no target it prints a notice and continues.
 4. `.github/workflows/ci.yml` adds a `make ship-gate` step after the Test suite step. Keep the existing action pins and the pin check green.
 5. The per-script shellcheck lint (h-12) stays in `make test` unchanged.
@@ -294,15 +305,17 @@ scripts/doctor.sh --check
 
 **Approach:**
 1. Next to `SELF_TEST_GROUPS`, add the scope list and the validation in scenario 5. Audit each group by what it reads: `local` only if it tests the adopter's real files. Record each decision and its reason in the commit body. Expect `local` to be nearly empty.
-2. In an exported project (no source-only exporter), `--full` selects groups by scope as scenario 6 says. The harness-change test is one function using `git diff --name-only <merge-base>...HEAD` and the payload manifest's destinations; no local state, same behaviour in CI. Any failure to compute it runs every group.
+2. In an exported project (no source-only exporter), `--full` selects groups by scope as scenario 6 says. The harness-change test is one function over the changed set and base the Interface defines, and the payload manifest's destinations; no local state, same behaviour in CI. Any failure to compute it runs every group.
 3. Add `--all-groups`. Update the `self-test.sh` header comment and the export group's assertion that an exported project passes its full suite.
-4. Document the behaviour in `docs/` where the exported `make test` is described, and in the CHANGELOG draft notes for close-out.
+4. Change `make ship-gate` to `self-test.sh --full --all-groups` and assert it.
+5. Edit `templates/ci/ci.yml`'s app job (and its `templates/harness` mirror, if any) so the checkout has history and the base ref: `fetch-depth: 0`, and `AGENTIC_BASE_REF=origin/${{ github.base_ref }}` in the test step's environment for pull requests. The check-action-pins and CI-template checks must stay green.
+6. Document the behaviour in `docs/` where the exported `make test` is described, and in the CHANGELOG draft notes for close-out.
 
-**Test:** scenarios 5 and 6, failure path first: unknown merge base runs all groups; a one-line hand edit to a harness file runs the scaffold groups; no harness change runs only `local`.
+**Test:** scenarios 5 and 6, failure path first: each unresolvable-base case runs all groups (shallow clone with no merge base, missing `origin` refs, no remote, a git error); an uncommitted, a staged-only and an untracked harness edit each run the scaffold groups; a committed one-line edit does too; a detached PR-merge checkout with the base fetched and no harness change runs only `local`; the CI template change is asserted (`fetch-depth: 0`, base ref exported).
 
 **DoD:** scenarios 5 and 6 pass. The source repository's `--full` runs the same groups as before.
 **Verify:** `make test-one F=export`, `make test-one F=upgrade`, and `make test-one F=contracts`
-**Risks:** skipping a group that would have caught a real adopter break (any harness-owned change re-enables them; an unknown base runs everything); a wrong `local`/`scaffold` call; detection reading a stale base in CI (it falls back to every group).
+**Risks:** skipping a group that would have caught a real adopter break (any harness-owned change re-enables them; an unknown base runs everything); a wrong `local`/`scaffold` call; detection reading a stale base in CI (it falls back to every group); a changed set that omits uncommitted or untracked files (scenario 6 tests each); the CI template leaving a shallow checkout so adopters keep running every group.
 **Red-first:** `scripts/self-test.sh --only export` — scripts/self-test.sh
 **Commit:** `Give each test group a scope and run scaffold groups in adopters only when harness files change`
 
@@ -372,21 +385,21 @@ scripts/doctor.sh --check
 **Commit:** `Run self-test groups and scenario shards in parallel under --full`
 
 ## t-8 — Wall-time ceilings per group (T-6)
-**Why last:** ceilings need the post-split, post-parallel timings, and a ceiling set too early would be wrong.
+**Why last:** ceilings need the post-split, post-parallel timings, and a ceiling set too early would be wrong. They apply to the steps run after this one, so the growth the analysis describes is caught at the step that causes it, from the focused Verify run, not at close-out.
 
 **Approach:**
 1. Record each group's seconds as cost events (shard seconds, not the parallel total).
-2. Add one reviewed ceiling file, one line per group. A full run without `--only` fails when a group exceeds its ceiling, naming the group, seconds and ceiling.
+2. Add one reviewed ceiling file with one line per group and one per controller and stations tag. A whole-group run fails when a group exceeds its ceiling; a `--scenario` run fails when a selected tag exceeds its tag ceiling and applies no group ceiling. Each failure names the group or tag, seconds and ceiling. `make check` fails when a group or tag has no line.
 3. Set ceilings from this phase's measured timings with headroom stated in the commit body (for example 1.5×). Provide a boundary test.
 4. Document where the ceiling lives and that raising one is a reviewed change.
 
-**Test:** scenario 11: at the ceiling passes, one second over fails, `--only` and `--scenario` ignore ceilings, a missing group in the file fails `make check`.
+**Test:** scenario 11: at the ceiling passes, one second over fails, for a group and for a tag; a `--scenario` run enforces only the selected tags; a whole-group `--only` run enforces the group ceiling; a missing group or tag line fails `make check`.
 
 **DoD:** scenario 11 passes; a full `make test` is green under the new ceilings.
 **Verify:** `make test-one F=contracts`, then a full `make test` at the end of the brief
-**Risks:** ceilings tuned to this machine failing on a slower CI runner (headroom, and a note on how to raise one); flaky ceilings from noisy neighbours; a ceiling file nobody reviews.
+**Risks:** ceilings tuned to this machine failing on a slower CI runner (headroom, and a note on how to raise one); flaky ceilings from noisy neighbours; a ceiling file nobody reviews; a tag ceiling set so loosely it hides growth (set from measured seconds).
 **Red-first:** `scripts/self-test.sh --only contracts` — scripts/self-test.sh
-**Commit:** `Fail a full run when a test group exceeds its approved wall-time ceiling`
+**Commit:** `Fail a test run when a group or scenario tag exceeds its approved wall-time ceiling`
 
 ---
 
