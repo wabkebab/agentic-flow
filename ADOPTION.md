@@ -77,6 +77,15 @@ make check
 change: `export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, or `upgrade`.
 `make test` still runs the complete suite plus `shellcheck`.
 
+[`config/test-wall-ceilings.tsv`](config/test-wall-ceilings.tsv) sets the
+allowed seconds for each self-test group and each controller and stations tag.
+A focused run checks the group ceiling. Adding `S=<tag>[,<tag>…]` checks only
+the selected tags. The full suite checks each shard and sums the tag shard
+durations for each tagged group's ceiling. `make check` requires a ceiling for
+every group and tag. Set `AGENTIC_MEASURE_EVENTS` to an absolute output file to
+capture group and tag seconds. Raising a ceiling requires review. Include a
+fresh measurement and explain the headroom in the proposed change.
+
 Agent context is intentionally progressive. Executors start from `AGENTS.md`, the issue,
 the linked brief step, `CLAUDE.md` Stack profile/Gotchas, and live call sites/tests.
 Planner and close-out work starts from `CLAUDE.md` plus the relevant template, Tracker,

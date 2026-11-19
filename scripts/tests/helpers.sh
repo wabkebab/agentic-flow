@@ -30,6 +30,13 @@ fail() {
   exit 1
 }
 
+link_test_wall_ceilings() { # <fixture root>
+  mkdir -p "$1/config"
+  ln "$ROOT/config/test-wall-ceilings.tsv" "$1/config/test-wall-ceilings.tsv"
+}
+
+self_test_now() { printf '%s\n' "$SECONDS"; }
+
 # Shared by stations and recovery, including the approved red-first paths.
 # shellcheck disable=SC2034 # Sourced ledger consumes fixture context.
 controller_salvage_ledger_tests() (

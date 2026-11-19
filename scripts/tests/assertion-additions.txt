@@ -96,3 +96,18 @@ fail	'parallel dispatcher exceeded two CPUs'
 fail	'parallel dispatcher missed the combined copy budget'
 fail	'parallel dispatcher omitted another failing shard'
 fail	'parallel dispatcher stopped after a failed shard'
+fail	"make check accepted a missing wall-time ceiling for $missing"
+fail	"make check did not identify the missing wall-time ceiling for $missing"
+fail	"wall ceiling ($*) returned $status, expected $expected: $(cat "$fixture/out")"
+fail	'disjoint tag blocks did not sum their seconds'
+fail	'full run did not record its aggregate group seconds'
+fail	'full run did not record the over-ceiling group'
+fail	'full suite missed the combined seconds for a tagged group'
+fail	'group boundary did not record its seconds'
+fail	'missing wall-time ceiling file: config/test-wall-ceilings.tsv'
+fail	'partial run recorded a group or an unselected tag'
+fail	'scenario union missed an over-ceiling selected tag'
+fail	'tag boundary did not record its seconds'
+fail	'tag ceiling failure lacked the tag and measured and allowed seconds'
+fail	'whole tagged group missed its group ceiling'
+fail	'whole-group ceiling failure lacked the group and measured and allowed seconds'

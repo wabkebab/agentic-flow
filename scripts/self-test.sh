@@ -128,6 +128,7 @@ CONTROLLER_BLOCKS="timing:launch ship:ship andon:andon launch:launch ledger:ledg
 STATIONS_SCENARIOS="launch verify handoff packet"
 STATIONS_BLOCKS="watchdogs:launch cache:verify slice:launch journal:handoff cli:handoff interrupt:verify red-first:verify packet:packet closeout:handoff settings:launch"
 SCENARIO_BLOCKS_RAN=" "
+SCENARIO_TAGS=""
 if [ "$SCENARIO_SET" = 1 ]; then
   case "$ONLY_GROUP" in
     controller) SCENARIO_TAGS=$CONTROLLER_SCENARIOS ;;
@@ -280,6 +281,52 @@ fi
 # shellcheck source=scripts/tests/helpers.sh
 . "$ROOT/scripts/tests/helpers.sh"
 
+# Validate against the dispatcher inventory in every mode, including make check.
+load_wall_ceilings() {
+  local key keys="$SELF_TEST_GROUPS" file="$ROOT/config/test-wall-ceilings.tsv"
+  for key in $CONTROLLER_SCENARIOS; do keys="$keys controller:$key"; done
+  for key in $STATIONS_SCENARIOS; do keys="$keys stations:$key"; done
+  [ -r "$file" ] || fail 'missing wall-time ceiling file: config/test-wall-ceilings.tsv'
+  awk -F '\t' -v keys="$keys" '
+    function reject(message) {
+      print "self-test failed: " message > "/dev/stderr"
+      invalid=1
+      exit 1
+    }
+    BEGIN {
+      count=split(keys, order, " ")
+      for (i=1; i<=count; i++) expected[order[i]]=1
+    }
+    /^#/ || /^$/ { next }
+    NF != 2 || $2 !~ /^(0|[1-9][0-9]*)$/ || length($2)>9 {
+      reject("invalid wall-time ceiling at config/test-wall-ceilings.tsv line " FNR)
+    }
+    !($1 in expected) { reject("wall-time ceiling for unknown group or tag: " $1) }
+    $1 in seen { reject("duplicate wall-time ceiling: " $1) }
+    { seen[$1]=$2 }
+    END {
+      if (invalid) exit 1
+      for (i=1; i<=count; i++) {
+        key=order[i]
+        if (!(key in seen)) reject("missing wall-time ceiling: " key)
+        printf " %s=%s", key, seen[key]
+      }
+      print " "
+    }
+  ' "$file"
+}
+WALL_CEILINGS=$(load_wall_ceilings) || exit 1
+
+check_wall_ceiling() { # <group[:tag]> <elapsed seconds>
+  local key="$1" elapsed="$2" ceiling
+  ceiling=${WALL_CEILINGS#*" $key="}
+  ceiling=${ceiling%% *}
+  if [ "$elapsed" -gt "$ceiling" ]; then
+    printf 'self-test failed: %s took %s seconds (ceiling: %s seconds)\n' "$key" "$elapsed" "$ceiling" >&2
+    return 1
+  fi
+}
+
 cost_count() { # <event-file> <event>
   awk -v event="$2" '$0 == event { n++ } END { print n+0 }' "$1"
 }
@@ -327,6 +374,7 @@ should_run() { # <group>
     fast_check_group "$1"
     return 1
   fi
+  GROUP_START_SECONDS=$(self_test_now)
   return 0
 }
 
@@ -334,10 +382,12 @@ should_run() { # <group>
 scenario_group_begin() { # <controller|stations>; isolate markers in whole-suite runs.
   SCENARIO_GROUP=$1
   case "$1" in
-    controller) SCENARIO_BLOCKS=$CONTROLLER_BLOCKS ;;
-    stations) SCENARIO_BLOCKS=$STATIONS_BLOCKS ;;
+    controller) SCENARIO_BLOCKS=$CONTROLLER_BLOCKS; SCENARIO_TAGS=$CONTROLLER_SCENARIOS ;;
+    stations) SCENARIO_BLOCKS=$STATIONS_BLOCKS; SCENARIO_TAGS=$STATIONS_SCENARIOS ;;
   esac
   SCENARIO_BLOCKS_RAN=" "
+  SCENARIO_WALL_TAG=""
+  : > "$TMP/scenario-wall"
 }
 
 scenario_selected() { # <tag>; no flag means every scenario, including CI's --full run.
@@ -346,7 +396,15 @@ scenario_selected() { # <tag>; no flag means every scenario, including CI's --fu
   return 1
 }
 
+scenario_wall_end() {
+  [ -n "$SCENARIO_WALL_TAG" ] || return 0
+  printf '%s %s\n' "$SCENARIO_WALL_TAG" "$(( $(self_test_now) - SCENARIO_START_SECONDS ))" \
+    >> "$TMP/scenario-wall"
+  SCENARIO_WALL_TAG=""
+}
+
 should_run_scenario() { # <tag> <unique-block-name>
+  scenario_wall_end
   case " $SCENARIO_BLOCKS " in
     *" $2:$1 "*) ;;
     *) if [ "$SCENARIO_GROUP" = controller ]; then
@@ -356,11 +414,14 @@ should_run_scenario() { # <tag> <unique-block-name>
   scenario_selected "$1" || return 1
   SCENARIO_BLOCKS_RAN="$SCENARIO_BLOCKS_RAN $2:$1 "
   measure_event "scenario:$1:$2"
+  SCENARIO_WALL_TAG=$1
+  SCENARIO_START_SECONDS=$(self_test_now)
   return 0
 }
 
 assert_scenarios_ran() {
   local block tag
+  scenario_wall_end
   if [ "$SCENARIO_BLOCKS_RAN" = ' ' ]; then
     if [ "$SCENARIO_GROUP" = controller ]; then fail 'no controller scenario block executed'
     else fail 'no stations scenario block executed'; fi
@@ -377,6 +438,31 @@ assert_scenarios_ran() {
   done
 }
 # SCENARIO HELPERS END
+
+report_focused_wall_time() {
+  local elapsed=$(( $(self_test_now) - GROUP_START_SECONDS )) status=0 tag tag_seconds
+  local selected_tags=""
+  if [ "$SCENARIO_SET" = 0 ]; then
+    measure_event "group:$ONLY_GROUP:$elapsed"
+    check_wall_ceiling "$ONLY_GROUP" "$elapsed" || status=1
+  fi
+  for tag in $SCENARIO_TAGS; do
+    if scenario_selected "$tag"; then selected_tags="${selected_tags:+$selected_tags }$tag"; fi
+  done
+  for tag in $selected_tags; do
+    if [ "$SCENARIO_SET" = 1 ] && [ "$selected_tags" = "$tag" ]; then
+      # A single-tag shard carries the full cost of its shared group setup.
+      tag_seconds=$elapsed
+    else
+      tag_seconds=$(awk -v tag="$tag" '$1 == tag { total+=$2 } END { print total+0 }' "$TMP/scenario-wall")
+    fi
+    measure_event "group:$ONLY_GROUP:$tag:$tag_seconds"
+    if [ "$SCENARIO_SET" = 1 ]; then
+      check_wall_ceiling "$ONLY_GROUP:$tag" "$tag_seconds" || status=1
+    fi
+  done
+  return "$status"
+}
 
 workflow_contract_check() {
   local workflow_root=${1:-$ROOT}
@@ -483,8 +569,11 @@ if [ "$SHIP_GATE" = 1 ]; then
   : > "$gate_events"
   if ! (cd "$TMP/ship-export" && AGENTIC_MEASURE_EVENTS="$gate_events" scripts/self-test.sh --full --all-groups); then
     gate_group=$(awk '
-      /^group:/ { group=substr($0,7) }
-      /^shard_failure:/ { failed=failed (failed ? ", " : "") substr($0,15) }
+      /^group:[^:]+$/ { group=substr($0,7) }
+      /^(shard|group)_failure:/ {
+        sub(/^[^:]+:/, "")
+        failed=failed (failed ? ", " : "") $0
+      }
       END { print (failed ? failed : (group ? group : "startup")) }
     ' "$gate_events")
     fail "exported full suite failed (group: $gate_group)"
@@ -513,9 +602,10 @@ self_test_cpus() {
 }
 
 run_full_shards() {
-  local group tag shard dir report seen jobs running=0 next=0 slot pid status
-  local -a shards=() pids=() statuses=() args
-  for group in $SELECTED_FULL_GROUPS; do
+  local group tag tags shard dir report seen jobs running=0 next=0 slot pid status elapsed
+  local -a groups=() shards=() pids=() statuses=() args
+  read -r -a groups <<< "$SELECTED_FULL_GROUPS"
+  for group in "${groups[@]}"; do
     case "$group" in
       controller) for tag in $CONTROLLER_SCENARIOS; do shards+=("$group/$tag"); done ;;
       stations) for tag in $STATIONS_SCENARIOS; do shards+=("$group/$tag"); done ;;
@@ -569,7 +659,7 @@ run_full_shards() {
     seen=""
     if [ -f "$dir/local-events" ]; then
       cat "$dir/local-events" >> "$LOCAL_EVENTS"
-      seen=$(sed -n 's/^group://p' "$dir/local-events")
+      seen=$(sed -n 's/^group:\([^:]*\)$/\1/p' "$dir/local-events")
     fi
     if [ -n "$REPORT_EVENTS" ] && [ -f "$dir/report-events" ]; then
       cat "$dir/report-events" >> "$REPORT_EVENTS"
@@ -582,8 +672,36 @@ run_full_shards() {
     else
       echo "self-test failed: shard '$shard' never executed group '$group' exactly once" >&2
     fi
-    if [ "$status" != 0 ] || [ "$seen" != "$group" ]; then
-      measure_event "shard_failure:$shard"
+    if [ "$status" = 0 ] && [ "$seen" = "$group" ]; then
+      if grep -Eq "^group:${shard/\//:}:[0-9]+$" "$dir/local-events"; then continue; fi
+      echo "self-test failed: shard '$shard' did not record its wall seconds" >&2
+    fi
+    measure_event "shard_failure:$shard"
+    FULL_FAILED=1
+  done
+
+  # Untagged groups each have one shard and check their own ceiling. A tagged
+  # group's total is the sum of its shards' own seconds, irrespective of overlap.
+  for group in "${groups[@]}"; do
+    case "$group" in
+      stations) tags=$STATIONS_SCENARIOS ;;
+      controller) tags=$CONTROLLER_SCENARIOS ;;
+      *) continue ;;
+    esac
+    elapsed=$(awk -F : -v group="$group" -v tags="$tags" '
+      BEGIN {
+        expected=split(tags, order, " ")
+        for (i=1; i<=expected; i++) pending[order[i]]=1
+      }
+      $1 == "group" && $2 == group && NF == 4 && ($3 in pending) {
+        total+=$4; count++; delete pending[$3]
+      }
+      END { if (count == expected) print total+0 }
+    ' "$LOCAL_EVENTS")
+    [ -n "$elapsed" ] || continue # A failed shard may have no timing record.
+    measure_event "group:$group:$elapsed"
+    if ! check_wall_ceiling "$group" "$elapsed"; then
+      measure_event "group_failure:$group"
       FULL_FAILED=1
     fi
   done
@@ -675,6 +793,8 @@ done
 # counters together: fewer snapshots cannot conceal whole-tree derived fixtures.
 if [ -z "$ONLY_GROUP" ]; then
   assert_cost_budget "$LOCAL_EVENTS" "$SELF_TEST_MODE"
+else
+  report_focused_wall_time
 fi
 
 [ "$FULL_FAILED" = 0 ] || exit 1

@@ -121,6 +121,7 @@ if should_run_scenario launch timing; then
 # replaced by markers. This avoids recursively launching this suite or a model.
 SELECT_FIX="$TMP/scenario-selection"
 mkdir -p "$SELECT_FIX/scripts/tests"
+link_test_wall_ceilings "$SELECT_FIX"
 ln "$ROOT/scripts/tests/helpers.sh" "$SELECT_FIX/scripts/tests/helpers.sh"
 cat "$ROOT/scripts/self-test.sh" > "$SELECT_FIX/scripts/self-test.sh"
 chmod +x "$SELECT_FIX/scripts/self-test.sh"
@@ -1311,8 +1312,9 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     PAYLOAD_EXCLUDED_SCOPES=codex
     payload_load_manifest "$ROOT/config/payload.tsv"
     payload_expand_files "$ROOT"
-    printf '%s\n' "${DESTS[@]}" | grep -Fxq .agents/skills/review-execution/SKILL.md || fail 'excluding Codex removed the vendor-neutral reviewer bundle'
-    printf '%s\n' "${DESTS[@]}" | grep -Fxq .agents/skills/plan-to-issues/SKILL.md && fail 'station bundle swept Codex-only skills back in'
+    # Read the complete list so an early grep match cannot break the writer's pipe.
+    printf '%s\n' "${DESTS[@]}" | grep -Fx .agents/skills/review-execution/SKILL.md >/dev/null || fail 'excluding Codex removed the vendor-neutral reviewer bundle'
+    printf '%s\n' "${DESTS[@]}" | grep -Fx .agents/skills/plan-to-issues/SKILL.md >/dev/null && fail 'station bundle swept Codex-only skills back in'
     exit 0
   ) || fail 'station contract export regression failed'
 fi

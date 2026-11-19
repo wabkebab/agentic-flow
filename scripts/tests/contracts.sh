@@ -2,10 +2,99 @@
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
 
+# Scenario 11: advance a private clock from inert group and scenario bodies.
+wall_ceiling_tests() (
+  local fixture="$TMP/wall-ceilings" key tag gate missing
+  mkdir -p "$fixture/scripts/tests" "$fixture/config"
+  ln "$ROOT/scripts/self-test.sh" "$fixture/scripts/self-test.sh"
+  cat "$ROOT/scripts/tests/helpers.sh" > "$fixture/scripts/tests/helpers.sh"
+  cat >> "$fixture/scripts/tests/helpers.sh" <<'CLOCK'
+self_test_now() { printf '%s\n' "${FIXTURE_CLOCK:-0}"; }
+CLOCK
+  for key in $SELF_TEST_GROUPS; do
+    case "$key" in
+      controller|stations)
+        awk '
+          /^if should_run_scenario / {
+            print
+            print "  FIXTURE_CLOCK=$((${FIXTURE_CLOCK:-0} + ${STEP_" toupper($3) ":-0}))"
+            next
+          }
+          /^fi # scenario$/ { print }
+        ' "$ROOT/scripts/tests/$key.sh" > "$fixture/scripts/tests/$key.sh"
+        ;;
+      *)
+        cat > "$fixture/scripts/tests/$key.sh" <<'BODY'
+FIXTURE_CLOCK=${STEP_GROUP:-0}
+BODY
+        ;;
+    esac
+  done
+  {
+    for key in $SELF_TEST_GROUPS; do printf '%s\t5\n' "$key"; done
+    for tag in $CONTROLLER_SCENARIOS; do printf 'controller:%s\t5\n' "$tag"; done
+    for tag in $STATIONS_SCENARIOS; do printf 'stations:%s\t5\n' "$tag"; done
+  } > "$fixture/ceilings"
+  cat "$fixture/ceilings" > "$fixture/config/test-wall-ceilings.tsv"
+
+  ceiling_probe() {
+    local expected=$1 status=0
+    shift
+    : > "$fixture/events"
+    AGENTIC_MEASURE_EVENTS="$fixture/events" "$fixture/scripts/self-test.sh" "$@" \
+      > "$fixture/out" 2>&1 || status=$?
+    [ "$status" = "$expected" ] || fail "wall ceiling ($*) returned $status, expected $expected: $(cat "$fixture/out")"
+  }
+  STEP_GROUP=6 ceiling_probe 1 --only hooks
+  grep -Fq 'hooks took 6 seconds (ceiling: 5 seconds)' "$fixture/out" \
+    || fail 'whole-group ceiling failure lacked the group and measured and allowed seconds'
+  STEP_PACKET=6 ceiling_probe 1 --only stations --scenario packet
+  grep -Fq 'stations:packet took 6 seconds (ceiling: 5 seconds)' "$fixture/out" \
+    || fail 'tag ceiling failure lacked the tag and measured and allowed seconds'
+  STEP_GROUP=5 ceiling_probe 0 --only hooks
+  grep -Fxq 'group:hooks:5' "$fixture/events" || fail 'group boundary did not record its seconds'
+  STEP_PACKET=5 ceiling_probe 0 --only stations --scenario packet
+  grep -Fxq 'group:stations:packet:5' "$fixture/events" || fail 'tag boundary did not record its seconds'
+  # The launch tag uses three blocks, and the union exceeds the group ceiling.
+  STEP_LAUNCH=1 STEP_PACKET=5 STEP_VERIFY=60 ceiling_probe 0 --only stations --scenario packet,launch
+  grep -Fxq 'group:stations:launch:3' "$fixture/events" || fail 'disjoint tag blocks did not sum their seconds'
+  if grep -Eq '^group:stations:(verify:|[0-9]+$)' "$fixture/events"; then
+    fail 'partial run recorded a group or an unselected tag'
+  fi
+  STEP_LAUNCH=1 STEP_PACKET=6 ceiling_probe 1 --only stations --scenario launch,packet
+  grep -Fq 'stations:packet took 6 seconds (ceiling: 5 seconds)' "$fixture/out" \
+    || fail 'scenario union missed an over-ceiling selected tag'
+  STEP_LAUNCH=1 STEP_PACKET=3 ceiling_probe 1 --only stations
+  grep -Fq 'stations took 6 seconds (ceiling: 5 seconds)' "$fixture/out" \
+    || fail 'whole tagged group missed its group ceiling'
+  STEP_LAUNCH=1 STEP_PACKET=3 ceiling_probe 1 --full --jobs 2
+  grep -Fq 'stations took 6 seconds (ceiling: 5 seconds)' "$fixture/out" \
+    || fail 'full suite missed the combined seconds for a tagged group'
+  grep -Fxq 'group:stations:6' "$fixture/events" || fail 'full run did not record its aggregate group seconds'
+  grep -Fxq 'group_failure:stations' "$fixture/events" || fail 'full run did not record the over-ceiling group'
+  STEP_LAUNCH=1 STEP_PACKET=2 ceiling_probe 0 --full --jobs 2
+
+  # Use the real check recipe, with unrelated gates stubbed.
+  ln "$ROOT/Makefile" "$fixture/Makefile"
+  for gate in shell-inventory check-payload-manifest check-harness-sync check-memory-index check-action-pins; do
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$fixture/scripts/$gate.sh"
+    chmod +x "$fixture/scripts/$gate.sh"
+  done
+  for missing in hooks stations:verify; do
+    awk -v missing="$missing" '$1 != missing' "$fixture/ceilings" > "$fixture/config/test-wall-ceilings.tsv"
+    make -s -C "$fixture" check > "$fixture/out" 2>&1 \
+      && fail "make check accepted a missing wall-time ceiling for $missing"
+    grep -Fq "missing wall-time ceiling: $missing" "$fixture/out" \
+      || fail "make check did not identify the missing wall-time ceiling for $missing"
+  done
+)
+wall_ceiling_tests
+
 # Scenario 10: exercise the full dispatcher with small, independent shard bodies.
 parallel_shard_tests() (
   local fixture="$TMP/parallel-shards" status=0 group shard count selection actual expected
   mkdir -p "$fixture/scripts/tests" "$fixture/bin" "$fixture/roots"
+  link_test_wall_ceilings "$fixture"
   cat "$ROOT/scripts/self-test.sh" > "$fixture/scripts/self-test.sh"
   chmod +x "$fixture/scripts/self-test.sh"
   printf '#!/usr/bin/env bash\necho 2\n' > "$fixture/bin/nproc"
@@ -119,6 +208,7 @@ stations_selector_tests() (
   local fixture selection status expected actual group mf
   fixture="$TMP/stations-selector"
   mkdir -p "$fixture/scripts/tests"
+  link_test_wall_ceilings "$fixture"
   ln "$ROOT/scripts/tests/helpers.sh" "$fixture/scripts/tests/helpers.sh"
   cat "$ROOT/scripts/self-test.sh" > "$fixture/scripts/self-test.sh"
   chmod +x "$fixture/scripts/self-test.sh"
@@ -207,6 +297,7 @@ split_regression_tests() (
   local fixture group bootstrap_status=0
   fixture="$TMP/split-regression"
   mkdir -p "$fixture/scripts/tests"
+  link_test_wall_ceilings "$fixture"
   # The approved t-4 red-first paths copy only the dispatcher and contracts.
   # Missing split dependencies must produce an assertion, not a source error.
   mkdir -p "$fixture/bootstrap/scripts/tests"
@@ -273,7 +364,7 @@ done
 BLOCKS
   AGENTIC_MEASURE_EVENTS="$fixture/events" "$fixture/scripts/self-test.sh" --full \
     > "$TMP/split-full.out" 2>&1 || fail 'split full dispatcher failed'
-  [ "$(sed -n 's/^group://p' "$fixture/events" | awk '!seen[$0]++' | tr '\n' ' ')" = \
+  [ "$(sed -n 's/^group:\([^:]*\)$/\1/p' "$fixture/events" | awk '!seen[$0]++' | tr '\n' ' ')" = \
     'export contracts upgrade hooks plan-to-issues lifecycle stations controller ' ] \
     || fail 'split changed the full-suite group order'
   grep -qx 'self-test passed.' "$TMP/split-full.out" \
@@ -287,6 +378,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # these cases measure dispatch, without recursively executing the regression suite.
   SCOPE_FIX="$TMP/group-scope"
   mkdir -p "$SCOPE_FIX/scripts/tests" "$SCOPE_FIX/config" "$SCOPE_FIX/bin"
+  link_test_wall_ceilings "$SCOPE_FIX"
   ln "$ROOT/scripts/tests/helpers.sh" "$SCOPE_FIX/scripts/tests/helpers.sh"
   awk '/^FULL_FAILED=0$/ { exit } { print }' "$ROOT/scripts/self-test.sh" \
     > "$SCOPE_FIX/scripts/self-test.sh"
@@ -329,7 +421,7 @@ SELECTOR
       AGENTIC_MEASURE_EVENTS="$TMP/scope.events" "$SCOPE_FIX/scripts/self-test.sh" --full "$@" \
       > "$TMP/scope.out" 2>&1 \
       || { cat "$TMP/scope.out" >&2; fail "scope dispatch failed: $name"; }
-    actual=$(sed -n 's/^group://p' "$TMP/scope.events" | tr '\n' ' ' | sed 's/ $//')
+    actual=$(sed -n 's/^group:\([^:]*\)$/\1/p' "$TMP/scope.events" | tr '\n' ' ' | sed 's/ $//')
     [ "$actual" = "$expected" ] || fail "scope dispatch $name: '$actual', expected '$expected'"
   }
   # Failure paths first: no repository, no remote, missing refs, a git command error,
@@ -339,7 +431,7 @@ SELECTOR
   git -C "$SCOPE_FIX" config user.name Fixture
   git -C "$SCOPE_FIX" config user.email fixture@example.invalid
   git -C "$SCOPE_FIX" config commit.gpgsign false
-  git -C "$SCOPE_FIX" add scripts/self-test.sh scripts/tests/helpers.sh config/payload.tsv
+  git -C "$SCOPE_FIX" add scripts/self-test.sh scripts/tests/helpers.sh config/payload.tsv config/test-wall-ceilings.tsv
   git -C "$SCOPE_FIX" commit -qm 'Scope fixture base'
   scope_base=$(git -C "$SCOPE_FIX" rev-parse HEAD)
   scope_expect "$SELF_TEST_GROUPS" 'no remote'
@@ -443,6 +535,7 @@ GIT_ERROR
   # arguments into the exported runner. Stub only export and the exported runner.
   GATE_FIX="$TMP/ship-gate"
   mkdir -p "$GATE_FIX/scripts/tests"
+  link_test_wall_ceilings "$GATE_FIX"
   ln "$ROOT/scripts/tests/helpers.sh" "$GATE_FIX/scripts/tests/helpers.sh"
   ln "$ROOT/scripts/self-test.sh" "$GATE_FIX/scripts/self-test.sh"
   cat > "$GATE_FIX/scripts/export.sh" <<'SH'
@@ -1649,6 +1742,7 @@ done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*' "${route_inputs[@]}" \
 # the executor's per-step gate, so both ways it can go quietly empty must be red.
 DISPATCH_FIX="$TMP/dispatch/scripts"
 mkdir -p "$DISPATCH_FIX/tests"
+link_test_wall_ceilings "${DISPATCH_FIX%/scripts}"
 ln "$ROOT/scripts/tests/helpers.sh" "$DISPATCH_FIX/tests/helpers.sh"
 sed 's/^if should_run hooks; then$/if should_run hook; then/' "$ROOT/scripts/self-test.sh" \
   > "$DISPATCH_FIX/self-test.sh"
