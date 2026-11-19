@@ -10,7 +10,7 @@
 - [x] Brief drafted and approved 2026-11-17; h-9 and h-10 added 2026-11-18. Tracker #150, steps #151 to #160, all approved and closed.
 - [x] Close-out gate: `make check && make test` green on `phase-2b` at `0a85379` (2026-11-18, about 80 minutes). Release notes `0.17.0` in `0258be2`.
 - [x] Accepted by the owner (2026-11-17, P3 from the h-2 review): h-1's per-scenario timing profile was never captured, so the DoD's before-and-after controller-group times per step are not reported. The only comparison is the full `make test`: about 32 minutes at `b6c1962`, about 80 minutes at `0a85379`.
-- [ ] PR #161's CI killed `make test` twice with SIGTERM after the self-test passed (2026-11-18). h-11 (#162, added 2026-11-18) fixes a watchdog leak found while investigating; a temporary CI diagnostic follows it. The close-out gate is re-run after both.
+- [ ] PR #161's CI killed `make test` twice with SIGTERM after the self-test passed (2026-11-18). h-11 (#162, added 2026-11-18) fixes a watchdog leak found while investigating. A temporary CI monitor then showed the cause: shellcheck reached 7.3 GB on the 7 GB runner. h-12 (added 2026-11-18) lints one file per process; the diagnostic steps are removed with it, and the close-out gate is re-run.
 - [ ] The human runs `ship` and `doctor --stations`; Claude updates the roadmap.
 
 ---
@@ -205,7 +205,7 @@ id: station-hardening
 profile: strict
 tracking: Plan: Station hardening
 branch: phase-2b
-steps: h-1 h-2 h-3 h-4 h-5 h-6 h-7 h-8 h-9 h-10 h-11
+steps: h-1 h-2 h-3 h-4 h-5 h-6 h-7 h-8 h-9 h-10 h-11 h-12
 ```
 
 ## Prerequisite
@@ -240,7 +240,7 @@ Do not raise a ceiling. Only h-4 edits a contract: the reviewer skill, which is 
 - `make check`, `make test`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
 - All 22 acceptance scenarios below pass as tests.
 - The human has run `agentic-flow doctor --stations` once on the operator machine against the real Codex and OpenCode CLIs and it passed, or each failure is a recorded finding. The executor cannot do this: a station sandbox has no network.
-- Steps h-3 to h-11 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
+- Steps h-3 to h-12 ran through `agentic-flow run`. The close-out lists every human `resume` and its cause (C-7 baseline: five, all launcher faults), and the controller-group wall time per step before (h-1's profile) and after (`S=` runs).
 
 ## Acceptance scenarios (written at Spec; the executor does not edit these)
 
@@ -514,6 +514,23 @@ scripts/doctor.sh --check
 
 ---
 
+## h-12 — Lint one shell file per shellcheck process
+**Why twelfth:** found on PR #161's CI (2026-11-18). Four CI runs were cancelled three to four minutes into the shellcheck line of `make test`, after the full self-test had passed. A live monitor (run 44399861458) showed the cause: one `shellcheck` process linting all 47 scripts grew to 7.3 GB resident on the 7 GB private-repo runner, free memory fell to about 50 MB, swap reached 3 GB, and the runner cancelled the job. Memory stayed near 900 MB for the whole suite before that. `scripts/shell-inventory.sh --lint` passes every file to one process, which follows every `source` across all of them; this phase's test growth pushed it past the runner. Measured locally: one process takes 78 s and peaks at 4.8 GB; one `shellcheck -x` per file takes 123 s, peaks at 3.1 GB (`scripts/tests/controller.sh`) and reports the same clean result. Linting per file without `-x` is cheaper but raises false SC1091 and SC2034 findings, so it is not an option.
+
+**Approach:**
+1. In `scripts/shell-inventory.sh --lint`, run `shellcheck -x` once per inventory file, run every file even after a failure, and exit non-zero if any file failed. Keep the inventory, the file order and the output of each file's findings.
+2. Keep the `--list` and `--syntax` modes, and `make test`'s recipe, unchanged. The script is payload, so adopters get the same bounded memory.
+
+**Test:** in the `contracts` group, beside the existing `shell-inventory` tests. Failure path first: a fixture inventory with one file that has a shellcheck finding and one clean file fails, prints the finding with the bad file's path, and still lints the clean file. Then a clean fixture inventory passes, and a sourced helper is followed (`-x`), so a variable set for the helper raises no SC2034.
+
+**DoD:** `--lint` runs one `shellcheck -x` per file and fails when any file fails; `make test` is green locally; the next CI run on PR #161 finishes the Test suite step.
+**Verify:** `make check` and `make test-one F=contracts`
+**Risks:** a lint that stops at the first failing file and hides the rest; dropping `-x` and raising false findings; a file left out of the loop; a much slower lint (about 2 minutes locally is the expected cost).
+**Red-first:** none
+**Commit:** `Lint one shell file per shellcheck process to bound memory`
+
+---
+
 # Close-out
 
 Claude, on `phase-2b`, after the last approval, and before the human merges:
@@ -529,7 +546,7 @@ Claude, on `phase-2b`, after the last approval, and before the human merges:
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/150
-- **Approval:** status=approved; by=wabkebab; at=2026-11-17; rev=d65bbc9a705be1622403ca16c4ee560462745ed3
+- **Approval:** status=approved; by=wabkebab; at=2026-11-17; rev=eec0710365a73f77571d6c87d5318e7c225776fa
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
