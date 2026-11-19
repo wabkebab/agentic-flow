@@ -4,9 +4,19 @@
 
 # Scenario 7: first remove an assertion, then remove an executable group.
 split_regression_tests() (
-  local fixture group
+  local fixture group bootstrap_status=0
   fixture="$TMP/split-regression"
   mkdir -p "$fixture/scripts/tests"
+  # The approved t-4 red-first paths copy only the dispatcher and contracts.
+  # Missing split dependencies must produce an assertion, not a source error.
+  mkdir -p "$fixture/bootstrap/scripts/tests"
+  ln "$ROOT/scripts/self-test.sh" "$fixture/bootstrap/scripts/self-test.sh"
+  ln "$ROOT/scripts/tests/contracts.sh" "$fixture/bootstrap/scripts/tests/contracts.sh"
+  "$fixture/bootstrap/scripts/self-test.sh" --only contracts \
+    > "$TMP/split-bootstrap.out" 2>&1 || bootstrap_status=$?
+  [ "$bootstrap_status" = 1 ] || fail 'missing test helpers returned the wrong status'
+  grep -Fxq 'self-test failed: missing self-test helper file: scripts/tests/helpers.sh' \
+    "$TMP/split-bootstrap.out" || fail 'missing test helpers did not produce an assertion'
   [ -f "$ROOT/scripts/tests/export.sh" ] || fail 'split export group is missing'
   for group in $SELF_TEST_GROUPS; do
     [ -f "$ROOT/scripts/tests/$group.sh" ] || fail "split group is missing: $group"

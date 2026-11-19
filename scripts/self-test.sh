@@ -233,6 +233,12 @@ cp() {
   measure_copy "$@"
 }
 
+# A red-first overlay can contain only the dispatcher and contracts tests.
+# Fail as an assertion before sourcing an absent split dependency.
+if [ ! -f "$ROOT/scripts/tests/helpers.sh" ]; then
+  echo 'self-test failed: missing self-test helper file: scripts/tests/helpers.sh' >&2
+  exit 1
+fi
 # shellcheck source=scripts/tests/helpers.sh
 . "$ROOT/scripts/tests/helpers.sh"
 
