@@ -1,0 +1,1579 @@
+#!/usr/bin/env bash
+# Sourced by self-test.sh; shared fixture context is intentional.
+# shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
+
+# Scenario 7: first remove an assertion, then remove an executable group.
+split_regression_tests() (
+  local fixture group
+  fixture="$TMP/split-regression"
+  mkdir -p "$fixture/scripts/tests"
+  [ -f "$ROOT/scripts/tests/export.sh" ] || fail 'split export group is missing'
+  for group in $SELF_TEST_GROUPS; do
+    [ -f "$ROOT/scripts/tests/$group.sh" ] || fail "split group is missing: $group"
+    ln "$ROOT/scripts/tests/$group.sh" "$fixture/scripts/tests/$group.sh"
+  done
+  ln "$ROOT/scripts/self-test.sh" "$fixture/scripts/self-test.sh"
+  ln "$ROOT/scripts/tests/helpers.sh" "$fixture/scripts/tests/helpers.sh"
+  ln "$ROOT/scripts/tests/assertion-messages.pl" "$fixture/scripts/tests/assertion-messages.pl"
+  ln "$ROOT/scripts/tests/assertion-messages.txt" "$fixture/scripts/tests/assertion-messages.txt"
+  ln "$ROOT/scripts/tests/assertion-additions.txt" "$fixture/scripts/tests/assertion-additions.txt"
+  # Unlink before editing: the fixture must never alter the source inode.
+  rm "$fixture/scripts/tests/export.sh"
+  sed '/export --dry-run failed against an empty target/d' "$ROOT/scripts/tests/export.sh" \
+    > "$fixture/scripts/tests/export.sh"
+  cmp -s "$ROOT/scripts/tests/export.sh" "$fixture/scripts/tests/export.sh" \
+    && fail 'assertion deletion fixture did not delete an assertion'
+  perl "$ROOT/scripts/tests/assertion-messages.pl" "$fixture" --check \
+    > "$TMP/split-deleted.out" 2>&1 && fail 'assertion inventory accepted a deleted assertion'
+  grep -q 'missing: fail' "$TMP/split-deleted.out" \
+    || fail 'assertion inventory did not identify the deleted assertion'
+  rm "$fixture/scripts/tests/hooks.sh"
+  sed '/git --no-pager -C \/some\/path add -A/d' "$ROOT/scripts/tests/hooks.sh" \
+    > "$fixture/scripts/tests/hooks.sh"
+  cmp -s "$ROOT/scripts/tests/hooks.sh" "$fixture/scripts/tests/hooks.sh" \
+    && fail 'helper deletion fixture did not delete an assertion'
+  perl "$ROOT/scripts/tests/assertion-messages.pl" "$fixture" --check \
+    > "$TMP/split-helper.out" 2>&1 && fail 'assertion inventory accepted a deleted helper call'
+  grep -q 'missing: must_block' "$TMP/split-helper.out" \
+    || fail 'assertion inventory did not identify the deleted helper call'
+  mv "$fixture/scripts/tests/hooks.sh" "$fixture/scripts/tests/hooks.renamed"
+  "$fixture/scripts/self-test.sh" --only hooks > "$TMP/split-missing.out" 2>&1 \
+    && fail 'dispatcher accepted a renamed group file'
+  grep -q 'missing self-test group file: hooks' "$TMP/split-missing.out" \
+    || fail 'dispatcher did not name the missing group file'
+  perl "$ROOT/scripts/tests/assertion-messages.pl" "$ROOT" --check \
+    || fail 'assertion inventory differs after the split'
+  [ "$SELF_TEST_GROUPS" = 'export contracts hooks plan-to-issues lifecycle upgrade stations controller' ] \
+    || fail 'split changed the self-test group names'
+  # Exercise the real dispatcher with inert bodies to check order and completion
+  # without recursively executing the suite. Each file has a private inode.
+  for group in $SELF_TEST_GROUPS; do
+    rm -f "$fixture/scripts/tests/$group.sh"
+    printf ':\n' > "$fixture/scripts/tests/$group.sh"
+  done
+  cat > "$fixture/scripts/tests/controller.sh" <<'BLOCKS'
+for block in $CONTROLLER_BLOCKS; do
+  should_run_scenario "${block#*:}" "${block%:*}"
+done
+BLOCKS
+  AGENTIC_MEASURE_EVENTS="$fixture/events" "$fixture/scripts/self-test.sh" --full \
+    > "$TMP/split-full.out" 2>&1 || fail 'split full dispatcher failed'
+  [ "$(sed -n 's/^group://p' "$fixture/events" | tr '\n' ' ')" = \
+    'export contracts upgrade hooks plan-to-issues lifecycle stations controller ' ] \
+    || fail 'split changed the full-suite group order'
+  grep -qx 'self-test passed.' "$TMP/split-full.out" \
+    || fail 'split changed the full-suite completion message'
+)
+split_regression_tests
+
+# Dispatcher scope, ship-gate and ceiling regressions need the source layout.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Test the real startup, selector and completion assertion with inert group bodies:
+  # these cases measure dispatch, without recursively executing the regression suite.
+  SCOPE_FIX="$TMP/group-scope"
+  mkdir -p "$SCOPE_FIX/scripts/tests" "$SCOPE_FIX/config" "$SCOPE_FIX/bin"
+  ln "$ROOT/scripts/tests/helpers.sh" "$SCOPE_FIX/scripts/tests/helpers.sh"
+  awk '/^# --- export invariants / { exit } { print }' "$ROOT/scripts/self-test.sh" \
+    > "$SCOPE_FIX/scripts/self-test.sh"
+  cat >> "$SCOPE_FIX/scripts/self-test.sh" <<'SELECTOR'
+fast_check_group() { :; }
+assert_cost_budget() { :; }
+for scope_group in $SELF_TEST_GROUPS; do
+  if should_run "$scope_group"; then :; fi
+done
+SELECTOR
+  awk '/^# --- the run did what the mode promised / { emit=1 } emit' "$ROOT/scripts/self-test.sh" \
+    >> "$SCOPE_FIX/scripts/self-test.sh"
+  chmod +x "$SCOPE_FIX/scripts/self-test.sh"
+  # Scope validation is part of --fast (and hence make check), before any group runs.
+  grep -q '^SELF_TEST_GROUP_SCOPES=' "$SCOPE_FIX/scripts/self-test.sh" \
+    || fail 'self-test groups do not declare scopes'
+  for scope_case in missing unknown invalid duplicate; do
+    case "$scope_case" in
+      missing) scope_edit='s/contracts:local//g' ;;
+      unknown) scope_edit='s/contracts:local/absent:local/g' ;;
+      invalid) scope_edit='s/contracts:local/contracts:other/g' ;;
+      duplicate) scope_edit='s/contracts:local/contracts:local contracts:local/g' ;;
+    esac
+    sed "$scope_edit" "$SCOPE_FIX/scripts/self-test.sh" > "$SCOPE_FIX/scripts/bad.sh"
+    bash "$SCOPE_FIX/scripts/bad.sh" --fast > "$TMP/scope.out" 2>&1 \
+      && fail "scope validation accepted $scope_case declaration"
+    grep -q 'self-test failed:.*scope' "$TMP/scope.out" \
+      || fail "scope validation did not explain $scope_case declaration"
+  done
+  rm "$SCOPE_FIX/scripts/bad.sh"
+  # Deliberately use a mapped destination: installed paths come from column two.
+  printf 'source/tool\tscripts\tcore\tpreserve\texport\nsource/contract\tAGENTS.md\tcore\tpreserve\texport\nsource/private\tprivate\tsource-only\tnone\tsource-only\n' \
+    > "$SCOPE_FIX/config/payload.tsv"
+  scope_expect() { # <expected groups> <case name> [runner flags]
+    local expected="$1" name="$2" actual
+    shift 2
+    : > "$TMP/scope.events"
+    AGENTIC_BASE_REF="${SCOPE_BASE_REF:-}" GITHUB_BASE_REF="${SCOPE_PR_BASE:-}" \
+      AGENTIC_MEASURE_EVENTS="$TMP/scope.events" "$SCOPE_FIX/scripts/self-test.sh" --full "$@" \
+      > "$TMP/scope.out" 2>&1 \
+      || { cat "$TMP/scope.out" >&2; fail "scope dispatch failed: $name"; }
+    actual=$(sed -n 's/^group://p' "$TMP/scope.events" | tr '\n' ' ' | sed 's/ $//')
+    [ "$actual" = "$expected" ] || fail "scope dispatch $name: '$actual', expected '$expected'"
+  }
+  # Failure paths first: no repository, no remote, missing refs, a git command error,
+  # and a shallow feature checkout whose integration branch has no merge base.
+  scope_expect "$SELF_TEST_GROUPS" 'not a repository'
+  git -C "$SCOPE_FIX" init -q
+  git -C "$SCOPE_FIX" config user.name Fixture
+  git -C "$SCOPE_FIX" config user.email fixture@example.invalid
+  git -C "$SCOPE_FIX" config commit.gpgsign false
+  git -C "$SCOPE_FIX" add scripts/self-test.sh scripts/tests/helpers.sh config/payload.tsv
+  git -C "$SCOPE_FIX" commit -qm 'Scope fixture base'
+  scope_base=$(git -C "$SCOPE_FIX" rev-parse HEAD)
+  scope_expect "$SELF_TEST_GROUPS" 'no remote'
+  git -C "$SCOPE_FIX" remote add origin "$TMP/missing-remote"
+  scope_expect "$SELF_TEST_GROUPS" 'missing origin refs'
+  git -C "$SCOPE_FIX" update-ref refs/remotes/origin/main "$scope_base"
+  scope_git=$(command -v git)
+  cat > "$SCOPE_FIX/bin/git" <<'GIT_ERROR'
+#!/usr/bin/env bash
+case " $* " in
+  *" $SCOPE_GIT_FAIL "*) exit 1 ;;
+esac
+exec "$SCOPE_REAL_GIT" "$@"
+GIT_ERROR
+  chmod +x "$SCOPE_FIX/bin/git"
+  for scope_command in diff ls-files; do
+    SCOPE_REAL_GIT="$scope_git" SCOPE_GIT_FAIL="$scope_command" PATH="$SCOPE_FIX/bin:$PATH" \
+      scope_expect "$SELF_TEST_GROUPS" "git $scope_command error"
+  done
+  rm "$SCOPE_FIX/bin/git"
+  # Build genuinely shallow history, then fetch an unrelated base tip without ancestry.
+  git -C "$SCOPE_FIX" checkout -q -b shallow-feature "$scope_base"
+  git -C "$SCOPE_FIX" commit --allow-empty -qm 'Shallow feature tip'
+  git clone -q --depth 1 --branch shallow-feature "file://$SCOPE_FIX" "$TMP/shallow-scope"
+  git -C "$TMP/shallow-scope" fetch -q --depth 1 origin "$scope_base:refs/remotes/origin/main"
+  git -C "$TMP/shallow-scope" merge-base HEAD origin/main >/dev/null \
+    && fail 'shallow fixture unexpectedly has a merge base'
+  SCOPE_ORIGINAL=$SCOPE_FIX
+  SCOPE_FIX="$TMP/shallow-scope"
+  scope_expect "$SELF_TEST_GROUPS" 'shallow clone without merge base'
+  SCOPE_FIX=$SCOPE_ORIGINAL
+  mv "$SCOPE_FIX/config/payload.tsv" "$SCOPE_FIX/config/payload.saved"
+  scope_expect "$SELF_TEST_GROUPS" 'missing manifest'
+  mv "$SCOPE_FIX/config/payload.saved" "$SCOPE_FIX/config/payload.tsv"
+  printf 'malformed manifest row\n' >> "$SCOPE_FIX/config/payload.tsv"
+  scope_expect "$SELF_TEST_GROUPS" 'malformed manifest'
+  git -C "$SCOPE_FIX" checkout -- config/payload.tsv
+  scope_locals='contracts hooks'
+  scope_expect "$scope_locals" 'clean integration base'
+  printf 'app\n' > "$SCOPE_FIX/app.txt"
+  scope_expect "$scope_locals" 'untracked application file'
+  printf 'private\n' > "$SCOPE_FIX/private"
+  scope_expect "$scope_locals" 'source-only destination'
+  printf '\n# unstaged harness edit\n' >> "$SCOPE_FIX/scripts/self-test.sh"
+  scope_expect "$SELF_TEST_GROUPS" 'unstaged harness edit'
+  git -C "$SCOPE_FIX" checkout -- scripts/self-test.sh
+  printf 'contract\n' > "$SCOPE_FIX/AGENTS.md"
+  git -C "$SCOPE_FIX" add AGENTS.md
+  scope_expect "$SELF_TEST_GROUPS" 'staged-only harness edit'
+  git -C "$SCOPE_FIX" reset -q HEAD -- AGENTS.md
+  rm "$SCOPE_FIX/AGENTS.md"
+  printf 'new harness file\n' > "$SCOPE_FIX/scripts/untracked file"
+  scope_expect "$SELF_TEST_GROUPS" 'untracked harness edit'
+  rm "$SCOPE_FIX/scripts/untracked file"
+  rm "$SCOPE_FIX/app.txt" "$SCOPE_FIX/private"
+  printf '\n# committed harness edit\n' >> "$SCOPE_FIX/scripts/self-test.sh"
+  git -C "$SCOPE_FIX" add scripts/self-test.sh
+  git -C "$SCOPE_FIX" commit -qm 'Committed harness change'
+  scope_expect "$SELF_TEST_GROUPS" 'committed harness edit'
+  # Tracking the pushed feature branch (at HEAD) must never hide its harness edit.
+  git -C "$SCOPE_FIX" branch -M feature
+  git -C "$SCOPE_FIX" update-ref refs/remotes/origin/feature HEAD
+  git -C "$SCOPE_FIX" branch --set-upstream-to=origin/feature feature >/dev/null
+  [ -z "$(git -C "$SCOPE_FIX" status --porcelain)" ] || fail 'pushed feature fixture is not clean'
+  scope_expect "$SELF_TEST_GROUPS" 'pushed feature upstream equals HEAD'
+  git -C "$SCOPE_FIX" update-ref refs/remotes/origin/integration HEAD
+  SCOPE_BASE_REF=origin/integration scope_expect "$scope_locals" 'explicit base precedence'
+  SCOPE_PR_BASE=integration scope_expect "$scope_locals" 'PR base precedence'
+  SCOPE_BASE_REF=origin/missing SCOPE_PR_BASE=integration \
+    scope_expect "$scope_locals" 'first resolving base'
+  # A detached PR merge with fetched base and only application changes skips scaffolds.
+  git -C "$SCOPE_FIX" checkout -qb app-pr "$scope_base"
+  printf 'app\n' > "$SCOPE_FIX/app.txt"
+  git -C "$SCOPE_FIX" add app.txt
+  git -C "$SCOPE_FIX" commit -qm 'Application-only PR'
+  git -C "$SCOPE_FIX" checkout -q --detach "$scope_base"
+  git -C "$SCOPE_FIX" merge --no-ff -qm 'Detached PR merge' app-pr
+  SCOPE_PR_BASE=main scope_expect "$scope_locals" 'detached PR merge'
+  SCOPE_BASE_REF=origin/main scope_expect "$scope_locals" 'explicit CI base'
+  scope_expect "$SELF_TEST_GROUPS" 'forced groups' --all-groups
+  printf '# source exporter marker\n' > "$SCOPE_FIX/scripts/export.sh"
+  scope_expect "$SELF_TEST_GROUPS" 'source full suite'
+  rm "$SCOPE_FIX/scripts/export.sh"
+  # Rename a harness file out of its owned directory; the deleted source still counts.
+  printf 'contract\n' > "$SCOPE_FIX/AGENTS.md"
+  git -C "$SCOPE_FIX" add AGENTS.md
+  git -C "$SCOPE_FIX" commit -qm 'Installed contract'
+  git -C "$SCOPE_FIX" update-ref refs/remotes/origin/main HEAD
+  git -C "$SCOPE_FIX" mv AGENTS.md app-contract.txt
+  scope_expect "$SELF_TEST_GROUPS" 'renamed harness path'
+  git -C "$SCOPE_FIX" reset -q --hard HEAD
+  # CI must supply both integration history and the PR base in the app test job.
+  awk '/^  app:/ { app=1 }
+    app && /^      - name:/ { checkout=($0 ~ /Checkout$/); test=($0 ~ /Test suite$/) }
+    app && checkout && /fetch-depth: 0/ { depth=1 }
+    app && test && /AGENTIC_BASE_REF: origin\/\$\{\{ github.base_ref \}\}/ { base=1 }
+    /^  docs:/ { exit } END { exit !(depth && base) }' "$ROOT/templates/ci/ci.yml" \
+    || fail 'CI app job does not fetch history and export the PR base'
+
+  # The exported-layout gate must propagate a failing group, then pass all full-mode
+  # arguments into the exported runner. Stub only export and the exported runner.
+  GATE_FIX="$TMP/ship-gate"
+  mkdir -p "$GATE_FIX/scripts/tests"
+  ln "$ROOT/scripts/tests/helpers.sh" "$GATE_FIX/scripts/tests/helpers.sh"
+  ln "$ROOT/scripts/self-test.sh" "$GATE_FIX/scripts/self-test.sh"
+  cat > "$GATE_FIX/scripts/export.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+mkdir -p "$1/scripts"
+cat > "$1/scripts/self-test.sh" <<'RUNNER'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$GATE_CALLS"
+printf 'group:hooks\n' >> "$AGENTIC_MEASURE_EVENTS"
+[ "${GATE_FAIL:-0}" = 0 ]
+RUNNER
+chmod +x "$1/scripts/self-test.sh"
+SH
+  chmod +x "$GATE_FIX/scripts/export.sh"
+  gate_rc=0
+  GATE_CALLS="$TMP/gate.calls" GATE_FAIL=1 make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate \
+    > "$TMP/gate.out" 2>&1 || gate_rc=$?
+  [ "$gate_rc" -ne 0 ] || fail 'ship-gate accepted a failing exported suite'
+  grep -q 'group: hooks' "$TMP/gate.out" || fail 'ship-gate did not name the failing exported group'
+  : > "$TMP/gate.calls"
+  GATE_CALLS="$TMP/gate.calls" make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate \
+    > "$TMP/gate.out" 2>&1 || { cat "$TMP/gate.out" >&2; fail 'ship-gate rejected a passing exported suite'; }
+  grep -qx -- '--full --all-groups' "$TMP/gate.calls" || fail 'ship-gate did not run the exported full suite'
+  # CI keeps the costly exported suite as a separate step after everyday tests.
+  awk '/run: make test$/ { test=NR } /run: make ship-gate$/ { gate=NR } END { exit !(test && gate>test) }' \
+    "$ROOT/.github/workflows/ci.yml" || fail 'CI does not run ship-gate after make test'
+  grep -q '^#ship-gate:' "$ROOT/templates/harness/Makefile" \
+    || fail 'template Makefile does not document the optional ship-gate target'
+
+  # Regression for the scaffold-only scoping of the role-bundle word ceilings (below): an
+  # oversized CLAUDE.md must still fail the check in the scaffold repo, and must NOT fail it
+  # once exported, since CLAUDE.md/AGENTS.md are preserve/instance files every adopter fills
+  # with real project content of whatever size that content actually needs. Extract the live
+  # snippet rather than re-describing its logic, so this test breaks if the guard is ever
+  # dropped instead of silently drifting from what actually runs. Rewritten to reference
+  # CEILING_ROOT rather than ROOT so running it in a subshell below never shadows this
+  # script's own $ROOT for shellcheck (SC2030/SC2031) or for real.
+  CEILING_SNIPPET_FILE="$TMP/ceiling-snippet.sh"
+  # shellcheck disable=SC2016 # literal $ROOT/$CEILING_ROOT text being rewritten, not expanded.
+  sed -n '/^# Ceilings are set just above the MEASURED size of each bundle/,/^# END ROLE-BUNDLE CEILINGS/p' \
+    "$ROOT/scripts/tests/contracts.sh" \
+    | sed 's/\$ROOT\//\$CEILING_ROOT\//g' > "$CEILING_SNIPPET_FILE"
+  [ -s "$CEILING_SNIPPET_FILE" ] \
+    || fail "could not extract the role-bundle ceiling snippet for its own regression test"
+
+  run_ceiling_snippet() { # <fixture-root> <export-sh present: yes|no>
+    local d="$1" has_export="$2"
+    rm -rf "$d"
+    mkdir -p "$d/.agents/skills/review-execution"
+    printf 'word %.0s' $(seq 1 1600) > "$d/CLAUDE.md"
+    printf 'word %.0s' $(seq 1 1600) > "$d/AGENTS.md"
+    printf 'short reviewer skill\n' > "$d/.agents/skills/review-execution/SKILL.md"
+    if [ "$has_export" = yes ]; then mkdir -p "$d/scripts"; : > "$d/scripts/export.sh"; fi
+    ( # shellcheck disable=SC2034 # consumed by the sourced snippet below, not used directly here.
+      CEILING_ROOT="$d"
+      # shellcheck disable=SC2317,SC2329 # invoked indirectly by the sourced snippet below;
+      # which of the two IDs fires is shellcheck-version-dependent (SC2317 on CI's 0.9.0,
+      # SC2329 locally on 0.11.0), so both are disabled rather than chasing one.
+      fail() { echo "CEILING_FAIL: $1"; }
+      # shellcheck disable=SC1090 # the snippet is extracted from this file at runtime.
+      . "$CEILING_SNIPPET_FILE"
+    )
+  }
+
+  # Captured via command substitution, NOT piped live to grep -q: grep -q exits on its
+  # first match, and the snippet still has a second echo (the executor ceiling) queued
+  # behind it — writing to an already-closed pipe raises SIGPIPE, which pipefail turns
+  # into a pipeline failure even though the match already succeeded. Capturing first
+  # lets the subshell finish and exit cleanly before anything greps it.
+  CEILING_FIXTURE="$TMP/ceiling-fixture"
+  scaffold_ceiling_out=$(run_ceiling_snippet "$CEILING_FIXTURE" yes)
+  printf '%s\n' "$scaffold_ceiling_out" | grep -q "planner static role bundle exceeds" \
+    || fail "role-bundle ceiling did not fire for an oversized CLAUDE.md inside the scaffold repo"
+  exported_ceiling_out=$(run_ceiling_snippet "$CEILING_FIXTURE" no)
+  printf '%s\n' "$exported_ceiling_out" | grep -q "planner static role bundle exceeds" \
+    && fail "role-bundle ceiling fired in an exported project (scripts/export.sh absent) — adopters must be allowed real project content of any size"
+  rm -rf "$CEILING_FIXTURE"
+fi
+
+workflow_contract_check
+# T-1: keep the gate cadence identical in the live and exported role contracts.
+# shellcheck disable=SC2016 # Literal Markdown command references.
+cadence_contract='For each step, executors run `make check` and its Verify command; run the full `make test` once at the end of the plan. Under the controller, do not run `verify-step`.'
+for cadence_file in AGENTS.md CLAUDE.md templates/harness/AGENTS.md templates/harness/CLAUDE.md \
+                    .agents/skills/review-execution/SKILL.md; do
+  case "$cadence_file" in
+    templates/*) [ -d "$ROOT/templates/harness" ] || continue ;;
+    .agents/*) active_scope codex || continue ;;
+    CLAUDE.md) active_scope claude || continue ;;
+  esac
+  tr '\n' ' ' < "$ROOT/$cadence_file" | sed 's/[[:space:]][[:space:]]*/ /g' \
+    | grep -Fq "$cadence_contract" || fail "gate cadence missing from $cadence_file"
+done
+# S-9: the workflow is generated once; installed projects keep rendered contracts.
+if [ -d "$ROOT/templates/shared" ]; then
+  [ -f "$ROOT/templates/shared/workflow.md" ] || fail 'canonical rendered workflow is missing'
+  grep -q '^<!-- BEGIN SHARED WORKFLOW -->$' "$ROOT/METHODOLOGY.md" || fail 'methodology workflow region is missing'
+  "$ROOT/scripts/render-shared.sh" --check >/dev/null || fail 'workflow render is stale'
+  for role in CLAUDE.md AGENTS.md .agents/skills/review-execution/SKILL.md; do
+    case "$role" in CLAUDE.md) baseline=1515 ;; AGENTS.md) baseline=1088 ;; *) baseline=996 ;; esac
+    [ "$(wc -w < "$ROOT/$role")" -lt "$baseline" ] || fail "S-9 role did not shrink: $role"
+  done
+  for contract in CLAUDE.md AGENTS.md templates/harness/CLAUDE.md templates/harness/AGENTS.md \
+      .opencode/agent/code-reviewer.md .agents/skills/review-execution/SKILL.md \
+      .agents/skills/plan-to-issues/SKILL.md ADOPTION.md docs/README.md; do
+    grep -Eq 'agent:(claude|codex|opencode)|needs-(execution|review|closing|human)' "$ROOT/$contract" \
+      && fail "duplicated workflow labels in $contract"
+  done
+
+fi
+# S-2: these tests travel alone to the red base, so a missing library is an assertion.
+[ -f "$ROOT/scripts/lib/identity.sh" ] || fail 'identity library is missing'
+IDENTITY_FIX="$TMP/identity"
+mkdir -p "$IDENTITY_FIX/project/scripts/lib" "$IDENTITY_FIX/bin" "$IDENTITY_FIX/config/agentic-flow/identities/owner"
+cp "$ROOT/scripts/agentic-flow" "$IDENTITY_FIX/project/scripts/agentic-flow"
+cp "$ROOT/scripts/lib/identity.sh" "$ROOT/scripts/lib/review-policy.sh" "$IDENTITY_FIX/project/scripts/lib/"
+cp "$ROOT/scripts/lib/payload-apply.sh" "$IDENTITY_FIX/project/scripts/lib/"
+cp "$ROOT/scripts/doctor.sh" "$IDENTITY_FIX/project/scripts/doctor.sh"
+(
+  cd "$IDENTITY_FIX/project"
+  git init -q
+  git remote add origin git@github.com:owner/repo.git
+)
+printf 'version=1\nworkflow=.github/workflows/ci.yml\nidentity-mode=distinct-account\nreviewer=review-app[bot]\nexecutor=execute-app[bot]\napprover=plan-app[bot]\n' > "$IDENTITY_FIX/project/.agentic-flow-review-policy"
+IDENTITY_CONFIG="$IDENTITY_FIX/config/agentic-flow/identities/owner/repo.tsv"
+printf 'executor\texecute-app[bot]\t123\t456\ttest key\n' > "$IDENTITY_CONFIG"
+openssl genrsa -out "$IDENTITY_FIX/key" 2048 >/dev/null 2>&1
+openssl rsa -in "$IDENTITY_FIX/key" -pubout -out "$IDENTITY_FIX/public" >/dev/null 2>&1
+cat > "$IDENTITY_FIX/bin/security" <<'MOCK'
+#!/usr/bin/env bash
+[ "$*" = 'find-generic-password -s test key -w' ] || exit 1
+[ "${IDENTITY_CASE:-}" != key-failure ] || exit 1
+if [ "${IDENTITY_CASE:-}" = invalid-key ]; then printf 'invalid'; exit 0; fi
+if [ "${IDENTITY_CASE:-}" = encoded-key ]; then openssl base64 -A < "$IDENTITY_FIX/key"; exit 0; fi
+cat "$IDENTITY_FIX/key"
+MOCK
+cat > "$IDENTITY_FIX/bin/secret-tool" <<'MOCK'
+#!/usr/bin/env bash
+[ "$*" = 'lookup service agentic-flow key-ref test key' ] || exit 1
+cat "$IDENTITY_FIX/key"
+MOCK
+cat > "$IDENTITY_FIX/bin/uname" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "${IDENTITY_OS:-Darwin}"
+MOCK
+cat > "$IDENTITY_FIX/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+# Token minting must never use the ambient gh identity.
+printf 'ambient gh used\n' >> "$IDENTITY_FIX/ambient"
+exit 1
+MOCK
+cat > "$IDENTITY_FIX/bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+config=$(cat)
+jwt=${config#*Bearer }; jwt=${jwt%%\"*}
+[ "$*" != "${*#*https://api.github.com/app/installations/456/access_tokens}" ]
+request=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in --data-binary) request=$2; shift ;; esac
+  shift
+done
+printf '%s' "$request" | jq -e '.repositories == ["repo"] and .permissions == {issues:"write",pull_requests:"write",contents:"read",metadata:"read"}' >/dev/null
+base64url_decode() { local v=$1; while [ "$((${#v} % 4))" -ne 0 ]; do v="${v}="; done; printf '%s' "$v" | tr '_-' '/+' | openssl base64 -d -A; }
+payload=${jwt#*.}; payload=${payload%%.*}
+claims=$(base64url_decode "$payload")
+printf '%s' "$claims" | jq -e --argjson now "$(date +%s)" '.iss == "123" and .iat <= $now and .exp > $now and .exp <= ($now+600)' >/dev/null
+printf '%s' "${jwt%.*}" | openssl dgst -sha256 -verify "$IDENTITY_FIX/public" -signature <(base64url_decode "${jwt##*.}") >/dev/null
+case "${IDENTITY_CASE:-}" in
+  mint-failure) exit 22 ;;
+  timeout) exit 28 ;;
+  malformed) printf 'not-json'; exit 0 ;;
+  broad) permission=write ;;
+  *) permission=read ;;
+esac
+jq -n --arg contents "$permission" --arg value 'fixture-installation-value' --arg mode "${IDENTITY_CASE:-}" '
+  {token:$value,expires_at:"2099-01-01T00:00:00Z",permissions:{issues:"write",pull_requests:"write",contents:$contents,metadata:"read"},repositories:[{full_name:"owner/repo"}]} |
+  if $mode == "wrong-repo" then .repositories[0].full_name="owner/other"
+  elif $mode == "extra-permission" then .permissions.administration="write"
+  elif $mode == "expired" then .expires_at="2000-01-01T00:00:00Z"
+  elif $mode == "missing-token" then del(.token) else . end'
+MOCK
+# Doctor's workstation inventory is unrelated to identity behavior; keep it hermetic
+# on CI runners that do not install local signing wrappers or gitleaks.
+for tool in git-claude git-codex gitleaks; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$IDENTITY_FIX/bin/$tool"
+done
+chmod +x "$IDENTITY_FIX/bin/"*
+identity_run() { # role optional flags; capture output only from fake credentials
+  local status=0
+  # shellcheck disable=SC2097,SC2098 # Fixture env is passed to the child, not used by the parent.
+  ( cd "$IDENTITY_FIX/project"; PATH="$IDENTITY_FIX/bin:$PATH" XDG_CONFIG_HOME="$IDENTITY_FIX/config" \
+    IDENTITY_FIX="$IDENTITY_FIX" IDENTITY_CASE="${IDENTITY_CASE:-}" IDENTITY_OS="${IDENTITY_OS:-Darwin}" \
+    scripts/agentic-flow token "$@" ) > "$TMP/identity.out" 2> "$TMP/identity.err" || status=$?
+  return "$status"
+}
+identity_fails() { # expected-exit role flags
+  local expected=$1 status=0
+  shift
+  identity_run "$@" || status=$?
+  [ "$status" -eq "$expected" ] || fail "identity returned $status, expected $expected: $(cat "$TMP/identity.err")"
+  [ ! -s "$TMP/identity.out" ] || fail 'identity failure printed credential material'
+}
+identity_fails 6 reviewer
+for IDENTITY_CASE in key-failure invalid-key mint-failure timeout malformed broad wrong-repo extra-permission expired missing-token; do
+  identity_fails 5 executor --check
+done
+IDENTITY_CASE=''
+identity_run executor || fail "configured identity did not mint: $(cat "$TMP/identity.err")"
+[ "$(cat "$TMP/identity.out")" = fixture-installation-value ] || fail 'wrong minted value'
+identity_run executor --check || fail 'identity check failed'
+[ ! -s "$TMP/identity.out" ] || fail 'identity check printed a token'
+IDENTITY_OS=Linux identity_run executor --check || fail 'Linux keychain mint failed'
+IDENTITY_CASE=encoded-key identity_run executor --check || fail 'base64 keychain mint failed'
+[ ! -e "$IDENTITY_FIX/ambient" ] || fail 'identity fell back to ambient gh'
+(
+  . "$ROOT/scripts/lib/review-policy.sh"
+  read_review_policy "$IDENTITY_FIX/project"
+) || fail 'App logins rejected by review policy'
+for invalid in 'review[other]' 'review[bot]tail' 'review[bot][bot]'; do
+  sed "s/review-app\[bot\]/$invalid/" "$IDENTITY_FIX/project/.agentic-flow-review-policy" > "$IDENTITY_FIX/policy-bad"
+  ( . "$ROOT/scripts/lib/review-policy.sh"; mkdir -p "$IDENTITY_FIX/bad"; cp "$IDENTITY_FIX/policy-bad" "$IDENTITY_FIX/bad/.agentic-flow-review-policy"; read_review_policy "$IDENTITY_FIX/bad" ) >/dev/null 2>&1 \
+    && fail "invalid App login accepted: $invalid"
+done
+. "$ROOT/scripts/lib/review-policy.sh"
+normalized=$(printf '%s' '[{"author":{"login":"review-app","__typename":"Bot"}},{"user":{"login":"review-app[bot]","type":"Bot"}},{"author":{"login":"review-app","__typename":"User"}}]' | review_normalize_comments | jq -c '[.[].author.login]')
+[ "$normalized" = '["review-app[bot]","review-app[bot]","review-app"]' ] || fail 'bot author normalization conflated humans and Apps'
+IDENTITY_CASE=broad identity_fails 5 executor
+cp "$IDENTITY_CONFIG" "$IDENTITY_FIX/config-valid"
+for defect in duplicate unknown-role invalid-id wrong-login trailing; do
+  case "$defect" in
+    duplicate) cat "$IDENTITY_FIX/config-valid" "$IDENTITY_FIX/config-valid" > "$IDENTITY_CONFIG" ;;
+    unknown-role) printf 'stranger\texecute-app[bot]\t123\t456\ttest key\n' > "$IDENTITY_CONFIG" ;;
+    invalid-id) printf 'executor\texecute-app[bot]\tinvalid\t456\ttest key\n' > "$IDENTITY_CONFIG" ;;
+    wrong-login) printf 'executor\tunlisted-app[bot]\t123\t456\ttest key\n' > "$IDENTITY_CONFIG" ;;
+    trailing) printf 'executor\texecute-app[bot]\t123\t456\ttest key\t\n' > "$IDENTITY_CONFIG" ;;
+  esac
+  identity_fails 5 executor --check
+done
+mv "$IDENTITY_CONFIG" "$IDENTITY_FIX/config-invalid"
+identity_fails 6 executor
+cp "$IDENTITY_FIX/config-valid" "$IDENTITY_CONFIG"
+printf 'reviewer\treview-app[bot]\t123\t456\ttest key\napprover\tplan-app[bot]\t123\t456\ttest key\n' >> "$IDENTITY_CONFIG"
+identity_doctor() {
+  # shellcheck disable=SC2097,SC2098 # Pass fixture state to the child.
+  PATH="$IDENTITY_FIX/bin:$PATH" XDG_CONFIG_HOME="$IDENTITY_FIX/config" IDENTITY_FIX="$IDENTITY_FIX" \
+    "$IDENTITY_FIX/project/scripts/doctor.sh" --check --scope env > "$TMP/identity-doctor.out" 2>&1
+}
+identity_doctor || fail "doctor rejected valid role identities: $(cat "$TMP/identity-doctor.out")"
+grep -q 'ok.*identity approver login and token scope' "$TMP/identity-doctor.out" || fail 'doctor skipped configured identity'
+IDENTITY_CASE=broad; export IDENTITY_CASE
+identity_doctor && fail 'doctor accepted broader permissions'
+unset IDENTITY_CASE
+if grep -q 'fixture-installation-value' "$TMP/identity-doctor.out"; then fail 'doctor leaked a token'; fi
+WORKFLOW_FIX="$TMP/workflow"
+mkdir -p "$WORKFLOW_FIX/config"
+workflow_reject() { # <description> <expected diagnostic>
+  local output status=0
+  output=$(workflow_load "$WORKFLOW_FIX" 2>&1) || status=$?
+  [ "$status" -ne 0 ] || fail "workflow accepted $1"
+  printf '%s\n' "$output" | grep -Eq 'workflow.tsv:[0-9]+:' \
+    || fail "workflow diagnostic omitted file and line: $output"
+  printf '%s\n' "$output" | grep -Fq "$2" || fail "workflow diagnostic: $output"
+}
+for defect in spaces trailing unknown-label duplicate unreachable missing-state self-loop role requirement; do
+  case "$defect" in
+    spaces) printf 'state step-strict executing agent:codex,needs-execution open\n' > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='fields' ;;
+    trailing) printf 'state\tstep-strict\texecuting\tagent:codex,needs-execution\topen\t\n' > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='fields' ;;
+    unknown-label) sed 's/needs-execution/unknown-label/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='label' ;;
+    duplicate) cat "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; printf 'transition\tstep-strict\tsubmit\texecutor\texecuting\treviewing\thead,head≠last-bounced-head\n' >> "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='duplicate' ;;
+    unreachable) cat "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; printf 'state\tstep-strict\torphan\t-\tclosed\n' >> "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='unreachable' ;;
+    missing-state) sed 's/	reviewing	head/	absent	head/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='unknown state' ;;
+    self-loop) sed 's/	executing	reviewing	/	executing	executing	/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='self-loop' ;;
+    role) sed 's/	executor	/	stranger	/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='role' ;;
+    requirement) sed 's/head=submitted/anything/' "$ROOT/config/workflow.tsv" > "$WORKFLOW_FIX/config/workflow.tsv"; diagnostic='requirement' ;;
+  esac
+  workflow_reject "$defect" "$diagnostic"
+done
+workflow_load "$ROOT" || fail 'valid workflow rejected'
+[ "$(workflow_successor step-strict reviewing bounce 1)" = executing ] || fail 'second bounce did not execute'
+[ "$(workflow_successor step-strict reviewing bounce 2)" = escalated ] || fail 'third bounce did not escalate'
+[ "$(workflow_successor work-standard reviewing approve 0)" = closing ] || fail 'Standard approval did not close out'
+[ "$(workflow_successor step-strict reviewing approve 0)" = approved ] || fail 'Strict approval did not approve'
+[ "$(workflow_successor tracker open notify 0)" = closing ] || fail 'tracker notify did not close out'
+[ "$(workflow_state_labels step-strict approved)" = '-' ] || fail 'approved labels not empty'
+workflow_successor step-strict executing approve 0 >/dev/null 2>&1 && fail 'illegal successor accepted'
+workflow_successor step-strict reviewing bounce bad >/dev/null 2>&1 && fail 'invalid bounce count accepted'
+workflow_state_labels tracker absent >/dev/null 2>&1 && fail 'unknown state labels accepted'
+mkdir -p "$WORKFLOW_FIX/scripts/lib" "$WORKFLOW_FIX/scripts/hooks"
+cp "$ROOT/config/workflow.tsv" "$WORKFLOW_FIX/config/workflow.tsv"
+cp "$ROOT/scripts/lib/workflow.sh" "$WORKFLOW_FIX/scripts/lib/workflow.sh"
+cp "$ROOT/scripts/create-tags.sh" "$WORKFLOW_FIX/scripts/create-tags.sh"
+reader=scripts/lifecycle-status.sh
+  cp "$ROOT/scripts/hooks/require-step-comment.sh" "$WORKFLOW_FIX/scripts/hooks/require-step-comment.sh"
+  sed 's/needs-closing/needs-unknown/g' "$ROOT/$reader" > "$WORKFLOW_FIX/$reader"
+  ( workflow_contract_check "$WORKFLOW_FIX" ) > "$TMP/workflow-drift.out" 2>&1 \
+    && fail "workflow accepted drift in $reader"
+  grep -Fq 'hard-coded workflow labels drifted' "$TMP/workflow-drift.out" \
+    || fail 'workflow drift diagnostic missing'
+# Guard failures must block locally even when a guard cannot return its own exit 2.
+if [ -f "$ROOT/.claude/settings.json" ]; then
+  GUARD_FIX="$TMP/guard-failure-fixture"
+  mkdir -p "$GUARD_FIX/scripts/lib" "$GUARD_FIX/.claude"
+  cp "$ROOT/scripts/doctor.sh" "$GUARD_FIX/scripts/doctor.sh"
+  cp "$ROOT/scripts/lib/payload-apply.sh" "$GUARD_FIX/scripts/lib/payload-apply.sh"
+  for guard in block-git-add-all.sh block-push.sh scan-secrets.sh; do
+    for failure_mode in missing continue; do
+      jq --arg guard "$guard" --arg mode "$failure_mode" '
+        (.hooks.PreToolUse[] | .hooks[]
+          | select(.command | endswith($guard))) |=
+          (if $mode == "missing" then del(.onFailure) else .onFailure = "continue" end)
+      ' "$ROOT/.claude/settings.json" > "$GUARD_FIX/.claude/settings.json"
+      (cd "$GUARD_FIX" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo --skip-make-check) \
+        > "$TMP/guard-failure.out" 2>&1 \
+        && fail "doctor accepted $failure_mode onFailure for $guard"
+      grep -q "missing .claude/settings.json PreToolUse: $guard requires onFailure=block" \
+        "$TMP/guard-failure.out" \
+        || fail "doctor did not name the missing failure policy for $guard ($failure_mode)"
+    done
+  done
+  jq -e '
+    [.hooks[][] .hooks[] | select(has("onFailure"))]
+    | length == 3 and all(.[];
+        .type == "command" and .onFailure == "block" and
+        (.command | test("scripts/hooks/(block-git-add-all|block-push|scan-secrets)\\.sh$")))
+  ' "$ROOT/.claude/settings.json" >/dev/null \
+    || fail "Claude failure policy must cover exactly the three local guards"
+fi
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  [ -x "$ROOT/scripts/shell-inventory.sh" ] \
+    || fail "scaffold shell inventory is missing"
+  # Recompute from manifest source paths independently of the gate helper. In particular,
+  # a second call to its --list mode would only prove that the helper agrees with itself.
+  expected_shell_inventory() { # <source-root>
+    # shellcheck disable=SC2031 # Per-command fixture assignments supply this scoped value.
+    local src_root="$1" excluded_scopes="${PAYLOAD_EXCLUDED_SCOPES:-}"
+    local source scope disposition rel first
+    while IFS="$(printf '\t')" read -r source _dst scope _merge disposition; do
+      case "${source:-}" in ''|\#*) continue ;; esac
+      [ "$disposition" = export ] || [ "$disposition" = source-only ] || continue
+      if [ "$disposition" = export ]; then
+        case " $excluded_scopes " in *" $scope "*) continue ;; esac
+      fi
+      if [ -f "$src_root/$source" ]; then
+        printf '%s\n' "$source"
+      elif [ -d "$src_root/$source" ]; then
+        find "$src_root/$source" -type f | sed "s|^$src_root/||"
+      fi
+    done < "$src_root/config/payload.tsv" | sort -u | while IFS= read -r rel; do
+      [ -f "$src_root/$rel" ] || continue
+      IFS= read -r first < "$src_root/$rel" || true
+      case "$first" in '#!'*'/bash'|'#!'*'/sh'|'#!'*'env bash'|'#!'*'env sh')
+        printf '%s\n' "$rel" ;;
+      esac
+    done
+  }
+  expected_shell_inventory "$ROOT" > "$TMP/shell-expected"
+  "$ROOT/scripts/shell-inventory.sh" --list > "$TMP/shell-actual"
+  cmp -s "$TMP/shell-expected" "$TMP/shell-actual" \
+    || fail "scaffold shell inventory is incomplete against manifest source tree"
+
+  # A customized adopter may predate installation records. Sources are not installed.
+  inventory_adopter="$TMP/inventory-adopter"
+  "$ROOT/scripts/export.sh" --exclude-scope=codex "$inventory_adopter" >/dev/null
+  rm "$inventory_adopter/.agentic-flow-installation"
+  (cd "$inventory_adopter" && scripts/shell-inventory.sh --syntax) \
+    > "$TMP/inventory-adopter.out" 2>&1 \
+    || { cat "$TMP/inventory-adopter.out" >&2; fail "recordless adopter syntax gate failed"; }
+  (cd "$inventory_adopter" && make check) > "$TMP/inventory-adopter-check.out" 2>&1 \
+    || { cat "$TMP/inventory-adopter-check.out" >&2; fail "recordless adopter make check failed"; }
+  # Excluded destinations remain absent; deleting an active destination must fail by name.
+  [ ! -e "$inventory_adopter/.codex/hooks.json" ] \
+    || fail "inventory fixture unexpectedly installed excluded scope"
+  rm "$inventory_adopter/scripts/agentic-flow"
+  (cd "$inventory_adopter" && scripts/shell-inventory.sh --syntax) \
+    > "$TMP/inventory-missing.out" 2>&1 \
+    && fail "recordless inventory accepted a missing active script"
+  grep -q 'shell inventory: missing installed file scripts/agentic-flow; run scripts/doctor.sh' \
+    "$TMP/inventory-missing.out" \
+    || fail "recordless inventory did not name the missing installed script"
+  rm "$inventory_adopter/AGENTS.md"
+  (cd "$inventory_adopter" && scripts/shell-inventory.sh --syntax) \
+    > "$TMP/inventory-missing.out" 2>&1 \
+    && fail "recordless inventory accepted a missing mapped destination"
+  grep -q 'shell inventory: missing installed file AGENTS.md; run scripts/doctor.sh' \
+    "$TMP/inventory-missing.out" \
+    || fail "recordless inventory did not check mapped destinations"
+
+  if command -v shellcheck >/dev/null 2>&1; then
+    lint_fix="$TMP/shell-lint-fixture"
+    mkdir -p "$lint_fix/config" "$lint_fix/scripts" "$lint_fix/fixtures" "$lint_fix/bin"
+    touch "$lint_fix/scripts/export.sh"
+    printf 'fixtures\tscripts\tcore\tpreserve\texport\n' > "$lint_fix/config/payload.tsv"
+    # shellcheck disable=SC2016 # Deliberate unquoted expansion for the failure fixture.
+    printf '#!/usr/bin/env bash\nprintf %%s $unquoted\n' > "$lint_fix/fixtures/01-bad.sh"
+    printf '#!/usr/bin/env bash\nprintf clean\n' > "$lint_fix/fixtures/02-clean file.sh"
+    cat > "$lint_fix/bin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' call "$@" >> "$SHELLCHECK_CALL_LOG"
+exec "$REAL_SHELLCHECK" "$@"
+SH
+    chmod +x "$lint_fix/bin/shellcheck"
+    real_shellcheck=$(command -v shellcheck)
+    printf '%s\n' call -x "$lint_fix/fixtures/01-bad.sh" call -x "$lint_fix/fixtures/02-clean file.sh" \
+      > "$lint_fix/expected-calls"
+    PATH="$lint_fix/bin:$PATH" REAL_SHELLCHECK="$real_shellcheck" \
+      SHELLCHECK_CALL_LOG="$lint_fix/calls" AGENTIC_PROJECT_ROOT="$lint_fix" \
+      "$ROOT/scripts/shell-inventory.sh" --lint > "$lint_fix/out" 2>&1 \
+      && fail "ShellCheck gate accepted a fixture with a finding"
+    grep -Fq "$lint_fix/fixtures/01-bad.sh" "$lint_fix/out" \
+      || fail "ShellCheck gate lost the failing file's path"
+    grep -q SC2086 "$lint_fix/out" \
+      || fail "ShellCheck gate lost the failing file's diagnostic"
+    cmp -s "$lint_fix/expected-calls" "$lint_fix/calls" \
+      || fail "ShellCheck must lint every file separately with -x, in inventory order, after a failure"
+
+    printf '#!/usr/bin/env bash\nprintf clean\n' > "$lint_fix/fixtures/01-bad.sh"
+    cat > "$lint_fix/fixtures/02-clean file.sh" <<'SH'
+#!/usr/bin/env bash
+helper_value=used
+# shellcheck source-path=SCRIPTDIR
+. ./helper.sh
+SH
+    # No shebang: this helper is followed through source, not linted as an inventory file.
+    # shellcheck disable=SC2016 # The generated helper consumes the caller's variable.
+    printf 'printf "%%s\\n" "$helper_value"\n' > "$lint_fix/fixtures/helper.sh"
+    : > "$lint_fix/calls"
+    PATH="$lint_fix/bin:$PATH" REAL_SHELLCHECK="$real_shellcheck" \
+      SHELLCHECK_CALL_LOG="$lint_fix/calls" AGENTIC_PROJECT_ROOT="$lint_fix" \
+      "$ROOT/scripts/shell-inventory.sh" --lint > "$lint_fix/out" 2>&1 \
+      || { cat "$lint_fix/out" >&2; fail "ShellCheck gate rejected clean files with a sourced helper"; }
+    [ ! -s "$lint_fix/out" ] || fail "ShellCheck gate reported findings for clean files"
+    cmp -s "$lint_fix/expected-calls" "$lint_fix/calls" \
+      || fail "ShellCheck omitted or combined clean inventory files"
+  fi
+
+  shell_fix="$TMP/shell-inventory-fixture"
+  mkdir -p "$shell_fix/source/config" "$shell_fix/source/scripts" \
+    "$shell_fix/source/harness-src" "$shell_fix/source/scoped-src"
+  cp "$ROOT/scripts/shell-inventory.sh" "$shell_fix/source/scripts/"
+  touch "$shell_fix/source/scripts/export.sh"
+  printf 'harness-src\tscripts\tcore\tpreserve\texport\n' > "$shell_fix/source/config/payload.tsv"
+  printf 'scoped-src\tscoped-dest\tcodex\tpreserve\texport\n' >> "$shell_fix/source/config/payload.tsv"
+  printf 'scripts/shell-inventory.sh\tscripts/shell-inventory.sh\tsource-only\tnone\tsource-only\n' \
+    >> "$shell_fix/source/config/payload.tsv"
+  printf '#!/usr/bin/env bash\nif then\n' > "$shell_fix/source/harness-src/new-command"
+  cp "$shell_fix/source/harness-src/new-command" "$shell_fix/source/scripts/new-command"
+  # shellcheck disable=SC2016 # Deliberate literal ShellCheck defect in the adopter file.
+  printf '#!/usr/bin/env bash\nif then\necho $bad\n' > "$shell_fix/source/scripts/their-deploy.sh"
+  printf '#!/usr/bin/env bash\necho scoped\n' > "$shell_fix/source/scoped-src/ignored-command"
+  PAYLOAD_EXCLUDED_SCOPES='' AGENTIC_PROJECT_ROOT="$shell_fix/source" \
+    "$ROOT/scripts/shell-inventory.sh" --list \
+    > "$shell_fix/list"
+  grep -qx 'harness-src/new-command' "$shell_fix/list" \
+    || fail "manifest extensionless shell command missing from inventory"
+  grep -q 'their-deploy' "$shell_fix/list" \
+    && fail "adopter script was swept into source inventory"
+  # The destination query must not turn a shared directory into ownership of adopter files.
+  (
+    # shellcheck disable=SC1091 # Source the checked-in library in this isolated probe.
+    . "$ROOT/scripts/lib/payload-apply.sh"
+    payload_destination_files "$shell_fix/source"
+  ) > "$shell_fix/destination-list"
+  grep -qx 'scripts/their-deploy.sh' "$shell_fix/destination-list" \
+    && fail "destination query swept in an adopter-owned file"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
+    > "$shell_fix/syntax.out" 2>&1 \
+    && fail "syntax gate missed a manifest extensionless command"
+  grep -q 'new-command' "$shell_fix/syntax.out" \
+    || fail "syntax gate failed for the wrong reason"
+  grep -q 'their-deploy' "$shell_fix/syntax.out" \
+    && fail "syntax gate reported the adopter-owned script"
+  if command -v shellcheck >/dev/null 2>&1; then
+    AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
+      > "$shell_fix/lint.out" 2>&1 \
+      && fail "ShellCheck gate missed a manifest extensionless command"
+    grep -q 'new-command' "$shell_fix/lint.out" \
+      || fail "ShellCheck gate failed for the wrong reason"
+    grep -q 'their-deploy' "$shell_fix/lint.out" \
+      && fail "ShellCheck gate reported the adopter-owned script"
+  fi
+  PAYLOAD_EXCLUDED_SCOPES='' expected_shell_inventory "$shell_fix/source" \
+    > "$shell_fix/expected"
+  cmp -s "$shell_fix/expected" "$shell_fix/list" \
+    || fail "fixture shell inventory missed a manifest source member"
+  PAYLOAD_EXCLUDED_SCOPES=codex expected_shell_inventory "$shell_fix/source" \
+    > "$shell_fix/expected-excluded"
+  PAYLOAD_EXCLUDED_SCOPES=codex AGENTIC_PROJECT_ROOT="$shell_fix/source" \
+    "$ROOT/scripts/shell-inventory.sh" --list > "$shell_fix/list-excluded"
+  cmp -s "$shell_fix/expected-excluded" "$shell_fix/list-excluded" \
+    || fail "shell inventory disagrees with excluded manifest scope"
+  grep -q 'ignored-command' "$shell_fix/list-excluded" \
+    && fail "shell inventory included an excluded-scope command"
+  grep -qx 'scoped-src/ignored-command' "$shell_fix/list" \
+    || fail "scope fixture was missing before exclusion"
+
+  rm "$shell_fix/source/harness-src/new-command"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
+    > "$shell_fix/adopter-syntax.out" 2>&1 \
+    || fail "syntax gate swept in an adopter-owned script under the destination"
+  if command -v shellcheck >/dev/null 2>&1; then
+    AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
+      > "$shell_fix/adopter-lint.out" 2>&1 \
+      || fail "ShellCheck gate swept in an adopter-owned script under the destination"
+  fi
+  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/harness-src/agentic-flow"
+  printf '\nif then\n' >> "$shell_fix/source/harness-src/agentic-flow"
+  AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --syntax \
+    > "$shell_fix/cli-syntax.out" 2>&1 \
+    && fail "syntax gate missed a damaged scripts/agentic-flow"
+  grep -q 'agentic-flow' "$shell_fix/cli-syntax.out" \
+    || fail "CLI syntax gate failed for the wrong reason"
+  cp "$ROOT/scripts/agentic-flow" "$shell_fix/source/harness-src/agentic-flow"
+  # shellcheck disable=SC2016 # This literal creates a ShellCheck fixture in the copied CLI.
+  printf '\nprintf %%s $unquoted\n' >> "$shell_fix/source/harness-src/agentic-flow"
+  if command -v shellcheck >/dev/null 2>&1; then
+    AGENTIC_PROJECT_ROOT="$shell_fix/source" "$ROOT/scripts/shell-inventory.sh" --lint \
+      > "$shell_fix/cli-lint.out" 2>&1 \
+      && fail "ShellCheck gate missed a damaged scripts/agentic-flow"
+    grep -q 'SC2086' "$shell_fix/cli-lint.out" \
+      || fail "CLI ShellCheck gate failed for the wrong reason"
+  fi
+
+  build_fix="$TMP/build-failure"
+  mkdir -p "$build_fix/scripts"
+  cp "$ROOT/Makefile" "$build_fix/Makefile"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$build_fix/scripts/export.sh"
+  chmod +x "$build_fix/scripts/export.sh"
+  (cd "$build_fix" && make build) > "$build_fix/out" 2>&1 \
+    && fail "make build masked export failure"
+  grep -q 'export dry-run ok' "$build_fix/out" \
+    && fail "make build printed success after export failed"
+fi
+# A lint that skips when its tool is missing reports green for the wrong reason — that is
+# exactly how `make test` sat red-but-passing until someone installed shellcheck.
+#
+# Asserted by reading the recipes, NOT by running `make test` under a stripped PATH: this
+# script IS what `make test` runs, so invoking it would recurse without bound.
+for mf in "$ROOT/Makefile" "$ROOT/templates/harness/Makefile"; do
+  [ -f "$mf" ] || continue
+  grep -q "shellcheck" "$mf" || fail "$mf does not run shellcheck in 'make test'"
+  if grep -qi "shellcheck not found; skipping" "$mf"; then
+    fail "$mf skips shellcheck when absent instead of failing"
+  fi
+  grep -q "scripts/self-test.sh --fast" "$mf" \
+    || fail "$mf does not run fast self-test mode in 'make check'"
+  grep -q "scripts/self-test.sh --full" "$mf" \
+    || fail "$mf does not run full self-test mode in 'make test'"
+  # shellcheck disable=SC2016 # Literal Makefile variable references.
+  grep -q 'scripts/self-test.sh --only "$(F)" --scenario "$(S)"' "$mf" \
+    || fail "$mf does not forward controller scenario selection"
+  grep -q 'usage: make test-one .*S=' "$mf" \
+    || fail "$mf usage omits S="
+done
+if [ -f "$ROOT/templates/harness/Makefile" ]; then
+  sed -n '/^test-one:/,/^$/p' "$ROOT/Makefile" > "$TMP/root-test-one"
+  sed -n '/^test-one:/,/^$/p' "$ROOT/templates/harness/Makefile" > "$TMP/template-test-one"
+  cmp -s "$TMP/root-test-one" "$TMP/template-test-one" \
+    || fail 'root and template Makefile test-one call sites differ'
+fi
+
+# --- action-pin guard (run everywhere) ---------------------------------------------------
+# The guard's whole value is discriminating a mutable tag pin from an immutable SHA pin.
+# Assert it FAILS on bad input first — a checker that only ever passes proves nothing.
+PIN_GUARD="$ROOT/scripts/check-action-pins.sh"
+if [ -x "$PIN_GUARD" ]; then
+  PINFIX="$TMP/pinfix"
+  mkdir -p "$PINFIX/.github/workflows"
+
+  cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
+# Action pins verified: 2999-01-01
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@v4
+YAML
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
+    && fail "pin guard accepted a mutable tag pin"
+
+  cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
+# Action pins verified: 2999-01-01
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+YAML
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
+    && fail "pin guard accepted a SHA pin with no version comment"
+
+  # A well-formed pin and a local action must both pass.
+  cat > "$PINFIX/.github/workflows/bad.yml" <<'YAML'
+# Action pins verified: 2999-01-01
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/local
+YAML
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
+    || fail "pin guard rejected a correctly pinned action or a local action"
+
+  # Staleness is a warning, not an error — otherwise the calendar alone turns repos red
+  # and the Stop hook starts blocking turns. --strict is what enforces.
+  printf '%s\n' "# Action pins verified: 2020-01-01" > "$PINFIX/.github/workflows/stale.yml"
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" >/dev/null 2>&1 \
+    || fail "pin guard treated a stale stamp as fatal in default mode"
+  AGENTIC_PROJECT_ROOT="$PINFIX" "$PIN_GUARD" --strict >/dev/null 2>&1 \
+    && fail "pin guard --strict did not fail on a stale stamp"
+
+  # No workflows at all is a clean pass, not an error: most fresh adoptions have none.
+  mkdir -p "$TMP/pin-empty"
+  AGENTIC_PROJECT_ROOT="$TMP/pin-empty" "$PIN_GUARD" >/dev/null 2>&1 \
+    || fail "pin guard failed in a project with no workflow files"
+
+  # The shipped templates must satisfy their own guard.
+  (cd "$ROOT" && "$PIN_GUARD") >/dev/null 2>&1 \
+    || fail "shipped templates/ci workflows fail the pin guard"
+fi
+
+# --- harness/template section sync -------------------------------------------------------
+# CLAUDE.md and AGENTS.md exist twice on purpose and their prose legitimately differs, so
+# nothing compared them and a section added to one side shipped unnoticed. The guard asserts
+# structure only; assert it fires in both directions, or it is decoration.
+SYNC="$ROOT/scripts/check-harness-sync.sh"
+if [ -x "$SYNC" ]; then
+  SYNCFIX="$TMP/harness-sync-fixture"
+  mkdir -p "$SYNCFIX/templates/harness"
+  sync_fixture() { # <root-body> <template-body>
+    printf '# Contract\n\n%s\n' "$1" > "$SYNCFIX/CLAUDE.md"
+    printf '# Contract\n\n%s\n' "$2" > "$SYNCFIX/templates/harness/CLAUDE.md"
+    printf '# Executor\n\n## Your job\n' > "$SYNCFIX/AGENTS.md"
+    printf '# Executor\n\n## Your job\n' > "$SYNCFIX/templates/harness/AGENTS.md"
+  }
+  sync_run() { AGENTIC_PROJECT_ROOT="$SYNCFIX" "$SYNC" >/dev/null 2>&1; }
+
+  sync_fixture '## Roles' '## Roles'
+  sync_run || fail "harness sync rejected files with matching section structure"
+
+  # The template's "needs wiring" marker is not a structural change.
+  sync_fixture '## Stack profile' '## Stack profile  ⚠️ WIRE THIS UP'
+  sync_run || fail "harness sync treated the WIRE THIS UP marker as a section difference"
+
+  sync_fixture '## Roles' '## Roles
+## Extra section'
+  sync_run && fail "harness sync missed a section present only in the template"
+
+  sync_fixture '## Roles
+## Root only' '## Roles'
+  sync_run && fail "harness sync missed a section present only in the root contract"
+
+  # Prose differences are expected and must not fail: only structure is compared.
+  sync_fixture '## Roles
+
+Hand the issue to OpenCode review.' '## Roles
+
+Hand the step to the reviewer.'
+  sync_run || fail "harness sync compared prose instead of section structure"
+
+  # An adopted project has no templates/harness/ and must not fail on its absence.
+  ADOPTEDFIX="$TMP/harness-sync-adopted"
+  mkdir -p "$ADOPTEDFIX"
+  printf '# Contract\n\n## Roles\n' > "$ADOPTEDFIX/CLAUDE.md"
+  AGENTIC_PROJECT_ROOT="$ADOPTEDFIX" "$SYNC" >/dev/null 2>&1 \
+    || fail "harness sync failed in an adopted project with no templates/harness"
+
+fi
+
+# A generated consumer must match its complete canonical body. A malformed render
+# graph must leave every consumer untouched, including those before the bad one.
+if should_run contracts && [ -d "$ROOT/templates/shared" ]; then
+  RENDER="$ROOT/scripts/render-shared.sh"
+  RENDER_FIX="$TMP/shared-render-fixture"
+  mkdir -p "$RENDER_FIX/templates"
+  if [ -d "${SOURCE_SNAPSHOT:-}/templates/shared" ]; then
+    mkdir -p "$RENDER_FIX/templates/shared"
+    while IFS= read -r -d '' shared; do
+      shared_rel=${shared#"$SOURCE_SNAPSHOT/templates/shared/"}
+      mkdir -p "$RENDER_FIX/templates/shared/$(dirname "$shared_rel")"
+      ln "$shared" "$RENDER_FIX/templates/shared/$shared_rel"
+    done < <(find "$SOURCE_SNAPSHOT/templates/shared" -type f -print0)
+  else
+    cp -R "$ROOT/templates/shared" "$RENDER_FIX/templates/"
+  fi
+  for rel in config/workflow.tsv scripts/lib/workflow.sh \
+             Makefile templates/harness/Makefile AGENTS.md templates/harness/AGENTS.md \
+             CLAUDE.md templates/harness/CLAUDE.md \
+             METHODOLOGY.md .agents/skills/plan-to-issues/SKILL.md \
+             .claude/skills/plan-to-issues/SKILL.md .agents/skills/create-tags/SKILL.md \
+             .claude/skills/create-tags/SKILL.md .agents/skills/review-execution/SKILL.md \
+             .opencode/agent/code-reviewer.md; do
+    mkdir -p "$RENDER_FIX/$(dirname "$rel")"
+    cp "$ROOT/$rel" "$RENDER_FIX/$rel"
+  done
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null \
+    || fail "pristine shared render fixture drifted"
+  sed 's/needs-human/needs-review/g' "$ROOT/config/workflow.tsv" > "$RENDER_FIX/config/workflow.tsv"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" --check > "$TMP/workflow-drift.out" 2>&1 \
+    && fail 'changed workflow data was accepted as fresh'
+  grep -q 'shared render drift: templates/shared/workflow.md' "$TMP/workflow-drift.out" || fail 'workflow drift did not name generated source'
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" >/dev/null || fail 'workflow regeneration failed'
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" --check >/dev/null || fail 'regenerated workflow is stale'
+  installed_render_fix="$TMP/installed-render"
+  mkdir -p "$installed_render_fix"
+  AGENTIC_PROJECT_ROOT="$installed_render_fix" "$ROOT/scripts/render-shared.sh" --check >/dev/null \
+    || fail 'installed project requires absent render sources'
+  # Invalid input must leave every consumer untouched.
+  cp "$RENDER_FIX/METHODOLOGY.md" "$TMP/workflow-before"
+  printf 'invalid\n' >> "$RENDER_FIX/config/workflow.tsv"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$ROOT/scripts/render-shared.sh" > "$TMP/workflow-invalid.out" 2>&1 \
+    && fail 'invalid workflow rendered successfully'
+  cmp -s "$RENDER_FIX/METHODOLOGY.md" "$TMP/workflow-before" || fail 'invalid workflow partially rewrote contracts'
+  cp "$ROOT/config/workflow.tsv" "$RENDER_FIX/config/workflow.tsv"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" >/dev/null || fail 'workflow restore failed'
+  printf '\nconsumer drift\n' >> "$RENDER_FIX/.claude/skills/create-tags/SKILL.md"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
+    && fail "shared render missed a whole skill drift"
+  cp "$ROOT/.claude/skills/create-tags/SKILL.md" "$RENDER_FIX/.claude/skills/create-tags/SKILL.md"
+  sed 's/No unbounded anything/Unlimited anything/' "$ROOT/AGENTS.md" > "$RENDER_FIX/AGENTS.md"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
+    && fail "shared render missed content drift under an unchanged heading"
+  cp "$ROOT/AGENTS.md" "$RENDER_FIX/AGENTS.md"
+  sed 's/\*\*Medium\*\*/**Other**/' "$ROOT/.opencode/agent/code-reviewer.md" \
+    > "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" --check >/dev/null 2>&1 \
+    && fail "shared render missed severity drift"
+  cp "$ROOT/.opencode/agent/code-reviewer.md" "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  sed '/<!-- BEGIN SHARED REVIEW CONTRACT -->/d' "$ROOT/.opencode/agent/code-reviewer.md" \
+    > "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  before=$(tree_digest "$RENDER_FIX")
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" >/dev/null 2>&1 \
+    && fail "shared render accepted a missing marker"
+  [ "$before" = "$(tree_digest "$RENDER_FIX")" ] \
+    || fail "failed shared render changed a consumer"
+  cp "$ROOT/.opencode/agent/code-reviewer.md" "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  printf '\n<!-- BEGIN SHARED REVIEW CONTRACT -->\n' \
+    >> "$RENDER_FIX/.opencode/agent/code-reviewer.md"
+  before=$(tree_digest "$RENDER_FIX")
+  AGENTIC_PROJECT_ROOT="$RENDER_FIX" "$RENDER" >/dev/null 2>&1 \
+    && fail "shared render accepted a duplicate marker"
+  [ "$before" = "$(tree_digest "$RENDER_FIX")" ] \
+    || fail "duplicate-marker render changed a consumer"
+  for surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
+                 "$ROOT/.opencode/agent/code-reviewer.md"; do
+    grep -q 'verify-step' "$surface" \
+      || fail "review guidance does not route isolated red-first verification through verify-step"
+    grep -qi 'revert the change, run the test, restore' "$surface" \
+      && fail "review guidance mutates the live checkout for red-first verification"
+  done
+fi
+
+# Contract drift guard. The second plan-to-issues copy is kept for optionality, not need:
+# METHODOLOGY.md §6 points at `.claude/skills/plan-to-issues/`, CLAUDE.md lists the skill
+# under the Plan role, and AGENTS.md never mentions it — so nothing has Codex running it
+# today. Codex scans only .agents/skills and Claude Code only .claude/skills, so the copy is
+# what would let the executor take this over if a project ever switched; the guard keeps the
+# two identical so that option stays real rather than quietly rotting.
+# review-execution needed no such pair for a different reason: OpenCode discovers
+# .agents/skills natively, so one copy already served both and the third was deleted.
+if active_scope codex && active_scope claude; then
+  cmp -s "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
+         "$ROOT/.claude/skills/plan-to-issues/SKILL.md" \
+    || fail "plan-to-issues adapter copies diverged"
+fi
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+if active_scope codex; then
+  grep -q 'Stack profile.*`CLAUDE.md`' "$ROOT/.agents/skills/plan-to-issues/SKILL.md" \
+    || fail "plan-to-issues guidance does not name CLAUDE.md as Stack profile owner"
+fi
+
+token_line=""
+token_seen=0
+for token_file in "$ROOT/scripts/init.sh" "$ROOT/scripts/doctor.sh" "$ROOT/scripts/self-test.sh"; do
+  [ -f "$token_file" ] || continue
+  line=$(grep '^TOKEN_RE=' "$token_file" || true)
+  [ -n "$line" ] || fail "$token_file lacks TOKEN_RE assignment"
+  token_seen=$((token_seen + 1))
+  if [ -z "$token_line" ]; then
+    token_line="$line"
+  elif [ "$line" != "$token_line" ]; then
+    fail "TOKEN_RE assignment diverged in $token_file"
+  fi
+done
+[ "$token_seen" -ge 2 ] || fail "not enough TOKEN_RE assignments to guard parity"
+printf '%s\n%s\n' "$(printf '{%sPROJECT_NAME}%s' '{' '}')" \
+  "$(printf '{%sPROJECT_123}%s' '{' '}')" | grep -Eq "$TOKEN_RE" \
+  || fail "TOKEN_RE rejected valid placeholder fixtures"
+# shellcheck disable=SC2016 # literal GitHub Actions expression fixture.
+printf '%s\n%s\n%s\n' '${{ matrix.node }}' '{project_name}' \
+  "$(printf '{%sproject-name}%s' '{' '}')" | grep -Eq "$TOKEN_RE" \
+  && fail "TOKEN_RE accepted invalid placeholder fixtures"
+
+grep -Eq '^ADOPTION\.md[[:space:]]+ADOPTION\.md[[:space:]]+core[[:space:]]+preserve[[:space:]]+export$' \
+  "$ROOT/config/payload.tsv" \
+  || fail "ADOPTION.md is not exported by the payload manifest"
+grep -q 'require_file ADOPTION.md' "$ROOT/scripts/doctor.sh" \
+  || fail "doctor no longer requires ADOPTION.md"
+AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo --skip-make-check \
+  >/dev/null 2>&1 \
+  || fail "doctor rejected explicit repo-scope --skip-make-check"
+"$ROOT/scripts/doctor.sh" --check --scope all --skip-make-check \
+  >/dev/null 2>"$TMP/doctor-skip-scope.err" \
+  && fail "doctor accepted --skip-make-check outside repo scope"
+grep -q "only valid with --scope repo" "$TMP/doctor-skip-scope.err" \
+  || fail "doctor skip-scope failure did not explain the constraint"
+
+# --skip-make-check means the caller already ran an equivalent gate, and `make check` runs
+# docs-index.sh --check first. CI ran `make check` and then doctor --skip-make-check, so the
+# same command ran twice against the same state — it cannot reach a different verdict.
+AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo --skip-make-check \
+  > "$TMP/doctor-skip-docs.out" 2>&1 \
+  || fail "doctor rejected repo-scope --skip-make-check"
+if active_scope docs; then
+  grep -q "docs index up to date (checked by the caller's gate)" "$TMP/doctor-skip-docs.out" \
+    || fail "doctor re-ran the docs index check the caller's gate already covered"
+else
+  grep -q 'docs adapter excluded' "$TMP/doctor-skip-docs.out" \
+    || fail "doctor required an excluded docs adapter"
+fi
+# Without the flag it must still run the check itself.
+AGENTIC_SELFTEST=1 "$ROOT/scripts/doctor.sh" --scope repo \
+  > "$TMP/doctor-docs.out" 2>&1 || true
+if active_scope docs; then
+  grep -q "docs index up to date$" "$TMP/doctor-docs.out" \
+    || fail "doctor stopped checking the docs index when no gate was declared"
+fi
+
+for role_file in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" \
+                 "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
+  [ -f "$role_file" ] || continue
+  grep -qi 'preload the whole' "$role_file" \
+    || fail "$role_file lacks the minimal read-set rule"
+done
+# Ceilings are set just above the MEASURED size of each bundle, not above a modelled
+# "role used to preload METHODOLOGY.md" figure. A ceiling with 100%+ headroom passes no
+# matter what gets re-inlined, which turns the assertion into decoration. Raising one is
+# a deliberate act: move the content to its canonical home first (CLAUDE.md → routing).
+#
+# The planner/executor ceilings apply ONLY in the scaffold repo (scripts/export.sh present),
+# never in an exported project. CLAUDE.md and AGENTS.md are "preserve" instance files —
+# config/payload.tsv ships them to every adopter to fill with their OWN Stack profile,
+# Architecture, and Gotchas, which is real project information the pristine template doesn't
+# carry and has no reason to be bounded by this repo's own measurements. Running this
+# unconditionally broke the first real adopter upgrade past this check: collector's filled-in
+# CLAUDE.md measured 2227 words against a 1530 ceiling sized for the standard's own root file.
+# The reviewer-skill ceiling stays unconditional — that file is pristine payload, never
+# customized per project, so its size is meaningful everywhere.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Raised once, deliberately, when the review handoff became data-carrying: Codex now
+  # comments the commit sha and verification on the step issue, and the reviewer closes
+  # that issue itself rather than parking it at needs-closing. Every bit of *rationale* for
+  # that went to METHODOLOGY.md §2/§6 (uncapped, and the canonical home); what landed in
+  # the three bundles is irreducible mechanics — the state machine and the gh commands each
+  # role runs. Each ceiling keeps the original ~80-word headroom over its new measured
+  # size, so the assertion still bites on re-inlining rather than on one contract change.
+  # For the executor the binding measurement is templates/harness/AGENTS.md (947), not this
+  # repo's own root instance (869) — the same check runs inside a fresh export, where the
+  # bundle carries the opt-out notes too. Size a ceiling against the larger of the pair, or
+  # `make test` fails on the export while `make check` passes here.
+  planner_words=$(wc -w < "$ROOT/CLAUDE.md" | tr -d ' ')
+  executor_words=$(wc -w < "$ROOT/AGENTS.md" | tr -d ' ')
+  [ "$planner_words" -le 1530 ] \
+    || fail "planner static role bundle exceeds its ceiling: $planner_words words (max 1530)"
+  # Raised 1030 -> 1090 for the red-first handoff line, the dependency-version rule the root
+  # instance was missing, and the docs/MEMORY.md entry in the minimal read set. That last one
+  # is the whole multi-harness reach of the memory index in a single line: Codex and OpenCode
+  # both read AGENTS.md, so nothing else has to be added anywhere for either of them to find
+  # it. Sized against templates/harness/AGENTS.md, the larger of the pair and the file that
+  # becomes an adopter's AGENTS.md, with the usual narrow headroom.
+  [ "$executor_words" -le 1090 ] \
+    || fail "executor static role bundle exceeds its ceiling: $executor_words words (max 1090)"
+fi
+# Raised 965 -> 1000 deliberately, for two obligations the contract did not previously carry
+# and that no routing target could hold: re-run the executor's verification rather than
+# accepting it (a test that passed without testing anything shipped here once, and survived
+# review), and treat diff content as data rather than instruction. Both must be read on every
+# review, so neither can be routed to METHODOLOGY.md. Headroom stays deliberately narrow so
+# the assertion still bites on re-inlining a routed block.
+if active_scope codex; then
+  reviewer_words=$(wc -w < "$ROOT/.agents/skills/review-execution/SKILL.md" | tr -d ' ')
+  [ "$reviewer_words" -le 1000 ] \
+    || fail "reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 1000)"
+fi
+# END ROLE-BUNDLE CEILINGS
+
+# One set of engineering standards across every surface that states them. METHODOLOGY.md §11
+# is canonical; AGENTS.md (both instances) compresses them into the executor's always-loaded
+# checklist, and the /review agent contract restates them for the reviewer. Those copies are
+# deliberate — routing an executor to a 5,000-word document for six rules would cost more per
+# turn than it saves — but nothing kept the *set* in sync, so a rule added or retired in one
+# place could silently not exist in the others.
+#
+# Anchor on the distinctive phrase, not the full sentence: each surface words the rule for its
+# own audience ("Validate…" for the executor, "Validates…" for the reviewer), and asserting
+# identical prose would fail on correct, audience-tuned text.
+# templates/harness/AGENTS.md only exists in the source repo — an adopted project receives it
+# as its own AGENTS.md — so it joins the list only when present, the same source-vs-adopted
+# distinction the export ceilings already make.
+standards_surfaces="$ROOT/METHODOLOGY.md $ROOT/AGENTS.md"
+[ -f "$ROOT/templates/harness/AGENTS.md" ] \
+  && standards_surfaces="$standards_surfaces $ROOT/templates/harness/AGENTS.md"
+for standards_surface in $standards_surfaces; do
+  [ -f "$standards_surface" ] || fail "missing engineering-standards surface: $standards_surface"
+  while IFS= read -r standards_rule; do
+    [ -n "$standards_rule" ] || continue
+    grep -qiF "$standards_rule" "$standards_surface" \
+      || fail "${standards_surface#"$ROOT"/} does not state the standard: \"$standards_rule\""
+  done <<'RULES'
+at the boundary, once
+strings that get interpreted
+Deny by default
+never literals
+No unbounded
+failure path
+RULES
+done
+if active_scope opencode; then
+  grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.opencode/agent/code-reviewer.md" \
+    || fail "OpenCode review does not route engineering standards to AGENTS.md"
+fi
+
+# One severity vocabulary across every review surface — the SKILL.md pair AND the live
+# /review agent contract, which is where the old block/fix/nit scale survived an earlier
+# normalization pass precisely because nothing asserted over it.
+for review_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
+                      "$ROOT/.opencode/agent/code-reviewer.md"; do
+  case "$review_surface" in
+    */.agents/*) active_scope codex || continue ;;
+    */.opencode/*) active_scope opencode || continue ;;
+  esac
+  [ -f "$review_surface" ] || fail "missing review surface: $review_surface"
+  for level in High Medium Low Nit; do
+    grep -q "\*\*$level\*\*" "$review_surface" \
+      || fail "$review_surface lacks $level severity"
+  done
+  grep -qi 'accepted/by-design' "$review_surface" \
+    || fail "$review_surface does not name accepted/by-design as a disposition"
+  # shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+  grep -qE '\*\*(Blocker|Critical)\*\*|`block`|`fix`|LGTM' "$review_surface" \
+    && fail "$review_surface still uses a retired severity or verdict vocabulary"
+done
+if active_scope codex; then
+  grep -q 'AGENTS.md.*Engineering standards' "$ROOT/.agents/skills/review-execution/SKILL.md" \
+    || fail "review skill does not route engineering standards to AGENTS.md"
+fi
+
+# §8 files worktrees under "Optional capabilities", which is true of fanning out and false of
+# isolating writers: nothing required isolation for parallel *editing* agents, so a fan-out of
+# writers shared one tree. The tree-state cache made that cheaper, not correct. Anchor on the
+# distinctive phrase so the requirement cannot be softened back into an optional nicety.
+grep -qi 'isolation stops being optional' "$ROOT/METHODOLOGY.md" \
+  || fail "METHODOLOGY.md §8 does not require worktree isolation for concurrent editing agents"
+
+# The ensemble entry is the sixth surface that could have restated the severity scale, which
+# is already written out in ten places. It must route to §5 and carry the two failure modes
+# that make an ensemble worth less than its headcount suggests — otherwise it reads as "more
+# reviewers is better", which is the belief it exists to correct.
+ensemble_block=$(awk '
+  /^- \*\*Multi-reviewer ensemble\*\*/ { inblock = 1; print; next }
+  inblock && /^- \*\*/ { exit }
+  inblock { print }
+' "$ROOT/METHODOLOGY.md")
+[ -n "$ensemble_block" ] || fail "METHODOLOGY.md §8 has no multi-reviewer ensemble entry"
+printf '%s' "$ensemble_block" | grep -qi 'not a vote' \
+  || fail "the ensemble entry does not say aggregation is not a vote"
+printf '%s' "$ensemble_block" | grep -qi 'blind spot' \
+  || fail "the ensemble entry does not name the correlated-blind-spot failure mode"
+printf '%s' "$ensemble_block" | grep -q 'sev:' \
+  && fail "the ensemble entry restates the severity labels instead of routing to METHODOLOGY.md §5"
+
+# The shipped-hook count is stated in prose in two exported documents and was wrong in both:
+# METHODOLOGY.md §8 offered ideas "beyond the shipped two" and README.md's source-tree
+# inventory called scripts/hooks/ "the two hook scripts", while four ship and settings.json
+# calls all four. Nothing counted. Derive the count and assert the prose agrees, so adding or
+# retiring a hook fails here instead of leaving a stale number in two adopter-facing files.
+# Anchored on the distinctive phrase for the same reason as the standards surfaces above.
+hook_count=$(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | wc -l | tr -d ' ')
+case "$hook_count" in
+  1) hook_word=one ;;
+  2) hook_word=two ;;
+  3) hook_word=three ;;
+  4) hook_word=four ;;
+  5) hook_word=five ;;
+  6) hook_word=six ;;
+  *) hook_word="" ;;
+esac
+if [ -z "$hook_word" ]; then
+  fail "no english number word for the shipped hook count ($hook_count) — extend the case above"
+fi
+grep -q "the $hook_word shipped hooks" "$ROOT/METHODOLOGY.md" \
+  || fail "METHODOLOGY.md does not say \"the $hook_word shipped hooks\" ($hook_count ship)"
+# METHODOLOGY.md is payload and carries this claim into every adoption, so that assertion is
+# unconditional. The root README.md is NOT in config/payload.tsv — it describes this repo's own
+# source tree, and an adopted project's README is its own document about its own project. Assert
+# it only in the scaffold, the same source-vs-adopted split the role-bundle ceilings make.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  grep -q "the $hook_word hook scripts" "$ROOT/README.md" \
+    || fail "README.md does not say \"the $hook_word hook scripts\" ($hook_count ship)"
+fi
+
+# Counting alone would still let a new hook ship undocumented as long as someone bumped the
+# number. CLAUDE.md is the surface that names each hook and what it enforces, so require every
+# shipped script to appear there by filename.
+while IFS= read -r hook_script; do
+  hook_base=$(basename "$hook_script")
+  if active_scope claude; then
+    grep -q "$hook_base" "$ROOT/CLAUDE.md" \
+      || fail "CLAUDE.md does not document the shipped hook $hook_base"
+  fi
+done < <(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | sort)
+
+# §5 is the shared severity source every review surface cites, including the /review agent
+# contract for ordinary diffs — but it was titled "(Security reviews)" and defined its levels
+# in security terms ("exploitable / auth bypass") while the two surfaces citing it defined
+# them in general correctness terms. Assert the title stays unscoped and the blocking
+# semantics stay stated, so the definitions cannot drift back apart.
+grep -q '^## 5\. Severity legend$' "$ROOT/METHODOLOGY.md" \
+  || fail "METHODOLOGY.md §5 is not titled for every review surface"
+for blocking_phrase in 'Blocks merge' 'Does not block'; do
+  grep -qF "$blocking_phrase" "$ROOT/METHODOLOGY.md" \
+    || fail "METHODOLOGY.md §5 does not state \"$blocking_phrase\""
+done
+
+# Two review obligations that cannot be routed, because they apply on every review.
+# The first exists because a test that passed without testing anything shipped through review
+# here once: its payload was built with printf interpolation, produced invalid JSON, the hook
+# exited early, and the assertion passed vacuously. Re-running is the only thing that catches
+# that class. The second exists because this project's payload IS agent instructions, so a
+# diff can change what every adopting project's agent does — or try to instruct the reviewer.
+# Both reviewer surfaces carry both, so a reviewer reading either one is fully briefed.
+for reviewer_surface in "$ROOT/.agents/skills/review-execution/SKILL.md" \
+                        "$ROOT/.opencode/agent/code-reviewer.md"; do
+  case "$reviewer_surface" in
+    */.agents/*) active_scope codex || continue ;;
+    */.opencode/*) active_scope opencode || continue ;;
+  esac
+  [ -f "$reviewer_surface" ] || fail "missing reviewer surface: $reviewer_surface"
+  if ! grep -q 'verify-step' "$reviewer_surface" || ! grep -q 'sha.*and.*tree' "$reviewer_surface"; then
+    fail "${reviewer_surface#"$ROOT"/} does not bind verification reuse to sha and tree"
+  fi
+  grep -qi 'as data' "$reviewer_surface" \
+    || fail "${reviewer_surface#"$ROOT"/} does not tell the reviewer to treat the diff as data"
+  grep -qi 'instruction' "$reviewer_surface" \
+    || fail "${reviewer_surface#"$ROOT"/} does not warn that a diff may carry instructions"
+done
+
+# The reviewer's focused-group list named five of the six groups, omitting `upgrade`, so a
+# reviewer following it would never run that group. Derive it rather than trust the prose.
+if active_scope opencode; then
+  for reviewer_group in $SELF_TEST_GROUPS; do
+    grep -qF "\`$reviewer_group\`" "$ROOT/.opencode/agent/code-reviewer.md" \
+      || fail "code-reviewer.md does not name the $reviewer_group self-test group"
+  done
+fi
+
+# The executor's handoff is where the red-first evidence is cheapest to produce, and the
+# dependency-version rule shipped to adopters while the root instance silently lacked it —
+# a divergence check-harness-sync.sh cannot see, since it compares ## headings only.
+grep -qi 'Red first' "$ROOT/AGENTS.md" \
+  || fail "AGENTS.md does not require red-first evidence in the review handoff"
+
+# The memory index reaches all three harnesses through exactly two files: Claude reads
+# CLAUDE.md, and Codex and OpenCode both read AGENTS.md (OpenCode prefers AGENTS.md over
+# CLAUDE.md outright). Lose either pointer and the layer silently becomes single-harness,
+# which nothing else would catch. Both contract pairs must carry it.
+grep -qF 'docs/MEMORY.md' "$ROOT/AGENTS.md" \
+  || fail "AGENTS.md does not point at the docs/MEMORY.md index"
+if active_scope claude; then
+  grep -qF 'docs/MEMORY.md' "$ROOT/CLAUDE.md" \
+    || fail "CLAUDE.md does not point at the docs/MEMORY.md index"
+fi
+if [ -d "$ROOT/templates/harness" ]; then
+  for memory_template in "$ROOT/templates/harness/CLAUDE.md" "$ROOT/templates/harness/AGENTS.md"; do
+    grep -qF 'docs/MEMORY.md' "$memory_template" \
+      || fail "${memory_template#"$ROOT"/} does not point at the docs/MEMORY.md index"
+  done
+fi
+
+# docs-index.sh treats every .md under docs/ as a lifecycle document and fails make check on
+# anything outside its four stages. The memory tree is not a lifecycle stage, so it has to be
+# skipped explicitly — assert with a real file rather than by reading the case statement.
+MEMDOC_FIXTURE="$ROOT/docs/memory/self-test-stage-probe.md"
+if active_scope docs; then
+  printf '%s\n' '# probe' > "$MEMDOC_FIXTURE"
+  if ! "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
+    rm -f "$MEMDOC_FIXTURE"
+    fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
+  fi
+  rm -f "$MEMDOC_FIXTURE"
+fi
+
+# The tree ships empty. docs/MEMORY.md must NOT be payload: it accumulates adopter-local
+# entries in place, and upgrade --force overwrites a manifest row unconditionally.
+grep -q '^docs/memory/\.gitkeep' "$ROOT/config/payload.tsv" \
+  || fail "config/payload.tsv does not ship the docs/memory/ tree"
+grep -q '^docs/MEMORY\.md' "$ROOT/config/payload.tsv" \
+  && fail "docs/MEMORY.md is a manifest row — upgrade --force would overwrite an adopter's index"
+
+# The memory index carries TWO ceilings and the split is the whole point, so it gets a fixture
+# rather than a reading of the source. The tight one is this repo's housekeeping and must never
+# fire downstream: an adopter's memory is their own project knowledge, and a ceiling sized to
+# our habits firing on their content is precisely the bug recorded at the role-bundle ceilings
+# ("broke the first real adopter upgrade past this check"). The 200-line one is the reading
+# harness's own hard limit, past which entries are silently dropped, so it is true everywhere
+# and must fire even with no scripts/export.sh present.
+MEMCEIL="$TMP/memory-ceiling"
+memceil_index() { # <entry-count>
+  rm -rf "$MEMCEIL"
+  mkdir -p "$MEMCEIL/docs/memory" "$MEMCEIL/scripts"
+  printf '# MEMORY.md — index\n\n| Entry | Type | Description |\n|---|---|---|\n' \
+    > "$MEMCEIL/docs/MEMORY.md"
+  memceil_i=0
+  while [ "$memceil_i" -lt "$1" ]; do
+    # shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+    printf '| `e%s` | trap | filler |\n' "$memceil_i" >> "$MEMCEIL/docs/MEMORY.md"
+    printf -- '---\nid: e%s\n---\nbody\n' "$memceil_i" > "$MEMCEIL/docs/memory/e$memceil_i.md"
+    memceil_i=$((memceil_i + 1))
+  done
+}
+# `|| true` is load-bearing, not defensive. The checker exits 1 when it finds a problem, and
+# under `set -o pipefail` (line 7) that non-zero status propagates through
+# `memceil_run | grep -q ...` even when grep matches — so every assertion below would have
+# reported "did not fire" regardless of what the checker actually printed, and the
+# expect-no-match ones could never have failed at all. Swallow the status; assert on the text.
+memceil_run() { AGENTIC_PROJECT_ROOT="$MEMCEIL" "$ROOT/scripts/check-memory-index.sh" 2>&1 || true; }
+
+memceil_index 60
+memceil_run | grep -q "50-line ceiling" \
+  && fail "the scaffold-only memory ceiling fired in an adopted project — adopters must be allowed their own memories"
+touch "$MEMCEIL/scripts/export.sh"
+memceil_run | grep -q "50-line ceiling" \
+  || fail "the scaffold memory ceiling did not fire on a 60-entry index inside the scaffold"
+rm -f "$MEMCEIL/scripts/export.sh"
+memceil_index 205
+memceil_run | grep -q "200-line read limit" \
+  || fail "the harness read-limit ceiling did not fire on a 205-entry index in an adopted project"
+
+# The three ways an index rots apart from size. Same fixture, one entry, so each failure is
+# unambiguous.
+memceil_index 1
+printf -- '---\nid: orphan\n---\nbody\n' > "$MEMCEIL/docs/memory/orphan.md"
+memceil_run | grep -q "has no line in docs/MEMORY.md" \
+  || fail "an entry file with no index line was not reported"
+rm -f "$MEMCEIL/docs/memory/orphan.md"
+
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+printf '| `ghost` | trap | nothing backs this |\n' >> "$MEMCEIL/docs/MEMORY.md"
+memceil_run | grep -q "has a row for ghost" \
+  || fail "an index row with no entry file was not reported"
+
+memceil_index 1
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+printf 'cites `scripts/does-not-exist.sh:12`\n' >> "$MEMCEIL/docs/memory/e0.md"
+memceil_run | grep -q "does not exist" \
+  || fail "a memory citing a nonexistent path was not reported"
+
+# The cited file has to exist in the fixture, or this lands on the "does not exist" branch and
+# proves nothing about the line-count check.
+memceil_index 1
+mkdir -p "$MEMCEIL/config"
+printf 'a\nb\nc\n' > "$MEMCEIL/config/payload.tsv"
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+printf 'cites `config/payload.tsv:99999`\n' >> "$MEMCEIL/docs/memory/e0.md"
+memceil_run | grep -q "has only 3 lines" \
+  || fail "a memory citing a line past end-of-file was not reported"
+
+# A description is prose and will contain inline code spans. Only the first table cell names an
+# entry; reading every backticked token as a filename is what the first draft did, and it
+# reported `cp` and `merge-policy` as missing files.
+memceil_index 1
+# shellcheck disable=SC2016 # literal Markdown backticks, not command substitution.
+printf '| `e0` | trap | mentions `cp` and `merge-policy` inline |\n' > "$MEMCEIL/docs/MEMORY.md.body"
+{ printf '# MEMORY.md\n\n| Entry | Type | Description |\n|---|---|---|\n'; cat "$MEMCEIL/docs/MEMORY.md.body"; } \
+  > "$MEMCEIL/docs/MEMORY.md"
+rm -f "$MEMCEIL/docs/MEMORY.md.body"
+memceil_run | grep -q "memory index ok" \
+  || fail "inline code spans in a description were misread as entry filenames"
+
+rm -rf "$MEMCEIL"
+grep -qi 'Adding a dependency' "$ROOT/AGENTS.md" \
+  || fail "AGENTS.md does not carry the dependency-version rule"
+if [ -f "$ROOT/templates/harness/AGENTS.md" ]; then
+  grep -qi 'Red first' "$ROOT/templates/harness/AGENTS.md" \
+    || fail "templates/harness/AGENTS.md does not require red-first evidence in the handoff"
+fi
+
+# Every §N route an agent is told to follow must resolve. Emit each section on a line
+# individually: a greedy `.*§([0-9]+)` keeps only the LAST one, so "§3, §5" silently
+# stopped checking §3. ADOPTION.md and the docs README carry routes too.
+route_inputs=()
+for route_path in "$ROOT/CLAUDE.md" "$ROOT/AGENTS.md" "$ROOT/ADOPTION.md" \
+  "$ROOT/docs/README.md" "$ROOT/templates" "$ROOT/docs/templates" \
+  "$ROOT/.agents" "$ROOT/.opencode" "$ROOT/scripts" "$ROOT/Makefile"; do
+  [ -e "$route_path" ] && route_inputs+=( "$route_path" )
+done
+while IFS= read -r section; do
+  grep -q "^## $section\\. " "$ROOT/METHODOLOGY.md" \
+    || fail "METHODOLOGY.md §$section reference has no matching section"
+done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*' "${route_inputs[@]}" \
+  | grep -oE '§[0-9]+' | tr -d '§' | sort -u)
+
+# Failure-first coverage for the focused-group dispatcher itself. `make test-one F=…` is
+# the executor's per-step gate, so both ways it can go quietly empty must be red.
+DISPATCH_FIX="$TMP/dispatch/scripts"
+mkdir -p "$DISPATCH_FIX/tests"
+ln "$ROOT/scripts/tests/helpers.sh" "$DISPATCH_FIX/tests/helpers.sh"
+sed 's/^if should_run hooks; then$/if should_run hook; then/' "$ROOT/scripts/self-test.sh" \
+  > "$DISPATCH_FIX/self-test.sh"
+chmod +x "$DISPATCH_FIX/self-test.sh"
+cmp -s "$ROOT/scripts/self-test.sh" "$DISPATCH_FIX/self-test.sh" \
+  && fail "dispatch fixture failed to rename a should_run call site"
+"$DISPATCH_FIX/self-test.sh" --only hooks >/dev/null 2>"$TMP/dispatch-drift.err" \
+  && fail "focused run passed with a drifted should_run call-site label"
+grep -q "unknown self-test group at call site" "$TMP/dispatch-drift.err" \
+  || fail "drifted call-site label did not name the problem"
+
+sed 's/^if should_run hooks; then$/if false; then/' "$ROOT/scripts/self-test.sh" \
+  > "$DISPATCH_FIX/self-test.sh"
+chmod +x "$DISPATCH_FIX/self-test.sh"
+"$DISPATCH_FIX/self-test.sh" --only hooks >/dev/null 2>"$TMP/dispatch-empty.err" \
+  && fail "focused run passed with its group block disabled"
+grep -q "self-test group 'hooks' never executed" "$TMP/dispatch-empty.err" \
+  || fail "disabled group did not report that it never executed"
+
+DOC_STAGE_FIX="$TMP/docs-stage"
+mkdir -p "$DOC_STAGE_FIX/docs/unknown"
+cp "$ROOT/docs/README.md" "$DOC_STAGE_FIX/docs/README.md"
+cat > "$DOC_STAGE_FIX/docs/unknown/feature-bad.md" <<'MD'
+<!-- TRIAGE (first pass · 2026-01-01) -->
+> **Type:** Feature · **Status:** 🟦 Proposal
+MD
+AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check \
+  >/dev/null 2>"$TMP/docs-stage.err" \
+  && fail "docs-index accepted an undeclared docs stage"
+grep -q "undeclared docs stage" "$TMP/docs-stage.err" \
+  || fail "docs-index undeclared-stage failure did not explain the problem"
+
+MEASURE_FIX="$TMP/measure"
+mkdir -p "$MEASURE_FIX/root/docs" "$MEASURE_FIX/root/.agents/skills/review-execution" \
+  "$MEASURE_FIX/events"
+mkdir -p "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target"
+printf 'one\n' > "$MEASURE_FIX/copy-source/one"
+printf 'two\n' > "$MEASURE_FIX/copy-source/two"
+printf 'three\n' > "$MEASURE_FIX/copy-source/tree/three"
+printf 'four\n' > "$MEASURE_FIX/copy-source/tree/four"
+: > "$MEASURE_FIX/copy.events"
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" cp \
+  "$MEASURE_FIX/copy-source/one" "$MEASURE_FIX/copy-source/two" \
+  "$MEASURE_FIX/copy-target/"
+[ "$(grep -c '^fixture_file_copy$' "$MEASURE_FIX/copy.events")" -eq 2 ] \
+  || fail 'multi-source cp was not counted per file'
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" cp -Rp \
+  "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target/"
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" measure_copy --recursive \
+  "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target/"
+AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/copy.events" measure_copy --archive \
+  "$MEASURE_FIX/copy-source/tree" "$MEASURE_FIX/copy-target/"
+[ "$(grep -c '^fixture_tree_copy$' "$MEASURE_FIX/copy.events")" -eq 3 ] \
+  && [ "$(grep -c '^fixture_file_copy$' "$MEASURE_FIX/copy.events")" -eq 8 ] \
+  || fail 'recursive cp flags did not count trees and copied files'
+# One snapshot can coexist with repeated whole-tree materializations. This
+# approved budget applies only in the scaffold, which builds that snapshot.
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  printf 'source_snapshot_copy\nfixture_tree_copy\nfixture_tree_copy\n' \
+    > "$MEASURE_FIX/recopied.events"
+  ( assert_cost_budget "$MEASURE_FIX/recopied.events" full ) \
+    > "$MEASURE_FIX/recopied.out" 2>&1 \
+    && fail 'fixture budget accepted repeated tree copying with one snapshot'
+  grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
+    || fail 'fixture budget did not identify repeated tree copying'
+  printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
+  for ((copy_i=0; copy_i<191; copy_i++)); do
+    printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
+  done
+  ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
+    > "$MEASURE_FIX/full-files.out" 2>&1 \
+    && fail 'full fixture budget accepted 191 copies'
+  grep -q 'full mode made 191 fixture file copies; limit 190' "$MEASURE_FIX/full-files.out" \
+    || fail 'full fixture copy failure did not name the count and approved limit'
+  sed '$d' "$MEASURE_FIX/full-files.events" > "$MEASURE_FIX/full-boundary.events"
+  assert_cost_budget "$MEASURE_FIX/full-boundary.events" full \
+    || fail 'full fixture budget rejected its approved 190-copy boundary'
+fi
+: > "$MEASURE_FIX/fast-files.events"
+for ((copy_i=0; copy_i<34; copy_i++)); do
+  printf 'fixture_file_copy\n' >> "$MEASURE_FIX/fast-files.events"
+done
+( assert_cost_budget "$MEASURE_FIX/fast-files.events" fast ) \
+  > "$MEASURE_FIX/fast-files.out" 2>&1 \
+  && fail 'fast fixture budget accepted 34 copies'
+grep -q 'fast mode made 34 fixture file copies; limit 33' "$MEASURE_FIX/fast-files.out" \
+  || fail 'fast fixture copy failure did not name the count and approved limit'
+( PATH='' path_without_tools "$MEASURE_FIX/missing-tools" jq ) \
+  > "$MEASURE_FIX/missing-tools.out" 2>&1 \
+  && fail 'fixture PATH accepted missing required tools'
+grep -q 'required fixture tool missing:' "$MEASURE_FIX/missing-tools.out" \
+  || { cat "$MEASURE_FIX/missing-tools.out" >&2; fail 'missing fixture tool was not identified'; }
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  : > "$MEASURE_FIX/dispatch.events"
+  AGENTIC_MEASURE_EVENTS="$MEASURE_FIX/dispatch.events" \
+    "$ROOT/scripts/self-test.sh" --fast > "$MEASURE_FIX/dispatch.out" \
+    || fail 'nested fast dispatch failed'
+  actual_fast_groups=$(awk -F: '$1 == "group" { print $2 }' \
+    "$MEASURE_FIX/dispatch.events" | sort -u | tr '\n' ' ')
+  [ "$actual_fast_groups" = 'contracts controller hooks lifecycle plan-to-issues stations ' ] \
+    || fail "fast dispatch included an unexpected group: $actual_fast_groups"
+  assert_cost_budget "$MEASURE_FIX/dispatch.events" fast
+fi
+printf 'shared words\n' > "$MEASURE_FIX/root/CLAUDE.md"
+printf 'executor words\n' > "$MEASURE_FIX/root/AGENTS.md"
+printf 'memory words\n' > "$MEASURE_FIX/root/docs/MEMORY.md"
+printf 'review words\n' > "$MEASURE_FIX/root/.agents/skills/review-execution/SKILL.md"
+printf 'group:contracts\ngroup:contracts\nfixture_tree_copy\nfixture_file_copy\n' \
+  > "$MEASURE_FIX/events/fast.events"
+printf 'group:contracts\npacket_words:12\n' > "$MEASURE_FIX/events/full.events"
+measure_cmd=( "$ROOT/scripts/measure-harness.sh" --root "$MEASURE_FIX/root" \
+  --events "$MEASURE_FIX/events" --format json )
+"${measure_cmd[@]}" > "$MEASURE_FIX/first.json" \
+  || fail 'measurement fixture failed'
+"${measure_cmd[@]}" > "$MEASURE_FIX/second.json"
+cmp -s "$MEASURE_FIX/first.json" "$MEASURE_FIX/second.json" \
+  || fail 'measurement output changed for unchanged inputs'
+jq -e '.roles.executor.static_words == 6 and .roles.executor.static_files == 3
+  and .roles.executor.ceiling == 100 and .roles.executor.generated_packet_words == 12
+  and .verification.fast.fast_group_count == 1
+  and .verification.fast.fixture_tree_copies == 1
+  and .verification.fast.fixture_copied_files == 1' "$MEASURE_FIX/first.json" >/dev/null \
+  || fail 'measurement duplicated shared words or miscounted work'
+printf 'fixture_tree_copy\nfixture_file_copy\n' >> "$MEASURE_FIX/events/fast.events"
+"${measure_cmd[@]}" > "$MEASURE_FIX/added.json"
+jq -e '.verification.fast.fixture_tree_copies == 2
+  and .verification.fast.fixture_copied_files == 2' "$MEASURE_FIX/added.json" >/dev/null \
+  || fail 'new fixture did not move both copy counters'
+"$ROOT/scripts/measure-harness.sh" --format yaml --root "$MEASURE_FIX/root" \
+  --events "$MEASURE_FIX/events" >/dev/null 2>&1 \
+  && fail 'measurement accepted an invalid format'
+mv "$MEASURE_FIX/root/AGENTS.md" "$MEASURE_FIX/missing-agents"
+"${measure_cmd[@]}" >/dev/null 2>&1 \
+  && fail 'measurement accepted a missing bundle input'
+mv "$MEASURE_FIX/missing-agents" "$MEASURE_FIX/root/AGENTS.md"
+jq '.roles.executor.ceiling = 0' "$MEASURE_FIX/first.json" > "$MEASURE_FIX/ceiling.json"
+"${measure_cmd[@]}" --baseline "$MEASURE_FIX/ceiling.json" >/dev/null 2>&1 \
+  && fail 'measurement accepted a bundle above its baseline ceiling'
+printf 'packet_words:801\n' > "$MEASURE_FIX/events/full.events"
+"${measure_cmd[@]}" >/dev/null 2>&1 \
+  && fail 'measurement accepted a packet above the absolute cap'
+
+# The final negative case returns nonzero when it passes; sourcing must succeed.
+:

@@ -121,6 +121,7 @@ if should_run_scenario launch timing; then
 # replaced by markers. This avoids recursively launching this suite or a model.
 SELECT_FIX="$TMP/scenario-selection"
 mkdir -p "$SELECT_FIX/scripts/tests"
+ln "$ROOT/scripts/tests/helpers.sh" "$SELECT_FIX/scripts/tests/helpers.sh"
 cat "$ROOT/scripts/self-test.sh" > "$SELECT_FIX/scripts/self-test.sh"
 chmod +x "$SELECT_FIX/scripts/self-test.sh"
 awk '

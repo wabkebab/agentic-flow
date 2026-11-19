@@ -1,0 +1,23 @@
+fail	"missing self-test group file: contracts"
+fail	"missing self-test group file: controller"
+fail	"missing self-test group file: export"
+fail	"missing self-test group file: hooks"
+fail	"missing self-test group file: lifecycle"
+fail	"missing self-test group file: plan-to-issues"
+fail	"missing self-test group file: stations"
+fail	"missing self-test group file: upgrade"
+fail	"split group is missing: $group"
+fail	'assertion deletion fixture did not delete an assertion'
+fail	'assertion inventory accepted a deleted assertion'
+fail	'assertion inventory accepted a deleted helper call'
+fail	'assertion inventory did not identify the deleted assertion'
+fail	'assertion inventory did not identify the deleted helper call'
+fail	'assertion inventory differs after the split'
+fail	'dispatcher accepted a renamed group file'
+fail	'dispatcher did not name the missing group file'
+fail	'helper deletion fixture did not delete an assertion'
+fail	'split changed the full-suite completion message'
+fail	'split changed the full-suite group order'
+fail	'split changed the self-test group names'
+fail	'split export group is missing'
+fail	'split full dispatcher failed'
