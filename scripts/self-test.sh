@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # self-test.sh — offline regression checks for the agentic-flow scaffold.
 #
-# In the scaffold repo (scripts/export.sh present) it runs the full suite, including the
-# export invariants. In an exported project (export.sh is deliberately not copied) it skips
-# the export section and checks only the local invariants: hooks and spec validation.
+# --full runs every group in the scaffold source (scripts/export.sh present). In an
+# exported project it runs local groups, adding scaffold groups on payload-destination
+# changes against the integration base (or when Git cannot compute that changed set).
+# --full --all-groups forces every group; --fast keeps the smoke gate unchanged.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -22,6 +23,7 @@ active_scope() { case " $PAYLOAD_ACTIVE_SCOPES " in *" $1 "*) return 0 ;; esac; 
 SELF_TEST_MODE=fast
 ONLY_GROUP=""
 SHIP_GATE=0
+ALL_GROUPS=0
 SCENARIO_SET=0
 SCENARIOS=""
 while [ "$#" -gt 0 ]; do
@@ -38,6 +40,10 @@ while [ "$#" -gt 0 ]; do
       SELF_TEST_MODE=full
       shift
       ;;
+    --all-groups)
+      ALL_GROUPS=1
+      shift
+      ;;
     --only)
       [ "$#" -ge 2 ] || { echo "error: --only requires a group" >&2; exit 2; }
       ONLY_GROUP="$2"
@@ -50,7 +56,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--ship-gate|--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario launch,ledger,recovery,ship,andon (controller only)]" >&2
+      echo "usage: $0 [--ship-gate|--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--all-groups] [--scenario launch,ledger,recovery,ship,andon (controller only)]" >&2
       exit 0
       ;;
     *)
@@ -61,6 +67,33 @@ while [ "$#" -gt 0 ]; do
 done
 # The one list both the flag parser and every `should_run` call site are checked against.
 SELF_TEST_GROUPS="export contracts hooks plan-to-issues lifecycle upgrade stations controller"
+# Groups inspecting installed contracts/wiring stay local; fixture regressions are scaffold.
+SELF_TEST_GROUP_SCOPES="export:scaffold contracts:local hooks:local plan-to-issues:scaffold lifecycle:scaffold upgrade:scaffold stations:scaffold controller:scaffold"
+# GROUP SCOPE VALIDATION BEGIN: also runs in --fast, before any fixtures.
+scope_seen=" "
+for scope_entry in $SELF_TEST_GROUP_SCOPES; do
+  scope_group=${scope_entry%%:*}
+  scope_kind=${scope_entry#*:}
+  case " $SELF_TEST_GROUPS " in
+    *" $scope_group "*) ;;
+    *) echo "self-test failed: scope for unknown group: $scope_group" >&2; exit 1 ;;
+  esac
+  case "$scope_kind" in
+    local|scaffold) ;;
+    *) echo "self-test failed: invalid scope: $scope_entry" >&2; exit 1 ;;
+  esac
+  case "$scope_seen" in
+    *" $scope_group "*) echo "self-test failed: duplicate scope: $scope_group" >&2; exit 1 ;;
+  esac
+  scope_seen="$scope_seen$scope_group "
+done
+for scope_group in $SELF_TEST_GROUPS; do
+  case "$scope_seen" in
+    *" $scope_group "*) ;;
+    *) echo "self-test failed: missing scope: $scope_group" >&2; exit 1 ;;
+  esac
+done
+# GROUP SCOPE VALIDATION END
 GROUPS_RAN=" "
 case " $SELF_TEST_GROUPS " in
   *" $ONLY_GROUP "*) ;;
@@ -539,6 +572,8 @@ should_run() { # <group>
   esac
   if [ -n "$ONLY_GROUP" ]; then
     [ "$ONLY_GROUP" = "$1" ] || return 1
+  elif [ "$SELF_TEST_MODE" = full ]; then
+    case " $SELECTED_FULL_GROUPS " in *" $1 "*) ;; *) return 1 ;; esac
   elif [ "$SELF_TEST_MODE" != full ] && { [ "$1" = export ] || [ "$1" = upgrade ]; }; then
     return 1
   fi
@@ -637,6 +672,53 @@ fresh_export() { # <source checkout> <destination>
   "$1/scripts/export.sh" "$2" >/dev/null
 }
 
+# A conservative, stateless predicate over the integration base and manifest destinations.
+# Return true on a harness change OR any inability to compute the changed set.
+harness_changed() {
+  local ref resolved="" base path destination
+  for ref in "${AGENTIC_BASE_REF:-}" "${GITHUB_BASE_REF:+origin/$GITHUB_BASE_REF}" \
+             origin/HEAD origin/main origin/master; do
+    [ -n "$ref" ] || continue
+    if resolved=$(git -C "$ROOT" rev-parse --verify --end-of-options "$ref^{commit}" 2>/dev/null); then
+      break
+    fi
+    resolved=""
+  done
+  [ -n "$resolved" ] || return 0
+  base=$(git -C "$ROOT" merge-base HEAD "$resolved" 2>/dev/null) || return 0
+  # --no-renames keeps the deleted harness path when a file moves outside the payload.
+  git -C "$ROOT" diff --no-renames --name-only -z "$base" -- > "$TMP/harness-changes" 2>/dev/null \
+    || return 0
+  git -C "$ROOT" ls-files --others --exclude-standard -z >> "$TMP/harness-changes" 2>/dev/null \
+    || return 0
+  [ -r "$ROOT/config/payload.tsv" ] || return 0
+  # Validate that destination enumeration succeeded rather than treating an empty or
+  # broken manifest as proof that no path is owned. NUL paths preserve spaces/newlines.
+  awk -F '\t' '
+    /^#/ || /^$/ { next }
+    NF != 5 { exit 1 }
+    $5 == "export" { if ($2 == "") exit 1; found=1; print $2 }
+    END { if (!found) exit 1 }
+  ' "$ROOT/config/payload.tsv" > "$TMP/harness-destinations" || return 0
+  while IFS= read -r -d '' path; do
+    while IFS= read -r destination; do
+      case "$path" in "$destination"|"$destination"/*) return 0 ;; esac
+    done < "$TMP/harness-destinations"
+  done < "$TMP/harness-changes"
+  return 1
+}
+
+SELECTED_FULL_GROUPS=$SELF_TEST_GROUPS
+if [ "$SELF_TEST_MODE" = full ] && [ -z "$ONLY_GROUP" ] && [ "$ALL_GROUPS" = 0 ] \
+   && [ ! -f "$ROOT/scripts/export.sh" ] && ! harness_changed; then
+  SELECTED_FULL_GROUPS=""
+  for scope_entry in $SELF_TEST_GROUP_SCOPES; do
+    case "$scope_entry" in
+      *:local) SELECTED_FULL_GROUPS="${SELECTED_FULL_GROUPS}${SELECTED_FULL_GROUPS:+ }${scope_entry%:*}" ;;
+    esac
+  done
+fi
+
 if [ "$SHIP_GATE" = 1 ]; then
   [ -z "$ONLY_GROUP" ] && [ "$SCENARIO_SET" = 0 ] \
     || { echo 'error: --ship-gate cannot select groups or scenarios' >&2; exit 2; }
@@ -644,7 +726,7 @@ if [ "$SHIP_GATE" = 1 ]; then
   fresh_export "$ROOT" "$TMP/ship-export" || fail 'ship-gate export failed'
   gate_events="$TMP/ship-gate.events"
   : > "$gate_events"
-  if ! (cd "$TMP/ship-export" && AGENTIC_MEASURE_EVENTS="$gate_events" scripts/self-test.sh --full); then
+  if ! (cd "$TMP/ship-export" && AGENTIC_MEASURE_EVENTS="$gate_events" scripts/self-test.sh --full --all-groups); then
     gate_group=$(awk '/^group:/ { group=substr($0,7) } END { print (group ? group : "startup") }' "$gate_events")
     fail "exported full suite failed (group: $gate_group)"
   fi
@@ -655,6 +737,160 @@ fi
 # --- export invariants (scaffold repo only, full suite only) -----------------------------
 if should_run export; then
 if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Test the real startup, selector and completion assertion with inert group bodies:
+  # these cases measure dispatch, without recursively executing the regression suite.
+  SCOPE_FIX="$TMP/group-scope"
+  mkdir -p "$SCOPE_FIX/scripts" "$SCOPE_FIX/config" "$SCOPE_FIX/bin"
+  awk '/^# --- export invariants / { exit } { print }' "$ROOT/scripts/self-test.sh" \
+    > "$SCOPE_FIX/scripts/self-test.sh"
+  cat >> "$SCOPE_FIX/scripts/self-test.sh" <<'SELECTOR'
+fast_check_group() { :; }
+assert_cost_budget() { :; }
+for scope_group in $SELF_TEST_GROUPS; do
+  if should_run "$scope_group"; then :; fi
+done
+SELECTOR
+  awk '/^# --- the run did what the mode promised / { emit=1 } emit' "$ROOT/scripts/self-test.sh" \
+    >> "$SCOPE_FIX/scripts/self-test.sh"
+  chmod +x "$SCOPE_FIX/scripts/self-test.sh"
+  # Scope validation is part of --fast (and hence make check), before any group runs.
+  grep -q '^SELF_TEST_GROUP_SCOPES=' "$SCOPE_FIX/scripts/self-test.sh" \
+    || fail 'self-test groups do not declare scopes'
+  for scope_case in missing unknown invalid duplicate; do
+    case "$scope_case" in
+      missing) scope_edit='s/contracts:local//g' ;;
+      unknown) scope_edit='s/contracts:local/absent:local/g' ;;
+      invalid) scope_edit='s/contracts:local/contracts:other/g' ;;
+      duplicate) scope_edit='s/contracts:local/contracts:local contracts:local/g' ;;
+    esac
+    sed "$scope_edit" "$SCOPE_FIX/scripts/self-test.sh" > "$SCOPE_FIX/scripts/bad.sh"
+    bash "$SCOPE_FIX/scripts/bad.sh" --fast > "$TMP/scope.out" 2>&1 \
+      && fail "scope validation accepted $scope_case declaration"
+    grep -q 'self-test failed:.*scope' "$TMP/scope.out" \
+      || fail "scope validation did not explain $scope_case declaration"
+  done
+  rm "$SCOPE_FIX/scripts/bad.sh"
+  # Deliberately use a mapped destination: installed paths come from column two.
+  printf 'source/tool\tscripts\tcore\tpreserve\texport\nsource/contract\tAGENTS.md\tcore\tpreserve\texport\nsource/private\tprivate\tsource-only\tnone\tsource-only\n' \
+    > "$SCOPE_FIX/config/payload.tsv"
+  scope_expect() { # <expected groups> <case name> [runner flags]
+    local expected="$1" name="$2" actual
+    shift 2
+    : > "$TMP/scope.events"
+    AGENTIC_BASE_REF="${SCOPE_BASE_REF:-}" GITHUB_BASE_REF="${SCOPE_PR_BASE:-}" \
+      AGENTIC_MEASURE_EVENTS="$TMP/scope.events" "$SCOPE_FIX/scripts/self-test.sh" --full "$@" \
+      > "$TMP/scope.out" 2>&1 \
+      || { cat "$TMP/scope.out" >&2; fail "scope dispatch failed: $name"; }
+    actual=$(sed -n 's/^group://p' "$TMP/scope.events" | tr '\n' ' ' | sed 's/ $//')
+    [ "$actual" = "$expected" ] || fail "scope dispatch $name: '$actual', expected '$expected'"
+  }
+  # Failure paths first: no repository, no remote, missing refs, a git command error,
+  # and a shallow feature checkout whose integration branch has no merge base.
+  scope_expect "$SELF_TEST_GROUPS" 'not a repository'
+  git -C "$SCOPE_FIX" init -q
+  git -C "$SCOPE_FIX" config user.name Fixture
+  git -C "$SCOPE_FIX" config user.email fixture@example.invalid
+  git -C "$SCOPE_FIX" config commit.gpgsign false
+  git -C "$SCOPE_FIX" add scripts/self-test.sh config/payload.tsv
+  git -C "$SCOPE_FIX" commit -qm 'Scope fixture base'
+  scope_base=$(git -C "$SCOPE_FIX" rev-parse HEAD)
+  scope_expect "$SELF_TEST_GROUPS" 'no remote'
+  git -C "$SCOPE_FIX" remote add origin "$TMP/missing-remote"
+  scope_expect "$SELF_TEST_GROUPS" 'missing origin refs'
+  git -C "$SCOPE_FIX" update-ref refs/remotes/origin/main "$scope_base"
+  scope_git=$(command -v git)
+  cat > "$SCOPE_FIX/bin/git" <<'GIT_ERROR'
+#!/usr/bin/env bash
+case " $* " in
+  *" $SCOPE_GIT_FAIL "*) exit 1 ;;
+esac
+exec "$SCOPE_REAL_GIT" "$@"
+GIT_ERROR
+  chmod +x "$SCOPE_FIX/bin/git"
+  for scope_command in diff ls-files; do
+    SCOPE_REAL_GIT="$scope_git" SCOPE_GIT_FAIL="$scope_command" PATH="$SCOPE_FIX/bin:$PATH" \
+      scope_expect "$SELF_TEST_GROUPS" "git $scope_command error"
+  done
+  rm "$SCOPE_FIX/bin/git"
+  # Build genuinely shallow history, then fetch an unrelated base tip without ancestry.
+  git -C "$SCOPE_FIX" checkout -q -b shallow-feature "$scope_base"
+  git -C "$SCOPE_FIX" commit --allow-empty -qm 'Shallow feature tip'
+  git clone -q --depth 1 --branch shallow-feature "file://$SCOPE_FIX" "$TMP/shallow-scope"
+  git -C "$TMP/shallow-scope" fetch -q --depth 1 origin "$scope_base:refs/remotes/origin/main"
+  git -C "$TMP/shallow-scope" merge-base HEAD origin/main >/dev/null \
+    && fail 'shallow fixture unexpectedly has a merge base'
+  SCOPE_ORIGINAL=$SCOPE_FIX
+  SCOPE_FIX="$TMP/shallow-scope"
+  scope_expect "$SELF_TEST_GROUPS" 'shallow clone without merge base'
+  SCOPE_FIX=$SCOPE_ORIGINAL
+  mv "$SCOPE_FIX/config/payload.tsv" "$SCOPE_FIX/config/payload.saved"
+  scope_expect "$SELF_TEST_GROUPS" 'missing manifest'
+  mv "$SCOPE_FIX/config/payload.saved" "$SCOPE_FIX/config/payload.tsv"
+  printf 'malformed manifest row\n' >> "$SCOPE_FIX/config/payload.tsv"
+  scope_expect "$SELF_TEST_GROUPS" 'malformed manifest'
+  git -C "$SCOPE_FIX" checkout -- config/payload.tsv
+  scope_locals='contracts hooks'
+  scope_expect "$scope_locals" 'clean integration base'
+  printf 'app\n' > "$SCOPE_FIX/app.txt"
+  scope_expect "$scope_locals" 'untracked application file'
+  printf 'private\n' > "$SCOPE_FIX/private"
+  scope_expect "$scope_locals" 'source-only destination'
+  printf '\n# unstaged harness edit\n' >> "$SCOPE_FIX/scripts/self-test.sh"
+  scope_expect "$SELF_TEST_GROUPS" 'unstaged harness edit'
+  git -C "$SCOPE_FIX" checkout -- scripts/self-test.sh
+  printf 'contract\n' > "$SCOPE_FIX/AGENTS.md"
+  git -C "$SCOPE_FIX" add AGENTS.md
+  scope_expect "$SELF_TEST_GROUPS" 'staged-only harness edit'
+  git -C "$SCOPE_FIX" reset -q HEAD -- AGENTS.md
+  rm "$SCOPE_FIX/AGENTS.md"
+  printf 'new harness file\n' > "$SCOPE_FIX/scripts/untracked file"
+  scope_expect "$SELF_TEST_GROUPS" 'untracked harness edit'
+  rm "$SCOPE_FIX/scripts/untracked file"
+  rm "$SCOPE_FIX/app.txt" "$SCOPE_FIX/private"
+  printf '\n# committed harness edit\n' >> "$SCOPE_FIX/scripts/self-test.sh"
+  git -C "$SCOPE_FIX" add scripts/self-test.sh
+  git -C "$SCOPE_FIX" commit -qm 'Committed harness change'
+  scope_expect "$SELF_TEST_GROUPS" 'committed harness edit'
+  # Tracking the pushed feature branch (at HEAD) must never hide its harness edit.
+  git -C "$SCOPE_FIX" branch -M feature
+  git -C "$SCOPE_FIX" update-ref refs/remotes/origin/feature HEAD
+  git -C "$SCOPE_FIX" branch --set-upstream-to=origin/feature feature >/dev/null
+  [ -z "$(git -C "$SCOPE_FIX" status --porcelain)" ] || fail 'pushed feature fixture is not clean'
+  scope_expect "$SELF_TEST_GROUPS" 'pushed feature upstream equals HEAD'
+  git -C "$SCOPE_FIX" update-ref refs/remotes/origin/integration HEAD
+  SCOPE_BASE_REF=origin/integration scope_expect "$scope_locals" 'explicit base precedence'
+  SCOPE_PR_BASE=integration scope_expect "$scope_locals" 'PR base precedence'
+  SCOPE_BASE_REF=origin/missing SCOPE_PR_BASE=integration \
+    scope_expect "$scope_locals" 'first resolving base'
+  # A detached PR merge with fetched base and only application changes skips scaffolds.
+  git -C "$SCOPE_FIX" checkout -qb app-pr "$scope_base"
+  printf 'app\n' > "$SCOPE_FIX/app.txt"
+  git -C "$SCOPE_FIX" add app.txt
+  git -C "$SCOPE_FIX" commit -qm 'Application-only PR'
+  git -C "$SCOPE_FIX" checkout -q --detach "$scope_base"
+  git -C "$SCOPE_FIX" merge --no-ff -qm 'Detached PR merge' app-pr
+  SCOPE_PR_BASE=main scope_expect "$scope_locals" 'detached PR merge'
+  SCOPE_BASE_REF=origin/main scope_expect "$scope_locals" 'explicit CI base'
+  scope_expect "$SELF_TEST_GROUPS" 'forced groups' --all-groups
+  printf '# source exporter marker\n' > "$SCOPE_FIX/scripts/export.sh"
+  scope_expect "$SELF_TEST_GROUPS" 'source full suite'
+  rm "$SCOPE_FIX/scripts/export.sh"
+  # Rename a harness file out of its owned directory; the deleted source still counts.
+  printf 'contract\n' > "$SCOPE_FIX/AGENTS.md"
+  git -C "$SCOPE_FIX" add AGENTS.md
+  git -C "$SCOPE_FIX" commit -qm 'Installed contract'
+  git -C "$SCOPE_FIX" update-ref refs/remotes/origin/main HEAD
+  git -C "$SCOPE_FIX" mv AGENTS.md app-contract.txt
+  scope_expect "$SELF_TEST_GROUPS" 'renamed harness path'
+  git -C "$SCOPE_FIX" reset -q --hard HEAD
+  # CI must supply both integration history and the PR base in the app test job.
+  awk '/^  app:/ { app=1 }
+    app && /^      - name:/ { checkout=($0 ~ /Checkout$/); test=($0 ~ /Test suite$/) }
+    app && checkout && /fetch-depth: 0/ { depth=1 }
+    app && test && /AGENTIC_BASE_REF: origin\/\$\{\{ github.base_ref \}\}/ { base=1 }
+    /^  docs:/ { exit } END { exit !(depth && base) }' "$ROOT/templates/ci/ci.yml" \
+    || fail 'CI app job does not fetch history and export the PR base'
+
   # The exported-layout gate must propagate a failing group, then pass all full-mode
   # arguments into the exported runner. Stub only export and the exported runner.
   GATE_FIX="$TMP/ship-gate"
@@ -682,7 +918,7 @@ SH
   : > "$TMP/gate.calls"
   GATE_CALLS="$TMP/gate.calls" make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate \
     > "$TMP/gate.out" 2>&1 || { cat "$TMP/gate.out" >&2; fail 'ship-gate rejected a passing exported suite'; }
-  grep -qx -- '--full' "$TMP/gate.calls" || fail 'ship-gate did not run the exported full suite'
+  grep -qx -- '--full --all-groups' "$TMP/gate.calls" || fail 'ship-gate did not run the exported full suite'
   # CI keeps the costly exported suite as a separate step after everyday tests.
   awk '/run: make test$/ { test=NR } /run: make ship-gate$/ { gate=NR } END { exit !(test && gate>test) }' \
     "$ROOT/.github/workflows/ci.yml" || fail 'CI does not run ship-gate after make test'
@@ -5344,7 +5580,7 @@ fi
 if [ -n "$ONLY_GROUP" ]; then
   EXPECTED_GROUPS="$ONLY_GROUP"
 elif [ "$SELF_TEST_MODE" = full ]; then
-  EXPECTED_GROUPS="$SELF_TEST_GROUPS"
+  EXPECTED_GROUPS="$SELECTED_FULL_GROUPS"
 else
   EXPECTED_GROUPS='contracts hooks plan-to-issues lifecycle stations controller'
 fi

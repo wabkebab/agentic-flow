@@ -41,6 +41,7 @@ test-one:       ## one harness group: make test-one F=controller [S=launch,ledge
 # Optional close-out gate: ship runs it before pushing when the target exists.
 # Define this for your stack's extra release checks. The scaffold source uses a
 # fresh export, whose exporter is deliberately absent from installed projects.
+# Force every installed harness group with scripts/self-test.sh --full --all-groups.
 #.PHONY: ship-gate
 #ship-gate:      ## optional extra release checks
 #	@your-release-check-command

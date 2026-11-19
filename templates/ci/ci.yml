@@ -85,6 +85,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       # ── Replace this block with your stack's runtime setup ──────────────────
       # Always enable dependency caching where the stack supports it, and install from the
@@ -121,6 +123,8 @@ jobs:
       - name: Repo-scope scaffold doctor
         run: scripts/doctor.sh --check --scope repo --skip-make-check
       - name: Test suite
+        env:
+          AGENTIC_BASE_REF: origin/${{ github.base_ref }}
         run: make test
       - name: Build
         run: make build

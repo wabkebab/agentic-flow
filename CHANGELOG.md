@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — test streamlining (draft)
+
+- Exported `make test` runs the local `contracts` and `hooks` groups. The six
+  scaffold groups also run when committed, staged, unstaged or untracked edits
+  touch payload-manifest destinations against the integration merge base.
+  An unresolved base or Git failure runs every group; a feature branch's own
+  upstream is never used as the base.
+- `scripts/self-test.sh --full --all-groups` forces all harness groups.
+  The scaffold's `make ship-gate` uses it inside a fresh export; source `make test`
+  continues to run every group. The shipped CI app job fetches full history and
+  exports `AGENTIC_BASE_REF=origin/${{ github.base_ref }}` for PR tests.
+
 ## 0.17.0
 
 Station hardening, phase 2b (tracker #150). Controller-run stations now fail before
