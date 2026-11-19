@@ -135,7 +135,9 @@ exported project, --full: local groups; + scaffold groups when
     git diff --name-only <base>              (committed + staged + unstaged vs the base)
     + git ls-files --others --exclude-standard   (untracked)
     <base> = git merge-base HEAD <ref>, <ref> = first that resolves of
-      $AGENTIC_BASE_REF, origin/$GITHUB_BASE_REF, @{upstream}, origin/HEAD, origin/main, origin/master
+      $AGENTIC_BASE_REF, origin/$GITHUB_BASE_REF, origin/HEAD, origin/main, origin/master
+      (never the branch's own upstream: on a pushed feature branch it equals HEAD and would hide the
+       branch's committed harness edits; only an integration branch is a valid base)
     no <ref>, no merge base, or any git failure → run every group
 self-test.sh --full --all-groups          # force every group
 make ship-gate                            # always: self-test.sh --full --all-groups in the fresh export
@@ -238,7 +240,7 @@ Do not raise a ceiling. Only t-1 edits contracts. `CLAUDE.md` and `AGENTS.md` ar
 
 **T-8**
 5. **Every group declares a scope.** `SELF_TEST_GROUPS` and a scope list (`local` or `scaffold`) are validated against each other: a group with no scope, a scope for a missing group, or a scope other than the two fails `make check`. Each group's scope is justified in the commit body from what it reads (the audit decided in Part A).
-6. **Exported-project scope.** In an exported project, `self-test.sh --full` runs the `local` groups, and also the `scaffold` groups when the changed set touches a payload-manifest destination (including a hand edit to a harness file and an upgrade commit). The changed set is committed, staged, unstaged and untracked changes against `git merge-base HEAD <ref>`, with `<ref>` chosen as the Interface says. A harness file edited and left uncommitted, staged only, or newly created and untracked triggers the scaffold groups. An unresolvable base (shallow clone with no merge base, missing refs, no remote, any git error) runs every group. A detached PR-merge checkout with `GITHUB_BASE_REF` set and the base fetched computes a real base and, with no harness change, runs only `local`. `--all-groups` forces every group. In this source repository `--full` behaves as before. The "run the full suite" assertion in the export group and the `self-test.sh` header comment change to match.
+6. **Exported-project scope.** In an exported project, `self-test.sh --full` runs the `local` groups, and also the `scaffold` groups when the changed set touches a payload-manifest destination (including a hand edit to a harness file and an upgrade commit). The changed set is committed, staged, unstaged and untracked changes against `git merge-base HEAD <ref>`, with `<ref>` chosen as the Interface says: an integration branch, never the branch's own upstream. A pushed feature branch that tracks `origin/<feature>` and carries a committed harness edit, with a clean working tree, triggers the scaffold groups. A harness file edited and left uncommitted, staged only, or newly created and untracked triggers the scaffold groups. An unresolvable base (shallow clone with no merge base, missing refs, no remote, any git error) runs every group. A detached PR-merge checkout with `GITHUB_BASE_REF` set and the base fetched computes a real base and, with no harness change, runs only `local`. `--all-groups` forces every group. In this source repository `--full` behaves as before. The "run the full suite" assertion in the export group and the `self-test.sh` header comment change to match.
 
 **R-15**
 7. **The split loses nothing.** After moving each group to `scripts/tests/<group>.sh`, the set of `fail`/assertion message strings found in the files is identical to the set before the move, `SELF_TEST_GROUPS` is unchanged, `--only <group>` passes for every group, and `--full` prints the same "self-test passed." with the same group order. A check compares the message set against a recorded list, so a dropped assertion fails.
@@ -311,11 +313,11 @@ scripts/doctor.sh --check
 5. Edit `templates/ci/ci.yml`'s app job (and its `templates/harness` mirror, if any) so the checkout has history and the base ref: `fetch-depth: 0`, and `AGENTIC_BASE_REF=origin/${{ github.base_ref }}` in the test step's environment for pull requests. The check-action-pins and CI-template checks must stay green.
 6. Document the behaviour in `docs/` where the exported `make test` is described, and in the CHANGELOG draft notes for close-out.
 
-**Test:** scenarios 5 and 6, failure path first: each unresolvable-base case runs all groups (shallow clone with no merge base, missing `origin` refs, no remote, a git error); an uncommitted, a staged-only and an untracked harness edit each run the scaffold groups; a committed one-line edit does too; a detached PR-merge checkout with the base fetched and no harness change runs only `local`; the CI template change is asserted (`fetch-depth: 0`, base ref exported).
+**Test:** scenarios 5 and 6, failure path first: each unresolvable-base case runs all groups (shallow clone with no merge base, missing `origin` refs, no remote, a git error); an uncommitted, a staged-only and an untracked harness edit each run the scaffold groups; a committed one-line edit does too; a pushed feature branch whose upstream equals HEAD, with a committed harness edit against `origin/main` and a clean tree, runs the scaffold groups (the upstream is never the base); a detached PR-merge checkout with the base fetched and no harness change runs only `local`; the CI template change is asserted (`fetch-depth: 0`, base ref exported).
 
 **DoD:** scenarios 5 and 6 pass. The source repository's `--full` runs the same groups as before.
 **Verify:** `make test-one F=export`, `make test-one F=upgrade`, and `make test-one F=contracts`
-**Risks:** skipping a group that would have caught a real adopter break (any harness-owned change re-enables them; an unknown base runs everything); a wrong `local`/`scaffold` call; detection reading a stale base in CI (it falls back to every group); a changed set that omits uncommitted or untracked files (scenario 6 tests each); the CI template leaving a shallow checkout so adopters keep running every group.
+**Risks:** skipping a group that would have caught a real adopter break (any harness-owned change re-enables them; an unknown base runs everything); a wrong `local`/`scaffold` call; detection reading a stale base in CI (it falls back to every group); a changed set that omits uncommitted or untracked files (scenario 6 tests each); a base that equals HEAD because the branch tracks itself (never use the upstream); the CI template leaving a shallow checkout so adopters keep running every group.
 **Red-first:** `scripts/self-test.sh --only export` — scripts/self-test.sh
 **Commit:** `Give each test group a scope and run scaffold groups in adopters only when harness files change`
 
@@ -326,6 +328,7 @@ scripts/doctor.sh --check
 1. Move each remaining group (export, contracts, hooks, plan-to-issues, lifecycle, upgrade) into `scripts/tests/<group>.sh`, sourced by the dispatcher the way `controller.sh` and `stations.sh` already are. The dispatcher keeps flag parsing, the fixtures and helpers shared across groups, the group-ran check and the cost budget.
 2. Before moving, record the sorted set of assertion message strings (each `fail "…"` and each helper that names one) into a reviewed list; after the move a check compares them (scenario 7).
 3. Keep the `should_run` call sites validated against `SELF_TEST_GROUPS`.
+4. Put the test helpers that t-6 to t-8's tests need (fixture builders, assertion functions, the fake-clock or timing stubs) in `scripts/tests/helpers.sh`, not in the dispatcher's implementation. Tests for the dispatcher's own behaviour (flags, shards, ceilings) live in `scripts/tests/contracts.sh`. This lets a red-first run copy the tests and helpers onto the base while the implementation under test stays at the base version.
 
 **Test:** scenario 7, failure path first: delete one assertion from a moved file and show the list check fails; rename a group file and show the dispatcher fails loudly.
 
@@ -348,7 +351,7 @@ scripts/doctor.sh --check
 **DoD:** scenario 8 passes inside the 190-copy budget.
 **Verify:** `make test-one F=upgrade`, `make test-one F=hooks`, and `make test-one F=export`
 **Risks:** the twin duplicating a whole fixture copy and blowing the budget; a twin so similar to the pristine export that it proves nothing (the red-first case is the guard).
-**Red-first:** `scripts/self-test.sh --only upgrade` — scripts/self-test.sh scripts/tests/upgrade.sh
+**Red-first:** `scripts/self-test.sh --only upgrade` — scripts/tests/upgrade.sh scripts/tests/helpers.sh
 **Commit:** `Test upgrade, hooks and make check against a customized adopter project`
 
 ## t-6 — Select `stations` scenarios by tag (T-4, stations)
@@ -364,7 +367,7 @@ scripts/doctor.sh --check
 **DoD:** scenario 9 passes; whole-group behaviour and CI are unchanged.
 **Verify:** `make test-one F=stations` and `make test-one F=stations S=<each tag>`
 **Risks:** a block relying on state another tag creates (scenario 9's fresh-checkout run is the guard); drift between the controller and stations selection code (shared function); the root and template Makefile `S` rules drifting.
-**Red-first:** `scripts/self-test.sh --only stations` — scripts/self-test.sh scripts/tests/stations.sh
+**Red-first:** `scripts/self-test.sh --only stations` — scripts/tests/stations.sh scripts/tests/helpers.sh
 **Commit:** `Select stations scenarios by tag, sharing the controller group's selector`
 
 ## t-7 — Run groups and shards in parallel in `--full` (T-5)
@@ -381,7 +384,7 @@ scripts/doctor.sh --check
 **DoD:** scenario 10 passes; the commit body gives the two wall times.
 **Verify:** `make test-one F=contracts`, `make test-one F=controller S=ledger`, and `make test` once at the end
 **Risks:** shared state between shards (fixture roots, `HOME`, ledger directories); the copy budget undercounting; CPU-count detection differing on macOS and Linux; memory use on the 7 GB CI runner (the default must not start more shards than 2 CPUs allow there); interleaved logs hiding the failing line.
-**Red-first:** `scripts/self-test.sh --only contracts` — scripts/self-test.sh
+**Red-first:** `scripts/self-test.sh --only contracts` — scripts/tests/contracts.sh scripts/tests/helpers.sh
 **Commit:** `Run self-test groups and scenario shards in parallel under --full`
 
 ## t-8 — Wall-time ceilings per group (T-6)
@@ -398,7 +401,7 @@ scripts/doctor.sh --check
 **DoD:** scenario 11 passes; a full `make test` is green under the new ceilings.
 **Verify:** `make test-one F=contracts`, then a full `make test` at the end of the brief
 **Risks:** ceilings tuned to this machine failing on a slower CI runner (headroom, and a note on how to raise one); flaky ceilings from noisy neighbours; a ceiling file nobody reviews; a tag ceiling set so loosely it hides growth (set from measured seconds).
-**Red-first:** `scripts/self-test.sh --only contracts` — scripts/self-test.sh
+**Red-first:** `scripts/self-test.sh --only contracts` — scripts/tests/contracts.sh scripts/tests/helpers.sh
 **Commit:** `Fail a test run when a group or scenario tag exceeds its approved wall-time ceiling`
 
 ---
