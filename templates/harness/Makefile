@@ -31,10 +31,10 @@ test:           ## full test suite
 # END SHARED SHELL GATE
 #	npm run test:run
 
-test-one:       ## one harness group: make test-one F=controller [S=launch,ledger]
-	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller [S=launch,ledger,recovery,ship,andon (controller only)]" >&2; exit 2; }
+test-one:       ## one harness group: F=controller|stations supports S=tag[,tag]
+	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller [S=tag[,tag] (controller: launch,ledger,recovery,ship,andon; stations: launch,packet,verify,handoff)]" >&2; exit 2; }
 	@if [ "$(origin S)" = "command line" ]; then \
-	  [ "$(F)" = controller ] || { echo "S= is valid only with F=controller" >&2; exit 2; }; \
+	  { [ "$(F)" = controller ] || [ "$(F)" = stations ]; } || { echo "S= is valid only with F=controller or F=stations" >&2; exit 2; }; \
 	  scripts/self-test.sh --only "$(F)" --scenario "$(S)"; \
 	else scripts/self-test.sh --only "$(F)"; fi
 

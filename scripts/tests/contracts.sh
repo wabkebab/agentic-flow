@@ -2,6 +2,94 @@
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
 
+# Scenario 9: exercise the real dispatcher with only station block bodies inert.
+stations_selector_tests() (
+  local fixture selection status expected actual group mf
+  fixture="$TMP/stations-selector"
+  mkdir -p "$fixture/scripts/tests"
+  ln "$ROOT/scripts/tests/helpers.sh" "$fixture/scripts/tests/helpers.sh"
+  cat "$ROOT/scripts/self-test.sh" > "$fixture/scripts/self-test.sh"
+  chmod +x "$fixture/scripts/self-test.sh"
+  awk '
+    /^if should_run_scenario / { print; print "  :"; next }
+    /^fi # scenario$/ { print }
+  ' "$ROOT/scripts/tests/stations.sh" > "$fixture/blocks"
+  cat "$fixture/blocks" > "$fixture/scripts/tests/stations.sh"
+  stations_select_run() {
+    expected=$1; shift; status=0
+    : > "$fixture/events"
+    AGENTIC_MEASURE_EVENTS="$fixture/events" "$fixture/scripts/self-test.sh" "$@" \
+      > "$fixture/out" 2> "$fixture/err" || status=$?
+    [ "$status" = "$expected" ] \
+      || fail "stations selector returned $status expected $expected: $(cat "$fixture/err")"
+  }
+  stations_select_markers() {
+    actual=$(sed -n 's/^scenario://p' "$fixture/events" | sort | tr '\n' ' ')
+    [ "$actual" = "$1" ] || fail "stations markers '$actual', expected '$1'"
+  }
+  for selection in unknown ledger '' ',packet' 'packet,' 'packet,,verify' 'packet verify'; do
+    stations_select_run 2 --only stations --scenario "$selection"
+    [ ! -s "$fixture/events" ] || fail 'invalid stations selection ran a group'
+  done
+  stations_select_run 2 --only stations --scenario
+  for group in export contracts hooks plan-to-issues lifecycle upgrade; do
+    stations_select_run 2 --only "$group" --scenario launch
+    [ ! -s "$fixture/events" ] || fail 'scenario accepted for an unsupported group'
+  done
+  stations_select_run 2 --full --scenario launch
+  # Removing all guards must fail, as must losing just one selected block.
+  sed 's/^if should_run_scenario .*; then$/if false; then/' "$fixture/blocks" \
+    > "$fixture/scripts/tests/stations.sh"
+  stations_select_run 1 --only stations --scenario packet
+  grep -q 'no stations scenario block executed' "$fixture/err" \
+    || fail 'empty stations selection lacked a diagnosis'
+  sed 's/^if should_run_scenario launch watchdogs; then$/if false; then/' "$fixture/blocks" \
+    > "$fixture/scripts/tests/stations.sh"
+  stations_select_run 1 --only stations
+  grep -q "stations scenario block 'watchdogs:launch' never executed" "$fixture/err" \
+    || fail 'stations whole group missed a deleted block'
+  sed 's/^if should_run_scenario packet packet; then$/if should_run_scenario typo packet; then/' "$fixture/blocks" \
+    > "$fixture/scripts/tests/stations.sh"
+  stations_select_run 1 --only stations --scenario packet
+  grep -q 'unknown stations scenario block at call site' "$fixture/err" \
+    || fail 'stations accepted a drifted block tag'
+  cat "$fixture/blocks" > "$fixture/scripts/tests/stations.sh"
+  for selection in launch packet verify handoff; do
+    stations_select_run 0 --only stations --scenario "$selection"
+    case "$selection" in
+      launch) stations_select_markers 'launch:settings launch:slice launch:watchdogs ' ;;
+      packet) stations_select_markers 'packet:packet ' ;;
+      verify) stations_select_markers 'verify:cache verify:interrupt verify:red-first ' ;;
+      handoff) stations_select_markers 'handoff:cli handoff:closeout handoff:journal ' ;;
+    esac
+  done
+  stations_select_run 0 --only stations --scenario packet,launch
+  stations_select_markers 'launch:settings launch:slice launch:watchdogs packet:packet '
+  stations_select_run 0 --only stations --scenario packet,packet
+  stations_select_markers 'packet:packet '
+  stations_select_run 0 --only stations
+  stations_select_markers 'handoff:cli handoff:closeout handoff:journal launch:settings launch:slice launch:watchdogs packet:packet verify:cache verify:interrupt verify:red-first '
+  for mf in "$ROOT/Makefile" "$ROOT/templates/harness/Makefile"; do
+    [ -f "$mf" ] || continue
+    : > "$fixture/events"
+    env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES S=launch \
+      AGENTIC_MEASURE_EVENTS="$fixture/events" make -s -C "$fixture" -f "$mf" \
+      test-one F=stations S=packet,launch > "$fixture/make.out" \
+      || fail 'Makefile did not forward stations union'
+    stations_select_markers 'launch:settings launch:slice launch:watchdogs packet:packet '
+    : > "$fixture/events"
+    env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES S=packet \
+      AGENTIC_MEASURE_EVENTS="$fixture/events" make -s -C "$fixture" -f "$mf" \
+      test-one F=stations > "$fixture/make.out" || fail 'environment S affected stations'
+    stations_select_markers 'handoff:cli handoff:closeout handoff:journal launch:settings launch:slice launch:watchdogs packet:packet verify:cache verify:interrupt verify:red-first '
+    status=0
+    env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES make -s -C "$fixture" -f "$mf" \
+      test-one F=stations S= > "$fixture/make.out" 2> "$fixture/make.err" || status=$?
+    [ "$status" = 2 ] || fail 'Makefile accepted an empty stations selector'
+  done
+)
+stations_selector_tests
+
 # Scenario 7: first remove an assertion, then remove an executable group.
 split_regression_tests() (
   local fixture group bootstrap_status=0
@@ -63,6 +151,11 @@ split_regression_tests() (
   done
   cat > "$fixture/scripts/tests/controller.sh" <<'BLOCKS'
 for block in $CONTROLLER_BLOCKS; do
+  should_run_scenario "${block#*:}" "${block%:*}"
+done
+BLOCKS
+  cat > "$fixture/scripts/tests/stations.sh" <<'BLOCKS'
+for block in $STATIONS_BLOCKS; do
   should_run_scenario "${block#*:}" "${block%:*}"
 done
 BLOCKS

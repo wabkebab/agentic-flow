@@ -1,6 +1,163 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091,SC2153,SC2034 # ROOT comes from the sourcing test runner.
 # Sourced by self-test.sh. All credentials, GitHub state and faults are fixtures.
+# Fixture builders run only for selected blocks; no tag needs another tag's state.
+STATION_A=$(printf '%040d' 1)
+STATION_B=$(printf '%040d' 2)
+STATION_C=$(printf '%040d' 3)
+
+stations_verify_base() {
+  VERIFY_FIX=$(mktemp -d "$TMP/verify-fixture.XXXXXX")
+  mkdir -p "$VERIFY_FIX"
+  git -C "$VERIFY_FIX" init -q
+  git -C "$VERIFY_FIX" config user.email fixture@example.invalid
+  git -C "$VERIFY_FIX" config user.name Fixture
+  git -C "$VERIFY_FIX" config commit.gpgsign false
+  printf 'check:\n\t@test ! -e dirty\n' > "$VERIFY_FIX/Makefile"
+  git -C "$VERIFY_FIX" add Makefile
+  git -C "$VERIFY_FIX" commit -qm 'Verification base'
+  VERIFY_BASE=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+}
+
+stations_cli_fixture() {
+  STATION_FIX=$(mktemp -d "$TMP/stations.XXXXXX")
+  mkdir -p "$STATION_FIX/bin" "$STATION_FIX/project/scripts/lib" "$STATION_FIX/project/config" "$STATION_FIX/project/docs" "$STATION_FIX/state"
+  # Share immutable fixture inputs; copy only identity.sh, which this fixture overrides.
+  for station_library in "$ROOT/scripts/lib/"*; do
+    if [ "${station_library##*/}" = identity.sh ]; then
+      cp "$station_library" "$STATION_FIX/project/scripts/lib/identity.sh"
+    else ln "$station_library" "$STATION_FIX/project/scripts/lib/${station_library##*/}"; fi
+  done
+  ln "$ROOT/scripts/agentic-flow" "$STATION_FIX/project/scripts/agentic-flow"
+  ln "$ROOT/config/workflow.tsv" "$STATION_FIX/project/config/workflow.tsv"
+  git -C "$STATION_FIX/project" init -q
+  git -C "$STATION_FIX/project" remote add origin https://github.com/owner/repo.git
+  printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=distinct-account' \
+    'executor=exec' 'reviewer=review' 'approver=plan' > "$STATION_FIX/project/.agentic-flow-review-policy"
+  cat > "$STATION_FIX/bin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+state=${STATION_STATE:?}
+printf '%s\n' "$*" >> "$state/calls"
+case "$1 $2" in
+  'issue comment'|'issue edit'|'issue close'|'issue reopen')
+    waited=0
+    until mkdir "$state/write-lock" 2>/dev/null; do
+      [ "$waited" -lt 100 ] || exit 1
+      sleep 0.05; waited=$((waited+1))
+    done
+    trap 'rmdir "$state/write-lock"' EXIT ;;
+esac
+case "$1 $2" in
+  'api repos/'*)
+    case "$2" in
+      */pulls/*) cat "$state/evidence/pr" ;;
+      */actions/workflows/*) cat "$state/evidence/runs" ;;
+      */actions/runs/*) cat "$state/evidence/run" ;;
+      *) exit 2 ;;
+    esac ;;
+  'api user') printf '%s\n' "${STATION_LOGIN:-exec}" ;;
+  'api graphql')
+    n=''; for arg in "$@"; do case "$arg" in number=*) n=${arg#number=} ;; esac; done
+    [ "${STATION_BAD_READ:-0}" = 0 ] || { echo '{}'; exit 0; }
+    jq --argjson more "${STATION_MORE:-false}" '{data:{repository:{issue:(. | .comments.pageInfo.hasNextPage=$more)}}}' "$state/$n.json" ;;
+  'issue view') n=${3##*/}; jq '{body,state,labels:.labels.nodes}' "$state/$n.json" ;;
+  'issue list')
+    search=''; for ((i=1;i<=$#;i++)); do
+      if [ "${!i}" = --search ]; then i=$((i+1)); search=${!i}; fi
+    done
+    author=''; case "$search" in *' author:'*) author=${search##* author:} ;; esac
+    jq -s --arg author "$author" --arg unfiltered "${STATION_DISCOVERY_UNFILTERED:-0}" '
+      map({number,body,author,state}) |
+      if $author!="" and $unfiltered!="1" then
+        map(select((.author.login + (if .author.is_bot==true and (.author.login|endswith("[bot]")|not) then "[bot]" else "" end))==$author))
+      else . end | .[0:100]' "$state/"*.json ;;
+  'issue comment')
+    n=$3; shift 3; file=''
+    while [ "$#" -gt 0 ]; do case "$1" in --body-file) file=$2; shift 2 ;; *) shift ;; esac; done
+    jq --arg body "$(cat "$file")" --arg login "$(if [ "${GH_TOKEN:-}" = fixture-review ]; then echo review; else echo "${STATION_LOGIN:-exec}"; fi)" \
+      '.comments.nodes += [{id:("C"+(.comments.nodes|length|tostring)),fullDatabaseId:(.comments.nodes|length|tostring),body:$body,author:{login:$login,__typename:"User"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' \
+      "$state/$n.json" > "$state/next"; mv "$state/next" "$state/$n.json"
+    printf 'https://github.com/owner/repo/issues/%s#issuecomment-%s\n' "$n" "$(jq '(.comments.nodes|length)-1' "$state/$n.json")"
+    [ "${STATION_POST_TIMEOUT:-0}" = 0 ] || exit 1 ;;
+  'issue edit')
+    n=$3; shift 3; add='' remove=''
+    while [ "$#" -gt 0 ]; do case "$1" in --add-label) add=$2; shift 2 ;; --remove-label) remove=$2; shift 2 ;; *) shift ;; esac; done
+    [ "${STATION_EDIT_FAIL:-0}" = 0 ] || exit 1
+    jq --arg add "$add" --arg remove "$remove" '.labels.nodes =
+      ([.labels.nodes[].name | select(. as $x | ($remove|split(",")|index($x))==null)] +
+      ($add|split(",")|map(select(length>0))) | unique | map({name:.}))' "$state/$n.json" > "$state/next"
+    mv "$state/next" "$state/$n.json" ;;
+  'issue close'|'issue reopen')
+    target=CLOSED; [ "$2" != reopen ] || target=OPEN
+    jq --arg target "$target" '.state=$target' "$state/$3.json" > "$state/next"; mv "$state/next" "$state/$3.json" ;;
+  *) exit 2 ;;
+esac
+FAKE_GH
+  chmod +x "$STATION_FIX/bin/gh"
+  export STATION_STATE="$STATION_FIX/state"
+}
+
+station_issue() { # number identity extra topology
+  jq -n --argjson n "$1" --arg body "<!-- agentic-flow:plan:fixture $2 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa journal=v1 -->
+<!-- agentic-flow:topology:${3:-strict} -->" \
+    '{number:$n,body:$body,author:{login:"plan",is_bot:false},state:"OPEN",labels:{pageInfo:{hasNextPage:false},nodes:[{name:"user-label"}]},comments:{pageInfo:{hasNextPage:false},nodes:[]}}' > "$STATION_STATE/$1.json"
+}
+station_run() { # expected status, then handoff args
+  local expected=$1 rc=0; shift
+  (cd "$STATION_FIX/project" && PATH="$STATION_FIX/bin:$PATH" XDG_CONFIG_HOME="$STATION_FIX/config" \
+    scripts/agentic-flow handoff "$@") > "${STATION_OUTPUT:-$TMP/station.out}" 2>&1 || rc=$?
+  [ "$rc" = "$expected" ] || fail "handoff returned $rc expected $expected ($*): $(cat "${STATION_OUTPUT:-$TMP/station.out}")"
+}
+station_count() { jq '.comments.nodes|length' "$STATION_STATE/$1.json"; }
+
+stations_red_fixture() {
+  stations_verify_base
+  mkdir -p "$VERIFY_FIX/scripts/lib" "$VERIFY_FIX/config" "$VERIFY_FIX/docs"
+  cp "$ROOT/scripts/lib/"* "$VERIFY_FIX/scripts/lib/"
+  cp "$ROOT/config/workflow.tsv" "$VERIFY_FIX/config/workflow.tsv"
+  cp "$STATION_FIX/project/.agentic-flow-review-policy" "$VERIFY_FIX/"
+  git -C "$VERIFY_FIX" remote add origin https://github.com/owner/repo.git
+  cat > "$VERIFY_FIX/docs/plan.md" <<'PLAN'
+# Feature — Verify fixture
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: fixture
+profile: strict
+tracking: Plan: fixture
+branch: topic
+steps: alpha
+```
+## alpha — Verify
+**DoD:** classified
+**Verify:** `make check`
+**Red-first:** `bash scripts/runner.sh new-group` — scripts/regression.sh
+**Risks:** invalid runner
+PLAN
+  printf 'RED_FIRST_SIGNATURE := ^assertion failed:\ncheck:\n\t@:\n' > "$VERIFY_FIX/Makefile"
+  printf '#!/usr/bin/env bash\nexit 2\n' > "$VERIFY_FIX/scripts/runner.sh"
+  printf 'exit 0\n' > "$VERIFY_FIX/scripts/regression.sh"
+  git -C "$VERIFY_FIX" add Makefile scripts docs config .agentic-flow-review-policy
+  git -C "$VERIFY_FIX" commit -qm 'Red base with old runner'
+  VERIFY_RED_BASE=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+  printf '#!/usr/bin/env bash\nbash scripts/regression.sh\n' > "$VERIFY_FIX/scripts/runner.sh"
+  printf 'echo "assertion failed: regression"\nexit 1\n' > "$VERIFY_FIX/scripts/regression.sh"
+}
+
+verify_fixture_commit() {
+  git -C "$VERIFY_FIX" add Makefile scripts/runner.sh scripts/regression.sh docs/plan.md
+  git -C "$VERIFY_FIX" commit -qm 'Verification candidate'
+  VERIFY_HEAD=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+  station_issue 1 step:alpha
+  jq --arg head "$VERIFY_HEAD" '.body += ("\nBrief at approved revision `"+$head+"`.") |
+    .comments.nodes=[{id:"submit",fullDatabaseId:"1",body:("agentic-flow-transition: v=1; id=fixture/alpha/1/submit; event=submit; from=executing; role=executor; head="+$head),author:{login:"exec",__typename:"User"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' \
+    "$STATION_STATE/1.json" > "$STATION_STATE/next"
+  mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+}
+verify_fixture_run() {
+  (cd "$VERIFY_FIX" && PATH="$STATION_FIX/bin:$PATH" "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_HEAD" --doc docs/plan.md --step alpha --red-base "$VERIFY_RED_BASE" --json "$@") > "$TMP/verify.json" 2> "$TMP/verify.err"
+}
+
 # Track only this call's watchdogs, including the old watchdog's sleep child.
 # shellcheck disable=SC2016 # Perl code uses Perl variables, not shell expansion.
 review_bounded_tests() (
@@ -70,6 +227,8 @@ SLEEP_WATCHDOG
   done < "$fixture/watchdogs"
   : > "$fixture/watchdogs"
 )
+
+if should_run_scenario launch watchdogs; then
 review_bounded_tests
 
 grep -q "brief)" "$ROOT/scripts/agentic-flow" || fail 'brief command is missing'
@@ -95,17 +254,11 @@ for select_env_makefile in "$ROOT/Makefile" "$ROOT/templates/harness/Makefile"; 
   env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES make -s -C "$SELECT_ENV_FIX" -f "$select_env_makefile" \
     test-one F=hooks S=launch > "$TMP/exported-s.out" 2>&1 && fail 'command-line S accepted for hooks'
 done
+fi # scenario
+
+if should_run_scenario verify cache; then
 # Verification must certify only committed bytes and classify wiring failures.
-VERIFY_FIX="$TMP/verify-fixture"
-mkdir -p "$VERIFY_FIX"
-git -C "$VERIFY_FIX" init -q
-git -C "$VERIFY_FIX" config user.email fixture@example.invalid
-git -C "$VERIFY_FIX" config user.name Fixture
-git -C "$VERIFY_FIX" config commit.gpgsign false
-printf 'check:\n\t@test ! -e dirty\n' > "$VERIFY_FIX/Makefile"
-git -C "$VERIFY_FIX" add Makefile
-git -C "$VERIFY_FIX" commit -qm 'Verification base'
-VERIFY_BASE=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+stations_verify_base
 printf 'check:\n\t@exit 1\n' > "$VERIFY_FIX/Makefile"
 git -C "$VERIFY_FIX" add Makefile
 printf 'dirty' > "$VERIFY_FIX/dirty"
@@ -232,6 +385,9 @@ verify_review_run --force || verify_review_rc=$?
 [ "$(git -C "$VERIFY_REVIEW_FIX" worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail 'internal failure leaked worktree'
 unset VERIFY_REAL_PERL VERIFY_REAL_GIT
 
+fi # scenario
+
+if should_run_scenario launch slice; then
 # The slice comes from Git, including its approval metadata, never dirty bytes.
 SLICE_FIX="$TMP/step-slice"
 mkdir -p "$SLICE_FIX/docs/inprogress"
@@ -314,6 +470,9 @@ slice_run s-2 --at HEAD > "$TMP/slice.out" || fail 'literal backslash slice fail
 grep -q 'Second approach sentinel' "$TMP/slice.out" || fail 'literal backslash title lost the selected step'
 if grep -Eq '# Close-out|Close-out sentinel' "$TMP/slice.out"; then fail 'backslash step slice leaked close-out'; fi
 
+fi # scenario
+
+if should_run_scenario handoff journal; then
 
 [ -f "$ROOT/scripts/lib/journal.sh" ] || fail 'journal library is missing'
 must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'gh issue edit 1 --add-label "bug, needs-review"'
@@ -327,9 +486,6 @@ must_allow "$ROOT/scripts/hooks/require-step-comment.sh" 'cd /tmp; gh issue view
 workflow_load "$ROOT" || fail 'cannot load station workflow'
 REVIEW_EXECUTORS=' exec ' REVIEW_REVIEWERS=' review ' REVIEW_APPROVERS=' plan '
 JOURNAL_PLAN=fixture JOURNAL_STEP=alpha JOURNAL_LEGACY=false
-STATION_A=$(printf '%040d' 1)
-STATION_B=$(printf '%040d' 2)
-STATION_C=$(printf '%040d' 3)
 STATION_COMMENTS='[]'
 station_append() { # seq event from role head author [body]
   local line
@@ -396,95 +552,11 @@ journal_context "$legacy_body" || fail 'legacy stamp not parsed'
 journal_context "${legacy_body/ -->/ journal=v1 -->}" || fail 'new stamp not parsed'
 [ "$JOURNAL_LEGACY" = false ] || fail 'journal=v1 did not disable legacy markers'
 
+fi # scenario
+
+if should_run_scenario handoff cli; then
 # Real CLI against a stateful fake gh. No network, no external Python runtime.
-STATION_FIX="$TMP/stations"
-mkdir -p "$STATION_FIX/bin" "$STATION_FIX/project/scripts/lib" "$STATION_FIX/project/config" "$STATION_FIX/project/docs" "$STATION_FIX/state"
-# Share immutable fixture inputs; copy only identity.sh, which this fixture overrides.
-for station_library in "$ROOT/scripts/lib/"*; do
-  if [ "${station_library##*/}" = identity.sh ]; then
-    cp "$station_library" "$STATION_FIX/project/scripts/lib/identity.sh"
-  else ln "$station_library" "$STATION_FIX/project/scripts/lib/${station_library##*/}"; fi
-done
-ln "$ROOT/scripts/agentic-flow" "$STATION_FIX/project/scripts/agentic-flow"
-ln "$ROOT/config/workflow.tsv" "$STATION_FIX/project/config/workflow.tsv"
-git -C "$STATION_FIX/project" init -q
-git -C "$STATION_FIX/project" remote add origin https://github.com/owner/repo.git
-printf '%s\n' 'version=1' 'workflow=.github/workflows/ci.yml' 'identity-mode=distinct-account' \
-  'executor=exec' 'reviewer=review' 'approver=plan' > "$STATION_FIX/project/.agentic-flow-review-policy"
-cat > "$STATION_FIX/bin/gh" <<'FAKE_GH'
-#!/usr/bin/env bash
-set -euo pipefail
-state=${STATION_STATE:?}
-printf '%s\n' "$*" >> "$state/calls"
-case "$1 $2" in
-  'issue comment'|'issue edit'|'issue close'|'issue reopen')
-    waited=0
-    until mkdir "$state/write-lock" 2>/dev/null; do
-      [ "$waited" -lt 100 ] || exit 1
-      sleep 0.05; waited=$((waited+1))
-    done
-    trap 'rmdir "$state/write-lock"' EXIT ;;
-esac
-case "$1 $2" in
-  'api repos/'*)
-    case "$2" in
-      */pulls/*) cat "$state/evidence/pr" ;;
-      */actions/workflows/*) cat "$state/evidence/runs" ;;
-      */actions/runs/*) cat "$state/evidence/run" ;;
-      *) exit 2 ;;
-    esac ;;
-  'api user') printf '%s\n' "${STATION_LOGIN:-exec}" ;;
-  'api graphql')
-    n=''; for arg in "$@"; do case "$arg" in number=*) n=${arg#number=} ;; esac; done
-    [ "${STATION_BAD_READ:-0}" = 0 ] || { echo '{}'; exit 0; }
-    jq --argjson more "${STATION_MORE:-false}" '{data:{repository:{issue:(. | .comments.pageInfo.hasNextPage=$more)}}}' "$state/$n.json" ;;
-  'issue view') n=${3##*/}; jq '{body,state,labels:.labels.nodes}' "$state/$n.json" ;;
-  'issue list')
-    search=''; for ((i=1;i<=$#;i++)); do
-      if [ "${!i}" = --search ]; then i=$((i+1)); search=${!i}; fi
-    done
-    author=''; case "$search" in *' author:'*) author=${search##* author:} ;; esac
-    jq -s --arg author "$author" --arg unfiltered "${STATION_DISCOVERY_UNFILTERED:-0}" '
-      map({number,body,author,state}) |
-      if $author!="" and $unfiltered!="1" then
-        map(select((.author.login + (if .author.is_bot==true and (.author.login|endswith("[bot]")|not) then "[bot]" else "" end))==$author))
-      else . end | .[0:100]' "$state/"*.json ;;
-  'issue comment')
-    n=$3; shift 3; file=''
-    while [ "$#" -gt 0 ]; do case "$1" in --body-file) file=$2; shift 2 ;; *) shift ;; esac; done
-    jq --arg body "$(cat "$file")" --arg login "$(if [ "${GH_TOKEN:-}" = fixture-review ]; then echo review; else echo "${STATION_LOGIN:-exec}"; fi)" \
-      '.comments.nodes += [{id:("C"+(.comments.nodes|length|tostring)),fullDatabaseId:(.comments.nodes|length|tostring),body:$body,author:{login:$login,__typename:"User"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' \
-      "$state/$n.json" > "$state/next"; mv "$state/next" "$state/$n.json"
-    printf 'https://github.com/owner/repo/issues/%s#issuecomment-%s\n' "$n" "$(jq '(.comments.nodes|length)-1' "$state/$n.json")"
-    [ "${STATION_POST_TIMEOUT:-0}" = 0 ] || exit 1 ;;
-  'issue edit')
-    n=$3; shift 3; add='' remove=''
-    while [ "$#" -gt 0 ]; do case "$1" in --add-label) add=$2; shift 2 ;; --remove-label) remove=$2; shift 2 ;; *) shift ;; esac; done
-    [ "${STATION_EDIT_FAIL:-0}" = 0 ] || exit 1
-    jq --arg add "$add" --arg remove "$remove" '.labels.nodes =
-      ([.labels.nodes[].name | select(. as $x | ($remove|split(",")|index($x))==null)] +
-      ($add|split(",")|map(select(length>0))) | unique | map({name:.}))' "$state/$n.json" > "$state/next"
-    mv "$state/next" "$state/$n.json" ;;
-  'issue close'|'issue reopen')
-    target=CLOSED; [ "$2" != reopen ] || target=OPEN
-    jq --arg target "$target" '.state=$target' "$state/$3.json" > "$state/next"; mv "$state/next" "$state/$3.json" ;;
-  *) exit 2 ;;
-esac
-FAKE_GH
-chmod +x "$STATION_FIX/bin/gh"
-export STATION_STATE="$STATION_FIX/state"
-station_issue() { # number identity extra topology
-  jq -n --argjson n "$1" --arg body "<!-- agentic-flow:plan:fixture $2 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa journal=v1 -->
-<!-- agentic-flow:topology:${3:-strict} -->" \
-    '{number:$n,body:$body,author:{login:"plan",is_bot:false},state:"OPEN",labels:{pageInfo:{hasNextPage:false},nodes:[{name:"user-label"}]},comments:{pageInfo:{hasNextPage:false},nodes:[]}}' > "$STATION_STATE/$1.json"
-}
-station_run() { # expected status, then handoff args
-  local expected=$1 rc=0; shift
-  (cd "$STATION_FIX/project" && PATH="$STATION_FIX/bin:$PATH" XDG_CONFIG_HOME="$STATION_FIX/config" \
-    scripts/agentic-flow handoff "$@") > "${STATION_OUTPUT:-$TMP/station.out}" 2>&1 || rc=$?
-  [ "$rc" = "$expected" ] || fail "handoff returned $rc expected $expected ($*): $(cat "${STATION_OUTPUT:-$TMP/station.out}")"
-}
-station_count() { jq '.comments.nodes|length' "$STATION_STATE/$1.json"; }
+stations_cli_fixture
 station_issue 1 step:alpha
 station_issue 2 tracker
 STATION_LOGIN=review; export STATION_LOGIN
@@ -777,6 +849,9 @@ mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 station_run 0 1 reconcile
 unset STATION_STATE STATION_LOGIN
 
+fi # scenario
+
+if should_run_scenario verify interrupt; then
 # TERM must remove the worktree and stop its command tree.
 (cd "$VERIFY_FIX" && exec "$ROOT/scripts/agentic-flow" verify-step HEAD --json) > "$TMP/interrupt.json" 2> "$TMP/interrupt.err" & verify_pid=$!
 verify_wait=0
@@ -790,51 +865,12 @@ wait "$verify_pid" || verify_rc=$?
 [ "$verify_rc" = 143 ] || fail 'interrupt did not preserve signal status'
 [ "$(git -C "$VERIFY_FIX" worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail 'interrupt leaked worktree'
 
+fi # scenario
+
+if should_run_scenario verify red-first; then
 # Scenario 11: adding tests without their runner is a wiring failure, not red.
-export STATION_STATE="$STATION_FIX/state"
-rm -f "$STATION_STATE/"*.json
-mkdir -p "$VERIFY_FIX/scripts/lib" "$VERIFY_FIX/config" "$VERIFY_FIX/docs"
-cp "$ROOT/scripts/lib/"* "$VERIFY_FIX/scripts/lib/"
-cp "$ROOT/config/workflow.tsv" "$VERIFY_FIX/config/workflow.tsv"
-cp "$STATION_FIX/project/.agentic-flow-review-policy" "$VERIFY_FIX/"
-git -C "$VERIFY_FIX" remote add origin https://github.com/owner/repo.git
-cat > "$VERIFY_FIX/docs/plan.md" <<'PLAN'
-# Feature — Verify fixture
-# Part B — Implementation Brief
-```agentic-flow-plan
-id: fixture
-profile: strict
-tracking: Plan: fixture
-branch: topic
-steps: alpha
-```
-## alpha — Verify
-**DoD:** classified
-**Verify:** `make check`
-**Red-first:** `bash scripts/runner.sh new-group` — scripts/regression.sh
-**Risks:** invalid runner
-PLAN
-printf 'RED_FIRST_SIGNATURE := ^assertion failed:\ncheck:\n\t@:\n' > "$VERIFY_FIX/Makefile"
-printf '#!/usr/bin/env bash\nexit 2\n' > "$VERIFY_FIX/scripts/runner.sh"
-printf 'exit 0\n' > "$VERIFY_FIX/scripts/regression.sh"
-git -C "$VERIFY_FIX" add Makefile scripts docs config .agentic-flow-review-policy
-git -C "$VERIFY_FIX" commit -qm 'Red base with old runner'
-VERIFY_RED_BASE=$(git -C "$VERIFY_FIX" rev-parse HEAD)
-printf '#!/usr/bin/env bash\nbash scripts/regression.sh\n' > "$VERIFY_FIX/scripts/runner.sh"
-printf 'echo "assertion failed: regression"\nexit 1\n' > "$VERIFY_FIX/scripts/regression.sh"
-verify_fixture_commit() {
-  git -C "$VERIFY_FIX" add Makefile scripts/runner.sh scripts/regression.sh docs/plan.md
-  git -C "$VERIFY_FIX" commit -qm 'Verification candidate'
-  VERIFY_HEAD=$(git -C "$VERIFY_FIX" rev-parse HEAD)
-  station_issue 1 step:alpha
-  jq --arg head "$VERIFY_HEAD" '.body += ("\nBrief at approved revision `"+$head+"`.") |
-    .comments.nodes=[{id:"submit",fullDatabaseId:"1",body:("agentic-flow-transition: v=1; id=fixture/alpha/1/submit; event=submit; from=executing; role=executor; head="+$head),author:{login:"exec",__typename:"User"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' \
-    "$STATION_STATE/1.json" > "$STATION_STATE/next"
-  mv "$STATION_STATE/next" "$STATION_STATE/1.json"
-}
-verify_fixture_run() {
-  (cd "$VERIFY_FIX" && PATH="$STATION_FIX/bin:$PATH" "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_HEAD" --doc docs/plan.md --step alpha --red-base "$VERIFY_RED_BASE" --json "$@") > "$TMP/verify.json" 2> "$TMP/verify.err"
-}
+stations_cli_fixture
+stations_red_fixture
 verify_fixture_commit
 verify_fixture_run && fail 'unknown base runner counted as red'
 jq -e '.red_first[0].status=="invalid" and .red_first[0].exit==2' "$TMP/verify.json" >/dev/null || fail "unknown runner was not invalid: $(cat "$TMP/verify.err")"
@@ -895,6 +931,24 @@ jq -e '.red_first[0].status=="invalid"' "$TMP/verify.json" >/dev/null || fail 'm
 [ "$(git -C "$VERIFY_FIX" worktree list --porcelain | grep -c '^worktree ')" = 1 ] || fail 'red-first leaked worktree'
 unset STATION_STATE
 
+fi # scenario
+
+if should_run_scenario packet packet; then
+# Build packet inputs directly, without executing verification or handoff tests.
+stations_cli_fixture
+printf '%s\n' 'approver=plan-app[bot]' >> "$STATION_FIX/project/.agentic-flow-review-policy"
+stations_red_fixture
+sed 's/— scripts\/regression.sh$/— scripts\/regression.sh scripts\/runner.sh/' "$VERIFY_FIX/docs/plan.md" > "$TMP/plan"
+cat "$TMP/plan" > "$VERIFY_FIX/docs/plan.md"
+sed '/RED_FIRST_SIGNATURE/d' "$VERIFY_FIX/Makefile" > "$TMP/makefile"
+cat "$TMP/makefile" > "$VERIFY_FIX/Makefile"
+# The copied verifier below must differ from the one certifying packet evidence.
+cp "$ROOT/scripts/agentic-flow" "$VERIFY_FIX/scripts/agentic-flow"
+for verify_library in verify-step.sh verify-record.sh; do
+  printf '\n# changed verifier fixture\n' >> "$VERIFY_FIX/scripts/lib/$verify_library"
+done
+. "$ROOT/scripts/lib/verify-record.sh"
+verify_fixture_commit
 # S-7: admission precedes all content; only role-relevant policy text is emitted.
 export STATION_STATE="$STATION_FIX/state"
 PACKET_REV=$(git -C "$VERIFY_FIX" rev-parse HEAD)
@@ -1002,6 +1056,10 @@ jq --arg a "$STATION_A" --arg b "$STATION_B" '.body|=sub(" journal=v1";"") |
  {id:"bad-approval",fullDatabaseId:"2",body:("agentic-flow-review: status=approved; step=alpha; head="+$b+"; role=reviewer"),author:{login:"review"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 packet_refused
 grep -q UNJOURNALED "$TMP/packet.err" || fail 'unjournaled refusal lacked diagnosis'
+fi # scenario
+
+if should_run_scenario handoff closeout; then
+stations_cli_fixture
 # Close-out end to end: real linear history, policy-authored journals, fake PR/CI.
 CLOSE_ORIGINAL_FIX=$STATION_FIX
 STATION_FIX="$TMP/close-stations"
@@ -1206,9 +1264,13 @@ STATION_FIX=$CLOSE_ORIGINAL_FIX
 
 unset STATION_STATE
 
+fi # scenario
+
+if should_run_scenario launch settings; then
 # The shipped station settings are launch inputs; test the direct-read deny list.
 jq -e '.permissions.deny|index("Bash(gh:*)")!=null and index("WebFetch(domain:github.com)")!=null' "$ROOT/config/stations/claude.settings.json" >/dev/null || fail 'Claude station profile does not deny raw GitHub reads'
 jq -e 'any(.permissions[];.action=="shell" and .resource=="gh *" and .effect=="deny")' "$ROOT/config/stations/opencode.json" >/dev/null || fail 'OpenCode station profile does not deny gh'
 for profile_setting in 'approval_policy = "never"' 'network_access = false' 'GH_TOKEN = "exclude"' 'web_search = "disabled"'; do
   grep -Fq "$profile_setting" "$ROOT/config/stations/codex.config.toml" || fail "Codex station profile lacks $profile_setting"
 done
+fi # scenario

@@ -56,7 +56,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--ship-gate|--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--all-groups] [--scenario launch,ledger,recovery,ship,andon (controller only)]" >&2
+      echo "usage: $0 [--ship-gate|--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--all-groups] [--scenario TAG[,TAG] (controller: launch,ledger,recovery,ship,andon; stations: launch,packet,verify,handoff)]" >&2
       exit 0
       ;;
     *)
@@ -102,9 +102,15 @@ esac
 # SCENARIO DISPATCH BEGIN: validate before fixtures or group checks run.
 CONTROLLER_SCENARIOS="launch ledger recovery ship andon"
 CONTROLLER_BLOCKS="timing:launch ship:ship andon:andon launch:launch ledger:ledger recovery:recovery"
+STATIONS_SCENARIOS="launch packet verify handoff"
+STATIONS_BLOCKS="watchdogs:launch cache:verify slice:launch journal:handoff cli:handoff interrupt:verify red-first:verify packet:packet closeout:handoff settings:launch"
 SCENARIO_BLOCKS_RAN=" "
 if [ "$SCENARIO_SET" = 1 ]; then
-  [ "$ONLY_GROUP" = controller ] || { echo 'error: --scenario requires --only controller' >&2; exit 2; }
+  case "$ONLY_GROUP" in
+    controller) SCENARIO_TAGS=$CONTROLLER_SCENARIOS ;;
+    stations) SCENARIO_TAGS=$STATIONS_SCENARIOS ;;
+    *) echo 'error: --scenario requires --only controller or --only stations' >&2; exit 2 ;;
+  esac
   case "$SCENARIOS" in
     ''|,*|*,|*,,*) echo 'error: --scenario requires a nonempty comma-separated selection' >&2; exit 2 ;;
   esac
@@ -112,11 +118,11 @@ if [ "$SCENARIO_SET" = 1 ]; then
   while [ -n "$scenario_rest" ]; do
     scenario=${scenario_rest%%,*}
     case "$scenario" in
-      *[!a-z]*) echo "unknown controller scenario: $scenario" >&2; exit 2 ;;
+      *[!a-z]*) echo "unknown $ONLY_GROUP scenario: $scenario" >&2; exit 2 ;;
     esac
-    case " $CONTROLLER_SCENARIOS " in
+    case " $SCENARIO_TAGS " in
       *" $scenario "*) ;;
-      *) echo "unknown controller scenario: $scenario" >&2; exit 2 ;;
+      *) echo "unknown $ONLY_GROUP scenario: $scenario" >&2; exit 2 ;;
     esac
     case "$scenario_rest" in *,*) scenario_rest=${scenario_rest#*,} ;; *) break ;; esac
   done
@@ -293,6 +299,15 @@ should_run() { # <group>
 }
 
 # SCENARIO HELPERS BEGIN
+scenario_group_begin() { # <controller|stations>; isolate markers in whole-suite runs.
+  SCENARIO_GROUP=$1
+  case "$1" in
+    controller) SCENARIO_BLOCKS=$CONTROLLER_BLOCKS ;;
+    stations) SCENARIO_BLOCKS=$STATIONS_BLOCKS ;;
+  esac
+  SCENARIO_BLOCKS_RAN=" "
+}
+
 scenario_selected() { # <tag>; no flag means every scenario, including CI's --full run.
   [ "$SCENARIO_SET" = 1 ] || return 0
   case ",$SCENARIOS," in *",$1,"*) return 0 ;; esac
@@ -300,9 +315,11 @@ scenario_selected() { # <tag>; no flag means every scenario, including CI's --fu
 }
 
 should_run_scenario() { # <tag> <unique-block-name>
-  case " $CONTROLLER_BLOCKS " in
+  case " $SCENARIO_BLOCKS " in
     *" $2:$1 "*) ;;
-    *) fail "unknown controller scenario block at call site: $2:$1" ;;
+    *) if [ "$SCENARIO_GROUP" = controller ]; then
+         fail "unknown controller scenario block at call site: $2:$1"
+       else fail "unknown stations scenario block at call site: $2:$1"; fi ;;
   esac
   scenario_selected "$1" || return 1
   SCENARIO_BLOCKS_RAN="$SCENARIO_BLOCKS_RAN $2:$1 "
@@ -312,13 +329,18 @@ should_run_scenario() { # <tag> <unique-block-name>
 
 assert_scenarios_ran() {
   local block tag
-  [ "$SCENARIO_BLOCKS_RAN" != ' ' ] || fail 'no controller scenario block executed'
-  for block in $CONTROLLER_BLOCKS; do
+  if [ "$SCENARIO_BLOCKS_RAN" = ' ' ]; then
+    if [ "$SCENARIO_GROUP" = controller ]; then fail 'no controller scenario block executed'
+    else fail 'no stations scenario block executed'; fi
+  fi
+  for block in $SCENARIO_BLOCKS; do
     tag=${block#*:}
     scenario_selected "$tag" || continue
     case "$SCENARIO_BLOCKS_RAN" in
       *" $block "*) ;;
-      *) fail "controller scenario block '$block' never executed" ;;
+      *) if [ "$SCENARIO_GROUP" = controller ]; then
+           fail "controller scenario block '$block' never executed"
+         else fail "stations scenario block '$block' never executed"; fi ;;
     esac
   done
 }
@@ -473,12 +495,15 @@ if should_run lifecycle; then
 fi
 
 if should_run stations; then
+  scenario_group_begin stations
   [ -f "$ROOT/scripts/tests/stations.sh" ] || fail "missing self-test group file: stations"
   # shellcheck source=scripts/tests/stations.sh
   . "$ROOT/scripts/tests/stations.sh"
+  assert_scenarios_ran
 fi
 
 if should_run controller; then
+  scenario_group_begin controller
   [ -f "$ROOT/scripts/tests/controller.sh" ] || fail "missing self-test group file: controller"
   # shellcheck source=scripts/tests/controller.sh
   . "$ROOT/scripts/tests/controller.sh"

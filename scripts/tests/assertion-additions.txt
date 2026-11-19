@@ -11,6 +11,12 @@ fail	"missing self-test group file: plan-to-issues"
 fail	"missing self-test group file: stations"
 fail	"missing self-test group file: upgrade"
 fail	"split group is missing: $group"
+fail	"stations markers '$actual', expected '$1'"
+fail	"stations scenario block '$block' never executed"
+fail	"stations selector returned $status expected $expected: $(cat "$fixture/err")"
+fail	"unknown stations scenario block at call site: $2:$1"
+fail	'Makefile accepted an empty stations selector'
+fail	'Makefile did not forward stations union'
 fail	'adopter twin Stop hook allowed a failing customized check'
 fail	'adopter twin Stop hook blocked a green customized check'
 fail	'adopter twin accepted an overwritten customized Makefile'
@@ -33,15 +39,22 @@ fail	'assertion inventory did not identify the deleted helper call'
 fail	'assertion inventory differs after the split'
 fail	'dispatcher accepted a renamed group file'
 fail	'dispatcher did not name the missing group file'
+fail	'empty stations selection lacked a diagnosis'
+fail	'environment S affected stations'
 fail	'helper deletion fixture did not delete an assertion'
+fail	'invalid stations selection ran a group'
 fail	'make check failed in the adopter twin'
 fail	'missing test helpers did not produce an assertion'
 fail	'missing test helpers returned the wrong status'
+fail	'no stations scenario block executed'
+fail	'scenario accepted for an unsupported group'
 fail	'split changed the full-suite completion message'
 fail	'split changed the full-suite group order'
 fail	'split changed the self-test group names'
 fail	'split export group is missing'
 fail	'split full dispatcher failed'
+fail	'stations accepted a drifted block tag'
+fail	'stations whole group missed a deleted block'
 fail	'unconfirmed adopter twin upgrade changed the project'
 must_allow	"$twin_hooks/$twin_guard.sh" "$twin_command"
 must_allow	"$twin_hooks/$twin_guard.sh" "$twin_heredoc"
@@ -51,3 +64,19 @@ must_allow	"$twin_hooks/require-step-comment.sh" 'make adopter-lint'
 must_block	"$twin_hooks/block-git-add-all.sh" 'git add -A'
 must_block	"$twin_hooks/block-push.sh" 'git push origin main'
 must_block	"$twin_hooks/scan-secrets.sh" 'git -c commit.gpgsign=false commit -F .adopter-commit-message'
+stations_select_markers	'handoff:cli handoff:closeout handoff:journal '
+stations_select_markers	'handoff:cli handoff:closeout handoff:journal launch:settings launch:slice launch:watchdogs packet:packet verify:cache verify:interrupt verify:red-first '
+stations_select_markers	'launch:settings launch:slice launch:watchdogs '
+stations_select_markers	'launch:settings launch:slice launch:watchdogs packet:packet '
+stations_select_markers	'packet:packet '
+stations_select_markers	'verify:cache verify:interrupt verify:red-first '
+stations_select_run	0 --only stations
+stations_select_run	0 --only stations --scenario "$selection"
+stations_select_run	0 --only stations --scenario packet,launch
+stations_select_run	0 --only stations --scenario packet,packet
+stations_select_run	1 --only stations
+stations_select_run	1 --only stations --scenario packet
+stations_select_run	2 --full --scenario launch
+stations_select_run	2 --only "$group" --scenario launch
+stations_select_run	2 --only stations --scenario
+stations_select_run	2 --only stations --scenario "$selection"
