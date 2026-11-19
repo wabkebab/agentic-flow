@@ -1102,6 +1102,9 @@ launch_tests() (
     probe_clean
   done
   [ "$(cat "$common/agentic-flow/codex-home/session-sentinel")" = 'session sentinel' ] || fail 'Codex home lost sessions'
+  # Codex 0.169 refuses a legacy [profiles.*] table: the profile is its own file.
+  cmp -s "$HOME/.codex/agentic-station.config.toml" "$common/agentic-flow/codex-home/agentic-station.config.toml" || fail 'Codex home profile file differs from the installed profile'
+  [ ! -s "$common/agentic-flow/codex-home/config.toml" ] || fail 'Codex home config.toml must stay empty'
   local fingerprint changed
   fingerprint=$(launch_fingerprint executor "$C1/project")
   printf '2\n' > "$C1/version"

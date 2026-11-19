@@ -57,12 +57,14 @@ launch_codex_home() { # worktree
   [ ! -L "$LAUNCH_CODEX_HOME" ] || { launch_error 'Codex station home is a symlink'; return 6; }
   mkdir -p "$LAUNCH_CODEX_HOME" || return 6
   local file
-  for file in config.toml AGENTS.md; do
+  for file in config.toml agentic-station.config.toml AGENTS.md; do
     [ ! -L "$LAUNCH_CODEX_HOME/$file" ] || { launch_error "Codex station $file is a symlink"; return 6; }
   done
-  # The installed file contains profile settings, not a config with a named table.
-  # Wrap that exact copy in the table selected by --profile agentic-station.
-  { printf '[profiles.agentic-station]\n'; cat "$installed"; } > "$LAUNCH_CODEX_HOME/config.toml" || return 6
+  # Codex 0.169 reads --profile agentic-station from agentic-station.config.toml beside an
+  # otherwise empty config.toml, and refuses a legacy [profiles.*] table in config.toml.
+  # cat, not cp: the self-test wraps cp for copy counting, and that wrapper resets the probe traps.
+  cat "$installed" > "$LAUNCH_CODEX_HOME/agentic-station.config.toml" || return 6
+  : > "$LAUNCH_CODEX_HOME/config.toml" || return 6
   : > "$LAUNCH_CODEX_HOME/AGENTS.md" || return 6
   if [ -e "$LAUNCH_CODEX_HOME/auth.json" ] || [ -L "$LAUNCH_CODEX_HOME/auth.json" ]; then
     [ -L "$LAUNCH_CODEX_HOME/auth.json" ] && [ "$(readlink "$LAUNCH_CODEX_HOME/auth.json")" = "$login" ] \
@@ -83,7 +85,8 @@ launch_fingerprint() { # station worktree; excludes changing sessions and token 
     done
     shasum -a 256 < "$LAUNCH_PROFILE" || return 6
     if [ "$LAUNCH_CLI" = codex ]; then
-      shasum -a 256 < "$LAUNCH_CODEX_HOME/config.toml"
+      shasum -a 256 < "$LAUNCH_CODEX_HOME/config.toml" || return 6
+      shasum -a 256 < "$LAUNCH_CODEX_HOME/agentic-station.config.toml" || return 6
       shasum -a 256 < "$LAUNCH_CODEX_HOME/AGENTS.md" || return 6
       readlink "$LAUNCH_CODEX_HOME/auth.json" || return 6
     fi
