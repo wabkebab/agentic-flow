@@ -21,12 +21,17 @@ fi
 active_scope() { case " $PAYLOAD_ACTIVE_SCOPES " in *" $1 "*) return 0 ;; esac; return 1; }
 SELF_TEST_MODE=fast
 ONLY_GROUP=""
+SHIP_GATE=0
 SCENARIO_SET=0
 SCENARIOS=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --fast)
       SELF_TEST_MODE=fast
+      shift
+      ;;
+    --ship-gate)
+      SHIP_GATE=1
       shift
       ;;
     --full)
@@ -45,7 +50,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario launch,ledger,recovery,ship,andon (controller only)]" >&2
+      echo "usage: $0 [--ship-gate|--fast|--full|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario launch,ledger,recovery,ship,andon (controller only)]" >&2
       exit 0
       ;;
     *)
@@ -627,9 +632,63 @@ fast_check_group() { # <group>; fast mode only
   esac
 }
 
+# Both everyday export assertions and the close-out gate build the same layout.
+fresh_export() { # <source checkout> <destination>
+  "$1/scripts/export.sh" "$2" >/dev/null
+}
+
+if [ "$SHIP_GATE" = 1 ]; then
+  [ -z "$ONLY_GROUP" ] && [ "$SCENARIO_SET" = 0 ] \
+    || { echo 'error: --ship-gate cannot select groups or scenarios' >&2; exit 2; }
+  [ -x "$ROOT/scripts/export.sh" ] || fail 'ship-gate requires the scaffold source checkout'
+  fresh_export "$ROOT" "$TMP/ship-export" || fail 'ship-gate export failed'
+  gate_events="$TMP/ship-gate.events"
+  : > "$gate_events"
+  if ! (cd "$TMP/ship-export" && AGENTIC_MEASURE_EVENTS="$gate_events" scripts/self-test.sh --full); then
+    gate_group=$(awk '/^group:/ { group=substr($0,7) } END { print (group ? group : "startup") }' "$gate_events")
+    fail "exported full suite failed (group: $gate_group)"
+  fi
+  echo 'ship-gate passed (exported full suite).'
+  exit 0
+fi
+
 # --- export invariants (scaffold repo only, full suite only) -----------------------------
 if should_run export; then
 if [ -f "$ROOT/scripts/export.sh" ]; then
+  # The exported-layout gate must propagate a failing group, then pass all full-mode
+  # arguments into the exported runner. Stub only export and the exported runner.
+  GATE_FIX="$TMP/ship-gate"
+  mkdir -p "$GATE_FIX/scripts"
+  ln "$ROOT/scripts/self-test.sh" "$GATE_FIX/scripts/self-test.sh"
+  cat > "$GATE_FIX/scripts/export.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+mkdir -p "$1/scripts"
+cat > "$1/scripts/self-test.sh" <<'RUNNER'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$GATE_CALLS"
+printf 'group:hooks\n' >> "$AGENTIC_MEASURE_EVENTS"
+[ "${GATE_FAIL:-0}" = 0 ]
+RUNNER
+chmod +x "$1/scripts/self-test.sh"
+SH
+  chmod +x "$GATE_FIX/scripts/export.sh"
+  gate_rc=0
+  GATE_CALLS="$TMP/gate.calls" GATE_FAIL=1 make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate \
+    > "$TMP/gate.out" 2>&1 || gate_rc=$?
+  [ "$gate_rc" -ne 0 ] || fail 'ship-gate accepted a failing exported suite'
+  grep -q 'group: hooks' "$TMP/gate.out" || fail 'ship-gate did not name the failing exported group'
+  : > "$TMP/gate.calls"
+  GATE_CALLS="$TMP/gate.calls" make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate \
+    > "$TMP/gate.out" 2>&1 || { cat "$TMP/gate.out" >&2; fail 'ship-gate rejected a passing exported suite'; }
+  grep -qx -- '--full' "$TMP/gate.calls" || fail 'ship-gate did not run the exported full suite'
+  # CI keeps the costly exported suite as a separate step after everyday tests.
+  awk '/run: make test$/ { test=NR } /run: make ship-gate$/ { gate=NR } END { exit !(test && gate>test) }' \
+    "$ROOT/.github/workflows/ci.yml" || fail 'CI does not run ship-gate after make test'
+  grep -q '^#ship-gate:' "$ROOT/templates/harness/Makefile" \
+    || fail 'template Makefile does not document the optional ship-gate target'
+
   # Snapshot once, then hard-link unchanged files into private directory trees.
   # The five existing files mutated by export cases become private copies below.
   SOURCE_SNAPSHOT="$TMP/source-snapshot"
@@ -957,7 +1016,7 @@ DOCTOR_SESSION
   TARGET="$TMP/target"
   printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
   printf '%s\n' "# self-test root sentinel" >> "$SOURCE_FIXTURE/CLAUDE.md"
-  "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
+  fresh_export "$SOURCE_FIXTURE" "$TARGET"
   # Mirrors export.sh's own semver+SHA computation exactly — see the comment there.
   expected_semver=$(sed -n '1p' "$ROOT/VERSION" 2>/dev/null || true)
   [ -n "$expected_semver" ] || expected_semver="0.0.0"
@@ -1050,6 +1109,19 @@ DOCTOR_SESSION
 
   (cd "$TARGET" && scripts/docs-index.sh --check) >/dev/null
 
+  # A logging wrapper rejects a nested full run immediately: ordinary export checks
+  # must use fast mode, while ship-gate owns exported full coverage.
+  mv "$TARGET/scripts/self-test.sh" "$TARGET/scripts/self-test.sh.original"
+  cat > "$TARGET/scripts/self-test.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$0.calls"
+for arg in "$@"; do
+  [ "$arg" != --full ] || { echo 'nested --full marker' >&2; exit 91; }
+done
+exec bash "$0.original" "$@"
+SH
+  chmod +x "$TARGET/scripts/self-test.sh"
+
   # A fresh export must start green: its `make check` may not depend on scaffold-only
   # files (regression: `bash -n scripts/export.sh` turned every fresh adoption red and
   # made the Stop gate block from turn one).
@@ -1057,11 +1129,18 @@ DOCTOR_SESSION
     || { cat "$TMP/target-check.log" >&2; fail "make check failed in a fresh export"; }
   (cd "$TARGET" && PATH="$STRIPPED_PATH" make check) > "$TMP/target-check-stripped.log" 2>&1 \
     || { cat "$TMP/target-check-stripped.log" >&2; fail "make check failed in a fresh export on stripped PATH"; }
-  # Exported projects have no source-only export.sh and therefore build no source
-  # snapshot. Their full suite must still pass, as it does in the shipped CI job.
-  (cd "$TARGET" && AGENTIC_MEASURE_EVENTS='' scripts/self-test.sh --full) \
-    > "$TMP/target-full.log" 2>&1 \
-    || { cat "$TMP/target-full.log" >&2; fail "full self-test failed in a fresh export"; }
+  # Everyday tests keep exported fast coverage; ship-gate and CI run its full suite.
+  (cd "$TARGET" && AGENTIC_MEASURE_EVENTS='' scripts/self-test.sh --fast) \
+    > "$TMP/target-fast.log" 2>&1 \
+    || { cat "$TMP/target-fast.log" >&2; fail "fast self-test failed in a fresh export"; }
+
+  grep -qx -- '--fast' "$TARGET/scripts/self-test.sh.calls" \
+    || fail 'export checks did not run the exported fast suite'
+  if grep -q -- '--full' "$TARGET/scripts/self-test.sh.calls"; then
+    fail 'everyday export checks invoked the nested --full marker'
+  fi
+  mv "$TARGET/scripts/self-test.sh.original" "$TARGET/scripts/self-test.sh"
+  rm "$TARGET/scripts/self-test.sh.calls"
 
   printf '%s\n' "# local edits" >> "$TARGET/CLAUDE.md"
   printf 'origin https://example.invalid/fork.git\nref v1.2.3\n' > "$TARGET/.agentic-flow-source"
@@ -4472,6 +4551,79 @@ fi
 
 # --- lifecycle qualification -------------------------------------------------------------
 if should_run lifecycle; then
+# Run the real shipping orchestrator; all remote and Git writes are doubles.
+# shellcheck disable=SC2030 # Fixture globals intentionally remain inside this subshell.
+ship_gate_tests() (
+  # shellcheck disable=SC1091
+  . "$ROOT/scripts/lib/ship.sh"
+  local fixture="$TMP/ship-gate-lifecycle" rc=0 phase
+  local HANDOFF_TMP HANDOFF_REPO SHIP_ROOT SHIP_BRANCH SHIP_BASE SHIP_HEAD SHIP_TITLE SHIP_PLAN SHIP_PR SHIP_DOC CLOSE_TARGET
+  mkdir -p "$fixture/docs/done"
+  cd "$fixture" || exit 1
+  HANDOFF_TMP=$fixture SHIP_ROOT=$fixture SHIP_BRANCH=feature SHIP_BASE=main
+  SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  HANDOFF_REPO=owner/repo SHIP_TITLE=Fixture SHIP_PLAN=fixture
+  SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3"}'
+  export SHIP_GATE_ACTIONS="$fixture/actions"
+  git() {
+    case "$1" in
+      status|for-each-ref) return 0 ;;
+      push) printf 'push\n' >> "$SHIP_GATE_ACTIONS" ;;
+      *) return 99 ;;
+    esac
+  }
+  brief_approval() { printf '%s\towner\n' "$SHIP_HEAD"; }
+  brief_approved_at_head() { return 0; }
+  close_out_load() { CLOSE_TARGET=1; }
+  close_out_cmd() { printf '%s\n' "$1" >> "$SHIP_GATE_ACTIONS"; }
+  handoff_gh() { printf 'pr-create\n' >> "$SHIP_GATE_ACTIONS"; }
+  ship_pr() { SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3"}'; }
+  ship_wait_visibility() { return 0; }
+  ship_wait_ci() { return 0; }
+  ship_lifecycle() { printf 'READY fixture\n'; }
+  # A gate failure must stop each push path, including the initial PR-creation push.
+  for phase in initial final; do
+    SHIP_DOC=docs/done/plan.md
+    [ "$phase" != initial ] || { SHIP_PR=null; SHIP_DOC=docs/inprogress/plan.md; }
+    cat > Makefile <<'MAKE'
+.PHONY: ship-gate
+ship-gate:
+	@echo 'gate' >> "$$SHIP_GATE_ACTIONS"
+	@echo 'self-test failed: group: hooks' >&2
+	@exit 1
+MAKE
+    : > "$SHIP_GATE_ACTIONS"; rc=0
+    ship_run false > "$fixture/out" 2>&1 || rc=$?
+    [ "$rc" = 1 ] || fail "ship accepted a failing $phase gate"
+    [ "$(cat "$SHIP_GATE_ACTIONS")" = gate ] || fail "ship pushed after a failing $phase gate"
+    grep -q 'group: hooks' "$fixture/out" || fail 'ship swallowed failing group diagnostics'
+    # A missing prerequisite is a broken gate, even when its name shares the prefix.
+    printf 'ship-gate: ship-gate-dependency\n' > Makefile
+    : > "$SHIP_GATE_ACTIONS"; rc=0
+    ship_run false > "$fixture/out" 2>&1 || rc=$?
+    [ "$rc" = 1 ] && [ ! -s "$SHIP_GATE_ACTIONS" ] \
+      || fail 'ship treated a broken gate dependency as an absent optional target'
+    # No target is a supported adopter configuration, with a visible notice.
+    printf 'test:\n\t@:\n' > Makefile
+    : > "$SHIP_GATE_ACTIONS"
+    ship_run false > "$fixture/out" 2>&1 || fail "ship refused a missing $phase gate"
+    grep -q '^push$' "$SHIP_GATE_ACTIONS" || fail 'ship did not continue without a gate'
+    grep -q 'ship-gate.*not defined' "$fixture/out" || fail 'ship omitted the missing-target notice'
+    # On success the gate precedes every push, and final close-out is already committed.
+    [ "$phase" != initial ] || SHIP_PR=null
+    cat > Makefile <<'MAKE'
+.PHONY: ship-gate
+ship-gate:
+	@echo "gate" >> "$$SHIP_GATE_ACTIONS"
+MAKE
+    : > "$SHIP_GATE_ACTIONS"
+    ship_run false > "$fixture/out" 2>&1 || fail "ship refused a passing $phase gate"
+    [ "$(head -2 "$SHIP_GATE_ACTIONS" | tr '\n' /)" = "gate/push/" ] \
+      || fail "ship did not gate the $phase head before push"
+  done
+)
+ship_gate_tests
+
 V2FIX="$TMP/lifecycle-v2"
 mkdir -p "$V2FIX/docs/inprogress"
 cat > "$V2FIX/docs/inprogress/feature-v2.md" <<'MD'

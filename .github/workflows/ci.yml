@@ -138,6 +138,8 @@ jobs:
         run: scripts/doctor.sh --check --scope repo --skip-make-check
       - name: Test suite
         run: make test
+      - name: Exported-layout suite
+        run: make ship-gate
       - name: Build
         run: make build
 

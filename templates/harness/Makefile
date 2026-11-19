@@ -38,6 +38,13 @@ test-one:       ## one harness group: make test-one F=controller [S=launch,ledge
 	  scripts/self-test.sh --only "$(F)" --scenario "$(S)"; \
 	else scripts/self-test.sh --only "$(F)"; fi
 
+# Optional close-out gate: ship runs it before pushing when the target exists.
+# Define this for your stack's extra release checks. The scaffold source uses a
+# fresh export, whose exporter is deliberately absent from installed projects.
+#.PHONY: ship-gate
+#ship-gate:      ## optional extra release checks
+#	@your-release-check-command
+
 build:          ## production build
 	@echo "TODO: define 'build' in the Makefile."
 #	npm run build

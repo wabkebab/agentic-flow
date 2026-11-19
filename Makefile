@@ -30,6 +30,10 @@ test-one:       ## one harness group: make test-one F=controller [S=launch,ledge
 	  scripts/self-test.sh --only "$(F)" --scenario "$(S)"; \
 	else scripts/self-test.sh --only "$(F)"; fi
 
+.PHONY: ship-gate
+ship-gate:      ## full regression suite in a fresh exported layout (close-out / CI)
+	@scripts/self-test.sh --ship-gate
+
 build:          ## production build
 	@set -e; tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/agentic-flow-build.XXXXXX"); \
 	trap 'rm -rf "$$tmp"' EXIT; \
