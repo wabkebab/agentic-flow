@@ -136,57 +136,8 @@ jobs:
         run: make check
       - name: Repo-scope scaffold doctor
         run: scripts/doctor.sh --check --scope repo --skip-make-check
-      # TEMPORARY diagnostic for PR #161 (2026-11-18): make test was killed twice by a
-      # SIGTERM after the self-test passed. The kernel audit log records every SIGTERM
-      # sent on the runner with the sender's pid, parent, command and target, without
-      # tracing the suite itself. Remove the two diagnostic steps once the sender is known.
-      - name: Record SIGTERM senders (diagnostic)
-        run: |
-          sudo apt-get install -y -qq auditd >/dev/null 2>&1 || true
-          sudo systemctl start auditd 2>/dev/null || sudo service auditd start 2>/dev/null || true
-          sudo auditctl -b 65536 || true
-          sudo auditctl -a always,exit -F arch=b64 -S kill -F a1=15 -k term || true
-          sudo auditctl -a always,exit -F arch=b64 -S tkill -F a1=15 -k term || true
-          sudo auditctl -a always,exit -F arch=b64 -S tgkill -F a2=15 -k term || true
-          sudo auditctl -l || true
-      # The diagnostic monitor below streams into this step's own log, so it survives
-      # a runner-level cancel, which skips every later step (run 44389170564).
       - name: Test suite
-        run: |
-          set +e
-          (
-            while :; do
-              echo "[monitor $(date -u +%H:%M:%S)] $(free -m | awk '/^Mem:/{print "mem used=" $3 "M avail=" $7 "M"}')$(free -m | awk '/^Swap:/{print " swap used=" $3 "M"}') $(df -m / /tmp | awk 'NR>1{printf "%s used=%sM avail=%sM ", $6, $3, $4}')"
-              ps -eo rss=,pid=,ppid=,comm= --sort=-rss | head -3 | awk '{printf "[monitor]   top %dM pid=%s ppid=%s %s\n", $1/1024, $2, $3, $4}'
-              sleep 15
-            done
-          ) &
-          monitor=$!
-          sudo dmesg -w 2>/dev/null | grep --line-buffered -iE 'oom|out of memory|killed process' | sed -u 's/^/[kernel] /' &
-          kernel=$!
-          sudo tail -n0 -F /var/log/audit/audit.log 2>/dev/null \
-            | grep --line-buffered -E 'type=OBJ_PID .*ocomm="(make|shellcheck|shell-inventory|Runner\.Worker|Runner\.Listener)"' \
-            | while IFS= read -r line; do
-                serial=$(printf '%s\n' "$line" | sed -n 's/.*msg=audit([0-9.]*:\([0-9]*\)).*/\1/p')
-                echo "[term] $line"
-                [ -n "$serial" ] && sudo ausearch -a "$serial" -i 2>/dev/null | grep -E 'type=SYSCALL|type=PROCTITLE' | sed 's/^/[term]   /'
-              done &
-          audit=$!
-          bash -c 'printf "%s %s\n" "$$" "$(ps -o pgid= -p $$ | tr -d " ")" > "$RUNNER_TEMP/make.pid"; exec make test'
-          status=$?
-          kill "$monitor" "$kernel" "$audit" 2>/dev/null
-          exit "$status"
-      - name: Show SIGTERM senders (diagnostic)
-        if: always()
-        run: |
-          read -r make_pid make_pgid < "$RUNNER_TEMP/make.pid" || true
-          echo "make pid=$make_pid pgid=$make_pgid"
-          sudo ausearch -k term -i > "$RUNNER_TEMP/term.txt" 2>/dev/null || true
-          echo "SIGTERM records: $(grep -c 'type=SYSCALL' "$RUNNER_TEMP/term.txt" || true)"
-          echo "--- records naming make's pid or group, or pid 0 / -1:"
-          grep -B2 -A6 -E "a0=($make_pid|-$make_pgid|0|-1)( |$)|opid=$make_pid( |$)" "$RUNNER_TEMP/term.txt" | head -200 || true
-          echo "--- last 40 SIGTERM records:"
-          awk '/^----/{n++} {r[n]=r[n] $0 "\n"} END{for(i=(n>40?n-40:0);i<=n;i++) printf "%s", r[i]}' "$RUNNER_TEMP/term.txt" || true
+        run: make test
       - name: Build
         run: make build
 
