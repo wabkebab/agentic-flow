@@ -58,6 +58,11 @@ A closed step means reviewed clean; the Status block and CI record shipping.
 | `make build` | dry-run export into a temporary directory | validates the payload assembles without writing a real target |
 | `make run` | `scripts/doctor.sh` report mode | the scaffold's "app" is its adoption report |
 
+For each step, executors run `make check` and its Verify command; run the full
+`make test` once at the end of the plan. Under the controller, do not run `verify-step`.
+Reviewers run no test by default; reuse the packet's verification record, re-running
+only a named narrower command to resolve a concrete gap.
+
 - **Languages / runtimes:** POSIX-ish shell with Bash 3.2 compatibility for shipped scripts.
 - **Package / build layout:** single scaffold repo; reusable payload lives in scripts,
   docs skeleton, hooks, and `templates/harness/`.

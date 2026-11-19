@@ -42,6 +42,9 @@ A finding must be introduced by the reviewed change, actionable, and supported b
 
 ## Verify with evidence
 
+For each step, executors run `make check` and its Verify command; run the full
+`make test` once at the end of the plan. Under the controller, do not run `verify-step`.
+Reviewers run no test by default.
 Read the packet's verification record first. Reuse fresh passing evidence for this head
 and step. Re-run only a narrower command needed to resolve a concrete gap; name that
 command and record its result. Do not repeat the full per-step gate.

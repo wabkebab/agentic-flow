@@ -67,6 +67,11 @@ push, PR and close-out gates; commit its staged close-out when prompted, then ru
 | `make build` | <production build> | |
 | `make run` | <start the app locally> | for `/run` and `/verify` |
 
+For each step, executors run `make check` and its Verify command; run the full
+`make test` once at the end of the plan. Under the controller, do not run `verify-step`.
+Reviewers run no test by default; reuse the packet's verification record, re-running
+only a named narrower command to resolve a concrete gap.
+
 - **Languages / runtimes:** <…>
 - **Package / build layout:** <e.g. monorepo packages/*, single module, …>
 - **CI gate:** <what must be green before merge — ideally `make check && make test`. Start

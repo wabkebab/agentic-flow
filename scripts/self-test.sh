@@ -1359,6 +1359,19 @@ fi
 # --- shellcheck is required, not optional ------------------------------------------------
 if should_run contracts; then
 workflow_contract_check
+# T-1: keep the gate cadence identical in the live and exported role contracts.
+# shellcheck disable=SC2016 # Literal Markdown command references.
+cadence_contract='For each step, executors run `make check` and its Verify command; run the full `make test` once at the end of the plan. Under the controller, do not run `verify-step`.'
+for cadence_file in AGENTS.md CLAUDE.md templates/harness/AGENTS.md templates/harness/CLAUDE.md \
+                    .agents/skills/review-execution/SKILL.md; do
+  case "$cadence_file" in
+    templates/*) [ -d "$ROOT/templates/harness" ] || continue ;;
+    .agents/*) active_scope codex || continue ;;
+    CLAUDE.md) active_scope claude || continue ;;
+  esac
+  tr '\n' ' ' < "$ROOT/$cadence_file" | sed 's/[[:space:]][[:space:]]*/ /g' \
+    | grep -Fq "$cadence_contract" || fail "gate cadence missing from $cadence_file"
+done
 # S-9: the workflow is generated once; installed projects keep rendered contracts.
 if [ -d "$ROOT/templates/shared" ]; then
   [ -f "$ROOT/templates/shared/workflow.md" ] || fail 'canonical rendered workflow is missing'

@@ -39,10 +39,10 @@ order, edge cases — not finished code. Read the brief for the step before writ
    branch), follow that explicitly; don't split by default.
 3. **Implement** the step. Add the regression test the brief asks for — it must fail against
    the old code and pass after.
-4. **Verify** with the project's `make` targets (defined in the `Makefile`; explained in
-   `CLAUDE.md` → Stack profile): `make check` and `make test-one F=<the step's focused
-   selector>` per step; run the full `make test` at the end. (The Stop hook runs
-   `make check` regardless.)
+4. **Verify** using the `Makefile` targets (`CLAUDE.md` → Stack profile).
+   For each step, executors run `make check` and its Verify command; run the full
+   `make test` once at the end of the plan. Under the controller, do not run `verify-step`.
+   (The Stop hook runs `make check` regardless.)
 5. **Commit** (see contract below), one logical commit for the step, with `Fixes #N`.
    Under the controller, return the station result JSON with the full commit SHA;
    never call `handoff`. The controller verifies and submits it. For interactive use,
