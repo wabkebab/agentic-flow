@@ -1,16 +1,57 @@
 # Changelog
 
-## Unreleased — test streamlining (draft)
+## 0.18.0
 
+Test streamlining, phase 3 (tracker #165). Each test group runs once per full suite,
+per-step runs are scenario-sized, a group that grows past its budget fails, and
+adopters stop running the harness's internal tests on every `make test`.
+
+- Gate cadence: `AGENTS.md`, `CLAUDE.md` and the reviewer skill now say that each step
+  runs `make check` and its Verify command, and the plan runs the full `make test`
+  once at the end. Under the controller, executors do not run `verify-step`, and
+  reviewers run no test by default.
+- `make ship-gate` runs `self-test.sh --full --all-groups` in a fresh export. It is
+  the only place the exported layout gets full coverage. Everyday `make test` keeps
+  the exported `--fast` suite and `make check` and no longer runs the nested full
+  suite. `ship` runs `make ship-gate` on the final head before its first push. A
+  failing gate stops the push and names the group. A project without the target
+  gets a notice and `ship` continues. This repository's CI runs `make test` and
+  `make ship-gate` as separate steps.
 - Exported `make test` runs the local `contracts` and `hooks` groups. The six
   scaffold groups also run when committed, staged, unstaged or untracked edits
   touch payload-manifest destinations against the integration merge base.
   An unresolved base or Git failure runs every group; a feature branch's own
-  upstream is never used as the base.
-- `scripts/self-test.sh --full --all-groups` forces all harness groups.
-  The scaffold's `make ship-gate` uses it inside a fresh export; source `make test`
-  continues to run every group. The shipped CI app job fetches full history and
-  exports `AGENTIC_BASE_REF=origin/${{ github.base_ref }}` for PR tests.
+  upstream is never used as the base. `scripts/self-test.sh --full --all-groups`
+  forces every group. In the scaffold source, `--full` still runs every group.
+- The shipped CI app job fetches full history and exports
+  `AGENTIC_BASE_REF=origin/${{ github.base_ref }}` for PR tests, so a PR's
+  changed set uses a real merge base.
+- `self-test.sh --full --jobs <n>` (or `AGENTIC_TEST_JOBS`) runs groups and
+  controller and stations tag shards as parallel processes. The default is
+  `min(shards, CPUs)`. Each shard has its own fixture root and timeout, output is
+  replayed in a stable order, and every failed shard is reported. `--jobs 1` is the
+  serial order. The 190-copy budget applies to the merged event stream.
+- `make test-one F=stations S=launch,packet,verify,handoff` selects stations
+  scenarios by tag, with the controller group's rules.
+- Wall-time ceilings: `config/test-wall-ceilings.tsv` sets a ceiling in seconds for
+  each group and for each controller and stations tag. A whole-group run fails when
+  a group exceeds its ceiling. A `--scenario` run fails only on the tags it
+  selected. `make check` fails when a group or tag has no row. A ceiling change is
+  a reviewed diff to that file.
+- Tests: `self-test.sh` is now a dispatcher over `scripts/tests/<group>.sh`. A
+  recorded list of assertion messages keeps the split from dropping an assertion.
+  An adopter-twin fixture runs upgrade, hooks and `make check` against an export with
+  a customized `CLAUDE.md` and `Makefile`. The dispatcher's group imports are linted
+  with `source=/dev/null`, which keeps shellcheck under about 2.5 GB.
+
+Migration: run `scripts/agentic-flow upgrade`, then copy two `Makefile` changes from
+`templates/harness/Makefile` by hand: the `test-one` recipe (`S=` now accepts
+`F=stations`), and, if you want `ship` to run release checks before pushing, the
+commented `ship-gate` target with your own command (`scripts/self-test.sh --full
+--all-groups` forces every installed harness group). Exported `make test` now skips
+the scaffold groups unless a harness file changed, so set `AGENTIC_BASE_REF` where
+your CI's integration branch is not found automatically. Merge the new gate-cadence
+paragraph into a customized `CLAUDE.md` and `AGENTS.md`.
 
 ## 0.17.0
 
