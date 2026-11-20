@@ -121,7 +121,7 @@ The two body markers already in HTML comments show the pattern works.
 
 When `main` moves, the planner merges `main` into the plan branch. Rebasing would orphan the approval revision.
 
-`agentic-flow clean <id>` is the counterpart to `start`. After the PR has merged, it removes the plan worktree and the local branch, along with the plan's salvage refs if `ship` has not already deleted them. It refuses when the branch is not merged into its base or the worktree is dirty, so it never deletes unshipped work.
+`agentic-flow clean <id>` is the counterpart to `start`. After the PR has merged, it removes the plan worktree and the local branch, along with the plan's salvage refs if `ship` has not already deleted them. It refuses when the branch is not merged into its fetched base or the worktree is dirty, so it never deletes unshipped work. The merge check and the deletion use the same base ref (see Interface), so the outcome does not depend on the caller's checkout.
 
 ### Issue 2 — one green CI push
 
@@ -178,9 +178,14 @@ agentic-flow start <plan-id> [--type feature|security] [--base <branch>] [--bran
 
 agentic-flow clean <plan-id> [--dry-run]
   run from    any checkout of the repo except the plan worktree itself
-  requires    branch merged into its base (git merge-base --is-ancestor <branch> refs/remotes/origin/<base>
-              after a bounded fetch, or the local base with --no-fetch); worktree clean
-  effects     git worktree remove; git branch -d (never -D); delete refs/agentic-flow/salvage/<plan-id>/*
+  base ref    one ref, B = refs/remotes/origin/<base> after a bounded fetch (or B as already fetched, with
+              --no-fetch); never the caller's HEAD and never the branch's upstream
+  requires    the branch tip T (read once) is an ancestor of B; worktree clean
+  effects     in order: git worktree remove; git update-ref -d refs/heads/<branch> T (deletes only if the
+              branch still points at T); delete refs/agentic-flow/salvage/<plan-id>/*
+              git branch -d is not used: it checks against the upstream or the caller's HEAD, not B
+  re-run      every run re-reads T and re-checks it against B, so a run interrupted after any effect
+              finishes the rest; the result does not depend on which checkout it runs from
   exit        0 removed (or nothing to remove) · 2 usage · 3 refused (unmerged, dirty, unknown plan) · 5 fetch failed
 
 plan worktree path:  plan_worktree_path <git-common-dir> <plan-id>
@@ -213,7 +218,8 @@ CI (ci.yml and templates/ci/ci.yml):
   app_key   = sha256 of `git ls-files -s` over the PR merge checkout, minus bookkeeping paths
   cache key = app-green-v1-<app_key>; value: a file naming the run URL and attempt that passed
   app job   runs when app=='true' && app_cached!='true'; saves the key only on success
-  docs job  docs-index --check, check-memory-index
+  docs job  docs-index --check, check-memory-index, and every other failing reader of a bookkeeping path
+  bookkeeping rule: a path is bookkeeping only if every check that reads it and can fail runs in the docs job
 
 journal comment layout:
   line 1      "<!-- " + transition marker   (old form: transition marker without prefix)
@@ -238,7 +244,7 @@ The untrusted inputs are station-written text (summaries, findings, questions), 
 - **`source=final-approval`.** The PR binding now comes from a marker that only a configured reviewer login can post. That marker already binds the PR number, head and run.
 - **`start`.** Local only: no push and no GitHub write. It refuses to overwrite an existing branch, worktree or doc.
 - **`ship` committing.** `ship` commits only the paths prep produced, after prep's own check that nothing but bookkeeping changed, and only from a tree that was clean before prep. It commits under the closer's identity, never the executor's or reviewer's. The final reviewer still approves that exact head, so the commit gains no authority by being automatic.
-- **`clean`.** Deleting unshipped work is the main risk. `clean` uses `git branch -d` (never `-D`), requires the branch to be an ancestor of the base, refuses a dirty worktree, and never runs inside the worktree it removes.
+- **`clean`.** Deleting unshipped work is the main risk. `clean` checks one base ref and deletes against the same check. It reads the branch tip once, requires it to be an ancestor of the fetched base, and deletes with a compare-and-delete (`update-ref -d <ref> <tip>`), so a branch that moved after the check is kept. It refuses a dirty worktree and never runs inside the worktree it removes.
 - **PR body.** It is built from the approved brief and the journal, both already trusted inputs, with the same escaping as journal comments.
 
 ## Failure behavior
@@ -254,9 +260,9 @@ The untrusted inputs are station-written text (summaries, findings, questions), 
 | CI wait | exit 1 after `AGENTIC_SHIP_CI_TIMEOUT`; the next `ship` resumes | exit 5, as today | n/a |
 | Closer commit command in `ship` | n/a | n/a | it fails after prep staged: leave the staging, print the files and the command, exit 1; the next `ship` sees a staged tree and stops as today |
 | `git fetch` in `clean` | exit 5; nothing removed | n/a | n/a |
-| `git worktree remove` / `git branch -d` in `clean` | n/a | n/a | report what was removed and what was not; exit 3; a re-run finishes the rest |
+| `git worktree remove` / `git update-ref -d` in `clean` | n/a | n/a | report what was removed and what was not; exit 3; a re-run re-checks the tip against the same base and finishes the rest |
 
-Bounds: fetch 120 s; PR visibility 120 s (unchanged); CI wait 3600 s by default; GitHub comment body ≤ 65,536 characters (the renderer truncates the summary first and says so); findings table ≤ 100 rows (the schema cap); step packet ≤ 800 words (unchanged).
+Bounds: fetch 120 s; PR visibility 120 s (unchanged); CI wait 3600 s by default; rendered comment ≤ 60,000 characters after escaping (reduced in e-2's documented order, with the full findings kept for the executor through the ledger); findings ≤ 100 (the schema cap); step packet ≤ 800 words (unchanged).
 
 ## Out of scope / What NOT to build in this pass
 
@@ -272,7 +278,7 @@ Bounds: fetch 120 s; PR visibility 120 s (unchanged); CI wait 3600 s by default;
 
 ## Open questions
 
-- Is `docs/README.md` bookkeeping? It is in the payload and changes at every close-out. e-5 audits whether export or tests read its content. If they do, it stays an App input; that is safe, because after e-4 the close-out rides the single push anyway.
+- ~~Is `docs/README.md` bookkeeping?~~ Resolved in review (2026-11-20): no. Contract tests read it, so it stays an App input, as do the root `README.md` and `docs/accepted_risks.md`. That is safe, because after e-4 the close-out index change rides the single push anyway.
 - Release number: `0.19.0`, as a minor release with a migration note (old markers keep working). The owner confirms at approval.
 - Icons in comment headings (✅ 🔁 📦 ❓): default yes. The owner can veto at approval.
 - `AGENTIC_CLOSER_COMMIT` defaults to `git-claude`, because Claude is the closer here. Adopters with another closer set it. If `feature-role-signing.md` ships first, e-4 uses its closer signing instead.
@@ -330,7 +336,9 @@ Do not raise a ceiling. Only e-9 edits contracts; leave the reviewer skill alone
 
 **Issue 3 — readable tickets**
 1. **Both marker forms replay.** For every journal event (submit, approve, bounce, ask, resume, notify, close) and for hold and hold-clear, a comment in the old form and the same comment in the hidden-block form give identical replay output from `journal.jq`, identical `handoff` post lookup, identical lifecycle verdicts and identical `packet` and `andon` reads. A hidden-block comment whose first line is not exactly `<!-- ` plus a valid marker is skipped, as a malformed old-form comment is today. A comment from an unauthorized login is ignored in both forms.
-2. **Journal comments read well.** `handoff` and the controller write the hidden-block form. In the rendered Markdown, the first visible line is a level-3 heading naming the event, step id and step title. A bounce shows a findings table (Severity, Location, Finding) with `|` escaped, newlines flattened and the location in backticks. Station-supplied text containing `<!--`, `-->`, a marker line, `@someone` or `<placeholder>` is rendered inert: no comment opens or closes, no second marker is parsed, no mention is created, and the placeholder stays visible. The andon mention the harness adds still notifies. A result with `evidence` renders it inside a collapsed `<details>` block; a result without it renders no block; a result whose `evidence` breaks the schema limits is rejected like any other schema violation. A submit comment shows a Checks line built from the verify record for the submitted head; with no record it says "Checks: not recorded" rather than inventing a result.
+2. **Journal comments read well.** `handoff` and the controller write the hidden-block form. In the rendered Markdown, the first visible line is a level-3 heading naming the event, step id and step title. A bounce shows a findings table (Severity, Location, Finding) with `|` escaped, newlines flattened and the location in backticks. Station-supplied text containing `<!--`, `-->`, a marker line, `@someone` or `<placeholder>` is rendered inert: no comment opens or closes, no mention is created, and the placeholder stays visible. A marker line in supplied text is not parsed by any reader (`journal.jq`, lifecycle, `ship`, `andon`, `packet`), whether bare, inside inline code or inside a fenced block. The same holds for `Implemented in <sha>` anywhere in the text.
+
+**Size.** No rendered comment exceeds 60,000 characters after escaping. A bounce with 100 findings at the schema maximum is reduced in the documented order and says "Showing K of N findings". The executor's next packet still holds all N findings, read from the ledger station record. With that record missing or mismatched, the controller holds with `findings-incomplete` and launches no executor. An over-budget interactive `handoff` body exits 2 and posts nothing. The andon mention the harness adds still notifies. A result with `evidence` renders it inside a collapsed `<details>` block; a result without it renders no block; a result whose `evidence` breaks the schema limits is rejected like any other schema violation. A submit comment shows a Checks line built from the verify record for the submitted head; with no record it says "Checks: not recorded" rather than inventing a result.
 3. **Step issues read well.** A step issue body has, in order: a heading with the step id and title; a facts line linking the tracker, the profile and the brief (a GitHub link to the doc at the approved revision); sections for Definition of done, Verify, Verification commands (in a fenced block, so `<group>` survives) and Risks (one bullet per risk from the brief's bullet list; a one-line legacy value is one bullet); then the existing hidden stamps. The feature and security templates write `**Risks:**` as a bullet list, and `brief.sh` parses both forms. No line is parsed as a setext heading. The packet is still ≤ 800 words, and the packet the controller hands to a station holds the same facts as before.
 4. **The tracker reads well.** The tracker body has a title heading, a facts line (profile, branch → base, linked brief at the approved revision), the plan's tracking body when present, and a `### Steps` task list whose lines still carry the parsed `#N [id]` tokens without repeating the id in the visible title. `plan-to-issues` discovery and re-apply work on new trackers and on trackers in the old layout.
 
@@ -342,7 +350,7 @@ Do not raise a ceiling. Only e-9 edits contracts; leave the reviewer skill alone
    - A tree with any other staged or uncommitted change makes `ship` stop before prep.
    - When the closer command fails, the staging is left in place, `ship` exits 1 with no push, and a re-run stops as for a staged tree.
    - A plan that already has a PR with the doc in `inprogress/` follows the old two-push path.
-8. **Docs-only pushes skip App checks.** In `ci.yml` and `templates/ci/ci.yml`, `app` is true unless every changed file matches the bookkeeping list. A test parses both workflows and asserts that: the list is the same in both; no bookkeeping glob matches a `config/payload.tsv` source except `.gitkeep` files (and `docs/README.md` only if e-5's audit allows it); and `ci-gate` still needs every job. A PR changing only `METHODOLOGY.md` now sets `app=true`.
+8. **Docs-only pushes skip App checks.** In `ci.yml` and `templates/ci/ci.yml`, `app` is true unless every changed file matches the bookkeeping list. A test parses both workflows and asserts that: the list is the same in both; no bookkeeping glob matches a `config/payload.tsv` source (the payload's `.gitkeep` files are matched by no glob); and `ci-gate` still needs every job. A PR changing only `METHODOLOGY.md`, only the root `README.md`, only `docs/README.md` or only `docs/accepted_risks.md` sets `app=true`. Every check that reads a bookkeeping path's content and can fail runs in the Docs job, and a test lists those checks against the Docs job's steps. No test reads a live `docs/inprogress` doc.
 9. **Carry-forward is content-addressed.** The key computation, run as a script on fixtures, gives the same key for two trees that differ only in bookkeeping paths. It gives a different key when any App input changes (one byte, a mode change, a rename, an added or deleted file), and a different key when the base content differs. The App job is skipped only when the key is already in the cache, and the run summary names the source run. A cache lookup that errors runs App checks.
 10. **CI wait bound.** `ship` waits up to `AGENTIC_SHIP_CI_TIMEOUT` (default 3600 s) for CI. An invalid value exits 2.
 
@@ -354,6 +362,9 @@ Do not raise a ceiling. Only e-9 edits contracts; leave the reviewer skill alone
 **Added on review**
 14. **The PR reads well.** The PR `ship` creates has the plan title, the goal line, a step table (step, issue link, approved short head, bounces), the brief link at the approved revision and the tracker link, all escaped like journal comments. A plan with 20 steps and long titles stays under the size limit.
 15. **`clean` removes only shipped work.** After the plan branch is merged into `origin/<base>`, `agentic-flow clean demo-plan` removes the worktree, the local branch and the plan's salvage refs, and a second run reports nothing to remove. An unmerged branch, a dirty worktree, an unknown plan id, or running it from inside the plan worktree each exit 3 with nothing removed. `--dry-run` lists what it would remove and changes nothing.
+   - **Same base for check and delete.** Run `clean` from a main checkout whose local `main` is behind `origin/main`, for a plan branch merged only into `origin/main`, with the branch's upstream set to `origin/<branch>` and that upstream behind the branch. It removes both the worktree and the branch; it never consults the caller's `HEAD` or the upstream.
+   - **Converges.** A run interrupted after the worktree removal finishes the branch and ref deletion on re-run.
+   - **Keeps moved work.** A branch that gains a commit between the check and the delete is kept.
 
 ## Verification commands
 ```bash
@@ -394,16 +405,33 @@ scripts/doctor.sh --check
 **Approach:**
 1. Add one renderer (a shell or jq library under `scripts/lib/`) that takes the event, step id, step title, head and the body parts (summary, findings, question, warnings, andon mention) and returns the comment. Layout is in the Interface.
 2. Route every writer through it: `handoff_post` (interactive bodies are treated as a summary), the controller's station bodies (`controller.sh` near the bounce findings line), holds and hold-clears, and `ship_final_approve`. The final approval gets a heading naming the PR, short head and run attempt.
-3. Escaping applies to station- and human-supplied text, outside inline code and fenced blocks: neutralize `<!--` and `-->`, keep bare `<word>` visible, break `@` mentions, and reject or neutralize a marker line. In table cells, escape `|`, flatten newlines and wrap the location in backticks. Truncate the summary first to stay under 65,536 characters, and say so in the comment.
-4. Update the station prompt (`config/stations/preamble.md` or the result-schema description) so stations write `summary` as short Markdown (a sentence, then bullets) and put reused-evidence detail in `evidence`.
-5. Add the optional `evidence` field to `config/stations/result.schema.json` (Interface). `required` is unchanged, so results without it stay valid. Check that every CLI's schema mode (`claude --json-schema`, `codex --output-schema`, OpenCode's prompt-only schema) accepts an optional array; if one cannot, say so in the commit body and keep the field prompt-only for that CLI.
-6. The submit Checks line reads the verify record for the submitted head through the existing verify-record reader. Do not re-run anything.
+3. Escaping applies to station- and human-supplied text (summary, findings, evidence, question, interactive bodies):
+   - **Markers are neutralized everywhere, including inside inline code and fenced blocks.** The line-based readers scan raw lines and know nothing about Markdown fences. A supplied line that, after leading whitespace and an optional `<!--`, starts with a marker family is altered so no reader matches it. The families are `agentic-flow-transition:`, `agentic-flow-review:`, `agentic-flow-run:`, `agentic-flow-hold:`, `agentic-flow-hold-clear:` and `agentic-flow:`. An `Implemented in <40 hex>` anywhere in the text is also altered, because its reader is not line-anchored. The text stays readable; use one visible change, such as a zero-width joiner after `agentic`, applied the same way everywhere.
+   - Outside code: neutralize `<!--` and `-->`, keep bare `<word>` visible, and break `@` mentions. Inside code, `<word>` and `@` are already inert, but the marker rule above still applies.
+   - In table cells: escape `|`, flatten newlines, and wrap the location in backticks.
+4. **Size budget.** A rendered comment is at most 60,000 characters, measured after escaping (GitHub's limit is 65,536, which leaves room for the hidden blocks). When the full rendering exceeds that, reduce in this order and stop as soon as it fits:
+   1. drop `evidence` items from the end, then the whole block;
+   2. truncate the summary to 1,000 characters;
+   3. truncate each finding's location to 200 characters and its text to 600, both ending in `…`;
+   4. drop findings from the end, after a stable sort by severity (P1 first, so P3s go first), and write "Showing K of N findings" above the table.
 
-**Test:** scenario 2, rendered for every event against golden files. Failure path first: hostile summaries (comment openers and closers, marker lines, mentions, a 70 KB summary, a pipe-heavy finding), an over-limit `evidence`, and a submit with no verify record. Re-run scenario 1 on renderer output.
+   Each reduction says so in the visible text. Step 4 also writes `findings-shown=K/N` into the hidden block.
+5. **No finding is lost to the executor.** `packet.sh` today hands bounce comment bodies to the executor (`packet.sh:87`). When a bounce's hidden block says `findings-shown=K/N` with K < N, the packet takes the full findings from the controller's ledger station record for that run (`kind=station`, `result.findings`). If that record is missing or does not match the comment's run and head, the controller holds with `findings-incomplete` instead of launching the executor. Interactive `handoff --body-file` bodies are never truncated: over budget, `handoff` exits 2 and posts nothing.
+6. Update the station prompt (`config/stations/preamble.md` or the result-schema description) so stations write `summary` as short Markdown (a sentence, then bullets) and put reused-evidence detail in `evidence`.
+7. Add the optional `evidence` field to `config/stations/result.schema.json` (Interface). `required` is unchanged, so results without it stay valid. Check that every CLI's schema mode (`claude --json-schema`, `codex --output-schema`, OpenCode's prompt-only schema) accepts an optional array. Strict structured-output modes often require every property in `required`; if so, make `evidence` required with type `array|null`, which the existing schema already does for `head` and `question`, and treat `null` as absent. Ledger validation (`ledger.pl` `result_valid`) must accept the field.
+8. The submit Checks line reads the verify record for the submitted head through the existing verify-record reader. Do not re-run anything.
+
+**Test:** scenario 2, rendered for every event against golden files. Failure path first:
+- hostile summaries: comment openers and closers, marker lines bare and inside fenced and inline code, a non-anchored `Implemented in <sha>`, mentions, a pipe-heavy finding;
+- the size budget: 100 findings at schema maximum, a 70 KB interactive body;
+- the packet after a truncated bounce, with the ledger record present, missing and mismatched;
+- an over-limit `evidence`, and a submit with no verify record.
+
+Re-run scenario 1 on renderer output, and run every marker reader over the hostile fixtures.
 
 **DoD:** scenarios 1 and 2 pass; every comment the harness writes comes from the renderer.
 **Verify:** `make test-one F=stations S=handoff` and `make test-one F=controller S=ship`
-**Risks:** a changed byte in the marker breaking journal ids; the andon mention escaped by mistake; renderer output exceeding the comment limit after escaping.
+**Risks:** a changed byte in the marker breaking journal ids; the andon mention escaped by mistake; a marker reader missed by the neutralizing rule; truncation hiding a finding from the executor.
 **Red-first:** `scripts/self-test.sh --only stations --scenario handoff` — scripts/tests/stations.sh
 **Commit:** `Render journal comments as Markdown with the markers in a hidden block`
 
@@ -448,16 +476,23 @@ scripts/doctor.sh --check
 **Why fifth:** e-6's key needs a correct definition of App inputs, and today's filter misses payload files.
 
 **Approach:**
-1. In `ci.yml` and `templates/ci/ci.yml`, define `app` as "any changed file outside the bookkeeping list". Use `predicate-quantifier: every` with negated globs, or an equivalent. Start the list with `docs/inprogress/**`, `docs/done/**`, `docs/backlog/**`, `docs/memory/**`, `docs/MEMORY.md`, `ROADMAP.md`, `README.md` and `docs/agentic-flow-explained.html`. Audit `docs/README.md`, `CHANGELOG.md` and `docs/accepted_risks.md`: each is bookkeeping only if no export step, script or test reads its content. Record the decision for each in the commit body.
-2. Keep the list in one place per workflow, and add the check in scenario 8 (same list in both, no payload overlap) to `make check`.
-3. The Docs job runs `docs-index.sh --check` and `check-memory-index.sh`.
+1. In `ci.yml` and `templates/ci/ci.yml`, define `app` as "any changed file outside the bookkeeping list". Use `predicate-quantifier: every` with negated globs, or an equivalent.
+2. **The rule:** a path is bookkeeping only when every check that reads its content and can fail runs in the Docs job. A path read by any App-only check stays an App input. Before choosing the list, write the reader inventory into the commit body: for each candidate path, every script, test and export step that reads it, and the job it runs in. Readers found while drafting:
+   - root `README.md`: `scripts/tests/contracts.sh:1536` asserts its hook-count wording. **App input.**
+   - `docs/README.md`: copied and read by contract tests (`contracts.sh:1731`, `:1767`). **App input.**
+   - `docs/accepted_risks.md`: read by `scripts/lib/review-policy.sh:124` for anchors. **App input.**
+   - `docs/memory/**` and `docs/MEMORY.md`: read by `check-memory-index.sh`, which moves into the Docs job.
+   - `docs/inprogress/*.md`: read by `doctor.sh` (a warning only) and by `plan-to-issues.sh:483` (a test that copies a live plan doc when it exists). Turn that test into a fixture so it no longer reads a live doc, then the path can be bookkeeping.
+
+   Candidates after the audit: `docs/inprogress/**`, `docs/done/**`, `docs/backlog/**`, `docs/memory/**`, `docs/MEMORY.md`, `ROADMAP.md` and `docs/agentic-flow-explained.html`, each kept only if the inventory clears it. `.gitkeep` files stay App inputs (they are payload).
+3. Keep the list in one place per workflow, and add the check in scenario 8 to `make check`. The Docs job runs `docs-index.sh --check`, `check-memory-index.sh` and any other check the inventory assigns to it.
 4. The template comments tell adopters how to extend the list.
 
 **Test:** scenario 8. Failure path first: a glob that matches a payload file, the lists drifting between the two workflows, a job dropped from `ci-gate`.
 
 **DoD:** scenario 8 passes; `check-action-pins.sh` passes.
 **Verify:** `make check`
-**Risks:** a bookkeeping glob that hides an App input; the template diverging from this repo's file in ways the sync check does not see.
+**Risks:** a bookkeeping glob that hides an App input (the inventory decides, not intuition); a test that reads a live plan doc; the template diverging from this repo's file in ways the sync check does not see.
 **Red-first:** `scripts/self-test.sh --only contracts` — scripts/tests/contracts.sh
 **Commit:** `Run App checks unless every changed file is bookkeeping`
 
@@ -486,13 +521,13 @@ scripts/doctor.sh --check
 2. Move the plan worktree path into one helper that the controller and `start` both use. `AGENTIC_WORKTREE_ROOT` keeps overriding it.
 3. Fill the template by replacing its known fields (plan block `id`, `branch`, the Branch section's `Base:` and the TRIAGE date). Leave every other placeholder for the planner. Fetch with the existing `run_with_timeout` and `AGENTIC_FLOW_FETCH_TIMEOUT`.
 4. On any failure after the first write, remove what was created, in reverse order.
-5. Add `clean` in the same library (Interface). It finds the branch and base from the plan's doc on the plan branch, or from the worktree's branch when the doc is gone. It checks merge state against the fetched base, removes the worktree, deletes the branch with `-d` and deletes `refs/agentic-flow/salvage/<plan-id>/`. `ship`'s final message suggests `agentic-flow clean <id>` after the merge.
+5. Add `clean` in the same library (Interface). It finds the branch and base from the plan's doc on the plan branch, or from the worktree's branch when the doc is gone. It resolves one base ref, reads the branch tip once, checks ancestry against that ref, removes the worktree, then deletes the branch with `git update-ref -d refs/heads/<branch> <tip>`, then deletes `refs/agentic-flow/salvage/<plan-id>/`. Do not use `git branch -d`: it checks against the upstream or the caller's `HEAD`, which can disagree with the base check. `ship`'s final message suggests `agentic-flow clean <id>` after the merge.
 
-**Test:** scenarios 11, 12 and 15 with a fake origin. Failure path first: every refusal in scenarios 12 and 15, then fetch timeout, then a template write failure after the worktree exists, then a `clean` interrupted between worktree removal and branch deletion and re-run.
+**Test:** scenarios 11, 12 and 15 with a fake origin. Failure path first: every refusal in scenarios 12 and 15, then fetch timeout, then a template write failure after the worktree exists, then `clean` from a stale `main` checkout with a behind upstream, then a `clean` interrupted between worktree removal and branch deletion and re-run, then a branch that moves between check and delete.
 
 **DoD:** scenarios 11, 12 and 15 pass; `agentic-flow --help` lists `start` and `clean`.
 **Verify:** `make test-one F=controller S=launch`
-**Risks:** creating the branch from the caller's `HEAD` instead of the base; leaving a half-made worktree; a template field missed after a template edit (assert the filled fields); `clean` deleting an unmerged branch (a squash-merged branch is not an ancestor, so `clean` refuses it and says so).
+**Risks:** creating the branch from the caller's `HEAD` instead of the base; leaving a half-made worktree; a template field missed after a template edit (assert the filled fields); `clean` deleting an unmerged branch (a squash-merged branch is not an ancestor, so `clean` refuses it and says so); the merge check and the deletion using different bases.
 **Red-first:** `scripts/self-test.sh --only controller --scenario launch` — scripts/tests/controller.sh
 **Commit:** `Add agentic-flow start and clean: plan branch, worktree and prefilled doc, removed after merge`
 
