@@ -2,6 +2,126 @@
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
 
+# Flow ergonomics scenario 8. Parse the pinned action's single-quoted filter lists.
+ci_bookkeeping_globs() {
+  awk -v quote="'" '
+    /^  [^ ]/ { changes=($1=="changes:"); step=0; filters=0 }
+    !changes { next }
+    /^      - / { step=0; filters=0 }
+    /^        id: filter$/ { step=1 }
+    step && /^          predicate-quantifier: every$/ { every++ }
+    step && /^          filters: \|$/ { filters=1; next }
+    filters && /^            [^ ]/ { area=$1; next }
+    filters && /^              - / {
+      rule=substr($0, 17)
+      if (area=="app:") {
+        if (rule !~ ("^" quote "![A-Za-z0-9_./*-]+" quote "$")) invalid=1
+        else print substr(rule, 3, length(rule)-3)
+        app++
+      }
+      if (area=="docs:") {
+        if (rule != quote "{docs/**,*.md,.github/workflows/ci.yml}" quote) invalid=1
+        docs++
+      }
+    }
+    END { exit (invalid || every!=1 || app<1 || docs!=1) }
+  ' "$1"
+}
+
+ci_bookkeeping_check() (
+  local active=$1 template=$2 probe=$3 workflow globs template_globs source path matched status=0
+  globs=$(ci_bookkeeping_globs "$active") || fail "$active must use an all-negated App filter with the every predicate"
+  template_globs=$(ci_bookkeeping_globs "$template") || fail "$template must use an all-negated App filter with the every predicate"
+  [ "$globs" = "$template_globs" ] || fail 'CI workflows have different bookkeeping lists'
+
+  # Git ignore patterns and the workflow patterns share literal paths, * and **.
+  # Anchor the patterns and check in an empty repo so the project's ignore rules
+  # and index cannot affect classification.
+  mkdir -p "$probe"
+  git -C "$probe" init -q --template=
+  printf '%s\n' "$globs" | sed 's|^|/|' > "$probe/.gitignore"
+  {
+    while IFS=$'\t' read -r source _rest; do
+      case "$source" in ''|\#*) continue ;; esac
+      printf '%s\0' "$source"
+      if [ -d "$ROOT/$source" ]; then
+        while IFS= read -r -d '' path; do printf '%s\0' "${path#"$ROOT"/}"; done \
+          < <(find "$ROOT/$source" \( -type f -o -type l \) -print0)
+      fi
+    done < "$ROOT/config/payload.tsv"
+    printf '%s\0' README.md docs/README.md docs/accepted_risks.md .editorconfig .gitignore
+  } | git -C "$probe" -c core.excludesFile=/dev/null check-ignore --no-index -z --stdin \
+    > "$probe/matches" || status=$?
+  [ "$status" -le 1 ] || fail 'could not check CI bookkeeping against the payload manifest'
+  if IFS= read -r -d '' matched < "$probe/matches"; then
+    fail "CI bookkeeping matches an App input: $matched"
+  fi
+
+  for path in docs/inprogress/plan.md docs/done/plan.md docs/done/security/plan.md \
+      docs/backlog/plan.md docs/memory/entry.md docs/MEMORY.md ROADMAP.md docs/agentic-flow-explained.html; do
+    git -C "$probe" -c core.excludesFile=/dev/null check-ignore --no-index -q -- "$path" \
+      || fail "CI bookkeeping does not cover $path"
+  done
+  for workflow in "$active" "$template"; do
+    assert_ci_gate_needs_asserted "$workflow"
+    awk -v enabled="if: needs.changes.outputs.docs == 'true'" '
+      /^  [^ ]/ { docs=($1=="docs:") }
+      docs && $0=="    " enabled { condition++ }
+      docs && /^        run: scripts\/docs-index\.sh --check$/ { index_check++ }
+      docs && /^        run: scripts\/check-memory-index\.sh$/ { memory++ }
+      END { exit !(condition==1 && index_check==1 && memory==1) }
+    ' "$workflow" || fail "$workflow Docs job must run the docs and memory index checks"
+  done
+)
+
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  ci_active="$ROOT/.github/workflows/ci.yml"
+  ci_template="$ROOT/templates/ci/ci.yml"
+  ci_bookkeeping_check "$ci_active" "$ci_template" "$TMP/ci-bookkeeping"
+  if [ "$SELF_TEST_MODE" != fast ] || [ -n "$ONLY_GROUP" ]; then
+    ci_bad="$TMP/ci-invalid"
+    mkdir -p "$ci_bad"
+    for ci_mutation in payload drift gate result readers; do
+      ci_probe_active=$ci_active
+      ci_probe_template=$ci_template
+      case "$ci_mutation" in
+        payload)
+          ci_probe_active="$ci_bad/active"
+          ci_probe_template="$ci_bad/template"
+          sed "s|'!docs/done/\*\*/\*.md'|'!docs/done/**'|" "$ci_active" > "$ci_probe_active"
+          sed "s|'!docs/done/\*\*/\*.md'|'!docs/done/**'|" "$ci_template" > "$ci_probe_template"
+          ci_expected='CI bookkeeping matches an App input'
+          ;;
+        drift)
+          ci_probe_template="$ci_bad/template"
+          sed '/!ROADMAP\.md/d' "$ci_template" > "$ci_probe_template"
+          ci_expected='CI workflows have different bookkeeping lists'
+          ;;
+        gate)
+          ci_probe_active="$ci_bad/active"
+          sed 's/needs: \[changes, secrets-scan, app, docs\]/needs: [changes, secrets-scan, app]/' \
+            "$ci_active" > "$ci_probe_active"
+          ci_expected='does not match its actual job set'
+          ;;
+        result)
+          ci_probe_active="$ci_bad/active"
+          sed 's/needs\.docs\.result/needs.app.result/' "$ci_active" > "$ci_probe_active"
+          ci_expected="ci-gate loop does not assert on job 'docs'"
+          ;;
+        readers)
+          ci_probe_active="$ci_bad/active"
+          sed '/run: scripts\/check-memory-index\.sh/d' "$ci_active" > "$ci_probe_active"
+          ci_expected='Docs job must run the docs and memory index checks'
+          ;;
+      esac
+      ci_bookkeeping_check "$ci_probe_active" "$ci_probe_template" "$TMP/ci-bookkeeping" > "$ci_bad/out" 2>&1 \
+        && fail "CI bookkeeping check accepted the $ci_mutation fixture"
+      grep -Fq "$ci_expected" "$ci_bad/out" || fail "CI bookkeeping check missed the $ci_mutation diagnostic"
+    done
+  fi
+fi
+if [ "$SELF_TEST_MODE" = fast ] && [ -z "$ONLY_GROUP" ]; then return 0; fi
+
 # Scenario 11: advance a private clock from inert group and scenario bodies.
 wall_ceiling_tests() (
   local fixture="$TMP/wall-ceilings" key tag gate missing
@@ -1615,19 +1735,6 @@ if [ -d "$ROOT/templates/harness" ]; then
   done
 fi
 
-# docs-index.sh treats every .md under docs/ as a lifecycle document and fails make check on
-# anything outside its four stages. The memory tree is not a lifecycle stage, so it has to be
-# skipped explicitly — assert with a real file rather than by reading the case statement.
-MEMDOC_FIXTURE="$ROOT/docs/memory/self-test-stage-probe.md"
-if active_scope docs; then
-  printf '%s\n' '# probe' > "$MEMDOC_FIXTURE"
-  if ! "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
-    rm -f "$MEMDOC_FIXTURE"
-    fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
-  fi
-  rm -f "$MEMDOC_FIXTURE"
-fi
-
 # The tree ships empty. docs/MEMORY.md must NOT be payload: it accumulates adopter-local
 # entries in place, and upgrade --force overwrites a manifest row unconditionally.
 grep -q '^docs/memory/\.gitkeep' "$ROOT/config/payload.tsv" \
@@ -1774,6 +1881,14 @@ AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check \
   && fail "docs-index accepted an undeclared docs stage"
 grep -q "undeclared docs stage" "$TMP/docs-stage.err" \
   || fail "docs-index undeclared-stage failure did not explain the problem"
+
+# Memory entries must leave the fixture's lifecycle index unchanged.
+rm -r "$DOC_STAGE_FIX/docs/unknown"
+mkdir "$DOC_STAGE_FIX/docs/memory"
+AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" >/dev/null
+printf '%s\n' '# probe' > "$DOC_STAGE_FIX/docs/memory/self-test-stage-probe.md"
+AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1 \
+  || fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
 
 MEASURE_FIX="$TMP/measure"
 mkdir -p "$MEASURE_FIX/root/docs" "$MEASURE_FIX/root/.agents/skills/review-execution" \

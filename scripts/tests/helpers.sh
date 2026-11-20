@@ -7,12 +7,17 @@ source_snapshot() {
   mkdir -p "$SOURCE_SNAPSHOT"
   measure_event source_snapshot_copy
   measure_event fixture_tree_copy
+  # Keep live bookkeeping out of test fixtures. Export tests seed their own
+  # lifecycle documents, and the manifest's .gitkeep files still pass through.
   local tracked
   while IFS= read -r -d '' tracked; do
     [ -e "$ROOT/$tracked" ] || continue
     mkdir -p "$SOURCE_SNAPSHOT/$(dirname "$tracked")"
     command cp -p "$ROOT/$tracked" "$SOURCE_SNAPSHOT/$tracked"
-  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z)
+  done < <(cd "$ROOT" && git ls-files -co --exclude-standard -z -- . \
+    ':(exclude,glob)docs/inprogress/**/*.md' ':(exclude,glob)docs/done/**/*.md' \
+    ':(exclude,glob)docs/backlog/**/*.md' ':(exclude,glob)docs/memory/**/*.md' \
+    ':(exclude)docs/MEMORY.md' ':(exclude)ROADMAP.md' ':(exclude)docs/agentic-flow-explained.html')
 }
 
 link_snapshot_files() { # <destination>; directories are private, unchanged files share inodes
@@ -209,11 +214,15 @@ assert_active_ci_workflow() { # <workflow.yml>
 }
 
 assert_ci_gate_needs_asserted() { # <workflow.yml>
-  workflow="$1"
+  local workflow="$1" gate needs_csv other_jobs needs_sorted job
+  local -a ci_gate_needs
+  gate=$(awk '
+    /^  ci-gate:/ { in_gate=1; next }
+    in_gate && /^  [A-Za-z0-9_-]+:/ { exit }
+    in_gate { print }
+  ' "$workflow")
   needs_csv=$(awk '
-    /^[[:space:]]+ci-gate:/ { in_gate=1; next }
-    in_gate && /^[[:space:]][A-Za-z0-9_-]+:/ { exit }
-    in_gate && /^[[:space:]]+needs:/ {
+    /^    needs:/ {
       line=$0
       sub(/^[[:space:]]+needs:[[:space:]]*\[/, "", line)
       sub(/\][[:space:]]*$/, "", line)
@@ -221,7 +230,7 @@ assert_ci_gate_needs_asserted() { # <workflow.yml>
       print line
       exit
     }
-  ' "$workflow")
+  ' <<< "$gate")
   [ -n "$needs_csv" ] || fail "$workflow ci-gate needs list was not found"
 
   # ci-gate must depend on every OTHER top-level job — derived from the workflow's actual
@@ -246,7 +255,7 @@ assert_ci_gate_needs_asserted() { # <workflow.yml>
 
   IFS=, read -r -a ci_gate_needs <<< "$needs_csv"
   for job in "${ci_gate_needs[@]}"; do
-    grep -q "needs\.$job\.result" "$workflow" \
+    grep -q "needs\.$job\.result" <<< "$gate" \
       || fail "$workflow ci-gate loop does not assert on job '$job'"
   done
 }

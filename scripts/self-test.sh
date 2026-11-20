@@ -488,6 +488,11 @@ fast_check_group() { # <group>; fast mode only
       [ -f "$ROOT/config/payload.tsv" ] || fail 'payload manifest is missing'
       [ -f "$ROOT/templates/harness/Makefile" ] || [ ! -f "$ROOT/scripts/export.sh" ] \
         || fail 'pristine Makefile is missing'
+      if [ -f "$ROOT/scripts/export.sh" ]; then
+        [ -f "$ROOT/scripts/tests/contracts.sh" ] || fail "missing self-test group file: contracts"
+        # shellcheck source=/dev/null
+        ( . "$ROOT/scripts/tests/contracts.sh" )
+      fi
       ;;
     hooks)
       for hook in block-git-add-all block-push scan-secrets check-gate require-step-comment; do

@@ -230,8 +230,6 @@ fail	"$point recovery duplicated or lost submit"
 fail	"$point recovery relaunched completed work"
 fail	"$profile CI render left a runtime angle-bracket placeholder"
 fail	"$profile CI render left orphaned runtime setup marker comments"
-fail	"$profile CI render rewrote the manifest path-filter placeholder"
-fail	"$profile CI render rewrote the source path-filter placeholder"
 fail	"$profile rendered CI workflow failed the action pin guard"
 fail	"$profile stack profile did not render its build command"
 fail	"$profile stack profile left placeholder Make targets"
@@ -709,8 +707,6 @@ fail	"rust init did not render a Cargo runtime setup block"
 fail	"rust init did not render a locked Cargo dependency step"
 fail	"rust init leaked Node runtime marker into rendered CI template: $node_marker"
 fail	"rust init left the runtime setup replacement marker in the rendered template"
-fail	"rust init rewrote the project-specific manifest path placeholder"
-fail	"rust init rewrote the project-specific source path placeholder"
 fail	"salvage hold omitted $expected"
 fail	"same-version diff changed the project tree"
 fail	"scaffold shell inventory is incomplete against manifest source tree"
@@ -943,7 +939,6 @@ fail	'approval projection incorrect'
 fail	'approval staged unrelated paths'
 fail	'approval wait omitted evidence context'
 fail	'approved brief did not dry-run'
-fail	'approved document apply failed'
 fail	'approved labels not empty'
 fail	'approved stamp discarded legacy eligibility'
 fail	'arrived stream lost its ledger tail'
@@ -1640,7 +1635,6 @@ fail	'salvage changed real index bytes'
 fail	'salvage changed worktree bytes'
 fail	'salvage clear append failed'
 fail	'salvage hold append failed'
-fail	'salvage hold exceeded 4 KiB'
 fail	'salvage hold leaked provider value'
 fail	'salvage intent failed'
 fail	'salvage ledger fixture creation failed'
@@ -1859,7 +1853,6 @@ fail	'visibility wait did not poll both delayed resources'
 fail	'wait-review did not finish after approval'
 fail	'wait-review did not observe later approval'
 fail	'wait-review did not refresh CI attempt'
-fail	'warning changed verdict outcome'
 fail	'warning decision failed'
 fail	'warning diagnostic failed'
 fail	'weakened OpenCode settings passed'

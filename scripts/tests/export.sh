@@ -3,16 +3,18 @@
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
 if [ -f "$ROOT/scripts/export.sh" ]; then
   # Snapshot once, then hard-link unchanged files into private directory trees.
-  # The five existing files mutated by export cases become private copies below.
+  # The files mutated by export cases become private copies below.
   source_snapshot
   snapshot_digest=$(tree_digest "$SOURCE_SNAPSHOT")
   SOURCE_FIXTURE="$TMP/source"
   link_snapshot_files "$SOURCE_FIXTURE"
   for mutable in .claude/skills/create-tags/SKILL.md config/payload.tsv \
-    .codex/hooks.json CLAUDE.md templates/harness/CLAUDE.md; do
+    .codex/hooks.json CLAUDE.md templates/harness/CLAUDE.md docs/README.md; do
     rm "$SOURCE_FIXTURE/$mutable"
     cp -p "$SOURCE_SNAPSHOT/$mutable" "$SOURCE_FIXTURE/$mutable"
   done
+  # The source fixture omits live lifecycle docs, so regenerate its derived index.
+  "$SOURCE_FIXTURE/scripts/docs-index.sh" >/dev/null
 
   # Let the fixture resolve the real source HEAD for the version-stamp assertion without
   # copying or mutating the repository's git database.
@@ -30,7 +32,8 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   "$SOURCE_FIXTURE/scripts/export.sh" "$DRIFT_TARGET" >/dev/null 2>&1 \
     && fail "export accepted a stale generated skill"
   assert_no_file "$DRIFT_TARGET"
-  cp "$ROOT/.claude/skills/create-tags/SKILL.md" \
+  rm "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md"
+  ln "$SOURCE_SNAPSHOT/.claude/skills/create-tags/SKILL.md" \
     "$SOURCE_FIXTURE/.claude/skills/create-tags/SKILL.md"
 
   assert_active_ci_workflow "$SOURCE_FIXTURE/.github/workflows/ci.yml"
@@ -534,11 +537,11 @@ SH
       fail "rust init leaked Node runtime marker into rendered CI template: $node_marker"
     fi
   done
-  grep -q '<SRC DIRS, e.g. src/\*\*>' "$INIT_RUST/templates/ci/ci.yml" \
-    || fail "rust init rewrote the project-specific source path placeholder"
-  grep -q '<MANIFEST + LOCKFILE, e.g. package.json, package-lock.json>' \
-    "$INIT_RUST/templates/ci/ci.yml" \
-    || fail "rust init rewrote the project-specific manifest path placeholder"
+  ci_filter_step() {
+    sed -n '/^      - name: Filter paths$/,/^  secrets-scan:$/p' "$1"
+  }
+  cmp -s <(ci_filter_step "$ROOT/templates/ci/ci.yml") <(ci_filter_step "$INIT_RUST/templates/ci/ci.yml") \
+    || fail 'rust init rewrote the CI path filter'
   if grep -q 'Replace this block with your stack' "$INIT_RUST/templates/ci/ci.yml"; then
     fail "rust init left the runtime setup replacement marker in the rendered template"
   fi
@@ -574,10 +577,8 @@ SH
     if grep -q '<MAJOR' "$profile_workflow"; then
       fail "$profile CI render left a runtime angle-bracket placeholder"
     fi
-    grep -q '<SRC DIRS, e.g. src/\*\*>' "$profile_workflow" \
-      || fail "$profile CI render rewrote the source path-filter placeholder"
-    grep -q '<MANIFEST + LOCKFILE, e.g. package.json, package-lock.json>' "$profile_workflow" \
-      || fail "$profile CI render rewrote the manifest path-filter placeholder"
+    cmp -s <(ci_filter_step "$ROOT/templates/ci/ci.yml") <(ci_filter_step "$profile_workflow") \
+      || fail "$profile CI render rewrote the path filter"
     AGENTIC_PROJECT_ROOT="$profile_ci_root" "$ROOT/scripts/check-action-pins.sh" >/dev/null 2>&1 \
       || fail "$profile rendered CI workflow failed the action pin guard"
 
