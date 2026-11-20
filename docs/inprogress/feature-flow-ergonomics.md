@@ -8,11 +8,11 @@
 ## Tracker
 - [ ] e-1 Journal markers move into a hidden block; parsers read both forms — open
 - [ ] e-2 Journal comments render as readable Markdown — open
-- [ ] e-3 Plan and step issue bodies render as readable Markdown — open
-- [ ] e-4 Close-out is committed before the single push — open
+- [ ] e-3 Plan and step issue bodies render as readable Markdown; risks become bullets — open
+- [ ] e-4 `ship` commits the close-out before the single push and opens a readable PR — open
 - [ ] e-5 CI classifies paths by an explicit bookkeeping list — open
 - [ ] e-6 CI reuses a green App result for identical App inputs — open
-- [ ] e-7 `agentic-flow start` creates the plan branch, worktree and doc — open
+- [ ] e-7 `agentic-flow start` and `clean`: plan branch, worktree and doc, and their removal after merge — open
 - [ ] e-8 Plan commands run from the plan worktree — open
 - [ ] e-9 Contracts, methodology and release notes — open
 
@@ -22,7 +22,7 @@
 
 ## Goal
 
-The owner asked for three changes before Phase 4:
+The owner asked for three changes before Phase 4, and on review added four smaller ones that touch the same files (2026-11-20): `ship` commits the deterministic close-out itself, the PR body becomes readable, `agentic-flow clean` removes a merged plan's worktree and branch, and the brief template writes risks as bullets.
 
 1. **Start.** A new feature is created on the branch that will hold its development, not on `main`, so the plan doc never lives on two branches at once.
 2. **Close-out.** A plan ships with one green CI push. The close-out docs update must not re-run the App checks.
@@ -33,7 +33,9 @@ Success:
 - `agentic-flow start <id>` gives the planner a branch, a worktree and a prefilled doc; the plan is drafted, approved, issued, executed, closed out and shipped on that branch, and `main` sees it only through the PR;
 - on the happy path, `ship` pushes once and CI runs once from the last implementation commit to merge-ready;
 - a later push that changes only bookkeeping files (plan docs, roadmap, memory) does not run App checks when App inputs are unchanged;
-- a tracker, a step issue and every journal comment render with headings, lists, code blocks and tables, with no raw machine lines in view, and every existing issue still replays.
+- a tracker, a step issue, the PR and every journal comment render with headings, lists, code blocks and tables, with no raw machine lines in view, and every existing issue still replays;
+- once the closer has written release notes and memory, one `ship` run goes from "all steps approved" to "here is the merge command" without a hand-off to commit bookkeeping;
+- after merge, `agentic-flow clean <id>` leaves no plan worktree or local branch behind.
 
 ## Current state
 
@@ -71,6 +73,13 @@ The `docs` job runs `docs-index.sh --check` only. `make check` also runs `check-
 
 `ship_wait_ci` gives up after 1800 s (`ship.sh:96`). Three of the five runs above took longer than that before they finished.
 
+Two hand-offs add wall time without adding judgement:
+
+- After `prep` stages the close-out, `ship` stops and prints "commit the staged close-out, then run ship again" (`ship.sh:124`). Prep is deterministic and refuses any change that is not bookkeeping (the normalized-hash comparison in `close-out.sh`), so the stop exists only so Claude can run `git commit`. The closer's real work (release notes, accepted risks, memory) is separate, and in Phase 3 it landed in the same commit (`08c66a0`).
+- `ship` opens the PR with a single line: `Implementation of <tracker URL>` (`ship.sh:121`).
+
+Inside the App job, the Test suite (16 min) and the Exported-layout suite (13.5 min) run one after the other (run `44745336491`). Running them as parallel jobs would roughly halve the wall time, but it is deferred (see Out of scope).
+
 ### 3. Ticket text is hard to read
 
 Step issue #166, as created by `plan-to-issues.sh:524-527`:
@@ -78,6 +87,7 @@ Step issue #166, as created by `plan-to-issues.sh:524-527`:
 - The packet is written as `Profile:`, `Brief:`, `Definition of Done:` lines with no blank lines, followed by a `---` line. Markdown reads that as a setext heading, so the whole packet renders as one large H2.
 - Verification commands are copied without their code fence (`brief.sh:81` drops fence lines), so `<group>` and `<tag>` are parsed as HTML and disappear.
 - The brief reference is a plain `path@sha#step` string, not a link.
+- Risks are one line separated by semicolons, because the template's `**Risks:**` field is a single line. A renderer would have to guess where to split it.
 
 Tracker #165, as created by `plan-to-issues.sh:574`: a bare `## Steps` list whose lines repeat the step id (`#166 [t-1] t-1 — …`), with no goal, branch or brief link.
 
@@ -111,12 +121,16 @@ The two body markers already in HTML comments show the pattern works.
 
 When `main` moves, the planner merges `main` into the plan branch. Rebasing would orphan the approval revision.
 
+`agentic-flow clean <id>` is the counterpart to `start`. After the PR has merged, it removes the plan worktree and the local branch, along with the plan's salvage refs if `ship` has not already deleted them. It refuses when the branch is not merged into its base or the worktree is dirty, so it never deletes unshipped work.
+
 ### Issue 2 — one green CI push
 
 **A — close-out before the push.** `close-out prep` stops needing the PR URL. It writes `Implementation PR: source=final-approval`, and lifecycle resolves the PR from the reviewer's final-approval marker, which already names `pr=`, `head=`, `run=` and `attempt=` (`ship.sh:150`). `ship` then:
 
-1. preps and stages the close-out, and stops for the closer's commit, without pushing;
-2. on the next run, runs `ship-gate` once, pushes once, opens the PR, waits for CI, waits for the final approval, and finishes.
+1. preps the close-out and commits it itself with the closer's commit command, after the closer has already committed release notes and memory;
+2. runs `ship-gate` once, pushes once, opens the PR with a readable body, waits for CI, waits for the final approval, and finishes.
+
+`ship` commits only what prep produced: the moved doc and the regenerated index. It refuses to start when anything else is staged or uncommitted, as it does today. The closer's commit command comes from one setting (`AGENTIC_CLOSER_COMMIT`, default `git-claude` when that is on `PATH`). With no command available, `ship` stages the close-out and stops as it does today. `feature-role-signing.md` may later replace this setting with role-signed commits; keep it a single knob.
 
 **B — carry a green App result forward.** The `changes` job computes a key from the content of every App input in the PR merge checkout. Bookkeeping paths are excluded. The App job saves that key to the Actions cache when it succeeds. A later run whose key already exists skips App checks and writes the source run into the step summary. Because the key covers the merge checkout, a moved base or any App-input change gives a new key. A cache miss or error runs App checks.
 
@@ -141,7 +155,10 @@ The owner chose A + B + C (2026-11-20). A gives one push on the happy path. B co
 
   Marker lines keep their exact text inside the block, so the line-based readers (`agentic-flow-review:`, `agentic-flow-run:`) match unchanged. Only the line-1 readers learn to accept an optional `<!-- ` prefix. Old comments keep replaying.
 - **One renderer** builds the visible body from the event and the structured station result (`summary`, `findings[]`, `question`), for the controller, interactive `handoff`, holds and final approval.
-- **Issue bodies** become sections with headings, a fenced code block, a linked brief and a clean step list.
+  - The result schema gains one optional field, `evidence` (a list of short strings). The renderer puts it in a collapsed `<details>` block, so the verdict stays short and the evidence is one click away.
+  - A submit comment gets a Checks line (each command, plus red-first, with ✅ or ❌), read from the verify record the controller already keeps for that head.
+- **Issue bodies** become sections with headings, a fenced code block, a linked brief and a clean step list. The template's `**Risks:**` field becomes a bullet list, so the renderer copies bullets instead of splitting on semicolons. Old one-line risks render as one bullet.
+- **PR body.** `ship` opens the PR with the plan title, goal, a step table (issue, approved head, bounces), the brief link at the approved revision, and the tracker link. It is rendered with the same conventions.
 
 ## Interface (before the implementation)
 
@@ -159,6 +176,13 @@ agentic-flow start <plan-id> [--type feature|security] [--base <branch>] [--bran
   exit        0 created · 2 usage · 3 refused (exists, invalid, unknown base) · 5 fetch failed
   on error    nothing is left behind (no branch, no worktree, no file)
 
+agentic-flow clean <plan-id> [--dry-run]
+  run from    any checkout of the repo except the plan worktree itself
+  requires    branch merged into its base (git merge-base --is-ancestor <branch> refs/remotes/origin/<base>
+              after a bounded fetch, or the local base with --no-fetch); worktree clean
+  effects     git worktree remove; git branch -d (never -D); delete refs/agentic-flow/salvage/<plan-id>/*
+  exit        0 removed (or nothing to remove) · 2 usage · 3 refused (unmerged, dirty, unknown plan) · 5 fetch failed
+
 plan worktree path:  plan_worktree_path <git-common-dir> <plan-id>
   one helper; controller, start and error messages share it; AGENTIC_WORKTREE_ROOT still overrides
 
@@ -173,11 +197,16 @@ lifecycle Status field "Implementation PR":
       malformed or other repo → BLOCKED
 
 ship phases (derived, as today):
-  no PR, doc in inprogress  → prep + stage, print "commit the staged close-out, then run ship again"; no push
+  no PR, doc in inprogress  → prep, then commit it with $AGENTIC_CLOSER_COMMIT and continue to the next phase;
+                              with no closer command: stage, print "commit the staged close-out, then run ship again", stop; no push
   no PR, doc in done        → ship-gate, push, create PR, wait CI, wait final approval, finish, pre-merge
   PR, doc in inprogress     → legacy: prep --pr <url> as today
   PR, doc in done           → as today
   CI wait bound: AGENTIC_SHIP_CI_TIMEOUT seconds, default 3600
+  close-out commit: AGENTIC_CLOSER_COMMIT, default git-claude if on PATH; commits exactly the paths prep staged,
+      subject "Close out <plan title>.", body naming the tracker; refuses when anything else is staged or dirty
+  PR body: plan title, goal (the doc's TRIAGE summary line), step table, brief link at the approved revision,
+      tracker link; ≤ 65,536 characters
 
 CI (ci.yml and templates/ci/ci.yml):
   changes.outputs: app (true unless every changed file is bookkeeping), docs, app_key, app_cached
@@ -192,6 +221,12 @@ journal comment layout:
   visible     "### <icon> <Event> · <step> — <title>", a facts line, the body, findings table
   last        "<!--", agentic-flow-run line, "-->"
   hold        "<!-- agentic-flow-hold: …" / "<!-- agentic-flow-hold-clear: …" with the same rule
+  submit      visible facts line includes "Checks": each verify-record command and red-first, ✅/❌
+
+station result schema (config/stations/result.schema.json):
+  + "evidence": optional array, ≤ 20 strings of ≤ 300 characters; rendered in <details>; absent = no block
+
+brief template **Risks:** a bullet list under the label (one bullet per risk); a one-line value still parses
 ```
 
 ## Threat model
@@ -202,6 +237,9 @@ The untrusted inputs are station-written text (summaries, findings, questions), 
 - **Hidden markers.** Humans no longer see the markers in the rendered view. Authority stays where it is: author login plus journal replay, with edit detection unchanged. The visible header is rendered from the same values as the marker. Station text is escaped so it cannot open or close an HTML comment, forge a marker line, or create a new `@` mention.
 - **`source=final-approval`.** The PR binding now comes from a marker that only a configured reviewer login can post. That marker already binds the PR number, head and run.
 - **`start`.** Local only: no push and no GitHub write. It refuses to overwrite an existing branch, worktree or doc.
+- **`ship` committing.** `ship` commits only the paths prep produced, after prep's own check that nothing but bookkeeping changed, and only from a tree that was clean before prep. It commits under the closer's identity, never the executor's or reviewer's. The final reviewer still approves that exact head, so the commit gains no authority by being automatic.
+- **`clean`.** Deleting unshipped work is the main risk. `clean` uses `git branch -d` (never `-D`), requires the branch to be an ancestor of the base, refuses a dirty worktree, and never runs inside the worktree it removes.
+- **PR body.** It is built from the approved brief and the journal, both already trusted inputs, with the same escaping as journal comments.
 
 ## Failure behavior
 
@@ -214,6 +252,9 @@ The untrusted inputs are station-written text (summaries, findings, questions), 
 | `gh pr create` after the single push | exit 5; the next `ship` finds no PR with the doc in `done/`, pushes (no-op) and creates it | exit 5 | as timeout |
 | Final-approval marker lookup | UNVERIFIED, as today | BLOCKED | n/a |
 | CI wait | exit 1 after `AGENTIC_SHIP_CI_TIMEOUT`; the next `ship` resumes | exit 5, as today | n/a |
+| Closer commit command in `ship` | n/a | n/a | it fails after prep staged: leave the staging, print the files and the command, exit 1; the next `ship` sees a staged tree and stops as today |
+| `git fetch` in `clean` | exit 5; nothing removed | n/a | n/a |
+| `git worktree remove` / `git branch -d` in `clean` | n/a | n/a | report what was removed and what was not; exit 3; a re-run finishes the rest |
 
 Bounds: fetch 120 s; PR visibility 120 s (unchanged); CI wait 3600 s by default; GitHub comment body ≤ 65,536 characters (the renderer truncates the summary first and says so); findings table ≤ 100 rows (the schema cap); step packet ≤ 800 words (unchanged).
 
@@ -225,13 +266,16 @@ Bounds: fetch 120 s; PR visibility 120 s (unchanged); CI wait 3600 s by default;
 - Any change to journal events, states, authorization or edit detection.
 - Phase 4 items: R-12 hooks, R-13 native PR review, R-22 role-named labels, R-23 single state record.
 - Automating the `main` → plan-branch merge.
-- Making App checks themselves faster.
+- Making App checks themselves faster, including splitting the Test suite and the Exported-layout suite into parallel jobs. Deferred by the owner (2026-11-20) until CI has been stable for a while before the repo goes public (see the Phase 2b runner kill on PR #161).
+- `ship` committing release notes, accepted risks or memory. Those stay the closer's judgement and are committed before `ship`.
+- A notify hook, `agentic-flow status`, and `ship` launching the final reviewer. Deferred: the last two get simpler after Phase 4's R-23 and R-13.
 
 ## Open questions
 
 - Is `docs/README.md` bookkeeping? It is in the payload and changes at every close-out. e-5 audits whether export or tests read its content. If they do, it stays an App input; that is safe, because after e-4 the close-out rides the single push anyway.
 - Release number: `0.19.0`, as a minor release with a migration note (old markers keep working). The owner confirms at approval.
 - Icons in comment headings (✅ 🔁 📦 ❓): default yes. The owner can veto at approval.
+- `AGENTIC_CLOSER_COMMIT` defaults to `git-claude`, because Claude is the closer here. Adopters with another closer set it. If `feature-role-signing.md` ships first, e-4 uses its closer signing instead.
 
 ---
 
@@ -275,24 +319,29 @@ Do not raise a ceiling. Only e-9 edits contracts; leave the reviewer skill alone
 - Copy budget and wall-time ceilings: no step raises them. A new scenario needs a ceiling line in `config/test-wall-ceilings.tsv` sized from its measured time.
 
 ## Definition of done (whole brief)
-- Every step's DoD is met and all 13 acceptance scenarios pass as tests.
+- Every step's DoD is met and all 15 acceptance scenarios pass as tests.
 - `make check`, `make test`, `make ship-gate`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
 - This plan's own PR ships with **one** push and **one** CI run from the last step commit to merge-ready, unless a final-review bounce forces another. The close-out records the push count and CI run URLs.
-- The tracker, the step issues and the journal comments that this plan's own run creates render cleanly on GitHub. The close-out links one of each.
+- The tracker, the step issues, the journal comments and the PR that this plan's own run creates render cleanly on GitHub. The close-out links one of each. (The tracker and step issues are created before e-3 lands, so they keep the old layout; the close-out links a fresh fixture rendering instead.)
+- After merge, `agentic-flow clean flow-ergonomics` removes this plan's worktree and branch.
 - Steps e-1 to e-9 ran through `agentic-flow run` from the plan worktree.
 
 ## Acceptance scenarios (written at Spec; the executor does not edit these)
 
 **Issue 3 — readable tickets**
 1. **Both marker forms replay.** For every journal event (submit, approve, bounce, ask, resume, notify, close) and for hold and hold-clear, a comment in the old form and the same comment in the hidden-block form give identical replay output from `journal.jq`, identical `handoff` post lookup, identical lifecycle verdicts and identical `packet` and `andon` reads. A hidden-block comment whose first line is not exactly `<!-- ` plus a valid marker is skipped, as a malformed old-form comment is today. A comment from an unauthorized login is ignored in both forms.
-2. **Journal comments read well.** `handoff` and the controller write the hidden-block form. In the rendered Markdown, the first visible line is a level-3 heading naming the event, step id and step title. A bounce shows a findings table (Severity, Location, Finding) with `|` escaped, newlines flattened and the location in backticks. Station-supplied text containing `<!--`, `-->`, a marker line, `@someone` or `<placeholder>` is rendered inert: no comment opens or closes, no second marker is parsed, no mention is created, and the placeholder stays visible. The andon mention the harness adds still notifies.
-3. **Step issues read well.** A step issue body has, in order: a heading with the step id and title; a facts line linking the tracker, the profile and the brief (a GitHub link to the doc at the approved revision); sections for Definition of done, Verify, Verification commands (in a fenced block, so `<group>` survives) and Risks; then the existing hidden stamps. No line is parsed as a setext heading. The packet is still ≤ 800 words, and the packet the controller hands to a station holds the same facts as before.
+2. **Journal comments read well.** `handoff` and the controller write the hidden-block form. In the rendered Markdown, the first visible line is a level-3 heading naming the event, step id and step title. A bounce shows a findings table (Severity, Location, Finding) with `|` escaped, newlines flattened and the location in backticks. Station-supplied text containing `<!--`, `-->`, a marker line, `@someone` or `<placeholder>` is rendered inert: no comment opens or closes, no second marker is parsed, no mention is created, and the placeholder stays visible. The andon mention the harness adds still notifies. A result with `evidence` renders it inside a collapsed `<details>` block; a result without it renders no block; a result whose `evidence` breaks the schema limits is rejected like any other schema violation. A submit comment shows a Checks line built from the verify record for the submitted head; with no record it says "Checks: not recorded" rather than inventing a result.
+3. **Step issues read well.** A step issue body has, in order: a heading with the step id and title; a facts line linking the tracker, the profile and the brief (a GitHub link to the doc at the approved revision); sections for Definition of done, Verify, Verification commands (in a fenced block, so `<group>` survives) and Risks (one bullet per risk from the brief's bullet list; a one-line legacy value is one bullet); then the existing hidden stamps. The feature and security templates write `**Risks:**` as a bullet list, and `brief.sh` parses both forms. No line is parsed as a setext heading. The packet is still ≤ 800 words, and the packet the controller hands to a station holds the same facts as before.
 4. **The tracker reads well.** The tracker body has a title heading, a facts line (profile, branch → base, linked brief at the approved revision), the plan's tracking body when present, and a `### Steps` task list whose lines still carry the parsed `#N [id]` tokens without repeating the id in the visible title. `plan-to-issues` discovery and re-apply work on new trackers and on trackers in the old layout.
 
 **Issue 2 — one green CI push**
 5. **Prep without a PR.** `close-out prep <doc>` with no `--pr` writes `Implementation PR: source=final-approval`, moves and stages the doc and the index, and touches nothing else. `--pr <url>` behaves as today.
 6. **Lifecycle resolves the PR from the final approval.** With `source=final-approval`, lifecycle `--phase close-out` returns READY when the newest reviewer-authored final-approval marker names a PR in the origin repo whose head equals the marker's head and the run passed. With no marker it returns NEEDS-REVIEW. With a marker from a non-reviewer login, it ignores that marker. With a marker for another repo or a malformed one, it returns BLOCKED. Docs with `url=` verify as before.
-7. **One push on the happy path.** Start from a branch whose steps are all approved, the doc in `inprogress/`, and no PR. A fake `git` and `gh` record calls. `ship` stages the close-out and stops with no push. After the closer's commit, `ship` runs `ship-gate` once, pushes once, creates the PR once, waits for CI, waits for the final approval, finishes and passes pre-merge. In total: exactly one `git push` and one `make ship-gate`. A plan that already has a PR with the doc in `inprogress/` follows the old two-push path.
+7. **One `ship` run, one push.** Start from a clean branch whose steps are all approved, the doc in `inprogress/`, no PR, and a fake closer commit command. A fake `git` and `gh` record calls. One `ship --wait-review` run preps the close-out, commits exactly the moved doc and the index with the closer command, runs `ship-gate` once, pushes once, creates the PR once, waits for CI, waits for the final approval, finishes and passes pre-merge. In total: one close-out commit, one `git push`, one `make ship-gate`.
+   - With no closer command, `ship` stages the close-out and stops with no push. After a manual commit, the next `ship` continues with the same single push.
+   - A tree with any other staged or uncommitted change makes `ship` stop before prep.
+   - When the closer command fails, the staging is left in place, `ship` exits 1 with no push, and a re-run stops as for a staged tree.
+   - A plan that already has a PR with the doc in `inprogress/` follows the old two-push path.
 8. **Docs-only pushes skip App checks.** In `ci.yml` and `templates/ci/ci.yml`, `app` is true unless every changed file matches the bookkeeping list. A test parses both workflows and asserts that: the list is the same in both; no bookkeeping glob matches a `config/payload.tsv` source except `.gitkeep` files (and `docs/README.md` only if e-5's audit allows it); and `ci-gate` still needs every job. A PR changing only `METHODOLOGY.md` now sets `app=true`.
 9. **Carry-forward is content-addressed.** The key computation, run as a script on fixtures, gives the same key for two trees that differ only in bookkeeping paths. It gives a different key when any App input changes (one byte, a mode change, a rename, an added or deleted file), and a different key when the base content differs. The App job is skipped only when the key is already in the cache, and the run summary names the source run. A cache lookup that errors runs App checks.
 10. **CI wait bound.** `ship` waits up to `AGENTIC_SHIP_CI_TIMEOUT` (default 3600 s) for CI. An invalid value exits 2.
@@ -301,6 +350,10 @@ Do not raise a ceiling. Only e-9 edits contracts; leave the reviewer skill alone
 11. **`start` creates the plan.** In a fixture repo with a fake origin, `agentic-flow start demo-plan --base main` fetches, creates branch `demo-plan` from `origin/main` (not from the caller's `HEAD`), a worktree at the plan worktree path, and `docs/inprogress/feature-demo-plan.md`. That doc has the plan block's `id` and `branch`, the Branch section's `Base:` and the TRIAGE date filled. The doc and `docs/README.md` are staged, nothing is committed, and nothing is pushed. `--type security` uses the security template. The caller's checkout and branch are unchanged.
 12. **`start` refuses and cleans up.** An existing local or remote branch, an existing worktree path, an existing doc, an invalid id or branch name, or an unknown base each exit 3 with nothing created. A fetch that times out or fails exits 5 with nothing created. A failure after the worktree is created removes the worktree and the branch.
 13. **Commands run from the plan worktree.** From the worktree `start` made, with the doc approved there: `plan-to-issues`, `run --once`, `close-out prep` and `ship` work. `run` reuses the worktree and creates no second one. `run` refuses to start when the plan worktree has uncommitted changes, naming them. `run` from `main`, when the doc exists only on the plan branch, exits 3 and prints the plan worktree path to `cd` into. A plan whose doc is on `main` (the old flow) still runs from `main` as today.
+
+**Added on review**
+14. **The PR reads well.** The PR `ship` creates has the plan title, the goal line, a step table (step, issue link, approved short head, bounces), the brief link at the approved revision and the tracker link, all escaped like journal comments. A plan with 20 steps and long titles stays under the size limit.
+15. **`clean` removes only shipped work.** After the plan branch is merged into `origin/<base>`, `agentic-flow clean demo-plan` removes the worktree, the local branch and the plan's salvage refs, and a second run reports nothing to remove. An unmerged branch, a dirty worktree, an unknown plan id, or running it from inside the plan worktree each exit 3 with nothing removed. `--dry-run` lists what it would remove and changes nothing.
 
 ## Verification commands
 ```bash
@@ -342,9 +395,11 @@ scripts/doctor.sh --check
 1. Add one renderer (a shell or jq library under `scripts/lib/`) that takes the event, step id, step title, head and the body parts (summary, findings, question, warnings, andon mention) and returns the comment. Layout is in the Interface.
 2. Route every writer through it: `handoff_post` (interactive bodies are treated as a summary), the controller's station bodies (`controller.sh` near the bounce findings line), holds and hold-clears, and `ship_final_approve`. The final approval gets a heading naming the PR, short head and run attempt.
 3. Escaping applies to station- and human-supplied text, outside inline code and fenced blocks: neutralize `<!--` and `-->`, keep bare `<word>` visible, break `@` mentions, and reject or neutralize a marker line. In table cells, escape `|`, flatten newlines and wrap the location in backticks. Truncate the summary first to stay under 65,536 characters, and say so in the comment.
-4. Update the station prompt (`config/stations/preamble.md` or the result-schema description) so stations write `summary` as short Markdown: a sentence, then bullets. Keep the schema shape and limits.
+4. Update the station prompt (`config/stations/preamble.md` or the result-schema description) so stations write `summary` as short Markdown (a sentence, then bullets) and put reused-evidence detail in `evidence`.
+5. Add the optional `evidence` field to `config/stations/result.schema.json` (Interface). `required` is unchanged, so results without it stay valid. Check that every CLI's schema mode (`claude --json-schema`, `codex --output-schema`, OpenCode's prompt-only schema) accepts an optional array; if one cannot, say so in the commit body and keep the field prompt-only for that CLI.
+6. The submit Checks line reads the verify record for the submitted head through the existing verify-record reader. Do not re-run anything.
 
-**Test:** scenario 2, rendered for every event against golden files. Failure path first: hostile summaries (comment openers and closers, marker lines, mentions, a 70 KB summary, a pipe-heavy finding). Re-run scenario 1 on renderer output.
+**Test:** scenario 2, rendered for every event against golden files. Failure path first: hostile summaries (comment openers and closers, marker lines, mentions, a 70 KB summary, a pipe-heavy finding), an over-limit `evidence`, and a submit with no verify record. Re-run scenario 1 on renderer output.
 
 **DoD:** scenarios 1 and 2 pass; every comment the harness writes comes from the renderer.
 **Verify:** `make test-one F=stations S=handoff` and `make test-one F=controller S=ship`
@@ -359,8 +414,9 @@ scripts/doctor.sh --check
 1. Before changing layout, audit every reader of issue bodies (`plan-to-issues.sh` discovery and re-apply, `packet.sh`, `brief.sh`, `close-out.sh`, `lifecycle-status.sh`). Anything parsed from a visible line must keep its token (`#N [id]` in the task list) or move into a hidden stamp first. Record the audit in the commit body.
 2. Build the step body and tracker body as in scenarios 3 and 4. Keep the verification section's fence (`brief.sh` currently drops fence lines; keep them for the issue body). The brief link points at `https://github.com/<repo>/blob/<approved-rev>/<doc>`.
 3. Re-apply of an existing plan keeps preserving existing bodies (the approval-only path). New layout applies to newly created issues and to bodies `plan-to-issues` already rewrites.
+4. In `docs/templates/feature-analysis.md` and `security-review.md`, write `**Risks:**` as a label followed by a bullet list. `brief.sh` today rejects an empty value after the label (`bad("empty " label)`); make it accept an empty label value only when bullet lines follow. It parses the bullets into the packet's risks and still accepts a one-line value. This brief keeps one-line risks because it is parsed before e-3 lands. Changing how risks are parsed changes the spec hash only for briefs that use bullets; existing approved briefs keep their hash.
 
-**Test:** scenarios 3 and 4, golden bodies for Strict and Standard. Failure path first: a brief whose sections contain `---`, `<placeholder>`, pipes and backticks; an old-layout tracker on re-apply.
+**Test:** scenarios 3 and 4, golden bodies for Strict and Standard. Failure path first: a brief whose sections contain `---`, `<placeholder>`, pipes and backticks; an old-layout tracker on re-apply; a one-line risks value and a bullet list in the same brief.
 
 **DoD:** scenarios 3 and 4 pass; the packet word cap still holds; old-layout trackers re-apply cleanly.
 **Verify:** `make test-one F=plan-to-issues`
@@ -368,23 +424,25 @@ scripts/doctor.sh --check
 **Red-first:** `scripts/self-test.sh --only plan-to-issues` — scripts/tests/plan-to-issues.sh
 **Commit:** `Render plan and step issue bodies as Markdown sections`
 
-## e-4 — Close-out is committed before the single push
-**Why fourth:** it removes the second push and ships this plan's own close-out.
+## e-4 — `ship` commits the close-out before the single push and opens a readable PR
+**Why fourth:** it removes the second push and the close-out hand-off, and ships this plan's own close-out.
 
 **Approach:**
 1. `close-out prep`: `--pr` becomes optional; without it, write `source=final-approval` (Interface).
 2. `lifecycle-status.sh`: accept `source=final-approval` and resolve the PR as scenario 6 says. Reuse the existing final-approval verification and do not add a second parser. `--validate-doc-status` accepts the new value.
 3. `ship.sh`: the phases in the Interface. When there is no PR and the doc is in `inprogress/`, prep and stop without a gate or push. When there is no PR and the doc is in `done/`, run the gate, push, create the PR and continue as the existing PR path. Keep the legacy path for plans already pushed.
-4. Replace the 1800 s CI wait with `AGENTIC_SHIP_CI_TIMEOUT` (default 3600, validated as a positive integer).
-5. The feature and security templates' Status close-out text describes the new order. Keep the field list.
+4. After prep, `ship` commits exactly the staged prep paths with `AGENTIC_CLOSER_COMMIT` (Interface), checks that the new commit changed only those paths, and continues. Without a closer command, it stops as today. The hook layer must allow this commit, and its subject and body must not trip the commit hooks.
+5. The PR body is rendered from the approved brief and the journal replay (scenario 14), reusing e-2's escaping. Do not add a second renderer.
+6. Replace the 1800 s CI wait with `AGENTIC_SHIP_CI_TIMEOUT` (default 3600, validated as a positive integer).
+7. The feature and security templates' Status close-out text describes the new order. Keep the field list.
 
-**Test:** scenarios 5, 6, 7 and 10. Failure path first: `gh pr create` failing after the push, then `ship` re-run; a final approval from a non-reviewer; CI failing on the single run.
+**Test:** scenarios 5, 6, 7, 10 and 14. Failure path first: the closer command failing, a stray staged file, `gh pr create` failing after the push followed by a `ship` re-run, a final approval from a non-reviewer, and CI failing on the single run.
 
-**DoD:** scenarios 5, 6, 7 and 10 pass; `url=` docs in `docs/done/` still verify.
+**DoD:** scenarios 5, 6, 7, 10 and 14 pass; `url=` docs in `docs/done/` still verify.
 **Verify:** `make test-one F=controller S=ship` and `make test-one F=lifecycle`
-**Risks:** `ship` pushing a branch whose close-out commit is missing (a dirty-tree check must stop it); lifecycle trusting a marker from the wrong PR; the old path regressing for in-flight plans.
+**Risks:** `ship` pushing a branch whose close-out commit is missing (the dirty-tree check must stop it); `ship` committing a path prep did not produce; lifecycle trusting a marker from the wrong PR; the old path regressing for in-flight plans.
 **Red-first:** `scripts/self-test.sh --only controller --scenario ship` — scripts/tests/controller.sh
-**Commit:** `Commit the close-out before the first push so a plan ships with one CI run`
+**Commit:** `Commit the close-out in ship before the first push so a plan ships with one CI run`
 
 ## e-5 — CI classifies paths by an explicit bookkeeping list
 **Why fifth:** e-6's key needs a correct definition of App inputs, and today's filter misses payload files.
@@ -420,7 +478,7 @@ scripts/doctor.sh --check
 **Red-first:** `scripts/self-test.sh --only contracts` — scripts/tests/contracts.sh
 **Commit:** `Skip App checks when a green run already covered identical App inputs`
 
-## e-7 — `agentic-flow start` creates the plan branch, worktree and doc
+## e-7 — `agentic-flow start` and `clean`: plan branch, worktree and doc, and their removal after merge
 **Why seventh:** independent of the CI work, and e-8 builds on its worktree layout.
 
 **Approach:**
@@ -428,14 +486,15 @@ scripts/doctor.sh --check
 2. Move the plan worktree path into one helper that the controller and `start` both use. `AGENTIC_WORKTREE_ROOT` keeps overriding it.
 3. Fill the template by replacing its known fields (plan block `id`, `branch`, the Branch section's `Base:` and the TRIAGE date). Leave every other placeholder for the planner. Fetch with the existing `run_with_timeout` and `AGENTIC_FLOW_FETCH_TIMEOUT`.
 4. On any failure after the first write, remove what was created, in reverse order.
+5. Add `clean` in the same library (Interface). It finds the branch and base from the plan's doc on the plan branch, or from the worktree's branch when the doc is gone. It checks merge state against the fetched base, removes the worktree, deletes the branch with `-d` and deletes `refs/agentic-flow/salvage/<plan-id>/`. `ship`'s final message suggests `agentic-flow clean <id>` after the merge.
 
-**Test:** scenarios 11 and 12 with a fake origin. Failure path first: every refusal in scenario 12, then fetch timeout, then a template write failure after the worktree exists.
+**Test:** scenarios 11, 12 and 15 with a fake origin. Failure path first: every refusal in scenarios 12 and 15, then fetch timeout, then a template write failure after the worktree exists, then a `clean` interrupted between worktree removal and branch deletion and re-run.
 
-**DoD:** scenarios 11 and 12 pass; `agentic-flow --help` lists `start`.
+**DoD:** scenarios 11, 12 and 15 pass; `agentic-flow --help` lists `start` and `clean`.
 **Verify:** `make test-one F=controller S=launch`
-**Risks:** creating the branch from the caller's `HEAD` instead of the base; leaving a half-made worktree; a template field missed after a template edit (assert the filled fields).
+**Risks:** creating the branch from the caller's `HEAD` instead of the base; leaving a half-made worktree; a template field missed after a template edit (assert the filled fields); `clean` deleting an unmerged branch (a squash-merged branch is not an ancestor, so `clean` refuses it and says so).
 **Red-first:** `scripts/self-test.sh --only controller --scenario launch` — scripts/tests/controller.sh
-**Commit:** `Add agentic-flow start: plan branch, worktree and prefilled doc`
+**Commit:** `Add agentic-flow start and clean: plan branch, worktree and prefilled doc, removed after merge`
 
 ## e-8 — Plan commands run from the plan worktree
 **Why eighth:** it completes Issue 1 by making `run` work where `start` puts the planner.
