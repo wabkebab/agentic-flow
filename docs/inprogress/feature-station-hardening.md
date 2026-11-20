@@ -10,8 +10,9 @@
 - [x] Brief drafted and approved 2026-11-17; h-9 and h-10 added 2026-11-18. Tracker #150, steps #151 to #160, all approved and closed.
 - [x] Close-out gate: `make check && make test` green on `phase-2b` at `0a85379` (2026-11-18, about 80 minutes). Release notes `0.17.0` in `0258be2`.
 - [x] Accepted by the owner (2026-11-17, P3 from the h-2 review): h-1's per-scenario timing profile was never captured, so the DoD's before-and-after controller-group times per step are not reported. The only comparison is the full `make test`: about 32 minutes at `b6c1962`, about 80 minutes at `0a85379`.
-- [ ] PR #161's CI killed `make test` twice with SIGTERM after the self-test passed (2026-11-18). h-11 (#162, added 2026-11-18) fixes a watchdog leak found while investigating. A temporary CI monitor then showed the cause: shellcheck reached 7.3 GB on the 7 GB runner. h-12 (added 2026-11-18) lints one file per process; the diagnostic steps are removed with it, and the close-out gate is re-run.
-- [ ] The human runs `ship` and `doctor --stations`; Claude updates the roadmap.
+- [x] PR #161's CI killed `make test` twice with SIGTERM after the self-test passed (2026-11-18). h-11 (#162, added 2026-11-18) fixes a watchdog leak found while investigating. A temporary CI monitor then showed the cause: shellcheck reached 7.3 GB on the 7 GB runner. h-12 (added 2026-11-18) lints one file per process; the diagnostic steps are removed with it, and the close-out gate is re-run.
+- [x] h-12 did not bound it: `shellcheck -x` still followed every `source`, and #161 stayed red at `4cfefaa`. Phase 3's `7304024` (#173) fixed it, and CI run 44668198709 on PR #174 is green (see `feature-test-streamlining.md`). Owner's decision (2026-11-20): #174 merges as a merge commit, which also carries every Phase 2b commit and marks #161 as merged. #174's CI stands in for h-12's DoD clause "the next CI run on PR #161 finishes the Test suite step".
+- [ ] Close-out together with Phase 3 on `phase-3`, with #174 as the implementation PR. The human runs `ship` and `doctor --stations`; Claude updates the roadmap.
 
 ---
 
