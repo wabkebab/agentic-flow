@@ -524,6 +524,20 @@ jq --arg head "$LIFE_HEAD" '
 LIFE_STEP_COMMENTS_JSON="$TMP/journal-approved.json"
 review_case 'accepted approval with losing bounce' READY 'review by reviewer'
 grep -q 'journal skipped 1' "$TMP/lifecycle-review.out" || fail 'lifecycle did not count racing loser'
+cp "$TMP/lifecycle-review.out" "$TMP/lifecycle-bare-journal.out"
+jq '.data.repository.issue.comments.nodes |= map(.body |= ("<!-- " + . + "\n-->\nVisible note"))' \
+  "$TMP/journal-approved.json" > "$TMP/journal-hidden.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-hidden.json"
+review_case 'hidden approval with losing bounce' READY 'review by reviewer'
+cmp -s "$TMP/lifecycle-bare-journal.out" "$TMP/lifecycle-review.out" || fail 'hidden transitions changed lifecycle verdict'
+for LIFE_MARKER_PREFIX in '' '<!-- '; do
+  jq --arg prefix "$LIFE_MARKER_PREFIX" '.data.repository.issue.comments.nodes[1].body |= (
+    split("\n") as $lines | . + "\n" + $prefix + ($lines[1] | sub("status=approved"; "status=changes-requested")))' \
+    "$TMP/journal-hidden.json" > "$TMP/journal-conflict.json"
+  LIFE_STEP_COMMENTS_JSON="$TMP/journal-conflict.json"
+  review_case 'conflicting journal compatibility marker' BLOCKED 'has multiple review markers'
+done
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-approved.json"
 # This installation-specific check does not apply to generic exported policies.
 if [ -f "$ROOT/scripts/export.sh" ]; then
   # Exercise the repository policy: the owner may approve plans, but cannot review.

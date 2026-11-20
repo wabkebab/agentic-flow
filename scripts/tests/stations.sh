@@ -88,7 +88,9 @@ case "$1 $2" in
   'issue comment')
     n=$3; shift 3; file=''
     while [ "$#" -gt 0 ]; do case "$1" in --body-file) file=$2; shift 2 ;; *) shift ;; esac; done
-    jq --arg body "$(cat "$file")" --arg login "$(if [ "${GH_TOKEN:-}" = fixture-review ]; then echo review; else echo "${STATION_LOGIN:-exec}"; fi)" \
+    body=$(cat "$file")
+    if [ "${STATION_POST_HIDDEN:-0}" = 1 ]; then body=$(printf '<!-- %s\n-->' "$body"); fi
+    jq --arg body "$body" --arg login "$(if [ "${GH_TOKEN:-}" = fixture-review ]; then echo review; else echo "${STATION_LOGIN:-exec}"; fi)" \
       '.comments.nodes += [{id:("C"+(.comments.nodes|length|tostring)),fullDatabaseId:(.comments.nodes|length|tostring),body:$body,author:{login:$login,__typename:"User"},createdAt:"2026-01-01T00:00:00Z",lastEditedAt:null}]' \
       "$state/$n.json" > "$state/next"; mv "$state/next" "$state/$n.json"
     printf 'https://github.com/owner/repo/issues/%s#issuecomment-%s\n' "$n" "$(jq '(.comments.nodes|length)-1' "$state/$n.json")"
@@ -503,6 +505,7 @@ must_allow "$ROOT/scripts/hooks/require-step-comment.sh" 'cd /tmp; gh issue view
 . "$ROOT/scripts/lib/workflow.sh"
 . "$ROOT/scripts/lib/review-policy.sh"
 . "$ROOT/scripts/lib/journal.sh"
+. "$ROOT/scripts/lib/andon.sh"
 workflow_load "$ROOT" || fail 'cannot load station workflow'
 REVIEW_EXECUTORS=' exec ' REVIEW_REVIEWERS=' review ' REVIEW_APPROVERS=' plan '
 JOURNAL_PLAN=fixture JOURNAL_STEP=alpha JOURNAL_LEGACY=false
@@ -515,6 +518,60 @@ ${7:-Evidence}" --arg author "$6" '.+[{id:(length|tostring),dbid:(length|tostrin
 }
 station_replay() { STATION_REPLAY=$(journal_replay "$STATION_COMMENTS" step-strict) || fail 'journal replay failed'; }
 station_expect() { printf '%s' "$STATION_REPLAY" | jq -e "$1" >/dev/null || fail "journal assertion: $1: $STATION_REPLAY"; }
+# A marker must start on line one with at most one exact opener and no suffix.
+station_append 1 submit executing executor "$STATION_A" exec
+STATION_COMMENTS=$(printf '%s' "$STATION_COMMENTS" | jq '[.[0] as $c |
+  ("<!--", "<!--\n", "<!-- <!-- ") as $prefix | $c | .body |= ($prefix + . + "\n-->")] +
+  [.[0] | .body |= ("<!-- " + sub("\n"; " -->\n"))]')
+station_replay; station_expect '.seq==0 and .state=="executing"'
+STATION_COMMENTS='[]'
+station_append 1 submit executing executor "$STATION_A" stranger
+station_replay
+STATION_BARE_REPLAY=$STATION_REPLAY
+STATION_COMMENTS=$(printf '%s' "$STATION_COMMENTS" | jq 'map(.body |= ("<!-- " + . + "\n-->"))')
+station_replay; station_expect '.seq==0 and .skipped==1'
+[ "$STATION_REPLAY" = "$STATION_BARE_REPLAY" ] || fail 'unauthorized hidden transition replay changed'
+
+# Replay every event with both layouts. Author, order, and payload stay fixed.
+STATION_COMMENTS='[]'
+station_append 1 submit executing executor "$STATION_A" exec "Implemented in $STATION_A"
+station_append 2 bounce reviewing reviewer none review
+station_append 3 ask executing executor none exec
+station_append 4 resume escalated approver none plan
+station_append 5 submit executing executor "$STATION_B" exec "Implemented in $STATION_B"
+station_append 6 approve reviewing reviewer "$STATION_B" review "agentic-flow-review: status=approved; step=alpha; head=$STATION_B; role=reviewer"
+station_replay; station_expect '.state=="approved" and .seq==6'
+STATION_BARE_REPLAY=$STATION_REPLAY
+STATION_COMMENTS=$(printf '%s' "$STATION_COMMENTS" | jq 'map(.body |= ("<!-- " + . + "\n-->\nVisible note"))')
+station_replay
+[ "$STATION_REPLAY" = "$STATION_BARE_REPLAY" ] || fail 'hidden step events changed journal replay'
+JOURNAL_STEP=tracker
+STATION_COMMENTS=$(jq -nc '[
+  {id:"notify",author:"review",body:"agentic-flow-transition: v=1; id=fixture/tracker/1/notify; event=notify; from=open; role=reviewer; head=none\nAll steps approved."},
+  {id:"close",author:"plan",body:"agentic-flow-transition: v=1; id=fixture/tracker/2/close; event=close; from=closing; role=approver; head=none"}
+] | map(.+{dbid:.id,last_edited_at:null})')
+STATION_BARE_REPLAY=$(journal_replay "$STATION_COMMENTS" tracker) || fail 'bare tracker replay failed'
+STATION_COMMENTS=$(printf '%s' "$STATION_COMMENTS" | jq 'map(.body |= ("<!-- " + . + "\n-->\nVisible note"))')
+STATION_REPLAY=$(journal_replay "$STATION_COMMENTS" tracker) || fail 'hidden tracker replay failed'
+station_expect '.state=="closed" and .seq==2'
+[ "$STATION_REPLAY" = "$STATION_BARE_REPLAY" ] || fail 'hidden tracker events changed journal replay'
+JOURNAL_STEP=alpha
+STATION_COMMENTS='[]'
+
+# The controller and andon both read authorized hold history through hold_replay.
+STATION_HOLDS=$(jq -nc '[
+  {author:"stranger",body:"agentic-flow-hold: v=1; id=fixture/hold/1; issue=#1; reason=reopened; run=none"},
+  {author:"plan",body:"agentic-flow-hold: v=1; id=fixture/hold/2; issue=#1; reason=reopened; run=none"},
+  {author:"plan",body:"agentic-flow-hold: v=1; id=fixture/hold/3; issue=#1; reason=reopened; run=none"},
+  {author:"stranger",body:"agentic-flow-hold-clear: id=fixture/hold/2"},
+  {author:"plan",body:"agentic-flow-hold-clear: id=fixture/hold/3; rebaseline=true"}
+] | to_entries | map(.value + {dbid:(.key|tostring)})')
+STATION_BARE_HOLDS=$(printf '%s' "$STATION_HOLDS" | hold_replay fixture all) || fail 'bare hold replay failed'
+STATION_HIDDEN_HOLDS=$(printf '%s' "$STATION_HOLDS" | jq 'map(.body |= ("<!-- " + . + "\n-->\nVisible note"))')
+[ "$(printf '%s' "$STATION_HIDDEN_HOLDS" | hold_replay fixture all)" = "$STATION_BARE_HOLDS" ] || fail 'hidden holds changed replay'
+printf '%s' "$STATION_HIDDEN_HOLDS" | hold_replay fixture | jq -e 'map(.id)==["fixture/hold/2"]' >/dev/null || fail 'hidden holds changed open holds'
+printf '%s' "$STATION_BARE_HOLDS" | jq -e '.[1] | .id=="fixture/hold/3" and .cleared and .rebaseline' >/dev/null || fail 'clear lost hold history'
+
 # Hostile and out-of-role writes, then both directions of a competing verdict.
 station_append 1 submit executing executor "$STATION_A" stranger
 station_append 1 submit executing executor "$STATION_A" review
@@ -579,6 +636,24 @@ if should_run_scenario handoff cli; then
 stations_cli_fixture
 station_issue 1 step:alpha
 station_issue 2 tracker
+printf 'agentic-flow-run: run=fixture/1; host=123456789abc\n' > "$TMP/station-run-marker"
+STATION_LOGIN='exec' station_run 0 1 submit --as executor --head "$STATION_A" --body-file "$TMP/station-run-marker"
+station_run 0 1 reconcile --check --json
+cp "$TMP/station.out" "$TMP/station-bare-drift"
+station_issue 1 step:alpha
+STATION_LOGIN='exec' STATION_POST_HIDDEN=1 STATION_POST_TIMEOUT=1 station_run 0 1 submit --as executor --head "$STATION_A" --body-file "$TMP/station-run-marker"
+[ "$(station_count 1)" = 1 ] || fail 'hidden post lookup duplicated a timed-out submit'
+station_run 0 1 reconcile --check --json
+jq -e '.issues[] | select(.number==1) | .run=="fixture/1" and .host=="123456789abc"' "$TMP/station.out" >/dev/null || fail 'andon lost run metadata inside a block'
+cmp -s "$TMP/station-bare-drift" "$TMP/station.out" || fail 'hidden post changed andon drift report'
+printf '<!-- agentic-flow-review: status=approved; step=alpha; head=%s; role=reviewer\n<!-- agentic-flow-review: status=changes-requested; step=alpha; head=%s; role=reviewer\nReview note\n' \
+  "$STATION_A" "$STATION_A" > "$TMP/review-with-prefixed-markers"
+STATION_LOGIN=review AGENTIC_HANDOFF_TESTING=1 AGENTIC_HANDOFF_FAULT=before-notify station_run 5 1 approve --as reviewer --head "$STATION_A" --body-file "$TMP/review-with-prefixed-markers"
+jq -e '.comments.nodes[-1].body | contains("<!-- agentic-flow-review: status=changes-requested") and
+  (contains("<!-- agentic-flow-review: status=approved")|not) and endswith("Review note")' \
+  "$STATION_STATE/1.json" >/dev/null || fail 'handoff lost a conflicting marker or kept a prefixed duplicate'
+station_issue 1 step:alpha
+
 STATION_LOGIN=review; export STATION_LOGIN
 must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow approve docs/inprogress/plan.md --by owner'
 must_block "$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow hold clear docs/inprogress/plan.md fixture/hold/1'
@@ -1022,10 +1097,28 @@ packet_comment plan 'APPROVER_PROSE_NOT_NEEDED'
 packet_run 0 --station executor --json
 jq -e '.dropped==2 and .journal.state=="executing" and (.findings[0].body|contains("CURRENT_FINDING"))' "$TMP/packet.json" >/dev/null || fail 'trusted findings absent'
 if grep -Eq 'HOSTILE_SENTINEL|SUBMIT_SENTINEL|UNTRUSTED_BODY_SENTINEL|APPROVER_PROSE_NOT_NEEDED|id=fixture/alpha/1/approve' "$TMP/packet.json"; then fail 'packet included excluded thread text'; fi
+cp "$TMP/packet.json" "$TMP/packet-bare-executor.json"
 packet_run 0 --station reviewer --json
 jq -e '.submit.body|contains("SUBMIT_SENTINEL")' "$TMP/packet.json" >/dev/null || fail 'reviewer omitted accepted submit'
 if grep -Eq 'HOSTILE_SENTINEL|CURRENT_FINDING|APPROVER_PROSE_NOT_NEEDED' "$TMP/packet.json"; then fail 'reviewer packet included unrelated comments'; fi
 grep -q 'run verify-step' "$TMP/packet.json" || fail 'missing verification record not identified'
+cp "$TMP/packet.json" "$TMP/packet-bare-reviewer.json"
+packet_comment review 'agentic-flow-hold: v=1; id=fixture/hold/1; issue=#1; reason=reopened; run=none'
+packet_comment review 'agentic-flow-hold-clear: id=fixture/hold/1'
+packet_run 0 --station executor --json
+cmp -s "$TMP/packet-bare-executor.json" "$TMP/packet.json" || fail 'bare holds changed executor packet'
+jq '.comments.nodes |= (
+  .[2].body |= ("<!-- " + sub("\nSUBMIT_SENTINEL$"; "\n-->\nSUBMIT_SENTINEL") +
+    "\n<!--\nagentic-flow-run: run=fixture/1; host=123456789abc\n-->") |
+  .[-2,-1].body |= ("<!-- " + . + "\n-->"))' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+packet_run 0 --station executor --json
+cmp -s "$TMP/packet-bare-executor.json" "$TMP/packet.json" || fail 'hidden holds changed executor packet'
+packet_run 0 --station reviewer --json
+grep -q 'agentic-flow-run:' "$TMP/packet.json" && fail 'packet exposed hidden run metadata'
+jq '.submit.body |= (ltrimstr("<!-- ") | sub("\n-->\n"; "\n") | rtrimstr("\n<!--\n-->"))' \
+  "$TMP/packet.json" > "$TMP/packet-hidden-reviewer.json"
+cmp -s "$TMP/packet-bare-reviewer.json" "$TMP/packet-hidden-reviewer.json" || fail 'hidden submit changed reviewer packet'
 # Preserve valid provenance and make stale records explicitly unavailable.
 PACKET_TREE=$(git -C "$VERIFY_FIX" rev-parse "$PACKET_REV^{tree}")
 PACKET_IMPL=$(verify_record_digest)

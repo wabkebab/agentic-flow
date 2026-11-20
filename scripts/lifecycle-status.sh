@@ -262,7 +262,15 @@ verify_step_review() { # <repo> <issue-number> <step-id> <tmp-dir> <pr-head> [re
   fi
   while IFS= read -r node; do
     body=$(printf '%s' "$node" | jq -r '.body // empty')
-    candidate=$(printf '%s\n' "$body" | sed -n '/^[[:space:]]*agentic-flow-review:/p')
+    # A journaled verdict carries a bare compatibility line. Count a prefixed
+    # copy in its body as well so a conflicting verdict still blocks the gate.
+    # shellcheck disable=SC2016 # jq variables
+    candidate=$(printf '%s\n' "$body" | journal_jq -Rsr --argjson journaled "$journaled" '
+      include "journal-marker";
+      def review_line: select(test("^[[:space:]]*agentic-flow-review:"));
+      split("\n") as $lines | [$lines[] | review_line] as $bare |
+      if $journaled and ($bare|length)>0 then $lines[] | journal_marker_line | review_line
+      else $bare[] end') || return 1
     [ -n "$candidate" ] || continue
     # Byte-identical repeats of one marker carry no extra claim; collapse them.
     candidate=$(printf '%s\n' "$candidate" | awk '!seen[$0]++')

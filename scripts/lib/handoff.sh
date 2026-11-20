@@ -102,7 +102,10 @@ handoff_post() { # number event role head body; replay MUST have just been read
   # The gate accepts one marker per comment. Drop a body line identical to the
   # marker written above; a different marker in the body stays and is blocked.
   if [ -n "$compat_marker" ]; then
-    printf '%s\n' "$note" | grep -Fvx -- "$compat_marker" >> "$file" || true
+    # shellcheck disable=SC2016 # jq variables
+    printf '%s\n' "$note" | journal_jq -Rr --arg marker "$compat_marker" '
+      include "journal-marker";
+      select(journal_marker_line != $marker)' >> "$file" || return 5
   else
     printf '%s\n' "$note" >> "$file"
   fi
@@ -123,7 +126,11 @@ handoff_post() { # number event role head body; replay MUST have just been read
   [[ "$posted_dbid" =~ ^[0-9]+$ ]] || posted_dbid=''
   # A failed/timed-out post may have landed. Read once; never blindly repost.
   handoff_read "$number" || return $?
-  comment=$(jq -c --arg id "$id" --arg dbid "$posted_dbid" '[.comments.nodes[] | select(.body|startswith("agentic-flow-transition: v=1; id="+$id+";")) | select($dbid=="" or (.fullDatabaseId|tostring)==$dbid)] | first // empty' "$HANDOFF_TMP/$number.issue")
+  # shellcheck disable=SC2016 # jq variables
+  comment=$(journal_jq -c --arg id "$id" --arg dbid "$posted_dbid" '
+    include "journal-marker";
+    [.comments.nodes[] | select(.body|journal_marker_line|startswith("agentic-flow-transition: v=1; id="+$id+";")) |
+      select($dbid=="" or (.fullDatabaseId|tostring)==$dbid)] | first // empty' "$HANDOFF_TMP/$number.issue") || return 5
   [ -n "$comment" ] || { handoff_error "post not found for $id (status $rc)"; return 5; }
   author=$(printf '[%s]' "$comment" | journal_normalize | jq -r '.[0].author') || return 5
   [ "$author" = "$HANDOFF_LOGIN" ] || { handoff_error 'posted comment author differs from role identity'; return 5; }

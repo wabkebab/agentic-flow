@@ -14,11 +14,13 @@ andon_desktop() {
   fi
 }
 hold_replay() { # normalized comments on stdin; plan -> open authorized markers
-  jq --arg mode "${2:-open}" --arg plan "$1" --arg approvers "$REVIEW_APPROVERS" '
+  # shellcheck disable=SC2016 # jq variables
+  journal_jq --arg mode "${2:-open}" --arg plan "$1" --arg approvers "$REVIEW_APPROVERS" '
+    include "journal-marker";
     if type!="array" or length>100 then error("invalid hold thread") else . end |
     reduce .[] as $c ({holds:[],cleared:[]};
       if ($approvers|split(" ")|index($c.author))==null then . else
-        ($c.body|split("\n")[0]) as $line |
+        ($c.body|journal_marker_line) as $line |
         if ($line|startswith("agentic-flow-hold: ")) then
           ([try ($line|capture("^agentic-flow-hold: v=1; id=(?<plan>[a-z0-9][a-z0-9._-]*)/hold/(?<n>[1-9][0-9]{0,5}); issue=#(?<issue>[1-9][0-9]{0,9}); reason=(?<reason>[a-z0-9][a-z0-9-]{0,79}); run=(?<run>[a-zA-Z0-9/._-]+)$"))]|first) as $h |
           if $h==null or $h.plan!=$plan then . else
@@ -100,8 +102,10 @@ hold_transition() { # affected issue event reason run hold-id note [rebaseline]
     fi
     ledger_init "$HANDOFF_ROOT" || return 5
     if [ "${HANDOFF_LEDGER_UNAVAILABLE:-false}" = true ]; then records='[]'; else records=$(ledger_read "$HANDOFF_PLAN") || return 5; fi
-    n=$(printf '%s' "$records" | jq --argjson comments "$(printf '%s' "$HANDOFF_ISSUE" | jq .comments.nodes)" --arg p "$HANDOFF_PLAN" '
-      . as $records | [($records[]|select(.kind=="hold")|.hold),($comments[].body|split("\n")[0]|try capture("^agentic-flow-hold: v=1; id=(?<id>[^;]+);").id)] |
+    # shellcheck disable=SC2016 # jq variables
+    n=$(printf '%s' "$records" | journal_jq --argjson comments "$(printf '%s' "$HANDOFF_ISSUE" | jq .comments.nodes)" --arg p "$HANDOFF_PLAN" '
+      include "journal-marker";
+      . as $records | [($records[]|select(.kind=="hold")|.hold),($comments[].body|journal_marker_line|try capture("^agentic-flow-hold: v=1; id=(?<id>[^;]+);").id)] |
       [.[]|select(startswith($p+"/hold/"))|split("/")[-1]|try tonumber] | (max//0)+1') || return 5
     [ "$n" -le 999999 ] || return 5
     id="$HANDOFF_PLAN/hold/$n"
