@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-17) -->
 > **Type:** Feature · **Status:** 🚧 In progress
 > **Assurance:** Strict
-> Phase 3 of `product-harness-factory-optimization.md` (T-1 to T-8, R-15): run each test group once per commit and once per full suite, make per-step runs scenario-sized, stop a group from growing unnoticed, and stop adopters running the harness's internal tests on every `make test`. Part A is the analysis; Part B is the implementation brief (steps t-1 to t-8), approved 2026-11-19 and implemented; close-out is pending. T-1, T-3 and the controller-group half of T-4 moved into Phase 2b on 2026-11-17 and are not part of this phase's brief. Runs after Phase 2b (`feature-station-hardening.md`).
+> Phase 3 of `product-harness-factory-optimization.md` (T-1 to T-8, R-15): run each test group once per commit and once per full suite, make per-step runs scenario-sized, stop a group from growing unnoticed, and stop adopters running the harness's internal tests on every `make test`. Part A is the analysis; Part B is the implementation brief (steps t-1 to t-8), drafted 2026-11-19 and awaiting approval. T-1, T-3 and the controller-group half of T-4 moved into Phase 2b on 2026-11-17 and are not part of this phase's brief. Runs after Phase 2b (`feature-station-hardening.md`).
 
 # Feature — Test streamlining
 
