@@ -139,3 +139,4 @@ station_expect	'.state=="closed" and .seq==2'
 station_run	0 1 reconcile --check --json
 station_run	0 1 submit --as executor --head "$STATION_A" --body-file "$TMP/station-run-marker"
 station_run	5 1 approve --as reviewer --head "$STATION_A" --body-file "$TMP/review-with-prefixed-markers"
+fail	'journal_jq lost its marker module after a directory change'

@@ -532,6 +532,11 @@ STATION_COMMENTS=$(printf '%s' "$STATION_COMMENTS" | jq 'map(.body |= ("<!-- " +
 station_replay; station_expect '.seq==0 and .skipped==1'
 [ "$STATION_REPLAY" = "$STATION_BARE_REPLAY" ] || fail 'unauthorized hidden transition replay changed'
 
+# The controller sources these libraries by a relative path and then changes directory, so the
+# module search path must not depend on the caller's working directory.
+(cd "$ROOT" && . scripts/lib/journal.sh && cd / && printf '[]' | journal_jq 'include "journal-marker"; 1' >/dev/null) \
+  || fail 'journal_jq lost its marker module after a directory change'
+
 # Replay every event with both layouts. Author, order, and payload stay fixed.
 STATION_COMMENTS='[]'
 station_append 1 submit executing executor "$STATION_A" exec "Implemented in $STATION_A"
