@@ -105,6 +105,7 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-deterministic-stations | Feature | ✅ Done | done |
 | feature-distinct-identities | Feature | ✅ Done | done |
 | feature-export-banner-leak | Feature | ✅ Done | done |
+| feature-flow-ergonomics | Feature | ✅ Done | done |
 | feature-gate-and-handoff-fixes | Feature | ✅ Done | done |
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-harness-optimization | Feature | ✅ Done | done |
@@ -115,7 +116,6 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-station-hardening | Feature | ✅ Done | done |
 | feature-test-streamlining | Feature | ✅ Done | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
-| feature-flow-ergonomics | Feature | 🚧 In progress | inprogress |
 | feature-role-signing | Feature | 🟦 Proposal | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |
 <!-- END: generated index -->

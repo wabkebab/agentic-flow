@@ -1,21 +1,20 @@
 <!-- TRIAGE (first pass · 2026-11-20) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
-> Three workflow fixes the owner asked for before Phase 4: start each plan on its own branch, ship with one green CI push, and make plans, issues and review comments readable on GitHub. Part A is the analysis; Part B is the implementation brief (steps e-1 to e-9), drafted 2026-11-20 and awaiting approval. Runs before Phase 4 (`feature-harness-simplification.md`). This doc was itself drafted on its plan branch, by hand, the way e-7 will automate it.
+> Three workflow fixes the owner asked for before Phase 4: start each plan on its own branch, ship with one green CI push, and make plans, issues and review comments readable on GitHub. Part A is the analysis; Part B is the implementation brief (steps e-1 to e-9), drafted 2026-11-20, approved the same day and shipped as 0.19.0. Runs before Phase 4 (`feature-harness-simplification.md`). This doc was itself drafted on its plan branch, by hand, the way e-7 will automate it.
 
 # Feature — Flow ergonomics before Phase 4
 
 ## Tracker
-- [ ] e-1 Journal markers move into a hidden block; parsers read both forms — open
-- [ ] e-2 Journal comments render as readable Markdown — open
-- [ ] e-3 Plan and step issue bodies render as readable Markdown; risks become bullets — open
-- [ ] e-4 `ship` commits the close-out before the single push and opens a readable PR — open
-- [ ] e-5 CI classifies paths by an explicit bookkeeping list — open
-- [ ] e-6 CI reuses a green App result for identical App inputs — open
-- [ ] e-7 `agentic-flow start` and `clean`: plan branch, worktree and doc, and their removal after merge — open
-- [ ] e-8 Plan commands run from the plan worktree — open
-- [ ] e-9 Contracts, methodology and release notes — open
-
+- [x] e-1 — #176; approved=6cd46b0b839c37d5f9375ddf6e3f7226d577cd5d; submissions=6cd46b0b839c37d5f9375ddf6e3f7226d577cd5d,cdb599f63678a33e311b2dd296f3f54d42a02290
+- [x] e-2 — #177; approved=4c7b26d0667160c83b1d45f2839dcd17ec023fd9; submissions=4c7b26d0667160c83b1d45f2839dcd17ec023fd9
+- [x] e-3 — #178; approved=d0a3448d201c6ea5d21d0a92811dcf7f3ff390a3; submissions=d0a3448d201c6ea5d21d0a92811dcf7f3ff390a3
+- [x] e-4 — #179; approved=cfa00201499925f8c3d2889639e8e22c0d4a1762; submissions=cfa00201499925f8c3d2889639e8e22c0d4a1762
+- [x] e-5 — #180; approved=47f6af7ed54227727045be6a43bbf365bafa7cc5; submissions=47f6af7ed54227727045be6a43bbf365bafa7cc5
+- [x] e-6 — #181; approved=63fd1f1173f16c7f00732e6b57e1ff1847bfe771; submissions=63fd1f1173f16c7f00732e6b57e1ff1847bfe771
+- [x] e-7 — #182; approved=d0d9913210c6faf591d48a12cf9ba50c8d2521b3; submissions=d0d9913210c6faf591d48a12cf9ba50c8d2521b3
+- [x] e-8 — #183; approved=42b82f7efcc05cbb8b111d887482cc917ece2475; submissions=42b82f7efcc05cbb8b111d887482cc917ece2475
+- [x] e-9 — #184; approved=01a677eca892cc735b10d139fc6fcd8cf0e1f59f; submissions=01a677eca892cc735b10d139fc6fcd8cf0e1f59f
 ---
 
 # Part A — Analysis
@@ -590,10 +589,10 @@ Re-run scenario 1 on renderer output, and run every marker reader over the hosti
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/175
 - **Approval:** status=approved; by=wabkebab; at=2026-11-20; rev=4e45696847cb2f89cc21d82263d05a2b12bdfd3f
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** source=final-approval
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
   the index in the last repository commit. After human push, obtain CI and a structured
   reviewer approval on the `Tracking issue` for that exact PR head and run attempt.
