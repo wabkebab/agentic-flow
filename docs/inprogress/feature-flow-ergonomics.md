@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-11-20) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > **Assurance:** Strict
 > Three workflow fixes the owner asked for before Phase 4: start each plan on its own branch, ship with one green CI push, and make plans, issues and review comments readable on GitHub. Part A is the analysis; Part B is the implementation brief (steps e-1 to e-9), drafted 2026-11-20 and awaiting approval. Runs before Phase 4 (`feature-harness-simplification.md`). This doc was itself drafted on its plan branch, by hand, the way e-7 will automate it.
 
@@ -588,7 +588,7 @@ Re-run scenario 1 on renderer output, and run every marker reader over the hosti
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-20; rev=4e45696847cb2f89cc21d82263d05a2b12bdfd3f
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
