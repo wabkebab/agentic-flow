@@ -159,10 +159,12 @@ unset AGENTIC_SELF_TEST_SHARD_DIR
 LOCAL_EVENTS="${SHARD_DIR:-$TMP}/local-events"
 : > "$LOCAL_EVENTS"
 REPORT_EVENTS=${AGENTIC_MEASURE_EVENTS:-}
+# shellcheck disable=SC2034 # Shared with independently linted test groups.
 PROJECT_TOKEN="$(printf '{%sPROJECT_NAME}%s' '{' '}')"
 # Matches only real scaffold placeholders (double-brace UPPER_SNAKE), not the
 # dollar-brace expression syntax that shipped docs quote when documenting CI workflows.
 # Built with printf so this file never contains a literal placeholder to self-match.
+# shellcheck disable=SC2034 # Shared with independently linted test groups.
 TOKEN_RE="$(printf '{%s[A-Z][A-Z0-9_]*}%s' '{' '}')"
 # TIMING BEGIN: separate from cost events; disabled runs do no clock/file work.
 TEST_TIMING=0
@@ -711,47 +713,49 @@ FULL_FAILED=0
 if [ "$SELF_TEST_MODE" = full ] && [ -z "$ONLY_GROUP" ]; then
   run_full_shards
 else
+# Group files are linted separately by shell-inventory.sh. Following all of them
+# here combines the suite into one memory-heavy ShellCheck analysis.
 # --- export invariants (scaffold repo only, full suite only) -----------------------------
 if should_run export; then
   [ -f "$ROOT/scripts/tests/export.sh" ] || fail "missing self-test group file: export"
-  # shellcheck source=scripts/tests/export.sh
+  # shellcheck source=/dev/null
   . "$ROOT/scripts/tests/export.sh"
 fi
 
 if should_run contracts; then
   [ -f "$ROOT/scripts/tests/contracts.sh" ] || fail "missing self-test group file: contracts"
-  # shellcheck source=scripts/tests/contracts.sh
+  # shellcheck source=/dev/null
   . "$ROOT/scripts/tests/contracts.sh"
 fi
 
 if should_run upgrade; then
   [ -f "$ROOT/scripts/tests/upgrade.sh" ] || fail "missing self-test group file: upgrade"
-  # shellcheck source=scripts/tests/upgrade.sh
+  # shellcheck source=/dev/null
   . "$ROOT/scripts/tests/upgrade.sh"
 fi
 
 if should_run hooks; then
   [ -f "$ROOT/scripts/tests/hooks.sh" ] || fail "missing self-test group file: hooks"
-  # shellcheck source=scripts/tests/hooks.sh
+  # shellcheck source=/dev/null
   . "$ROOT/scripts/tests/hooks.sh"
 fi
 
 if should_run plan-to-issues; then
   [ -f "$ROOT/scripts/tests/plan-to-issues.sh" ] || fail "missing self-test group file: plan-to-issues"
-  # shellcheck source=scripts/tests/plan-to-issues.sh
+  # shellcheck source=/dev/null
   . "$ROOT/scripts/tests/plan-to-issues.sh"
 fi
 
 if should_run lifecycle; then
   [ -f "$ROOT/scripts/tests/lifecycle.sh" ] || fail "missing self-test group file: lifecycle"
-  # shellcheck source=scripts/tests/lifecycle.sh
+  # shellcheck source=/dev/null
   . "$ROOT/scripts/tests/lifecycle.sh"
 fi
 
 if should_run stations; then
   scenario_group_begin stations
   [ -f "$ROOT/scripts/tests/stations.sh" ] || fail "missing self-test group file: stations"
-  # shellcheck source=scripts/tests/stations.sh
+  # shellcheck source=/dev/null
   . "$ROOT/scripts/tests/stations.sh"
   assert_scenarios_ran
 fi
@@ -759,7 +763,7 @@ fi
 if should_run controller; then
   scenario_group_begin controller
   [ -f "$ROOT/scripts/tests/controller.sh" ] || fail "missing self-test group file: controller"
-  # shellcheck source=scripts/tests/controller.sh
+  # shellcheck source=/dev/null
   . "$ROOT/scripts/tests/controller.sh"
   assert_scenarios_ran
 fi
