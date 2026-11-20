@@ -29,11 +29,32 @@ brief_normalize() { # stdin; preserve every byte outside the bookkeeping lines
   done
 }
 
-brief_parse() { # file, display path, revision -> JSON spec
-  awk -v path="$2" -v rev="$3" '
+# Issue layout keeps Markdown that the canonical spec omits. The writer
+# removes it before hashing so previously approved specs keep their identity.
+brief_parse() { # file, display path, revision, optional issue-layout -> JSON spec
+  awk -v path="$2" -v rev="$3" -v issue_layout="${4:-}" '
     function bad(message) {print path ":" NR ": " message > "/dev/stderr"; failed=1; exit 1}
     function quote(s) {gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); gsub(/\t/,"\\t",s); gsub(/\r/,"\\r",s); gsub(/\n/,"\\n",s); return "\"" s "\""}
     function trim(s) {sub(/\n+$/,"",s); return s}
+    function layout_trim(s) {
+      s=trim(s)
+      while (sub(/\n---$/,"",s)) s=trim(s)
+      return s
+    }
+    issue_layout!="" {
+      if (!layout_fence && /^## Verification commands$/) layout_verify=1
+      else if (layout_verify) {
+        if (!layout_fence && /^##? /) layout_verify=0
+        else {
+          layout_verification=layout_verification $0 "\n"
+          if (match($0,/^(````*|~~~~*)/)) {
+            fence=substr($0,1,RLENGTH)
+            if (!layout_fence) layout_fence=fence
+            else if (index(fence,layout_fence)==1 && substr($0,RLENGTH+1) ~ /^[ \t]*$/) layout_fence=""
+          }
+        }
+      }
+    }
     /^##? / {verify=0}
     /^# Part B / {part=1}
     /^```agentic-flow-plan$/ {if (++blocks>1 || !part) bad("expected one plan block in Part B"); block=1; next}
@@ -46,9 +67,9 @@ brief_parse() { # file, display path, revision -> JSON spec
     }
     part && /^## [A-Za-z0-9][A-Za-z0-9._-]* — / {
       id=tolower($2); if (id in heading) bad("duplicate step " id)
-      heading[id]=substr($0,4); order[++sections]=id; active=""; next
+      heading[id]=substr($0,4); order[++sections]=id; active=""; layout_active=""; next
     }
-    part && /^##? / {id=""; active=""}
+    part && /^##? / {id=""; active=""; layout_active=""}
     id!="" && /^\*\*Red-first:\*\*/ {
       value=$0; sub(/^\*\*Red-first:\*\* /,"",value)
       if (value!="none" && value !~ /^`[^`]+` — [A-Za-z0-9_.\/-]+( [A-Za-z0-9_.\/-]+)*$/) bad("malformed Red-first line")
@@ -61,16 +82,28 @@ brief_parse() { # file, display path, revision -> JSON spec
         for(k=1;k<=n;k++) if(p[k] ~ /^\// || p[k] ~ /(^|\/)\.\.(\/|$)/) bad("Red-first path must stay inside the repository")
         selectors[id,red[id]]=selector; redpaths[id,red[id]]=paths
       }
-      active=""; next
+      active=""; layout_active=""; next
     }
     id!="" && /^\*\*[^*]+:\*\*/ {
-      active=""; label=$0; sub(/^\*\*/,"",label); sub(/:\*\*.*/,"",label)
+      active=""; layout_active=""; label=$0; sub(/^\*\*/,"",label); sub(/:\*\*.*/,"",label)
       if (label ~ /^(DoD|Verify|Risks)$/) {
         if ((id SUBSEP label) in fields) bad("duplicate " label " for " id)
-        value=$0; sub(/^\*\*[^*]+:\*\* /,"",value)
-        if(value==$0 || value=="") bad("empty " label)
+        value=$0; sub(/^\*\*[^*]+:\*\*( |$)/,"",value)
+        if (value==$0 || (value=="" && label!="Risks")) bad("empty " label)
         fields[id,label]=value; active=label
+        if (label=="Risks" && value=="") bullet_risks[id]=1
+        if (issue_layout!="" && label!="Risks") {layout_active=label; layout_fields[id,label]=value}
       }
+      next
+    }
+    id!="" && layout_active!="" {layout_fields[id,layout_active]=layout_fields[id,layout_active] "\n" $0}
+    id!="" && active=="Risks" && bullet_risks[id] && $0!="---" {
+      if ($0 ~ /^[-+*][ \t]+[^ \t]/) {
+        value=$0; sub(/^[-+*][ \t]+/,"",value)
+        fields[id,"Risks"]=fields[id,"Risks"] (fields[id,"Risks"]=="" ? "" : "\n") "- " value
+      } else if (fields[id,"Risks"]!="" && ($0=="" || $0 ~ /^  /)) {
+        fields[id,"Risks"]=fields[id,"Risks"] "\n" $0
+      } else if ($0!="") bad("expected a Risks bullet")
       next
     }
     id!="" && active!="" {
@@ -82,6 +115,7 @@ brief_parse() { # file, display path, revision -> JSON spec
     verify && $0!="" {verification=verification $0 "\n"}
     END {
       if (failed) exit 1
+      if (layout_fence) bad("unclosed verification fence")
       if (block || blocks!=1) bad("missing or unclosed plan block")
       if (plan["id"] !~ /^[a-z0-9][a-z0-9._-]*$/ || length(plan["id"])>80) bad("invalid plan id")
       if (plan["profile"]!="strict" && plan["profile"]!="standard") bad("invalid profile")
@@ -120,7 +154,16 @@ brief_parse() { # file, display path, revision -> JSON spec
         }
         printf "}"
       }
-      print "]}"
+      printf "]"
+      if (issue_layout=="issue-layout") {
+        printf ",\"issue_layout\":{\"verification_commands\":%s,\"steps\":{",quote(layout_trim(layout_verification))
+        for (i=1;i<=count;i++) {
+          step=steps[i]; if (i>1) printf ","
+          printf "%s:{\"definition_of_done\":%s,\"verify\":%s,\"bullet_risks\":%s}",quote(step),quote(layout_trim(layout_fields[step,"DoD"])),quote(layout_trim(layout_fields[step,"Verify"])),(bullet_risks[step] ? "true" : "false")
+        }
+        printf "}}"
+      }
+      print "}"
     }
   ' "$1"
 }

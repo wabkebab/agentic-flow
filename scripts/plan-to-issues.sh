@@ -73,7 +73,10 @@ if [ -z "$SPEC" ] && [ -n "$DOC" ]; then
   trap 'rm -rf "$BRIEF_TMP"' EXIT
   git show "$APPROVED_REV:$DOC" > "$BRIEF_TMP/approved.md" || die "doc missing at approved revision"
   SPEC="$BRIEF_TMP/spec.json"
-  brief_parse "$BRIEF_TMP/approved.md" "$DOC" "$APPROVED_REV" > "$SPEC" || die "invalid approved brief"
+  brief_parse "$BRIEF_TMP/approved.md" "$DOC" "$APPROVED_REV" issue-layout > "$BRIEF_TMP/layout-spec.json" \
+    || die "invalid approved brief"
+  jq '.issue_layout' "$BRIEF_TMP/layout-spec.json" > "$BRIEF_TMP/layout.json"
+  jq 'del(.issue_layout)' "$BRIEF_TMP/layout-spec.json" > "$SPEC"
 fi
 
 [ -n "$SPEC" ] || die "no spec file given. Usage: $0 [--apply|--diff] [--doc <path>] <spec.json>"
@@ -182,6 +185,68 @@ echo "Repo:            $REPO"
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/plan-to-issues.XXXXXX")
 trap 'rm -rf "$TMP"; [ -z "$BRIEF_TMP" ] || rm -rf "$BRIEF_TMP"' EXIT
+
+BRIEF_LINK=""
+BRIEF_STAMP=""
+if [ -n "$BRIEF_TMP" ]; then
+  doc_url_path=$(jq -nr --arg doc "$DOC" '$doc | split("/") | map(@uri) | join("/")')
+  BRIEF_LINK="[Approved brief](https://github.com/$REPO/blob/$APPROVED_REV/$doc_url_path)"
+  if [[ "$DOC" =~ ^docs/[A-Za-z0-9_./-]+\.md$ ]]; then
+    BRIEF_STAMP="<!-- agentic-flow:brief:$DOC -->"
+  fi
+fi
+
+# Preserve code spans and fenced code while protecting literal placeholder and
+# separator lines in prose. Keep the same rendering rules for both topologies.
+# shellcheck disable=SC2016
+ISSUE_MARKDOWN_JQ='
+  def issue_markdown:
+    gsub(
+      "(?<code>(?<![^\n]) {0,3}(?<fence>`{3,}|~{3,})[^\n]*\n[\\s\\S]*?(?<![^\n]) {0,3}\\k<fence>[`~]*[ \t]*(?=\n|$)|`+[^`\n]+`+)" +
+      "|(?<![^\n])(?<indent> {0,3})(?<separator>-+|=+)[ \t]*(?=\n|$)" +
+      "|<(?<tag>/?[A-Za-z][A-Za-z0-9_-]*)>|<!--";
+      if .code then .code elif .separator then .indent + "\\" + .separator
+      elif .tag then "&lt;" + .tag + "&gt;" else "&lt;!--" end);
+  def short_title($id):
+    if ascii_downcase | startswith($id + " — ") then split(" — ") | .[1:] | join(" — ") else . end;
+'
+
+render_step_body() { # <step index> <step id> <tracker URL or empty> <stamp>
+  local layout=/dev/null
+  [ -z "$BRIEF_TMP" ] || layout="$BRIEF_TMP/layout.json"
+  jq -r --argjson i "$1" --arg id "$2" --arg tracker "$3" --arg stamp "$4" \
+    --arg brief_link "$BRIEF_LINK" --arg brief_stamp "$BRIEF_STAMP" --slurpfile layout "$layout" \
+    "$ISSUE_MARKDOWN_JQ"'
+    .steps[$i] as $step | $step.packet as $packet | $layout[0].steps[$id] as $step_layout |
+    [
+      ("## " + ([$id, ($step.title | short_title($id))] | join(" — ") | issue_markdown)),
+      ([if $tracker != "" then "[Tracker #" + ($tracker | split("/") | last) + "](" + $tracker + ")" else empty end,
+        ("**Profile:** " + (if .profile == "strict" then "Strict" else "Standard" end)),
+        ($brief_link | select(length > 0))]
+        | join(" · ")),
+      (if $brief_link == "" then "Brief: " + ($packet.brief | issue_markdown) else empty end),
+      (($step.body // "") | select(length > 0) | issue_markdown),
+      "### Definition of done", (($step_layout.definition_of_done // $packet.definition_of_done) | issue_markdown),
+      "### Verify", (($step_layout.verify // $packet.verification) | issue_markdown),
+      ($layout[0].verification_commands // "" | select(length > 0) |
+        "### Verification commands", issue_markdown),
+      "### Risks",
+      (if $step_layout.bullet_risks then $packet.risks | issue_markdown
+       else "- " + ($packet.risks | issue_markdown | gsub("\n"; "\n  ")) end),
+      ([$brief_stamp, $stamp] | map(select(length > 0)) | join("\n"))
+    ] | join("\n\n")
+  ' "$SPEC"
+}
+
+render_tracker_intro() {
+  jq -r --arg brief_link "$BRIEF_LINK" "$ISSUE_MARKDOWN_JQ"'
+    [("## " + (.tracking.title | issue_markdown)),
+     (["**Profile:** Strict",
+       (select(.branch // "" | length > 0) | "`" + .branch + "` → `" + (.base // "main") + "`"),
+       ($brief_link | select(length > 0))] | join(" · ")),
+     (.tracking.body // "" | select(length > 0) | issue_markdown)] | join("\n\n")
+  ' "$SPEC"
+}
 
 # One bounded query discovers the tracker and every step belonging to this logical plan.
 ISSUES_JSON=$(gh issue list --repo "$REPO" --state all --limit 100 \
@@ -313,15 +378,8 @@ if [ "$PROFILE" = standard ]; then
   stamp="<!-- $PLAN_MARKER step:$step_id spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value}"
   [ -z "$approval_by" ] || stamp="$stamp approved-by:$approval_by approved-at:$approval_at"
   stamp="$stamp -->"
-  packet=$(jq -r '.steps[0].packet | "Profile: Standard\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"' "$SPEC")
-  body=$(jq -r '.steps[0].body // ""' "$SPEC")
-  desired_body="${body}
-
-## Executor packet
-${packet}
-
-${stamp}
-<!-- agentic-flow:topology:standard -->"
+  desired_body=$(render_step_body 0 "$step_id" "" "$stamp
+<!-- agentic-flow:topology:standard -->")
   desired_body=$(migrate_approval_body "$existing" "$desired_body")
   if [ "$MODE" = diff ]; then
     [ -n "$existing" ] && echo 'Work issue: exists' || echo 'Work issue: missing (would create)'
@@ -408,10 +466,12 @@ TRACK_STAMP="$TRACK_STAMP -->"
 if [ "$PROFILE" = strict ]; then
   TRACK_STAMP="$TRACK_STAMP
 <!-- agentic-flow:topology:strict -->"
+  TRACK_BODY=$(render_tracker_intro)
 fi
 TRACK_DESIRED="${TRACK_BODY}
 
 ${TRACK_STAMP}"
+TRACK_STUB=$TRACK_DESIRED
 
 TRACK_DESIRED=$(migrate_approval_body "$existing_tracker" "$TRACK_DESIRED")
 
@@ -421,7 +481,7 @@ if [ "$MODE" = diff ]; then
     echo "Tracker: missing (would create)"
   else
     existing_spec=$(printf '%s\n' "$existing_tracker" | jq -r '.body' \
-      | sed -n 's/.* spec:\([^ ]*\).* -->.*/\1/p' | head -1)
+      | sed -n 's/^<!-- agentic-flow:plan:[^ ]* tracker spec:\([^ ]*\).* -->$/\1/p' | head -1)
     existing_approved=$(printf '%s\n' "$existing_tracker" | jq -r .body | sed -nE 's/^<!-- .* approved=([a-f0-9]{40}).* -->$/\1/p')
     if [ -n "$APPROVED_REV" ] && [ -z "$existing_approved" ]; then
       echo
@@ -521,15 +581,12 @@ while [ "$i" -lt "$STEP_COUNT" ]; do
   if [ "$PROFILE" = strict ]; then
     stamp="$stamp
 <!-- agentic-flow:topology:strict -->"
-    packet=$(jq -r --argjson i "$i" '.steps[$i].packet | "Profile: Strict\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"' "$SPEC")
-    body="$body
-
-## Executor packet
-$packet"
-  fi
-  desired_body="${body}
+    desired_body=$(render_step_body "$i" "$step_id" "$track_url" "$stamp")
+  else
+    desired_body="${body}
 
 ${stamp}"
+  fi
   desired_body=$(migrate_approval_body "$existing" "$desired_body")
   printf '%s\n' "$step_id" >> "$TMP/current-step-ids"
   existing=$(issue_for_identity "step:$step_id")
@@ -549,7 +606,12 @@ ${stamp}"
     gh issue edit "$num" --repo "$REPO" --title "$title" --body "$desired_body" >/dev/null
     echo "updated step  #$num  $title"
   fi
-  printf '%s\t%s\t%s\n' "$num" "$step_id" "$title" >> "$TMP/step-rows"
+  task_title=$title
+  if [ "$PROFILE" = strict ]; then
+    task_title=$(jq -nr --arg title "$title" --arg id "$step_id" "$ISSUE_MARKDOWN_JQ"'
+      $title | short_title($id) | gsub("[\r\n\t]+"; " ") | issue_markdown')
+  fi
+  printf '%s\t%s\t%s\n' "$num" "$step_id" "$task_title" >> "$TMP/step-rows"
   i=$((i + 1))
 done
 
@@ -573,13 +635,24 @@ tasklist='
 
 ## Steps
 '
+if [ "$PROFILE" = strict ]; then
+  tasklist='
+
+### Steps
+
+'
+fi
 while IFS="$(printf '\t')" read -r num step_id title; do
   tasklist="${tasklist}- [ ] #${num} [${step_id}] ${title}
 "
 done < "$TMP/step-rows"
 TRACK_FINAL="${TRACK_BODY}${tasklist}
 ${TRACK_STAMP}"
-TRACK_FINAL=$(migrate_approval_body "$existing_tracker" "$TRACK_FINAL")
+# An interrupted creation leaves the generated stub. Finish its task list on
+# retry. The approval-only path still preserves every completed tracker body.
+if [ "$TRACK_DESIRED" != "$TRACK_STUB" ] || [ -z "$APPROVED_REV" ]; then
+  TRACK_FINAL=$(migrate_approval_body "$existing_tracker" "$TRACK_FINAL")
+fi
 gh issue edit "$track_num" --repo "$REPO" --title "$TRACK_TITLE" \
   --body "$TRACK_FINAL" >/dev/null
 

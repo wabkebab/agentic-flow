@@ -366,7 +366,12 @@ verify_strict_steps() { # <repo> <tracking-body> <tmp-dir> <pr-head>
   if ! jq -e 'type == "array" and length < 100' "$tmp/issues" >/dev/null 2>&1; then
     unverified_evidence 'step issue listing incomplete within 100'; return 1
   fi
-  jq -r --arg plan "$plan" '.[] | select((.body // "") | split("\n") | any(.[]; startswith("<!-- agentic-flow:plan:" + $plan + " step:") and endswith(" -->"))) | [.number, (.body | capture("step:(?<id>[a-z0-9][a-z0-9._-]*) spec:").id), .state] | @tsv' \
+  jq -r --arg plan "$plan" '
+    .[] | ((.body // "") | split("\n") |
+      map(select(startswith("<!-- agentic-flow:plan:" + $plan + " step:") and endswith(" -->"))) |
+      first | select(. != null)) as $stamp |
+    [.number, ($stamp | capture("step:(?<id>[a-z0-9][a-z0-9._-]*) spec:").id), .state] | @tsv
+  ' \
     "$tmp/issues" > "$tmp/steps" || { unverified_evidence 'step issue stamps malformed'; return 1; }
   while IFS="$(printf '\t')" read -r number step state; do
     [ -n "$number" ] || continue

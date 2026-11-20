@@ -259,7 +259,7 @@ case "$*" in
     else
       printf '{"state":"%s","labels":[{"name":"agent:claude"},{"name":"needs-closing"}],"body":"<!-- agentic-flow:plan:fixture tracker spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}\n' "${LIFE_ISSUE_STATE:-OPEN}"
     fi ;;
-  *'issue list'*) printf '[{"number":3,"state":"%s","body":"<!-- agentic-flow:plan:fixture step:f-1 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}]\n' "${LIFE_STEP_STATE:-CLOSED}" ;;
+  *'issue list'*) printf '[{"number":3,"state":"%s","body":"### Verify\\n\\nCheck step:example spec: syntax.\\n\\n<!-- agentic-flow:plan:fixture step:f-1 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}]\n' "${LIFE_STEP_STATE:-CLOSED}" ;;
   *'api repos/owner/repo/pulls/2'*) cat "$LIFE_PR_JSON" ;;
   *'api graphql '*'number=1'*) cat "$LIFE_COMMENTS_JSON" ;;
   *'api graphql '*'number=2'*) cat "$LIFE_PR_COMMENTS_JSON" ;;

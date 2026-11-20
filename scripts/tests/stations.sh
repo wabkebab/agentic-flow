@@ -1224,13 +1224,16 @@ packet_comment review 'agentic-flow-hold: v=1; id=fixture/hold/1; issue=#1; reas
 packet_comment review 'agentic-flow-hold-clear: id=fixture/hold/1'
 packet_run 0 --station executor --json
 cmp -s "$TMP/packet-bare-executor.json" "$TMP/packet.json" || fail 'bare holds changed executor packet'
-jq '.comments.nodes |= (
+jq '.body |= (
+  sub("\nBrief: `docs/plan.md`"; "\n## alpha — Fixture\n\n[Approved brief](https://github.com/owner/repo/blob/fixture/docs/plan.md)\n\nBrief: `docs/decoy.md`") +
+  "\n<!-- agentic-flow:brief:docs/plan.md -->"
+) | .comments.nodes |= (
   .[2].body |= ("<!-- " + sub("\nSUBMIT_SENTINEL$"; "\n-->\nSUBMIT_SENTINEL") +
     "\n<!--\nagentic-flow-run: run=fixture/1; host=123456789abc\n-->") |
   .[-2,-1].body |= ("<!-- " + . + "\n-->"))' "$STATION_STATE/1.json" > "$STATION_STATE/next"
 mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 packet_run 0 --station executor --json
-cmp -s "$TMP/packet-bare-executor.json" "$TMP/packet.json" || fail 'hidden holds changed executor packet'
+cmp -s "$TMP/packet-bare-executor.json" "$TMP/packet.json" || fail 'rendered body or hidden holds changed executor packet'
 packet_run 0 --station reviewer --json
 grep -q 'agentic-flow-run:' "$TMP/packet.json" && fail 'packet exposed hidden run metadata'
 jq '.submit.body |= (ltrimstr("<!-- ") | sub("\n-->\n"; "\n") | rtrimstr("\n<!--\n-->"))' \

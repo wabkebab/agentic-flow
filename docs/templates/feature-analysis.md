@@ -138,7 +138,8 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 
 **DoD:** <Observable end state for this step.>
 **Verify:** `make test-one F=<selector>`
-**Risks:** <Failure paths and edge cases.>
+**Risks:**
+- <Failure path or edge case.>
 **Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<imperative commit subject>`
 
@@ -154,7 +155,8 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 
 **DoD:** <…>
 **Verify:** `make test-one F=<selector>`
-**Risks:** <Failure paths and edge cases.>
+**Risks:**
+- <Failure path or edge case.>
 **Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<…>`
 

@@ -136,7 +136,8 @@ passes after.>
 
 **DoD:** <Observable end state.>
 **Verify:** `make test-one F=<selector>`
-**Risks:** <Failure paths and edge cases.>
+**Risks:**
+- <Failure path or edge case.>
 **Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<imperative commit subject>`
 
@@ -154,7 +155,8 @@ passes after.>
 
 **DoD:** <…>
 **Verify:** `make test-one F=<selector>`
-**Risks:** <Failure paths and edge cases.>
+**Risks:**
+- <Failure path or edge case.>
 **Red-first:** `<selector>` — <test-path> <runner-path>
 **Commit:** `<…>`
 

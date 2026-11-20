@@ -83,10 +83,14 @@ packet_cmd() (
   plan=$(printf '%s' "$stamp" | jq -r .plan)
   step=$(printf '%s' "$stamp" | jq -r .step)
   [ "$step" != tracker ] || { packet_error 'packet requires a step issue'; return 3; }
-  # Both generated @rev references and the bootstrap backtick form are supported.
+  # Prefer the path stamp on rendered issues. Older bodies keep their generated
+  # @rev reference or bootstrap backtick form.
   doc=$(printf '%s' "$body" | jq -Rser '
-    [split("\n")[]|select(startswith("Brief: "))|
-      capture("^Brief: `?(?<doc>docs/[A-Za-z0-9_./-]+\\.md)(`|@| )").doc]|unique|
+    split("\n") as $lines |
+    [$lines[]|capture("^<!-- agentic-flow:brief:(?<doc>docs/[A-Za-z0-9_./-]+\\.md) -->$").doc] |
+    if length>0 then . else
+      [$lines[]|capture("^Brief: `?(?<doc>docs/[A-Za-z0-9_./-]+\\.md)(`|@| )").doc]|unique
+    end |
     if length==1 then .[0] else error("missing or ambiguous brief path") end') || return 3
   case "$doc" in *'/../'*|*'/./'*|*/..) packet_error 'invalid brief path'; return 3 ;; esac
   git show "$approved:$doc" > "$tmp/doc" || return 3

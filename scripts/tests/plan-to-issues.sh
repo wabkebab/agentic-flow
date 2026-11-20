@@ -74,11 +74,11 @@ case "${1:-} ${2:-}" in
       esac
     done
     num=$(cat "$state/next")
-    printf '%s\n' $((num + 1)) > "$state/next"
     if [ "${FAKE_GH_FAIL_CREATE_NUMBER:-}" = "$num" ]; then
       echo "injected create failure" >&2
       exit 1
     fi
+    printf '%s\n' $((num + 1)) > "$state/next"
     dir="$state/issue-$num"
     mkdir -p "$dir"
     printf '%s\n' "$title" > "$dir/title"
@@ -370,12 +370,16 @@ jq '{profile:"standard",id:"standard-plan",steps:[.steps[0] | .packet = {
   verification:"make check and make test-one F=plan-to-issues",
   risks:"Malformed input must fail before a GitHub write"
 }]}' "$PLAN_SPEC" > "$STANDARD_SPEC"
-if [ -n "${AGENTIC_MEASURE_EVENTS:-}" ]; then
-  packet_words=$(jq -r '.steps[0].packet |
+packet_words=$(jq -r '.steps[0].packet |
     "## Executor packet\nProfile: Standard\nBrief: \(.brief)\nDefinition of Done: \(.definition_of_done)\nVerification: \(.verification)\nRisks and edge cases: \(.risks)"' \
-    "$STANDARD_SPEC" | wc -w | tr -d ' ')
+  "$STANDARD_SPEC" | wc -w | tr -d ' ')
+if [ -n "${AGENTIC_MEASURE_EVENTS:-}" ]; then
   measure_event "packet_words:$packet_words"
 fi
+jq --argjson extra "$((800 - packet_words))" \
+  '.steps[0].packet.verification += (" " + ([range($extra) | "word"] | join(" ")))' \
+  "$STANDARD_SPEC" > "$TMP/packet-at-cap.json"
+"$PLAN_DRIVER" "$TMP/packet-at-cap.json" >/dev/null || fail '800-word packet was rejected'
 STANDARD_STATE="$TMP/gh-standard-state"
 if PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STANDARD_STATE" \
   "$PLAN_DRIVER" --apply "$STANDARD_SPEC" > "$TMP/standard-unapproved.out" 2>&1; then
@@ -393,7 +397,7 @@ grep -q 'agentic-flow:topology:standard' "$STANDARD_STATE/issue-1/body" \
   || fail 'Standard work issue lacks topology stamp'
 grep -q 'approved-by:Test User' "$STANDARD_STATE/issue-1/body" \
   || fail 'Standard approval metadata was not recorded on work issue'
-grep -q '## Executor packet' "$STANDARD_STATE/issue-1/body" \
+grep -q '^### Definition of done$' "$STANDARD_STATE/issue-1/body" \
   || fail 'Standard work issue lacks executor packet'
 STANDARD_DOC="$TMP/standard-doc.md"
 cp "$APPROVAL_DOC" "$STANDARD_DOC"
@@ -460,7 +464,7 @@ grep -q 'downgrade' "$TMP/standard-downgrade.out" \
   || fail 'Standard downgrade lacked diagnostic'
 
 STRICT_SPEC="$TMP/strict-spec.json"
-jq '.profile="strict" | .id="strict-plan" |
+jq '.profile="strict" | .id="strict-plan" | .tracking.body="Tracker prose\n---\nMore details." |
   .steps |= map(.packet={brief:"approved brief step",definition_of_done:"reviewed behavior",
     verification:"make check",risks:"failure path"})' "$PLAN_SPEC" > "$STRICT_SPEC"
 STRICT_STATE="$TMP/gh-strict-state"
@@ -471,7 +475,11 @@ PATH="$GHFIX:$PATH" FAKE_GH_STATE="$STRICT_STATE" \
   || fail 'Strict did not create one tracker and two sub-issues'
 grep -q 'agentic-flow:topology:strict' "$STRICT_STATE/issue-1/body" \
   || fail 'Strict parent lacks topology stamp'
-grep -q '## Executor packet' "$STRICT_STATE/issue-2/body" \
+grep -Fxq 'Tracker prose' "$STRICT_STATE/issue-1/body" \
+  || fail 'Strict tracker lost its tracking body'
+grep -Fxq '\---' "$STRICT_STATE/issue-1/body" \
+  || fail 'Strict tracking prose can render as a setext heading'
+grep -q '^### Definition of done$' "$STRICT_STATE/issue-2/body" \
   || fail 'Strict step lacks executor packet'
 
 # Document-derived specs: real commits, fake GitHub, no ambient working-tree input.
@@ -480,11 +488,7 @@ mkdir -p "$BRIEF_FIX/docs"
 git -C "$BRIEF_FIX" init -q
 git -C "$BRIEF_FIX" config user.name Tester
 git -C "$BRIEF_FIX" config user.email tester@example.invalid
-if [ -f "$ROOT/docs/inprogress/feature-deterministic-stations.md" ]; then
-  cp "$ROOT/docs/inprogress/feature-deterministic-stations.md" "$BRIEF_FIX/docs/plan.md"
-else
-  # Adopter exports have the harness, not this repository's in-progress plan.
-  cat > "$BRIEF_FIX/docs/plan.md" <<'MD'
+cat > "$BRIEF_FIX/docs/plan.md" <<'MD'
 # Feature — Fixture stations
 ## Tracker
 - [ ] S-1 fixture
@@ -494,6 +498,7 @@ id: deterministic-stations
 profile: strict
 tracking: Plan: Deterministic stations
 branch: phase-1
+base: trunk
 steps: s-1 s-2 s-3 s-4 s-5 s-6 s-7 s-8 s-9
 ```
 ## Verification commands
@@ -502,17 +507,27 @@ make check
 make test
 ```
 MD
-  for n in 1 2 3 4 5 6 7 8 9; do
-    cat >> "$BRIEF_FIX/docs/plan.md" <<MD
+for n in 1 2 3 4 5 6 7 8 9; do
+  cat <<MD
 ## S-$n — Fixture step $n
 **Approach:** Parsing is strict.
 **DoD:** The fixture passes.
 **Verify:** make test-one F=plan-to-issues
-**Risks:** A malformed plan must fail.
-**Red-first:** \`scripts/self-test.sh --only plan-to-issues\` — scripts/self-test.sh
 MD
-  done
-  cat >> "$BRIEF_FIX/docs/plan.md" <<'MD'
+  if [ "$n" -eq 2 ]; then
+    cat <<'MD'
+**Risks:**
+- Keep <placeholder> visible.
+- Preserve `a | b`.
+MD
+  else
+    printf '%s\n' '**Risks:** A malformed plan must fail.'
+  fi
+  cat <<'MD'
+**Red-first:** `scripts/self-test.sh --only plan-to-issues` — scripts/self-test.sh
+MD
+done >> "$BRIEF_FIX/docs/plan.md"
+cat >> "$BRIEF_FIX/docs/plan.md" <<'MD'
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** pending
@@ -523,7 +538,6 @@ MD
 - **Review verdict:** source=pr-head-approval
 - **Memory:** pending
 MD
-fi
 git -C "$BRIEF_FIX" add docs/plan.md
 git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record approved plan'
 BRIEF_REV=$(git -C "$BRIEF_FIX" rev-parse HEAD)
@@ -558,14 +572,20 @@ for label in DoD Verify Risks; do
   jq -r --arg field "$field" '.steps[3].packet[$field] | split("\n")[0]' "$TMP/brief-spec.json" > "$TMP/label-packet"
   cmp -s "$TMP/label-source" "$TMP/label-packet" || fail "packet changed $label bytes"
 done
+jq -e '
+  .steps[0].packet.risks == "A malformed plan must fail." and
+  .steps[1].packet.risks == "- Keep <placeholder> visible.\n- Preserve `a | b`."
+' "$TMP/brief-spec.json" >/dev/null || fail 'brief changed risk content'
 # Strict parse failures must name a source line.
-for mutation in duplicate duplicate-section missing orphan extra-section malformed traversal; do
+for mutation in duplicate duplicate-section missing orphan extra-section malformed traversal empty-risks prose-risks; do
   case "$mutation" in
     duplicate-section) sed 's/^## S-2 — /## S-1 — /' "$TMP/approved-plan.md" ;;
     extra-section) sed 's/steps: s-1 s-2 /steps: s-1 /' "$TMP/approved-plan.md" ;;
     traversal) sed 's@— scripts/self-test.sh@— ../outside.sh@' "$TMP/approved-plan.md" ;;
     duplicate) sed 's/steps: s-1 /steps: s-1 s-1 /' "$TMP/approved-plan.md" ;;
     missing) sed '/^\*\*Risks:\*\*/d' "$TMP/approved-plan.md" ;;
+    empty-risks) sed 's/^\*\*Risks:\*\*.*/**Risks:**/' "$TMP/approved-plan.md" ;;
+    prose-risks) awk '/^\*\*Risks:/ {print "**Risks:**\nThis is prose."; next} {print}' "$TMP/approved-plan.md" ;;
     orphan) sed 's/steps: s-1 /steps: absent s-1 /' "$TMP/approved-plan.md" ;;
     malformed) sed 's/^\*\*Red-first:\*\*.*/**Red-first:** broken/' "$TMP/approved-plan.md" ;;
   esac > "$TMP/bad-brief.md"
@@ -574,9 +594,78 @@ for mutation in duplicate duplicate-section missing orphan extra-section malform
   fi
   grep -Eq 'fixture.md:[0-9]+:' "$TMP/parse.err" || fail 'parse error omitted line'
 done
-brief_run --apply > /dev/null || fail 'approved document apply failed'
+FAKE_GH_FAIL_CREATE_NUMBER=2 brief_run --apply > /dev/null 2>&1 && fail 'approved creation unexpectedly succeeded'
+[ -e "$TMP/brief-gh/issue-1/body" ] || fail 'interrupted apply did not retain its tracker'
+brief_run --apply > /dev/null || fail 'approved document apply did not resume'
 git -C "$BRIEF_FIX" add docs/plan.md
 git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record tracking issue'
+brief_hash=$(jq -cS . "$TMP/brief-spec.json" | git hash-object --stdin)
+grep -Fq "tracker spec:$brief_hash journal=v1 approved=$BRIEF_REV" "$TMP/brief-gh/issue-1/body" \
+  || fail 'issue layout changed the approved spec hash'
+normalize_issue_body() {
+  sed -E 's/spec:[a-f0-9]{40}/spec:<hash>/; s/approved=[a-f0-9]{40}/approved=<revision>/; s@/blob/[a-f0-9]{40}/@/blob/<revision>/@; s/approved-at:[^ ]+/approved-at:<time>/' "$1"
+}
+normalize_issue_body "$TMP/brief-gh/issue-1/body" > "$TMP/tracker-rendered"
+cat > "$TMP/tracker-golden" <<'MD'
+## Plan: Deterministic stations
+
+**Profile:** Strict · `phase-1` → `trunk` · [Approved brief](https://github.com/owner/repo/blob/<revision>/docs/plan.md)
+
+### Steps
+
+- [ ] #2 [s-1] Fixture step 1
+- [ ] #3 [s-2] Fixture step 2
+- [ ] #4 [s-3] Fixture step 3
+- [ ] #5 [s-4] Fixture step 4
+- [ ] #6 [s-5] Fixture step 5
+- [ ] #7 [s-6] Fixture step 6
+- [ ] #8 [s-7] Fixture step 7
+- [ ] #9 [s-8] Fixture step 8
+- [ ] #10 [s-9] Fixture step 9
+
+<!-- agentic-flow:plan:deterministic-stations tracker spec:<hash> journal=v1 approved=<revision> approved-by:Tester approved-at:<time> -->
+<!-- agentic-flow:topology:strict -->
+MD
+diff -u "$TMP/tracker-golden" "$TMP/tracker-rendered" || fail 'Strict tracker Markdown changed'
+normalize_issue_body "$TMP/brief-gh/issue-3/body" > "$TMP/strict-rendered"
+cat > "$TMP/strict-golden" <<'MD'
+## s-2 — Fixture step 2
+
+[Tracker #1](https://github.com/owner/repo/issues/1) · **Profile:** Strict · [Approved brief](https://github.com/owner/repo/blob/<revision>/docs/plan.md)
+
+### Definition of done
+
+The fixture passes.
+
+### Verify
+
+make test-one F=plan-to-issues
+
+### Verification commands
+
+```bash
+make check
+make test
+```
+
+### Risks
+
+- Keep &lt;placeholder&gt; visible.
+- Preserve `a | b`.
+
+<!-- agentic-flow:brief:docs/plan.md -->
+<!-- agentic-flow:plan:deterministic-stations step:s-2 spec:<hash> journal=v1 approved=<revision> -->
+<!-- agentic-flow:topology:strict -->
+MD
+diff -u "$TMP/strict-golden" "$TMP/strict-rendered" || fail 'Strict step issue Markdown changed'
+brief_run --diff > "$TMP/new-brief-diff.out" || fail 'new-layout tracker discovery failed'
+grep -q '^Tracker: current$' "$TMP/new-brief-diff.out" || fail 'new tracker was not recognized'
+# Use an actual old-layout tracker in the approval-only migration below.
+{
+  printf '%s\n' 'Handwritten tracker' '' '## Steps' '- [ ] #2 [s-1] S-1 — Fixture step 1' ''
+  tail -n 2 "$TMP/brief-gh/issue-1/body"
+} > "$TMP/old-layout-tracker"
+cp "$TMP/old-layout-tracker" "$TMP/brief-gh/issue-1/body"
 for n in 1 2 3 4 5 6 7 8 9 10; do
   grep -q "approved=$BRIEF_REV" "$TMP/brief-gh/issue-$n/body" || fail 'issue lacks approved revision'
   # Simulate legacy creation without journal=v1. Migration must preserve eligibility.
@@ -676,8 +765,19 @@ profile: standard
 branch: topic
 steps: alpha
 ```
+## Verification commands
+```bash
+make test-one F=<group>
+# Keep this shell comment in the fence.
+printf '%s\n' '---' 'a | b' '`ticks`'
+```
+
+---
+
 ## alpha — First
-**DoD:** done
+**DoD:** Render <placeholder>, pipes | and `code <literal>`.
+---
+Keep this line after the separator.
 **Verify:** `make check`
 **Red-first:** none
 **Risks:** malformed input
@@ -706,6 +806,39 @@ standard_brief_apply || fail "Standard document creation failed: $(cat "$TMP/std
 [ "$(find "$TMP/standard-brief-gh" -type d -name 'issue-*' | wc -l | tr -d ' ')" = 1 ] || fail 'Standard document created a tracker'
 grep -q "approved=$STANDARD_REV" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard creation missing revision stamp'
 grep -q "journal=v1" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard creation missing journal stamp'
+normalize_issue_body "$TMP/standard-brief-gh/issue-1/body" > "$TMP/standard-rendered"
+cat > "$TMP/standard-golden" <<'MD'
+## alpha — First
+
+**Profile:** Standard · [Approved brief](https://github.com/owner/repo/blob/<revision>/docs/inprogress/plan.md)
+
+### Definition of done
+
+Render &lt;placeholder&gt;, pipes | and `code <literal>`.
+\---
+Keep this line after the separator.
+
+### Verify
+
+`make check`
+
+### Verification commands
+
+```bash
+make test-one F=<group>
+# Keep this shell comment in the fence.
+printf '%s\n' '---' 'a | b' '`ticks`'
+```
+
+### Risks
+
+- malformed input
+
+<!-- agentic-flow:brief:docs/inprogress/plan.md -->
+<!-- agentic-flow:plan:standard-doc step:alpha spec:<hash> journal=v1 approved=<revision> approved-by:Tester approved-at:<time> -->
+<!-- agentic-flow:topology:standard -->
+MD
+diff -u "$TMP/standard-golden" "$TMP/standard-rendered" || fail 'Standard work issue Markdown changed'
 git -C "$STANDARD_BRIEF" add docs/inprogress/plan.md
 git -C "$STANDARD_BRIEF" -c commit.gpgsign=false commit -qm 'Record Standard work URL'
 cp "$TMP/standard-brief-gh/issue-1/body" "$TMP/std-before"
