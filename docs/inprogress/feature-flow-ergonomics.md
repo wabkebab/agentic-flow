@@ -587,7 +587,7 @@ Re-run scenario 1 on renderer output, and run every marker reader over the hosti
 ## Status / Implementation status
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
-- **Tracking issue:** pending
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/175
 - **Approval:** status=approved; by=wabkebab; at=2026-11-20; rev=4e45696847cb2f89cc21d82263d05a2b12bdfd3f
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
