@@ -274,3 +274,25 @@ fail	]
 fail	hash
 packet_run	13 --station executor --json
 station_run	2 1 submit --as executor --head "$STATION_A" --body-file "$TMP/oversize-comment"
+fail	"$change did not change the App key"
+fail	"$workflow App job ignores the cache verdict"
+fail	"$workflow accepted an App job that ended in $result"
+fail	"$workflow accepted an empty green marker"
+fail	"$workflow accepts a cache hit without source evidence"
+fail	"$workflow cache lookup errors fail the changes job"
+fail	"$workflow cache lookup errors or misses can be reused"
+fail	"$workflow changes job must use the default PR merge checkout"
+fail	"$workflow could save after an App failure"
+fail	"$workflow does not compute the App key"
+fail	"$workflow does not identify the reused run and attempt"
+fail	"$workflow emitted a cache hit for an empty marker"
+fail	"$workflow rejected a skipped App job"
+fail	"$workflow restores a cache entry with the wrong key"
+fail	"$workflow saves a cache entry with the wrong key"
+fail	"$workflow saves the green result before App checks finish"
+fail	"could not compute the App key after $change"
+fail	'App key did not hash the staged App inputs'
+fail	'bookkeeping changed the App key'
+fail	'could not compute the App key after the base moved'
+fail	'could not compute the App key on the merge checkout'
+fail	'new base content kept the same App key'

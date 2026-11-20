@@ -6,7 +6,7 @@
 # latest releases when you adopt it (METHODOLOGY.md §9) — pinning is only useful if the
 # pin is a version you actually chose.
 #
-# Action pins verified: 2026-07-24
+# Action pins verified: 2026-11-20
 # Checked by scripts/check-action-pins.sh. After re-verifying, run it with --stamp.
 
 name: CI
@@ -35,6 +35,8 @@ jobs:
     outputs:
       app: ${{ steps.filter.outputs.app }}
       docs: ${{ steps.filter.outputs.docs }}
+      app_key: ${{ steps.app_key.outputs.key }}
+      app_cached: ${{ steps.app_source.outcome == 'success' && steps.app_source.outputs.cached || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,6 +60,34 @@ jobs:
               - '!docs/agentic-flow-explained.html'
             docs:
               - '{docs/**,*.md,.github/workflows/ci.yml}'
+      # Checkout defaults to the pull_request merge commit.
+      - name: Compute App input key
+        id: app_key
+        if: steps.filter.outputs.app == 'true'
+        continue-on-error: true
+        run: |
+          key=$(scripts/app-input-key.sh)
+          printf 'key=%s\n' "$key" >> "$GITHUB_OUTPUT"
+      - name: Restore green App result
+        id: app_cache
+        if: steps.app_key.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/agentic-flow-app-green
+          key: app-green-v1-${{ steps.app_key.outputs.key }}
+      - name: Report reused App checks
+        id: app_source
+        if: steps.app_cache.outcome == 'success' && steps.app_cache.outputs.cache-hit == 'true'
+        continue-on-error: true
+        env:
+          APP_CACHE_FILE: ${{ runner.temp }}/agentic-flow-app-green
+        run: |
+          source_run=$(cat "$APP_CACHE_FILE")
+          prefix="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/"
+          [[ $source_run == "$prefix"* && ${source_run#"$prefix"} =~ ^[0-9]+/attempts/[0-9]+$ ]] || exit 1
+          printf 'Reused App checks from %s.\n' "$source_run" >> "$GITHUB_STEP_SUMMARY"
+          printf 'cached=true\n' >> "$GITHUB_OUTPUT"
 
   # ── Secrets scan ─────────────────────────────────────────────────────────────
   # Deliberately NOT path-filtered: a credential can land in any file.
@@ -84,7 +114,7 @@ jobs:
   app:
     name: App checks
     needs: changes
-    if: needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.app == 'true' && needs.changes.outputs.app_cached != 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -132,6 +162,22 @@ jobs:
         run: make test
       - name: Build
         run: make build
+      - name: Record green App result
+        id: app_green
+        if: success() && needs.changes.outputs.app_key != ''
+        continue-on-error: true
+        env:
+          APP_CACHE_FILE: ${{ runner.temp }}/agentic-flow-app-green
+        run: |
+          printf '%s/%s/actions/runs/%s/attempts/%s\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$APP_CACHE_FILE"
+      - name: Save green App result
+        if: success() && steps.app_green.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/agentic-flow-app-green
+          key: app-green-v1-${{ needs.changes.outputs.app_key }}
 
   docs:
     name: Docs index

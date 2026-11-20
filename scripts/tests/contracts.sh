@@ -3,35 +3,12 @@
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
 
 # Flow ergonomics scenario 8. Parse the pinned action's single-quoted filter lists.
-ci_bookkeeping_globs() {
-  awk -v quote="'" '
-    /^  [^ ]/ { changes=($1=="changes:"); step=0; filters=0 }
-    !changes { next }
-    /^      - / { step=0; filters=0 }
-    /^        id: filter$/ { step=1 }
-    step && /^          predicate-quantifier: every$/ { every++ }
-    step && /^          filters: \|$/ { filters=1; next }
-    filters && /^            [^ ]/ { area=$1; next }
-    filters && /^              - / {
-      rule=substr($0, 17)
-      if (area=="app:") {
-        if (rule !~ ("^" quote "![A-Za-z0-9_./*-]+" quote "$")) invalid=1
-        else print substr(rule, 3, length(rule)-3)
-        app++
-      }
-      if (area=="docs:") {
-        if (rule != quote "{docs/**,*.md,.github/workflows/ci.yml}" quote) invalid=1
-        docs++
-      }
-    }
-    END { exit (invalid || every!=1 || app<1 || docs!=1) }
-  ' "$1"
-}
-
 ci_bookkeeping_check() (
+  # shellcheck source=scripts/lib/ci-bookkeeping.sh
+  . "$ROOT/scripts/lib/ci-bookkeeping.sh"
   local active=$1 template=$2 probe=$3 workflow globs template_globs source path matched status=0
-  globs=$(ci_bookkeeping_globs "$active") || fail "$active must use an all-negated App filter with the every predicate"
-  template_globs=$(ci_bookkeeping_globs "$template") || fail "$template must use an all-negated App filter with the every predicate"
+  globs=$(ci_bookkeeping_globs "$active" --check-docs) || fail "$active must use an all-negated App filter with the every predicate"
+  template_globs=$(ci_bookkeeping_globs "$template" --check-docs) || fail "$template must use an all-negated App filter with the every predicate"
   [ "$globs" = "$template_globs" ] || fail 'CI workflows have different bookkeeping lists'
 
   # Git ignore patterns and the workflow patterns share literal paths, * and **.
@@ -74,11 +51,141 @@ ci_bookkeeping_check() (
   done
 )
 
+# Flow ergonomics scenario 9. Use an actual merge tree with the same PR head
+# before and after the base moves, and mutate tracked inputs in the index.
+ci_app_key_tests() (
+  local fixture="$TMP/ci-app-key" expected key base pr change file
+  git init -q -b main --template= "$fixture"
+  cd "$fixture"
+  git config user.name Fixture
+  git config user.email fixture@example.invalid
+  git config commit.gpgsign false
+  mkdir -p .github/workflows docs/done/security ROADMAP.md
+  cp "$ci_active" .github/workflows/ci.yml
+  printf 'base\n' > base.txt
+  printf 'app\n' > 'app input.sh'
+  printf 'nested App input\n' > ROADMAP.md/input
+  printf 'notes\n' > docs/done/security/plan.md
+  printf 'memory\n' > docs/MEMORY.md
+  git add -- base.txt 'app input.sh' ROADMAP.md/input docs/done/security/plan.md docs/MEMORY.md
+  git commit -qm base
+  base=$(git rev-parse HEAD)
+  git checkout -qb pr
+  printf 'PR\n' > pr.txt
+  git add -- pr.txt
+  git commit -qm pr
+  pr=$(git rev-parse HEAD)
+  git checkout -q --detach "$base"
+  git merge --no-ff -qm 'Original PR merge' "$pr"
+  key=$("$ROOT/scripts/app-input-key.sh") || fail 'could not compute the App key on the merge checkout'
+  expected=$(git -c core.quotePath=true ls-files -s -- base.txt 'app input.sh' ROADMAP.md/input pr.txt | shasum -a 256)
+  [ "$key" = "${expected%% *}" ] || fail 'App key did not hash the staged App inputs'
+
+  printf 'edited notes\n' > docs/done/security/plan.md
+  printf 'new notes\n' > docs/done/.draft.md
+  git add -- docs/done
+  [ "$key" = "$("$ROOT/scripts/app-input-key.sh")" ] || fail 'bookkeeping changed the App key'
+  git reset -q --hard HEAD
+  for change in mode rename delete add contents; do
+    file='app input.sh'
+    case "$change" in
+      mode) git update-index --chmod=+x -- "$file" ;;
+      rename) git mv -- "$file" app-renamed.sh ;;
+      delete) git rm -q -- "$file" ;;
+      add) printf 'added\n' > added.sh; git add -- added.sh ;;
+      contents) printf 'app!\n' > "$file"; git add -- "$file" ;;
+    esac
+    expected=$("$ROOT/scripts/app-input-key.sh") || fail "could not compute the App key after $change"
+    [ "$key" != "$expected" ] || fail "$change did not change the App key"
+    git reset -q --hard HEAD
+  done
+
+  git checkout -q main
+  printf 'new base\n' > base.txt
+  git add -- base.txt
+  git commit -qm 'Move base'
+  git checkout -q --detach main
+  git merge --no-ff -qm 'Updated PR merge' "$pr"
+  expected=$("$ROOT/scripts/app-input-key.sh") || fail 'could not compute the App key after the base moved'
+  [ "$key" != "$expected" ] || fail 'new base content kept the same App key'
+)
+
+ci_job_step() { # <workflow> <job> <step name>
+  awk -v job="$2:" -v step="      - name: $3" '
+    /^  [^ ]/ { in_job=($1==job); in_step=0 }
+    in_job && /^      - / { in_step=($0==step) }
+    in_step { print }
+  ' "$1"
+}
+
+ci_app_cache_tests() (
+  local workflow=$1 checkout key restore report marker save body source result
+  checkout=$(ci_job_step "$workflow" changes Checkout)
+  key=$(ci_job_step "$workflow" changes 'Compute App input key')
+  restore=$(ci_job_step "$workflow" changes 'Restore green App result')
+  report=$(ci_job_step "$workflow" changes 'Report reused App checks')
+  marker=$(ci_job_step "$workflow" app 'Record green App result')
+  save=$(ci_job_step "$workflow" app 'Save green App result')
+  if ! grep -q 'uses: actions/checkout@' <<< "$checkout" || grep -q '^[[:space:]]*ref:' <<< "$checkout"; then
+    fail "$workflow changes job must use the default PR merge checkout"
+  fi
+  grep -Fq 'scripts/app-input-key.sh' <<< "$key" || fail "$workflow does not compute the App key"
+  grep -q 'continue-on-error: true' <<< "$restore" || fail "$workflow cache lookup errors fail the changes job"
+  grep -Fxq "        if: steps.app_cache.outcome == 'success' && steps.app_cache.outputs.cache-hit == 'true'" \
+    <<< "$report" || fail "$workflow cache lookup errors or misses can be reused"
+  grep -Fxq "      app_cached: \${{ steps.app_source.outcome == 'success' && steps.app_source.outputs.cached || 'false' }}" \
+    "$workflow" || fail "$workflow accepts a cache hit without source evidence"
+  grep -Fxq "    if: needs.changes.outputs.app == 'true' && needs.changes.outputs.app_cached != 'true'" \
+    "$workflow" || fail "$workflow App job ignores the cache verdict"
+  grep -Fxq "          key: app-green-v1-\${{ steps.app_key.outputs.key }}" <<< "$restore" \
+    || fail "$workflow restores a cache entry with the wrong key"
+  grep -Fxq "          key: app-green-v1-\${{ needs.changes.outputs.app_key }}" <<< "$save" \
+    || fail "$workflow saves a cache entry with the wrong key"
+  grep -Fxq "        if: success() && steps.app_green.outcome == 'success'" <<< "$save" \
+    || fail "$workflow could save after an App failure"
+  awk '/^  app:/ { app=1 } /^  docs:/ { app=0 }
+    app && /^      - name:/ { before=last; last=$0 }
+    END { exit !(before ~ /Record green App result$/ && last ~ /Save green App result$/) }
+  ' "$workflow" || fail "$workflow saves the green result before App checks finish"
+
+  export APP_CACHE_FILE="$TMP/ci-app-green" GITHUB_STEP_SUMMARY="$TMP/ci-app-summary" \
+    GITHUB_OUTPUT="$TMP/ci-app-output" GITHUB_SERVER_URL=https://github.com \
+    GITHUB_REPOSITORY=owner/repo GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=2
+  source=https://github.com/owner/repo/actions/runs/123/attempts/2
+  body=$(sed -n '/^        run: |$/,$s/^          //p' <<< "$marker")
+  bash -e -c "$body"
+  body=$(sed -n '/^        run: |$/,$s/^          //p' <<< "$report")
+  : > "$GITHUB_OUTPUT"
+  bash -e -c "$body"
+  if ! grep -Fq "$source" "$GITHUB_STEP_SUMMARY" || ! grep -Fxq 'cached=true' "$GITHUB_OUTPUT"; then
+    fail "$workflow does not identify the reused run and attempt"
+  fi
+  : > "$GITHUB_OUTPUT"
+  : > "$APP_CACHE_FILE"
+  bash -e -c "$body" 2>/dev/null && fail "$workflow accepted an empty green marker"
+  [ ! -s "$GITHUB_OUTPUT" ] || fail "$workflow emitted a cache hit for an empty marker"
+
+  for result in skipped failure cancelled; do
+    body=$(ci_job_step "$workflow" ci-gate 'Assert no upstream job failed or was cancelled' \
+      | sed -n '/^        run: |$/,$s/^          //p' \
+      | sed -e "s/\${{ needs\.app\.result }}/$result/g" -e 's/${{ needs\.[a-z-]*\.result }}/success/g')
+    case "$result" in
+      skipped) bash -e -c "$body" || fail "$workflow rejected a skipped App job" ;;
+      *) if bash -e -c "$body" >/dev/null; then fail "$workflow accepted an App job that ended in $result"; fi ;;
+    esac
+  done
+)
+
 if [ -f "$ROOT/scripts/export.sh" ]; then
   ci_active="$ROOT/.github/workflows/ci.yml"
   ci_template="$ROOT/templates/ci/ci.yml"
-  ci_bookkeeping_check "$ci_active" "$ci_template" "$TMP/ci-bookkeeping"
-  if [ "$SELF_TEST_MODE" != fast ] || [ -n "$ONLY_GROUP" ]; then
+  if [ "$SELF_TEST_MODE" = fast ] && [ -z "$ONLY_GROUP" ]; then
+    ci_bookkeeping_check "$ci_active" "$ci_template" "$TMP/ci-bookkeeping"
+  else
+    ci_app_key_tests
+    ci_bookkeeping_check "$ci_active" "$ci_template" "$TMP/ci-bookkeeping"
+    ci_app_cache_tests "$ci_active"
+    ci_app_cache_tests "$ci_template"
     ci_bad="$TMP/ci-invalid"
     mkdir -p "$ci_bad"
     for ci_mutation in payload drift gate result readers; do
