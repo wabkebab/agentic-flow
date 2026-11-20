@@ -3,6 +3,7 @@
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/ledger.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/journal-comment.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/journal.sh" # journal_jq, used by the hold counter below
 
 andon_desktop() {
   if command -v osascript >/dev/null 2>&1; then
