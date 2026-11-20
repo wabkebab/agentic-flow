@@ -43,6 +43,11 @@ adopters stop running the harness's internal tests on every `make test`.
   An adopter-twin fixture runs upgrade, hooks and `make check` against an export with
   a customized `CLAUDE.md` and `Makefile`. The dispatcher's group imports are linted
   with `source=/dev/null`, which keeps shellcheck under about 2.5 GB.
+- `verify-step` records a command that ran past `AGENTIC_VERIFY_TIMEOUT` as exit
+  124 even when the command handles TERM and exits with an ordinary status, as GNU
+  make does on Linux. Before, only signal exits (137, 143) counted, so a timed-out
+  `make` target could be recorded as an ordinary failure. A command that succeeds
+  at the deadline still records success.
 
 Migration: run `scripts/agentic-flow upgrade`, then copy two `Makefile` changes from
 `templates/harness/Makefile` by hand: the `test-one` recipe (`S=` now accepts
