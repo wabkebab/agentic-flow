@@ -473,14 +473,18 @@ single_push_tests() (
   . "$ROOT/scripts/lib/ship.sh"
   local fixture="$TMP/single-push" stored="$TMP/single-push-state" rev tip rc mode ready
   local source=docs/inprogress/plan.md dest=docs/done/plan.md
-  mkdir -p "$fixture"/{config,docs/inprogress,scripts} "$stored"
+  mkdir -p "$fixture" "$stored"
   cd "$fixture" || return 1
-  command git init -q
-  command git checkout -qb feature
+  command git init -qb main
   command git config user.name Fixture
   command git config user.email fixture@example.invalid
   command git config commit.gpgsign false
   command git remote add origin https://github.com/owner/repo.git
+  command git commit --allow-empty -qm base
+  local plan_worktree="$fixture/.git/agentic-flow/worktrees/shipping-fixture"
+  command git worktree add -qb feature "$plan_worktree" || fail 'shipping fixture could not create a linked worktree'
+  cd "$plan_worktree" || return 1
+  mkdir -p config docs/inprogress scripts
   ln "$ROOT/config/workflow.tsv" config/workflow.tsv
   ln -s "$ROOT/scripts/hooks" scripts/hooks
   ln -s "$ROOT/scripts/lib" scripts/lib
@@ -537,7 +541,7 @@ if [ "$3" = --validate-doc-status ]; then exec "$FIXTURE_SCRIPTS/lifecycle-statu
 printf 'READY fixture\n'
 LIFECYCLE
   chmod +x scripts/docs-index.sh scripts/lifecycle-status.sh
-  AGENTIC_PROJECT_ROOT=$fixture scripts/docs-index.sh >/dev/null
+  AGENTIC_PROJECT_ROOT=$plan_worktree scripts/docs-index.sh >/dev/null
   command git add -- .agentic-flow-review-policy config/workflow.tsv docs/README.md "$source" fixture.txt \
     scripts/docs-index.sh scripts/lifecycle-status.sh scripts/hooks scripts/lib
   command git commit -qm brief
@@ -606,6 +610,9 @@ CLOSER
     printf 'finish\n' >> "$stored/actions"
   }
   sleep() { ready=true; }
+  close_out_cmd prep "$source" --dry-run > "$stored/out" || fail 'close-out prep failed in a linked worktree'
+  grep -Fq "Would move $source to $dest" "$stored/out" && [ -z "$(git status --porcelain)" ] ||
+    fail 'close-out dry run changed or omitted the worktree paths'
   for mode in dirty prep-stray commit-fail commit-noop manual create-fail ci-fail happy; do
     command git reset --hard "$tip" >/dev/null
     rm -f "$stored/pr" "$stored/remote-head" "$stored/pr-body"
@@ -963,11 +970,61 @@ GIT
   (cd "$wt" && scripts/docs-index.sh --check) >/dev/null || fail 'start generated a stale index'
   grep -Fq "$wt" "$fixture/output" && grep -Fq "$doc" "$fixture/output" || fail 'start omitted the plan paths'
 
-  sed 's/^Base: .*/Base: `main`. One branch and one PR: `demo-plan`. Each step closes its issue./' "$wt/$doc" > "$fixture/edited-plan"
-  mv "$fixture/edited-plan" "$wt/$doc"
+  cat > "$wt/$doc" <<'PLAN'
+# Feature — Worktree commands
+
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: demo-plan
+profile: standard
+branch: demo-plan
+steps: alpha
+```
+
+## Branch
+Base: `main`. One branch and one PR: `demo-plan`.
+
+## Alpha — Exercise worktree commands
+**DoD:** The commands use the plan worktree.
+**Verify:** make check
+**Risks:** Uncommitted planner edits
+**Red-first:** none
+
+## Status
+- **Approval:** pending
+PLAN
   git -C "$wt" add -- "$doc"
   git -C "$wt" commit -qm 'Publish plan doc locally'
+  rev=$(git -C "$wt" rev-parse HEAD)
+  sed "s/Approval:\*\* pending/Approval:** status=approved; by=owner; at=2026-01-01; rev=$rev/" "$wt/$doc" > "$fixture/approved-plan"
+  cat "$fixture/approved-plan" > "$wt/$doc"
+  git -C "$wt" add -- "$doc"
+  git -C "$wt" commit -qm 'Approve worktree plan'
   tip=$(git -C "$wt" rev-parse HEAD)
+
+  printf 'planner edit\n' >> "$wt/docs/README.md"
+  git -C "$wt" add -- docs/README.md
+  printf 'planner notes\n' > "$wt/notes.txt"
+  (cd "$wt" && plan_cli 3 run "$doc" --once)
+  grep -Fq 'plan worktree is dirty' "$fixture/output" && grep -Fq docs/README.md "$fixture/output" &&
+    grep -Fq notes.txt "$fixture/output" || fail 'run did not name dirty plan worktree paths'
+  [ "$(git -C "$wt" status --porcelain)" = "$(printf 'M  docs/README.md\n?? notes.txt')" ] &&
+    [ "$(cat "$wt/notes.txt")" = 'planner notes' ] || fail 'run changed planner edits'
+  git -C "$wt" restore --staged --worktree -- docs/README.md
+  rm "$wt/notes.txt"
+
+  git checkout -q main
+  plan_cli 3 run "$doc" --once
+  grep -Fxq "  cd $wt" "$fixture/output" || fail 'run omitted the unique plan worktree path'
+  git branch ambiguous-plan "$tip"
+  plan_cli 3 run "$doc" --once
+  if grep -q '^  cd ' "$fixture/output"; then fail 'run chose between branches containing the same plan doc'; fi
+  [ "$(git branch --show-current)" = main ] && [ "$(git rev-parse HEAD)" = "$initial" ] || fail 'run changed the caller checkout'
+  git branch -D ambiguous-plan >/dev/null
+  (cd "$wt" && "$ROOT/scripts/plan-to-issues.sh" --doc "$doc") > "$fixture/issues" || fail 'plan-to-issues could not read the worktree brief'
+  grep -Fq 'Exercise worktree commands' "$fixture/issues" || fail 'plan-to-issues omitted the worktree step'
+  git checkout -q caller
+
   salvage=refs/agentic-flow/salvage/demo-plan/run
   other=refs/agentic-flow/salvage/demo-plans/run
   git update-ref "$salvage" "$tip"
@@ -3019,7 +3076,7 @@ MODEL
   c5_run() {
     test_timing_begin call c5_run 1
     local expected=$1 status=0; shift
-    (cd "$project" && PATH="$bin:$PATH" XDG_CONFIG_HOME="$c4/operator" AGENTIC_WORKTREE_ROOT="$c4/worktrees" \
+    (cd "${C5_CHECKOUT:-$project}" && PATH="$bin:$PATH" XDG_CONFIG_HOME="$c4/operator" AGENTIC_WORKTREE_ROOT="$c4/worktrees" \
       scripts/agentic-flow run docs/inprogress/plan.md --json "$@") > "$c4/out" 2> "$c4/err" || status=$?
     [ "$status" = "$expected" ] || fail "C-5 returned $status expected $expected: $(cat "$c4/err") $(cat "$c4/out")"
     test_timing_end
@@ -3100,6 +3157,14 @@ REGRESSION
   [ "$(cat "$state/launches")" = 2 ] || fail 'Standard loop launched extra stations'
   c5_run 0
   [ "$(cat "$state/launches")" = 2 ] || fail 'ready to ship launched a station'
+  c5_reset
+  local worktrees_before
+  worktrees_before=$(git -C "$project" worktree list --porcelain | sed -n '/^worktree /p')
+  C5_CHECKOUT="$wt" c5_run 0 --once
+  [ "$(cat "$state/launches")" = 1 ] && [ "$(git -C "$wt" log -1 --format=%s)" = 'Implement fixture. Fixes #1' ] ||
+    fail 'run --once did not execute in the existing plan worktree'
+  [ "$(git -C "$project" worktree list --porcelain | sed -n '/^worktree /p')" = "$worktrees_before" ] &&
+    [ "$(git -C "$project" rev-parse HEAD)" = "$head" ] || fail 'run changed the worktree list or main checkout'
   c5_reset
   jq '.sandbox.enabled=false' "$wt/config/stations/claude.settings.json" > "$c4/weak-profile"
   cat "$c4/weak-profile" > "$wt/config/stations/claude.settings.json"

@@ -748,12 +748,16 @@ for approval_case in unapproved missing-rev unknown-rev unrelated-rev; do
 done
 
 
-# Standard document mode: creation, revision stamping, and label-preserving reapply.
-STANDARD_BRIEF="$TMP/standard-brief"
+# Standard creation and reapply from a linked worktree with a branch-only brief.
+STANDARD_REPO="$TMP/standard-brief"
+STANDARD_BRIEF="$STANDARD_REPO/.git/agentic-flow/worktrees/standard-doc"
+mkdir -p "$STANDARD_REPO"
+git -C "$STANDARD_REPO" init -qb main
+git -C "$STANDARD_REPO" config user.name Tester
+git -C "$STANDARD_REPO" config user.email fixture@example.invalid
+git -C "$STANDARD_REPO" -c commit.gpgsign=false commit --allow-empty -qm 'Standard base'
+git -C "$STANDARD_REPO" worktree add -qb topic "$STANDARD_BRIEF"
 mkdir -p "$STANDARD_BRIEF/docs/inprogress"
-git -C "$STANDARD_BRIEF" init -q
-git -C "$STANDARD_BRIEF" config user.name Tester
-git -C "$STANDARD_BRIEF" config user.email fixture@example.invalid
 cat > "$STANDARD_BRIEF/docs/inprogress/plan.md" <<'MD'
 # Feature — Standard fixture
 ## Tracker

@@ -9,6 +9,25 @@
 CONTROLLER_RECOVERY=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/recovery.pl
 
 controller_error() { printf 'controller: %s\n' "$*" >&2; }
+
+controller_worktree_hint() { # An absent HEAD doc is a routing hint, not authority to run.
+  local refs tip match='' size spec plan
+  refs=$(git for-each-ref --count=1001 --format='%(objectname)' refs/heads/) || return 0
+  [ "$(printf '%s\n' "$refs" | wc -l)" -le 1000 ] || return 0
+  while IFS= read -r tip; do
+    [ -n "$tip" ] && [ "$(git cat-file -t "$tip:$CT_DOC" 2>/dev/null)" = blob ] || continue
+    [ -z "$match" ] || return 0
+    match=$tip
+  done <<< "$refs"
+  [ -n "$match" ] || return 0
+  size=$(git cat-file -s "$match:$CT_DOC") && [ "$size" -le 1048576 ] || return 0
+  git show "$match:$CT_DOC" > "$CT_TMP/branch-doc" || return 0
+  spec=$(brief_parse "$CT_TMP/branch-doc" "$CT_DOC" "$match" 2>/dev/null) || return 0
+  plan=$(printf '%s' "$spec" | jq -er .id) || return 0
+  controller_error "run from the plan worktree for $CT_DOC"
+  printf '  cd %q\n' "$(plan_worktree_path "$CT_COMMON" "$plan")" >&2
+}
+
 controller_check() { # Rule a: same read-only report exposed by handoff reconcile --check.
   local json=true
   handoff_drift > "$CT_TMP/report" || return $?
@@ -230,7 +249,6 @@ controller_preserve_divergence() { # Never overwrite the owning run's immutable 
 }
 controller_worktree() { # Salvage before any repair; reconciliation never restores it.
   local actual common branch owner run chain recorded snapshot saved count row result orphan=false hold_run=none rebaselines clear salvage_run
-  CT_WORKTREE=$(plan_worktree_path "$CT_COMMON" "$CT_PLAN")
   CT_CONTEXT='{}' CT_OWNERSHIP=null
   [ -e "$CT_WORKTREE" ] || return 0
   actual=$(git -C "$CT_WORKTREE" rev-parse --show-toplevel) || return 9
@@ -824,17 +842,21 @@ controller_cmd() (
   local CT_ROOT CT_COMMON CT_TMP CT_PLAN CT_BRANCH CT_SPEC CT_REPORT CT_TRACKER CT_RECORDS CT_CHAINS CT_CONTEXT='{}' CT_PENDING='[]'
   local CT_LOCK='' CT_LOCK_OWNED=false CT_RECOVER_CLAIM=false CT_PREVIOUS_HOST='' CT_STARTED=false CT_FOREIGN_ALLOWED='[]' CT_FOREIGN_SEEN=false
   local CT_HOLDS='[]' CT_HOLD_REASONS='[]' CT_REPAIRS='[]' CT_RAISED=false CT_OWNERSHIP=null CT_REVIEWER_ESCALATE='' CT_REVIEWER_RELAUNCH='' CT_SNAPSHOT='{}' CT_SALVAGE_ONLY=false
-  local CT_HOST CT_PID CT_RUN CT_WORKTREE CT_LEASE=${AGENTIC_CONTROLLER_LEASE:-21600} approval rev status=0 result=0
+  local CT_HOST CT_PID CT_RUN CT_WORKTREE CT_LEASE=${AGENTIC_CONTROLLER_LEASE:-21600} approval rev dirty status=0 result=0
   [[ "$CT_LEASE" =~ ^[1-9][0-9]{0,6}$ ]] || return 2
   CT_ROOT=$(git rev-parse --show-toplevel) || return 3
   cd "$CT_ROOT" || return 3
   case "$doc" in docs/inprogress/*.md) ;; *) return 2 ;; esac
   case "$doc" in *'/../'*|*'/./'*|*[!A-Za-z0-9_./-]*) return 2 ;; esac
+  CT_COMMON=$(git rev-parse --git-common-dir) && CT_COMMON=$(cd "$CT_COMMON" && pwd -P) || return 3
   CT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentic-controller.XXXXXX") || return 5
   trap controller_unlock EXIT
   trap 'controller_interrupt 130' INT
   trap 'controller_interrupt 143' TERM
-  git show "HEAD:$doc" > "$CT_TMP/head-doc" || return 3
+  if ! git show "HEAD:$doc" > "$CT_TMP/head-doc"; then
+    controller_worktree_hint
+    return 3
+  fi
   [ "$(wc -c < "$CT_TMP/head-doc")" -le 1048576 ] || return 3
   approval=$(brief_approval "$CT_TMP/head-doc") || return 3; rev=${approval%%$'\t'*}
   brief_approved_at_head "$doc" "$rev" || return 3
@@ -842,10 +864,22 @@ controller_cmd() (
   CT_SPEC=$(brief_parse "$CT_TMP/doc" "$doc" "$rev") || return 3
   CT_PLAN=$(printf '%s' "$CT_SPEC" | jq -r .id); CT_BRANCH=$(printf '%s' "$CT_SPEC" | jq -r .branch)
   git check-ref-format "refs/heads/$CT_BRANCH" || return 3
+  CT_WORKTREE=$(plan_worktree_path "$CT_COMMON" "$CT_PLAN")
+  if [ "$CT_ROOT" -ef "$CT_WORKTREE" ]; then
+    [ "$(git symbolic-ref --quiet HEAD)" = "refs/heads/$CT_BRANCH" ] || {
+      controller_error 'plan worktree ownership differs'; return 9;
+    }
+    # A planner starting here must commit their edits before controller recovery runs.
+    dirty=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain --untracked-files=all --ignore-submodules=none) || return 9
+    if [ -n "$dirty" ]; then
+      controller_error "plan worktree is dirty: $CT_WORKTREE"
+      printf '%s\n' "$dirty" >&2
+      return 3
+    fi
+  fi
   workflow_load "$CT_ROOT" && read_review_policy "$CT_ROOT" || return 3
   [ -n "$REVIEW_OWNER" ] || { controller_error 'owner= is required for the controller'; return 3; }
   ledger_init "$CT_ROOT" || return 3
-  CT_COMMON=$(git rev-parse --git-common-dir); CT_COMMON=$(cd "$CT_COMMON" && pwd -P) || return 3
   CT_HOST=$(perl "$CONTROLLER_RECOVERY" host "$CT_COMMON") || return 9
   CT_PID=$(exec sh -c 'printf "%s\n" "$PPID"')
   CT_RUN="$CT_PLAN/controller/$CT_PID-$(date +%s)"
