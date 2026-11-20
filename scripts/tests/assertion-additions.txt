@@ -111,3 +111,5 @@ fail	'tag boundary did not record its seconds'
 fail	'tag ceiling failure lacked the tag and measured and allowed seconds'
 fail	'whole tagged group missed its group ceiling'
 fail	'whole-group ceiling failure lacked the group and measured and allowed seconds'
+fail	'handled termination was not recorded as a timeout'
+verify_run	"$VERIFY_TMP" "trap 'exit 2' TERM; sleep 30"

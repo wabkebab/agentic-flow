@@ -33,9 +33,10 @@ verify_run() { # directory, command; result in VERIFY_RESULT
   wait "$timer" 2>/dev/null || true
   VERIFY_PID='' VERIFY_TIMER=''
   if [ -f "$VERIFY_TMP/timed-out" ]; then
-    # A timer may observe an exited, unreaped child. Preserve a normal exit;
-    # only a child terminated by our TERM/KILL is a timed-out command.
-    case "$status" in 137|143) status=124 ;; esac
+    # The timer can race with successful completion, so preserve success.
+    # A terminated command can handle TERM and exit normally with a nonzero
+    # status (including make); the watchdog marker still records a timeout.
+    [ "$status" -eq 0 ] || status=124
     rm "$VERIFY_TMP/timed-out"
   fi
   digest=$(shasum -a 256 "$VERIFY_TMP/output"); digest=${digest%% *}

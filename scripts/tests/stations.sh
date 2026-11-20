@@ -19,6 +19,19 @@ stations_verify_base() {
   VERIFY_BASE=$(git -C "$VERIFY_FIX" rev-parse HEAD)
 }
 
+# A watchdog termination can become an ordinary exit status when a command
+# handles TERM (as make can), rather than the shell's 137/143 signal status.
+verify_timeout_status_tests() (
+  local VERIFY_TMP VERIFY_LIMIT=1 VERIFY_PID='' VERIFY_TIMER='' VERIFY_WT=''
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/lib/verify-step.sh"
+  VERIFY_TMP=$(mktemp -d "$TMP/verify-handled-term.XXXXXX")
+  trap 'verify_cleanup' EXIT
+  verify_run "$VERIFY_TMP" "trap 'exit 2' TERM; sleep 30" > "$VERIFY_TMP/captured" 2>&1
+  printf '%s' "$VERIFY_RESULT" | jq -e '.exit==124' >/dev/null \
+    || fail 'handled termination was not recorded as a timeout'
+)
+
 stations_cli_fixture() {
   STATION_FIX=$(mktemp -d "$TMP/stations.XXXXXX")
   mkdir -p "$STATION_FIX/bin" "$STATION_FIX/project/scripts/lib" "$STATION_FIX/project/config" "$STATION_FIX/project/docs" "$STATION_FIX/state"
@@ -263,6 +276,7 @@ done
 fi # scenario
 
 if should_run_scenario verify cache; then
+verify_timeout_status_tests
 # Verification must certify only committed bytes and classify wiring failures.
 stations_verify_base
 printf 'check:\n\t@exit 1\n' > "$VERIFY_FIX/Makefile"
