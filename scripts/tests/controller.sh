@@ -379,6 +379,7 @@ c6_tests() (
   ship_run false > "$fixture/out" || fail 'ready ship failed'
   [ "$(head -5 "$fixture/actions" | paste -sd '|' -)" = 'push|ci|close-out|finish docs/done/plan.md|pre-merge' ] || fail 'ship phases ran out of order'
   grep -q 'Human merge:' "$fixture/out" || fail 'merge command missing'
+  grep -Fxq 'After merge: agentic-flow clean shipping' "$fixture/out" || fail 'ship omitted the post-merge cleanup command'
   mode=review; : > "$fixture/actions"
   sleep() { mode=ready; SHIP_ATTEMPT=3; }
   ship_run true > "$fixture/out" || fail 'wait-review did not observe later approval'
@@ -842,6 +843,202 @@ fi # scenario
 
 if should_run_scenario launch launch; then
 test_timing_begin block launch
+
+# Local origin and real worktrees exercise the plan lifecycle without GitHub.
+(
+  set -e
+  fixture="$(cd "$TMP" && pwd -P)/plan-launch"
+  project="$fixture/project" origin="$fixture/origin"
+  mkdir -p "$project/docs/templates" "$project/docs/inprogress" "$project/scripts" "$fixture/bin"
+  cp "$ROOT/docs/templates/feature-analysis.md" "$ROOT/docs/templates/security-review.md" "$project/docs/templates/"
+  cp "$ROOT/docs/README.md" "$project/docs/README.md"
+  cp "$ROOT/scripts/docs-index.sh" "$project/scripts/"
+  git -C "$project" init -qb main
+  git -C "$project" config user.name 'Plan fixture'
+  git -C "$project" config user.email 'fixture@example.invalid'
+  git -C "$project" config commit.gpgsign false
+  touch "$project/docs/inprogress/.gitkeep"
+  git -C "$project" add docs scripts
+  git -C "$project" commit -qm 'Seed plan templates'
+  initial=$(git -C "$project" rev-parse HEAD)
+  git clone -q --bare --shared "$project" "$origin"
+  git -C "$project" remote add origin "$origin"
+  cd "$project"
+  worktrees="$project/.git/agentic-flow/worktrees"
+  unset AGENTIC_WORKTREE_ROOT
+  cli="$ROOT/scripts/agentic-flow"
+  export PLAN_FIXTURE_GIT; PLAN_FIXTURE_GIT=$(command -v git)
+  cat > "$fixture/bin/git" <<'GIT'
+#!/usr/bin/env bash
+case "${PLAN_FAULT:-}:${1:-}:${2:-}" in
+  slow:fetch:*) exec sleep 30 ;;
+  broken:fetch:*|offline:fetch:*|offline:ls-remote:*) exit 1 ;;
+  template:worktree:add)
+    "$PLAN_FIXTURE_GIT" "$@" || exit
+    shift $(( $# - 2 ))
+    rm -- "$1/docs/templates/feature-analysis.md"
+    exit ;;
+  interrupt:update-ref:-d)
+    [[ "$3" == refs/heads/* ]] && exit 1 ;;
+  moved:update-ref:-d)
+    if [[ "$3" == refs/heads/* ]]; then
+      "$PLAN_FIXTURE_GIT" update-ref "$3" "$PLAN_MOVED_TIP" "$4" || exit
+    fi ;;
+esac
+exec "$PLAN_FIXTURE_GIT" "$@"
+GIT
+  chmod +x "$fixture/bin/git"
+  export PATH="$fixture/bin:$PATH"
+
+  plan_cli() {
+    local expected=$1 status=0
+    shift
+    "$cli" "$@" > "$fixture/output" 2>&1 || status=$?
+    [ "$status" = "$expected" ] || fail "agentic-flow $* returned $status, expected $expected: $(cat "$fixture/output")"
+  }
+  absent() {
+    [ ! -e "$worktrees/$1" ] || fail "start left worktree $1"
+    if git show-ref --verify --quiet "refs/heads/${2:-$1}"; then fail "start left branch ${2:-$1}"; fi
+  }
+  git branch local-taken
+  git -C "$origin" branch remote-taken
+  plan_cli 3 start local-taken
+  plan_cli 3 start remote-taken
+  absent remote-taken
+  mkdir -p "$worktrees/path-taken"
+  plan_cli 3 start path-taken
+  [ -d "$worktrees/path-taken" ] || fail 'start removed a preexisting directory'
+  if git show-ref --verify --quiet refs/heads/path-taken; then fail 'start created a branch for an existing path'; fi
+  touch docs/inprogress/feature-doc-taken.md
+  plan_cli 3 start doc-taken
+  absent doc-taken
+  [ -f docs/inprogress/feature-doc-taken.md ] || fail 'start removed a preexisting doc'
+  rm docs/inprogress/feature-doc-taken.md
+  plan_cli 3 start '../outside'
+  plan_cli 3 start invalid-branch --branch 'bad..name'
+  plan_cli 3 start invalid-branch --branch ''
+  plan_cli 3 start unknown-base --base missing
+  absent invalid-branch
+  absent unknown-base
+  plan_cli 2 start demo-plan --type product
+  plan_cli 3 clean unknown-plan --no-fetch
+  absent unknown-plan
+  plan_cli 3 clean '../outside'
+  PLAN_FAULT=slow AGENTIC_FLOW_FETCH_TIMEOUT=1 plan_cli 5 start timed-out
+  absent timed-out
+  PLAN_FAULT=broken plan_cli 5 start fetch-failed
+  absent fetch-failed
+  PLAN_FAULT=template plan_cli 3 start write-failed
+  absent write-failed
+  if git worktree list --porcelain | grep -Fq "$worktrees/write-failed"; then fail 'template failure left worktree metadata'; fi
+
+  git checkout -qb caller
+  git commit --allow-empty -qm 'Caller-only work'
+  caller=$(git rev-parse HEAD)
+  git checkout -qb integration main
+  touch docs/inprogress/feature-base-taken.md
+  git add docs/inprogress/feature-base-taken.md
+  git commit -qm 'Advance remote base'
+  base=$(git rev-parse HEAD)
+  git -C "$origin" update-ref refs/heads/main "$base"
+  git checkout -q caller
+  plan_cli 3 start base-taken --base integration --no-fetch
+  absent base-taken
+  plan_cli 0 start demo-plan --base main
+  wt="$worktrees/demo-plan" doc=docs/inprogress/feature-demo-plan.md
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$base" ] && [ "$(git -C "$wt" branch --show-current)" = demo-plan ] || fail 'start did not create the plan branch at the remote base'
+  [ "$(git rev-parse HEAD)" = "$caller" ] && [ -z "$(git status --porcelain)" ] || fail 'start changed the caller checkout'
+  [ "$(git -C "$origin" for-each-ref --format='%(refname)' refs/heads/demo-plan)" = '' ] || fail 'start published a branch'
+  for field in 'id: demo-plan' 'branch: demo-plan'; do
+    grep -Fxq "$field" "$wt/$doc" || fail "start omitted $field"
+  done
+  grep -Fq 'Base: `main`.' "$wt/$doc" || fail 'start omitted the brief base'
+  grep -Fxq "<!-- TRIAGE (first pass · $(date +%F)) -->" "$wt/$doc" || fail 'start omitted the TRIAGE date'
+  grep -Fq '# Feature — <topic>' "$wt/$doc" || fail 'start replaced an unrelated placeholder'
+  [ "$(git -C "$wt" diff --cached --name-only)" = "$(printf '%s\n' docs/README.md "$doc")" ] || fail 'start did not stage only the index and doc'
+  (cd "$wt" && scripts/docs-index.sh --check) >/dev/null || fail 'start generated a stale index'
+  grep -Fq "$wt" "$fixture/output" && grep -Fq "$doc" "$fixture/output" || fail 'start omitted the plan paths'
+
+  sed 's/^Base: .*/Base: `main`. One branch and one PR: `demo-plan`. Each step closes its issue./' "$wt/$doc" > "$fixture/edited-plan"
+  mv "$fixture/edited-plan" "$wt/$doc"
+  git -C "$wt" add -- "$doc"
+  git -C "$wt" commit -qm 'Publish plan doc locally'
+  tip=$(git -C "$wt" rev-parse HEAD)
+  salvage=refs/agentic-flow/salvage/demo-plan/run
+  other=refs/agentic-flow/salvage/demo-plans/run
+  git update-ref "$salvage" "$tip"
+  git update-ref "$other" "$tip"
+  plan_cli 3 clean demo-plan --no-fetch
+  grep -qi squash "$fixture/output" || fail 'unmerged refusal omitted squash-merge behavior'
+  git -C "$origin" update-ref refs/heads/main "$tip"
+  PLAN_FAULT=slow AGENTIC_FLOW_FETCH_TIMEOUT=1 plan_cli 5 clean demo-plan
+  touch "$wt/untracked"
+  plan_cli 3 clean demo-plan
+  rm "$wt/untracked"
+  (cd "$wt" && plan_cli 3 clean demo-plan)
+  [ "$(git rev-parse refs/heads/demo-plan)" = "$tip" ] && git show-ref --verify --quiet "$salvage" || fail 'clean refusal deleted plan refs'
+  git -C "$origin" update-ref refs/heads/demo-plan "$base"
+  git update-ref refs/remotes/origin/demo-plan "$base"
+  git branch -q --set-upstream-to=origin/demo-plan demo-plan
+  git checkout -q main
+
+  plan_cli 0 clean demo-plan --dry-run
+  for item in "$wt" refs/heads/demo-plan "$salvage"; do
+    grep -Fq "$item" "$fixture/output" || fail "dry-run omitted $item"
+  done
+  [ -d "$wt" ] && git show-ref --verify --quiet "$salvage" || fail 'dry-run removed plan artifacts'
+  [ "$(git rev-parse refs/remotes/origin/main)" = "$base" ] || fail 'dry-run updated the local remote-tracking ref'
+  [ "$(git rev-parse HEAD)" = "$initial" ] || fail 'fixture local main was not stale'
+  plan_cli 0 clean demo-plan
+  absent demo-plan
+  if git show-ref --verify --quiet "$salvage"; then fail 'clean kept plan salvage refs'; fi
+  git show-ref --verify --quiet "$other" || fail 'clean deleted another plan salvage ref'
+  plan_cli 0 clean demo-plan
+  grep -qi 'nothing to remove' "$fixture/output" || fail 'clean retry gave no completion message'
+
+  git -C "$origin" update-ref refs/heads/integration "$tip"
+  git update-ref refs/remotes/origin/integration "$tip"
+  AGENTIC_WORKTREE_ROOT="$fixture/custom worktrees" PLAN_FAULT=offline plan_cli 0 start security-plan --type security --branch plans/custom --base integration --no-fetch
+  custom="$fixture/custom worktrees/security-plan"
+  security_doc=docs/inprogress/security-security-plan.md
+  grep -Fq '# Security Review — <topic>' "$custom/$security_doc" || fail 'start used the wrong template'
+  grep -Fxq 'branch: plans/custom' "$custom/$security_doc" && grep -Fq 'Base: `integration`.' "$custom/$security_doc" || fail 'start omitted custom branch or base'
+  git -C "$custom" commit -qm 'Add security plan'
+  mkdir -p "$custom/docs/done/security"
+  git -C "$custom" mv "$security_doc" "docs/done/security/${security_doc##*/}"
+  git -C "$custom" commit -qm 'Archive the security plan'
+  tip=$(git -C "$custom" rev-parse HEAD)
+  git update-ref refs/remotes/origin/integration "$tip"
+  custom_salvage=refs/agentic-flow/salvage/security-plan/run
+  git update-ref "$custom_salvage" "$tip"
+  AGENTIC_WORKTREE_ROOT="$fixture/custom worktrees" PLAN_FAULT=interrupt plan_cli 3 clean security-plan --no-fetch
+  [ ! -e "$custom" ] && git show-ref --verify --quiet refs/heads/plans/custom && git show-ref --verify --quiet "$custom_salvage" || fail 'interrupted clean did not preserve refs after removing the worktree'
+  AGENTIC_WORKTREE_ROOT="$fixture/custom worktrees" plan_cli 0 clean security-plan --no-fetch
+  if git show-ref --verify --quiet refs/heads/plans/custom || git show-ref --verify --quiet "$custom_salvage"; then fail 'resumed clean kept plan refs'; fi
+
+  plan_cli 0 start no-doc --base integration --branch plans/no-doc --no-fetch
+  fallback="$worktrees/no-doc"
+  git -C "$fallback" rm -fq -- docs/inprogress/feature-no-doc.md
+  git -C "$fallback" commit -qm 'Keep only the index changes'
+  no_doc_tip=$(git -C "$fallback" rev-parse HEAD)
+  git update-ref refs/remotes/origin/integration "$no_doc_tip"
+  plan_cli 0 clean no-doc --no-fetch
+  absent no-doc plans/no-doc
+
+  plan_cli 0 start racing --no-fetch
+  racing="$worktrees/racing"
+  git -C "$racing" commit -qm 'Add racing plan'
+  tip=$(git -C "$racing" rev-parse HEAD)
+  git update-ref refs/remotes/origin/main "$tip"
+  git update-ref refs/agentic-flow/salvage/racing/run "$tip"
+  PLAN_MOVED_TIP=$(printf 'Moved branch\n' | git commit-tree "$tip^{tree}" -p "$tip")
+  PLAN_MOVED_TIP="$PLAN_MOVED_TIP" PLAN_FAULT=moved plan_cli 3 clean racing --no-fetch
+  [ "$(git rev-parse refs/heads/racing)" = "$PLAN_MOVED_TIP" ] && git show-ref --verify --quiet refs/agentic-flow/salvage/racing/run || fail 'clean deleted the moved branch or its salvage ref'
+  plan_cli 3 clean racing --no-fetch
+  git update-ref refs/remotes/origin/main "$PLAN_MOVED_TIP"
+  plan_cli 0 clean racing --no-fetch
+  absent racing
+)
 
 # Advisory verdict lengths warn; hard bounds and structural rules still refuse.
 (

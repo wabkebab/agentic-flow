@@ -227,6 +227,7 @@ ship_run() {
     count=$((count+1))
   done < <(git for-each-ref --format='%(refname)' "refs/agentic-flow/salvage/$SHIP_PLAN/")
   printf 'Deleted %s salvage refs.\nHuman merge: gh pr merge %s --repo %s\n' "$count" "$(printf '%s' "$SHIP_PR" | jq -r .number)" "$HANDOFF_REPO"
+  printf 'After merge: agentic-flow clean %s\n' "$SHIP_PLAN"
 }
 ship_dispatch() (
   set +x

@@ -5,6 +5,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/packet.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/probe.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/start.sh"
 CONTROLLER_RECOVERY=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/recovery.pl
 
 controller_error() { printf 'controller: %s\n' "$*" >&2; }
@@ -229,7 +230,7 @@ controller_preserve_divergence() { # Never overwrite the owning run's immutable 
 }
 controller_worktree() { # Salvage before any repair; reconciliation never restores it.
   local actual common branch owner run chain recorded snapshot saved count row result orphan=false hold_run=none rebaselines clear salvage_run
-  CT_WORKTREE="${AGENTIC_WORKTREE_ROOT:-$CT_COMMON/agentic-flow/worktrees}/$CT_PLAN"
+  CT_WORKTREE=$(plan_worktree_path "$CT_COMMON" "$CT_PLAN")
   CT_CONTEXT='{}' CT_OWNERSHIP=null
   [ -e "$CT_WORKTREE" ] || return 0
   actual=$(git -C "$CT_WORKTREE" rev-parse --show-toplevel) || return 9
