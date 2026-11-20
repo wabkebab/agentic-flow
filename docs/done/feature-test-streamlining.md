@@ -1,17 +1,19 @@
 <!-- TRIAGE (first pass · 2026-11-17) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
 > Phase 3 of `product-harness-factory-optimization.md` (T-1 to T-8, R-15): run each test group once per commit and once per full suite, make per-step runs scenario-sized, stop a group from growing unnoticed, and stop adopters running the harness's internal tests on every `make test`. Part A is the analysis; Part B is the implementation brief (steps t-1 to t-8), drafted 2026-11-19 and awaiting approval. T-1, T-3 and the controller-group half of T-4 moved into Phase 2b on 2026-11-17 and are not part of this phase's brief. Runs after Phase 2b (`feature-station-hardening.md`).
 
 # Feature — Test streamlining
 
 ## Tracker
-<!-- Filled in when the brief is approved and plan-to-issues runs. -->
-- [x] Brief drafted and approved 2026-11-19, then re-approved at `dd09d82` with t-6's Verify fix. Tracker #165, steps #166 to #173, all approved and closed. Branch `phase-3`, based on `phase-2b`; PR #174.
-- [x] CI fix after t-8's approval. PR #174's run 44633318154 was killed twice, each time about 2.5 minutes after `self-test passed.`, with "The runner has received a shutdown signal". `shellcheck -x` on `scripts/self-test.sh` followed the dispatcher's eight group imports and reached 7.7 GB on the roughly 7 GB runner, so h-12's per-file split did not bound it. `7304024` (`Fixes #173`) marks the imports `source=/dev/null`; the whole lint now peaks at about 2.1 to 2.5 GB. It was reviewed after t-8's approval and approved with no findings ([#173 comment](https://github.com/wabkebab/agentic-flow/issues/173#issuecomment-7030414928)). CI run 44668198709 is green at `7304024`. The trap is recorded in `docs/memory/shellcheck-follow-sources-oom.md` (`7bd5757`).
-- [x] Merge order decided by the owner (2026-11-20). Phase 2b's PR #161 stays red at `4cfefaa` because it does not have the fix, so the Prerequisite's order (`phase-2b` first, after its CI passes) is replaced. #174 merges as a **merge commit, not a squash**. It contains every Phase 2b commit, so GitHub marks #161 as merged too. #174's CI is the evidence for both phases.
-- [ ] Close-out: `make check && make test && make ship-gate` at the close-out head, `VERSION` and `CHANGELOG.md`, `ship`, and the roadmap update.
-
+- [x] t-1 — #166; approved=9d01413e0fde727ecc40368616e308346c6cf59c; submissions=9d01413e0fde727ecc40368616e308346c6cf59c
+- [x] t-2 — #167; approved=346d3977d15f45c1a229b27f7e5b681de7197ab1; submissions=346d3977d15f45c1a229b27f7e5b681de7197ab1
+- [x] t-3 — #168; approved=49865d000c27c9b7a63b3ec22af3fa3a16568ab9; submissions=49865d000c27c9b7a63b3ec22af3fa3a16568ab9
+- [x] t-4 — #169; approved=a29ea3aea4fd0e6d6a79f6eb0fffd3d6dad8853a; submissions=a29ea3aea4fd0e6d6a79f6eb0fffd3d6dad8853a
+- [x] t-5 — #170; approved=f33547ba1f7e3ee50286fb93b59d9dd943070f1e; submissions=f33547ba1f7e3ee50286fb93b59d9dd943070f1e
+- [x] t-6 — #171; approved=1ec06d89ca3423a2e067e5ef61690b5aa5c75c6a; submissions=1ec06d89ca3423a2e067e5ef61690b5aa5c75c6a
+- [x] t-7 — #172; approved=3d344202905b802d35d59fcefbc8b8c1185a1643; submissions=3d344202905b802d35d59fcefbc8b8c1185a1643
+- [x] t-8 — #173; approved=29521e8f446113cea3d7edb878452c17cc671f5b; submissions=29521e8f446113cea3d7edb878452c17cc671f5b
 ---
 
 # Part A — Analysis
@@ -425,10 +427,10 @@ Claude, on `phase-3`, after the last approval, and before the human merges:
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/165
 - **Approval:** status=approved; by=wabkebab; at=2026-11-19; rev=dd09d82350090b82ae0debe5d8e2e55b8e4fa406
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** url=https://github.com/wabkebab/agentic-flow/pull/174
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** path=docs/memory/shellcheck-follow-sources-oom.md
 - Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
   the index in the last repository commit. After human push, obtain CI and a structured
   reviewer approval on the `Tracking issue` for that exact PR head and run attempt.
