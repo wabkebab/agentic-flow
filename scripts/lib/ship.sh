@@ -95,17 +95,19 @@ ship_lifecycle() {
   "$SHIP_ROOT/scripts/lifecycle-status.sh" --doc "$SHIP_DOC" --phase "$1" --check --verify-evidence
 }
 ship_final_approve() {
-  local file=$1 note='' tracker rc=0
+  local file=$1 note='' tracker rc=0 pr marker
   [ "$SHIP_PR" != null ] && [ "$(printf '%s' "$SHIP_PR" | jq -r .headRefOid)" = "$SHIP_HEAD" ] || return 3
   ship_ci || { rc=$?; [ "$rc" -eq 5 ] && return 5; return 3; }
-  [ -z "$file" ] || { [ -f "$file" ] && [ "$(wc -c < "$file")" -le 65536 ] || return 2; note=$(cat "$file"); }
-  case "$note" in *agentic-flow-review:*) return 2 ;; esac
+  [ -z "$file" ] || { [ -f "$file" ] && [ "$(wc -c < "$file")" -le 240000 ] || return 2; note=$(cat "$file") || return 2; }
   tracker=$(sed -n 's/^- \*\*Tracking issue:\*\* url=//p' "$SHIP_DOC")
   case "$tracker" in "https://github.com/$HANDOFF_REPO/issues/"*) tracker=${tracker##*/} ;; *) return 3 ;; esac
   [[ "$tracker" =~ ^[1-9][0-9]*$ ]] || return 3
   handoff_identity reviewer || return $?
-  printf 'agentic-flow-review: status=approved; pr=%s; head=%s; run=%s; attempt=%s; role=reviewer\n%s\n' \
-    "$(printf '%s' "$SHIP_PR" | jq -r .number)" "$SHIP_HEAD" "$SHIP_RUN_URL" "$SHIP_ATTEMPT" "$note" > "$HANDOFF_TMP/final-comment"
+  pr=$(printf '%s' "$SHIP_PR" | jq -r .number)
+  marker="agentic-flow-review: status=approved; pr=$pr; head=$SHIP_HEAD; run=$SHIP_RUN_URL; attempt=$SHIP_ATTEMPT; role=reviewer"
+  journal_summary "$note" > "$HANDOFF_TMP/final-result" || return 5
+  journal_render final-approve "PR #$pr — ${SHIP_HEAD:0:12} · attempt $SHIP_ATTEMPT" "$marker" \
+    "Role: reviewer · [CI run]($SHIP_RUN_URL)" '' "$HANDOFF_TMP/final-result" > "$HANDOFF_TMP/final-comment" || return $?
   handoff_comment "$tracker" "$HANDOFF_TMP/final-comment"
 }
 ship_run() {

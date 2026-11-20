@@ -280,7 +280,11 @@ launch_station() { # station worktree packet result [--resume session | --probe]
     fi
   fi
   command -v perl >/dev/null 2>&1 || { launch_error 'missing timeout runtime perl'; return 6; }
-  scratch=$(mktemp -d "${TMPDIR:-/tmp}/agentic-launch.XXXXXX") || return 6
+  if [ "$probe" = false ] && [ -n "${LAUNCH_SCRATCH:-}" ]; then
+    scratch=$LAUNCH_SCRATCH
+  else
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/agentic-launch.XXXXXX") || return 6
+  fi
   step=${LAUNCH_STEP:-unknown}
   if [ "$probe" = true ]; then
     # Probe differs only in its fixed prompt and bounded watchdog. All argv,

@@ -79,6 +79,15 @@
         "null"
       ],
       "maxLength": 1200
+    },
+    "evidence": {
+      "description": "Reused evidence details. Use null when there is no evidence.",
+      "type": ["array", "null"],
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "maxLength": 300
+      }
     }
   },
   "required": [
@@ -88,6 +97,7 @@
     "head",
     "summary",
     "findings",
-    "question"
+    "question",
+    "evidence"
   ]
 }

@@ -1,0 +1,155 @@
+===== submit =====
+<!-- agentic-flow-transition: v=1; id=fixture/alpha/1/submit; event=submit; from=executing; role=executor; head=0000000000000000000000000000000000000001
+Implemented in 0000000000000000000000000000000000000001
+-->
+### 📦 Submitted · alpha — Fixture title
+
+Role: executor · Transition: 1 · Head: `000000000000`
+
+Checks: not recorded
+
+Fixture notes.
+
+- Second line.
+
+<!--
+agentic-flow-run: run=fixture/1/1/reviewer/1/1; host=123456789abc
+-->
+===== bounce =====
+<!-- agentic-flow-transition: v=1; id=fixture/alpha/2/bounce; event=bounce; from=reviewing; role=reviewer; head=0000000000000000000000000000000000000001
+agentic-flow-review: status=changes-requested; step=alpha; head=0000000000000000000000000000000000000001; role=reviewer
+findings-complete=true; findings-shown=1/1
+findings-json: W3siZmlsZSI6InBhdGh8bmFtZS5zaCIsImxpbmUiOjQsInNldmVyaXR5IjoiUDIiLCJ0ZXh0IjoiRml4IGEgfCBiXG5vbiBib3RoIHBhdGhzIn1d
+-->
+### 🔁 Changes requested · alpha — Fixture title
+
+Role: reviewer · Transition: 2 · Head: `000000000000`
+
+Review summary
+
+| Severity | Location | Finding |
+| --- | --- | --- |
+| P2 | `path\|name.sh:4` | Fix a \| b on both paths |
+
+<details>
+<summary>Evidence</summary>
+
+- Reused a check.
+
+</details>
+
+<!--
+agentic-flow-run: run=fixture/1/1/reviewer/1/1; host=123456789abc
+-->
+===== ask =====
+<!-- agentic-flow-transition: v=1; id=fixture/alpha/3/ask; event=ask; from=executing; role=executor; head=none
+-->
+### ❓ Decision requested · alpha — Fixture title
+
+Role: executor · Transition: 3
+
+Blocked
+
+Question
+
+Which branch should the fixture use?
+
+@owner needs a decision: Which branch should the fixture use?
+
+<!--
+agentic-flow-run: run=fixture/1/1/reviewer/1/1; host=123456789abc
+-->
+===== resume =====
+<!-- agentic-flow-transition: v=1; id=fixture/alpha/4/resume; event=resume; from=escalated; role=approver; head=none; return=executing
+-->
+### ▶️ Resumed · alpha — Fixture title
+
+Role: approver · Transition: 4
+
+Fixture notes.
+
+- Second line.
+
+<!--
+agentic-flow-run: run=fixture/1/1/reviewer/1/1; host=123456789abc
+-->
+===== approve =====
+<!-- agentic-flow-transition: v=1; id=fixture/alpha/6/approve; event=approve; from=reviewing; role=reviewer; head=0000000000000000000000000000000000000001
+agentic-flow-review: status=approved; step=alpha; head=0000000000000000000000000000000000000001; role=reviewer
+-->
+### ✅ Approved · alpha — Fixture title
+
+Role: reviewer · Transition: 6 · Head: `000000000000`
+
+Fixture notes.
+
+- Second line.
+
+<!--
+agentic-flow-run: run=fixture/1/1/reviewer/1/1; host=123456789abc
+-->
+===== notify =====
+<!-- agentic-flow-transition: v=1; id=fixture/tracker/1/notify; event=notify; from=open; role=reviewer; head=none
+-->
+### 📣 Ready for final review · tracker — Fixture title
+
+Role: reviewer · Transition: 1
+
+Fixture notes.
+
+- Second line.
+
+<!--
+agentic-flow-run: run=fixture/1/1/reviewer/1/1; host=123456789abc
+-->
+===== close =====
+<!-- agentic-flow-transition: v=1; id=fixture/tracker/2/close; event=close; from=closing; role=approver; head=none
+-->
+### 🏁 Closed · tracker — Fixture title
+
+Role: approver · Transition: 2
+
+Fixture notes.
+
+- Second line.
+
+<!--
+agentic-flow-run: run=fixture/1/1/reviewer/1/1; host=123456789abc
+-->
+===== hold =====
+<!-- agentic-flow-hold: v=1; id=fixture/hold/1; issue=#1; reason=fixture; run=none
+-->
+### 🛑 On hold · tracker — Fixture title
+
+Issue: #1 · Reason: fixture
+
+Fixture notes.
+
+- Second line.
+
+@owner needs a decision: fixture
+
+<!--
+agentic-flow-run: run=fixture/1/1/reviewer/1/1; host=123456789abc
+-->
+===== hold-clear =====
+<!-- agentic-flow-hold-clear: id=fixture/hold/1; rebaseline=true
+-->
+### ▶️ Hold cleared · tracker — Fixture title
+
+Hold: fixture/hold/1
+
+Fixture notes.
+
+- Second line.
+===== final-approve =====
+<!--
+agentic-flow-review: status=approved; pr=7; head=0000000000000000000000000000000000000001; run=https://github.com/owner/repo/actions/runs/8; attempt=2; role=reviewer
+-->
+### ✅ Final approval · PR #7 — 000000000000 · attempt 2
+
+Role: reviewer · [CI run](https://github.com/owner/repo/actions/runs/8)
+
+Fixture notes.
+
+- Second line.

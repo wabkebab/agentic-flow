@@ -32,15 +32,32 @@ verify_record_key() { # sha, doc, step, red base, command plan; no worktrees or 
       signature_source:{sha:$source,tree:$source_tree,makefile_blob:$blob}}}'
 }
 
-verify_record_fresh() { # record path, expected key; stdout is the bounded record
-  local file=$1 key=$2 record size
+verify_record_read() { # record path; bound both the file size and the read
+  local file=$1 record size
   [ -f "$file" ] && [ -r "$file" ] || return 1
   size=$(wc -c < "$file") || return 1
   [ "$size" -le 262144 ] || return 1
-  # Bound the read too, including a concurrently replaced/growing record.
   record=$(head -c 262145 "$file") || return 1
   size=$(printf '%s' "$record" | wc -c) || return 1
   [ "$size" -le 262144 ] || return 1
+  printf '%s\n' "$record"
+}
+
+verify_record_checks() { # submitted head; read the saved result without running checks
+  local head=$1 common
+  common=$(git rev-parse --git-common-dir) || return 1
+  verify_record_read "$common/agentic-flow/verify/$head.json" | jq -cse --arg head "$head" '
+    select(length==1) | .[0] | select(.v==1 and .sha==$head and (.commands|type)=="array") |
+    .red_first as $red | .commands | select(length<=100 and all(.[];
+      (.cmd|type)=="string" and (.exit|type)=="number" and
+      (.role=="prepare" or .role=="green" or .role=="red-first"))) |
+    map({cmd,role,passed:(if .role=="red-first" then
+      .cmd as $cmd | any($red[]?;.selector==$cmd and .status=="red") else .exit==0 end)})'
+}
+
+verify_record_fresh() { # record path, expected key; stdout is the bounded record
+  local key=$2 record
+  record=$(verify_record_read "$1") || return 1
   printf '%s' "$record" | jq -se --argjson key "$key" '
     length==1 and (.[0] | . as $r |
     all($key|to_entries[]; if .key=="verifier" then
