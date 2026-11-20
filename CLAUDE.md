@@ -31,11 +31,12 @@
 Controller stations return result JSON and never call `handoff`; the controller verifies
 and journals their results. Interactive executors use `brief`, `verify-step`, and
 `handoff submit`; reviewers use `packet`, `verify-step`, and `handoff approve|bounce`.
-States live in `METHODOLOGY.md` §6. `ship` handles push, PR and close-out gates;
-Claude, as closer, commits the staged close-out when `ship` prompts, then the human
-runs `ship` again. Closers use `close-out prep <doc> --pr <url>`, commit the candidate,
-then `close-out finish <moved-doc>` after the human pushes and final-head evidence passes.
-A closed step means reviewed clean; the Status block and CI record shipping.
+States live in `METHODOLOGY.md` §6. Before the first push, run `close-out prep <doc>`
+and commit the staged close-out. The human runs `ship <doc> --wait-review` to push once
+and open the PR.
+`ship` can also prepare and commit the close-out with the configured closer. After CI
+and final-head approval, `ship` runs `close-out finish <moved-doc>` and the pre-merge gate.
+A closed Strict step means reviewed clean. The Status block and CI record shipping.
 
 <!-- OPT-OUT: For a Claude-only project, state it here, e.g.:
      "This project is Claude-only. There is no Codex executor; Claude both plans and
@@ -142,9 +143,12 @@ enforce the local stop gate, named staging, and no-push contract.
 
 ## Document workflow
 
-- New work → copy the matching template from `docs/templates/` into `docs/inprogress/`.
+- Start new Feature or Security work with `agentic-flow start <plan-id> [--type feature|security]`.
+  It creates the plan branch, worktree, and draft in `docs/inprogress/`.
+- Draft and approve the plan on its branch, and edit its roadmap pointers there.
+  Merge updates from `main` into the plan branch. Never rebase it.
 - Security/Feature docs carry an **inlined implementation brief** (approach + ordered steps
   + DoD + verification commands from the Stack profile — **not code**).
-- Approved plan → run the **`plan-to-issues`** skill.
-- On done (shipped & verified, or risk accepted) → move the doc to `docs/done/`
-  (or `docs/done/security/`); record accepted risks in `docs/accepted_risks.md`.
+- Use the **`plan-to-issues`** skill from the plan worktree after approval.
+- Use close-out to move an implemented plan to `docs/done/`. Record accepted risks in
+  `docs/accepted_risks.md` and move the doc to the applicable done stage.

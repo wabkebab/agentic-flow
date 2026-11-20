@@ -51,11 +51,14 @@ opt-out reassigns the review, it never leaves it to both.
 ## 2. The loop
 
 ```
+  agentic-flow start <plan-id>     creates the plan branch, worktree and draft
+        │
+        ▼
   Review / Plan (Claude)
         │  produces
         ▼
-  docs/inprogress/<doc>.md         Security | Feature | Product Analysis
-        │   (Security & Feature docs carry an inlined Implementation Brief —
+  docs/inprogress/<doc>.md         Security | Feature
+        │   (docs carry an inlined Implementation Brief —
         │    the execution insights for the implementer, NOT the code)
         │
         │  human approves
@@ -70,15 +73,16 @@ opt-out reassigns the review, it never leaves it to both.
   Review (OpenCode)                 reviews the submitted commit against the brief;
         │                           returns findings or approval to controller
         ▼
-  Close-out (Claude)                tick the Tracker, update Status, verify evidence,
-        │                           move the doc, then close the named issue
+  Close-out (Claude)                tick the Tracker, update Status and commit the doc move
+        │
+        ▼
+  ship (human)                      push once, open the PR and wait for CI and final review
+        │                           then close the named issue and verify pre-merge readiness
         ▼
   Merge (human)  ────────────────▶  the PR. Reviewed issues are already closed;
         │                           "Fixes #N" stays for traceability.
         ▼
-  doc done  ─────────────────────▶  move to docs/done/ (or docs/done/security/),
-                                    update the Status section; accepted-but-not-built
-                                    risks/features recorded in docs/accepted_risks.md
+  agentic-flow clean <plan-id>     remove the merged plan branch and worktree
 ```
 
 The human approves, runs `agentic-flow run`, answers andon, runs `ship`, and merges.
@@ -106,9 +110,10 @@ The gate authenticates the comment author, but in single-operator mode the revie
 is only an attestation, not proof of independence. Comments and Actions runs remain mutable:
 verification is point-in-time, not a merge guard.
 
-Approvals bind to commits: rebasing or amending a reviewed branch requires re-review.
-Every approved step commit must be an ancestor of the PR head. Missing objects or
-shallow history leave ancestry UNVERIFIED until the operator fetches the history.
+Approvals bind to commits. Merge base-branch updates into the plan branch to preserve
+the approved revision and each approved step commit as ancestors of the PR head.
+Rewriting those commits invalidates the associated evidence. Missing objects or shallow
+history leave ancestry UNVERIFIED until the operator fetches the history.
 
 `agentic-flow handoff approve|bounce` writes the step verdict on that step's issue,
 using the executor's full implementation SHA (`status=changes-requested` for bounce):
@@ -222,10 +227,16 @@ docs/
 ```
 
 - A doc starts in `backlog/` (or straight into `inprogress/` if work begins immediately).
-- It lives in `inprogress/` through plan → execute → review.
-- It moves to `done/` (or `done/security/`) when **either**: the implementation brief's
-  steps are all shipped and verified, **or** the user has accepted the risk / declined the
-  feature (record that decision in `accepted_risks.md` and link it).
+- To begin Feature or Security work, run `agentic-flow start <plan-id>` with `--type security`
+  for Security work. It creates the branch from the selected base (`main` by default), a linked
+  worktree, and a prefilled draft under `inprogress/`. It stages the draft and docs index.
+- Draft and commit the plan in that worktree. Record the human's approval of the plan commit,
+  issue the approved steps, and edit the plan's roadmap pointers on the same branch. Merge
+  base-branch updates into the plan branch and preserve its history. Run plan commands from
+  that worktree, including `agentic-flow run` with a clean checkout.
+- The doc stays in `inprogress/` through plan → execute → review. Close-out prepares the move
+  to `done/` before the first push (§6). If the user accepts the risk or declines the feature,
+  record the decision in `accepted_risks.md`, link it, and move the doc to the applicable done stage.
 
 ### Naming convention
 - `security-<topic>.md`, `feature-<topic>.md`, `product-<topic>.md`,
@@ -303,8 +314,8 @@ A markdown tracker is versioned and offline; GitHub issues give a live progress 
 issue state, and PR linkage. They're complementary — **doc = design intent,
 issues = execution units**.
 
-Use the `plan-to-issues` skill (`.claude/skills/plan-to-issues/`) once a plan is
-**approved**. Standard creates one work issue from its one-step brief. Strict creates
+Use the `plan-to-issues` skill (`.claude/skills/plan-to-issues/`) in the plan worktree once
+the plan is **approved**. Standard creates one work issue from its one-step brief. Strict creates
 one tracker plus one sub-issue per independently shippable step. Existing specs without
 a profile keep the legacy tracker and steps.
 
@@ -376,6 +387,27 @@ Rules:
   recipes into issue bodies.
 - Flow is one-directional. If the plan changes, regenerate or hand-edit issues; never
   reverse-sync issue edits into the doc.
+
+### Close-out and shipping
+
+1. After all steps are approved, use `agentic-flow close-out prep <doc>` in the plan worktree
+   and commit the staged doc move and index. Prep writes `Implementation PR: source=final-approval`
+   so the PR can be resolved from the reviewer's final approval after it exists. On a clean
+   worktree with no PR, `ship` can prepare and commit this change using `AGENTIC_CLOSER_COMMIT`
+   (defaults to `git-claude` when installed). If no closer command is available, `ship` stages
+   the close-out and stops before pushing so the closer can commit it.
+2. The human runs `agentic-flow ship <doc> --wait-review`. It runs `make ship-gate` when
+   available, pushes the prepared head once, opens the PR, and waits for CI and final review.
+   A review bounce that changes the head requires another push and fresh evidence.
+3. After CI succeeds, the reviewer records final approval for that PR, head, run, and attempt
+   with `agentic-flow final-approve <moved-doc>`. `ship` finishes close-out, closes the tracker
+   or Standard work issue, and checks pre-merge readiness. The human merges and runs
+   `agentic-flow clean <plan-id>`. Cleanup requires the plan tip to be an ancestor of the base.
+
+Plans with an open PR from the previous two-push workflow finish on that path. `ship` prepares
+the in-progress doc with `close-out prep <doc> --pr <url>`. The closer commits it and the human
+runs `ship` again to push and verify the final head. Existing `Implementation PR: url=…`
+documents continue to verify.
 
 ---
 
@@ -582,7 +614,8 @@ there and should not ship both.
 ### `ci.yml` — job structure
 
 ```
-changes ──┬─▶ app checks        (if changes.app)
+changes ──┬─▶ app checks        (if changes.app and no reusable green result)
+          ├─▶ docs checks       (if changes.docs)
           ├─▶ compose syntax    (if changes.docker)
           └─▶ <area N>          (if changes.<area>)
 secrets-scan  (never filtered — always runs)
@@ -591,9 +624,20 @@ secrets-scan  (never filtered — always runs)
               ci-gate           needs: [everything], if: always()
 ```
 
-1. **`changes`** — a path-filter job whose outputs gate the rest, so a docs-only PR doesn't
-   pay for a full build. One filter per independently-testable area.
-2. **Per-area jobs**, each `if: needs.changes.outputs.<area> == 'true'`.
+1. **`changes`** outputs gate independently testable areas. The App filter runs App checks
+   when any changed path falls outside its explicit bookkeeping list. The shipped list covers
+   `docs/inprogress/**/*.md`, `docs/done/**/*.md`, `docs/backlog/**/*.md`,
+   `docs/memory/**/*.md`, `docs/MEMORY.md`, `ROADMAP.md`, and `docs/agentic-flow-explained.html`.
+   Keep payload files and App inputs outside these exclusions. The Docs job covers the
+   bookkeeping paths and runs the docs-index and memory-index checks.
+   When App is selected, `scripts/app-input-key.sh` hashes the tracked App entries (paths,
+   modes, and object IDs) from the PR merge checkout using the same exclusions. A successful
+   App job saves its run URL and attempt under that key. CI skips App only on an exact cache
+   hit with a valid source run reference and reports that source in the run summary. A miss
+   or a key, cache, or source-reference error runs App checks. The current head still needs
+   a green CI gate and final approval.
+2. **Per-area jobs** run when their change flag is true. App also requires a cache miss
+   or an unusable cache result.
 3. **`secrets-scan`** — scans the PR diff range (`base…head`) for **verified** leaked
    secrets. Never path-filtered: a leak can land in any file.
 4. **The app job runs cheapest-first, fail-fast:** checkout → set up runtime *with dependency
@@ -604,11 +648,11 @@ secrets-scan  (never filtered — always runs)
 
    ```yaml
    ci-gate:
-     needs: [changes, secrets-scan, app, compose-syntax]
+     needs: [changes, secrets-scan, app, docs, compose-syntax]
      if: always()
      steps:
        - run: |
-           for result in "${{ needs.secrets-scan.result }}" "${{ needs.app.result }}" …; do
+           for result in "${{ needs.secrets-scan.result }}" "${{ needs.app.result }}" "${{ needs.docs.result }}" …; do
              case "$result" in
                success|skipped) ;;
                *) echo "Upstream job ended in '$result'"; exit 1 ;;

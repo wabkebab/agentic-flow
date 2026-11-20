@@ -46,9 +46,11 @@ else under `docs/` — including `docs/` itself — fails the index build (and t
 `make check`) rather than being listed under an invented stage. Non-Markdown files and
 `README.md` / `accepted_risks.md` / `templates/` and the memory tree are skipped entirely.
 
-Use `close-out prep <doc> --pr <url>` and `close-out finish <moved-doc>` to close
-reviewed, verified plans; states live in `METHODOLOGY.md` §6. If the user accepts
-the risk or declines the feature, link its disposition in `accepted_risks.md`.
+Start Feature and Security plans with `agentic-flow start` and work in the plan worktree.
+Use `close-out prep <doc>` and commit the move before the first push. The human runs
+`ship` to open the PR and finish close-out after CI and final approval. See `METHODOLOGY.md`
+§6 for the existing-PR path. If the user accepts the risk or declines the feature, link
+its disposition in `accepted_risks.md`.
 
 New Feature and Security Status blocks use `Evidence schema: v2` and the exact
 field values in their templates. Resolve the pending fields before close-out.

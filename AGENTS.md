@@ -30,6 +30,8 @@ order, edge cases — not finished code. Read the brief for the step before writ
 
 ## How to work a step
 
+Work in the plan worktree throughout execution.
+
 1. Run `scripts/agentic-flow brief <doc> <step-id>` for the approved step and preamble.
    Read its problem, approach, regression test, and Definition of Done.
 2. **Branch** as the brief specifies; work one step at a time, in the brief's order. The

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.19.0
+
+Flow ergonomics before Phase 4 (tracker #175).
+
+- `agentic-flow start` creates a plan branch, linked worktree, and prefilled Feature or
+  Security draft. Draft, approve, issue, and run the plan from that worktree. After a
+  merge that preserves the plan's history, `agentic-flow clean` removes the worktree and
+  local branch.
+- Journal comments, plan and step issues, and PR bodies render as readable Markdown.
+  Journal readers accept both the original plain-text markers and the hidden markers
+  used by the new comments.
+- For new PRs, `ship` prepares and commits close-out before its first push. CI and the
+  reviewer's final approval verify the pushed head. The prepared doc resolves its PR
+  from that approval.
+- CI skips App checks for bookkeeping-only changes. Other changes can reuse a green
+  App result for identical tracked App inputs on the PR merge checkout. CI reports
+  the source run and still checks the current head.
+
+Migration. Run `scripts/agentic-flow upgrade` and merge the contract and CI template
+changes into your customized files. Existing markers and `Implementation PR: url=…`
+documents continue to work. Plans with an open PR finish on the existing two-push path.
+Re-run `create-tags` only when workflow labels change. This release keeps the same labels.
+
 ## 0.18.0
 
 Test streamlining, phase 3 (tracker #165). Each test group runs once per full suite,
