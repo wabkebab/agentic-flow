@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-20) -->
 > **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
-> Three workflow fixes the owner asked for before Phase 4: start each plan on its own branch, ship with one green CI push, and make plans, issues and review comments readable on GitHub. Part A is the analysis; Part B is the implementation brief (steps e-1 to e-9), drafted 2026-11-20, approved the same day and shipped as 0.19.0. Runs before Phase 4 (`feature-harness-simplification.md`). This doc was itself drafted on its plan branch, by hand, the way e-7 will automate it.
+> Three workflow fixes the owner asked for before Phase 4: start each plan on its own branch, ship with one green CI push, and make plans, issues and review comments readable on GitHub. Part A is the analysis; Part B is the implementation brief (steps e-1 to e-9), drafted 2026-11-20 and awaiting approval. Runs before Phase 4 (`feature-harness-simplification.md`). This doc was itself drafted on its plan branch, by hand, the way e-7 will automate it.
 
 # Feature — Flow ergonomics before Phase 4
 
