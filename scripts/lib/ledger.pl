@@ -92,20 +92,51 @@ sub sync_directories {
   }
   fail('ledger directory ancestry exceeds cap');
 }
+# The schema advertises advisory lengths; both durable and launch validation use
+# these hard bounds and preserve the original text. Return advisory warnings.
+sub result_keys {
+  my ($r,$label,@keys)=@_;
+  object($r) or fail("$label is not an object");
+  my %expected=map { $_=>1 } @keys;
+  my @missing=grep { !exists($r->{$_}) } @keys;
+  my $extra=grep { !$expected{$_} } keys %$r;
+  !@missing && !$extra or fail("$label keys (missing ".join(',',@missing)."; extra $extra)");
+}
+sub result_text {
+  my ($value,$label,$hard,$advisory,$warnings)=@_;
+  text($value) or fail("$label is not a string: ".result_value($value));
+  my $size=length($value);
+  $size<=$hard or fail("$label $size > $hard");
+  push @$warnings,"$label $size > $advisory" if $size>$advisory;
+}
+sub result_value { return substr($json->encode($_[0]),0,80); }
 sub result_valid {
-  my ($r,$station)=@_;
-  object($r) && integer($r->{v},1) && $r->{v}==1 && ($r->{station}//'') eq $station or fail('invalid station result');
-  member($r->{outcome},$station eq 'executor' ? qw(submitted ask) : qw(approve bounce ask)) or fail('invalid station outcome');
-  string($r->{summary},1200) or fail('invalid result summary');
-  if ($r->{outcome} eq 'ask') { string($r->{question},1200) && length($r->{question}) or fail('ask requires question'); }
-  else { sha($r->{head},40) or fail('result requires head'); }
-  if (exists($r->{findings})) {
-    ref($r->{findings}) eq 'ARRAY' && @{$r->{findings}}<=100 or fail('invalid findings');
-    for my $f (@{$r->{findings}}) {
-      object($f) && member($f->{severity},qw(P1 P2 P3)) && string($f->{file}) && string($f->{text},1200) && (!defined($f->{line}) || integer($f->{line},1)) or fail('invalid finding');
-    }
+  my ($r,$station)=@_; my @warnings;
+  result_keys($r,'result',qw(v station outcome head summary findings question));
+  integer($r->{v},1) && $r->{v}==1 or fail('v is not 1: '.result_value($r->{v}));
+  member($station,qw(executor reviewer)) && text($r->{station}) && $r->{station} eq $station
+    or fail("station is not $station: ".result_value($r->{station}));
+  member($r->{outcome},$station eq 'executor' ? qw(submitted ask) : qw(approve bounce ask))
+    or fail("outcome is invalid for $station: ".result_value($r->{outcome}));
+  result_text($r->{summary},'summary',8000,2000,\@warnings);
+  !defined($r->{question}) or result_text($r->{question},'question',4000,1200,\@warnings);
+  !defined($r->{head}) || (text($r->{head}) && length($r->{head})==40 && sha($r->{head},40))
+    or fail('head is not 40 hex characters ('.(text($r->{head}) ? 'length '.length($r->{head}) : 'type '.result_value($r->{head})).')');
+  if ($r->{outcome} eq 'ask') { text($r->{question}) && length($r->{question}) or fail('ask requires nonempty question (length 0 or null)'); }
+  else { defined($r->{head}) or fail('head is not 40 hex characters (null)'); }
+  ref($r->{findings}) eq 'ARRAY' or fail('findings is not an array');
+  my $count=@{$r->{findings}};
+  $count<=100 or fail("findings $count > 100");
+  for my $i (0..$count-1) {
+    my $f=$r->{findings}[$i]; my $label="findings[$i]";
+    result_keys($f,$label,qw(severity file line text));
+    member($f->{severity},qw(P1 P2 P3)) or fail("$label.severity is invalid: ".result_value($f->{severity}));
+    result_text($f->{file},"$label.file",4096,4096,\@warnings);
+    result_text($f->{text},"$label.text",4000,1200,\@warnings);
+    !defined($f->{line}) || integer($f->{line},1) or fail("$label.line is not a positive integer or null: ".result_value($f->{line}));
   }
-  $r->{outcome} ne 'bounce' || (ref($r->{findings}) eq 'ARRAY' && @{$r->{findings}}) or fail('bounce requires findings');
+  $r->{outcome} ne 'bounce' || $count or fail('bounce requires findings (count 0)');
+  return \@warnings;
 }
 sub validate {
   my ($r,$plan)=@_;
@@ -114,6 +145,10 @@ sub validate {
   member($k,qw(intent session station verify decision handoff salvage end hold clear ship takeover)) or fail('unknown record kind');
   exists($r->{plan}) && ($r->{plan}//'') ne $plan and fail('record belongs to another plan');
   !exists($r->{orphan}) || JSON::PP::is_bool($r->{orphan}) or fail('invalid unowned salvage flag');
+  if (exists($r->{rebaseline})) {
+    ($k eq 'clear' && JSON::PP::is_bool($r->{rebaseline})) ||
+      ($k eq 'salvage' && hold_id($r->{rebaseline})) or fail('invalid rebaseline');
+  }
   my $orphan=$k eq 'salvage' && $r->{orphan};
   if ($orphan) { ($r->{run}//'') =~ m{^\Q$plan\E/unowned/[a-f0-9]{24}$} && !defined($r->{chain}) or fail('invalid unowned salvage'); }
   run_parts($r->{run},$plan) if !$orphan && $k =~ /^(intent|session|station|verify|decision|handoff|salvage)$/;
@@ -126,13 +161,14 @@ sub validate {
     $r->{chain} eq join('/',@p[0..4]) && integer($r->{issue},1) && $r->{issue}==$p[1] && integer($r->{seq_before}) && $r->{seq_before}==$p[2] && $r->{station} eq $p[3] or fail('intent identity disagrees with run');
     identifier($r->{step}) && member($r->{cli},qw(claude codex opencode)) && string($r->{model},256) && string($r->{host},256) or fail('invalid intent assignment');
     member($r->{reason},qw(initial relaunch resume-result resume-packet fresh-result resume-valid fix resume-dirty fresh-dirty)) or fail('invalid launch reason');
-    member($r->{session_mode},qw(new resume fresh-reassigned)) or fail('invalid session mode');
+    member($r->{session_mode},qw(new resume fresh-reassigned fresh-dead fresh-launcher-changed)) or fail('invalid session mode');
     for (qw(resume_of session)) { !defined($r->{$_}) || (string($r->{$_},256) && length($r->{$_})) or fail('invalid session'); }
     !defined($r->{reassigned_from}) || member($r->{reassigned_from},qw(claude codex opencode)) or fail('invalid reassigned CLI');
     sha($r->{base_head},40) && sha($r->{packet_sha256},64) or fail('invalid intent hashes');
     run_parts($r->{replaces},$plan) if defined($r->{replaces});
     !exists($r->{profile}) || string($r->{profile}) or fail('invalid profile');
     !exists($r->{contract_mode}) || member($r->{contract_mode},qw(native excluded overridden)) or fail('invalid contract mode');
+    !exists($r->{fingerprint}) || sha($r->{fingerprint},64) or fail('invalid launcher fingerprint');
   } elsif ($k eq 'session') {
     required($r,'session'); string($r->{session},256) && length($r->{session}) or fail('invalid session id');
   } elsif ($k eq 'station') {
@@ -141,6 +177,7 @@ sub validate {
     for (qw(input output cost_usd)) {
       exists($r->{usage}{$_}) && (!defined($r->{usage}{$_}) || (number($r->{usage}{$_}) && $r->{usage}{$_}>=0 && $r->{usage}{$_}<=1e12 && ($_ eq 'cost_usd' || integer($r->{usage}{$_})))) or fail('invalid usage');
     }
+    !exists($r->{warnings}) || (ref($r->{warnings}) eq 'ARRAY' && @{$r->{warnings}}<=102 && !grep { !string($_,160) } @{$r->{warnings}}) or fail('invalid result warnings');
     !defined($r->{invalid_reason}) || (string($r->{invalid_reason},1200) && length($r->{invalid_reason})) or fail('invalid failure reason');
     !defined($r->{result}) || object($r->{result}) or fail('invalid result');
     defined($r->{result}) || defined($r->{invalid_reason}) or fail('missing result needs invalid_reason');
@@ -180,8 +217,14 @@ sub generation {
   my ($state,$prefix)=@_; return 1+($state->{generations}{$prefix}//0);
 }
 sub apply_record {
-  my ($state,$r,$plan)=@_; validate($r,$plan);
+  my ($state,$r,$plan,$writing)=@_; validate($r,$plan);
   my $k=$r->{kind}; my $id=$r->{run};
+  if ($k eq 'salvage' && exists($r->{rebaseline})) {
+    my $hold=$state->{holds}{$r->{rebaseline}};
+    $hold && $hold->{clear} && $hold->{clear}{rebaseline} && !$hold->{rebaseline}
+      or fail('salvage requires an unused rebaseline clear');
+    $hold->{rebaseline}=$r;
+  }
   if ($k eq 'intent') {
     !exists($state->{runs}{$id}) or fail('duplicate intent');
     my @p=run_parts($id,$plan); my $chain=$r->{chain}; my $c=$state->{chains}{$chain};
@@ -216,10 +259,16 @@ sub apply_record {
       $run->{decision} && $r->{event} eq ($run->{decision}{event}//'') && $r->{after}==$run->{intent}{seq_before} && $r->{attempt}==@{$run->{handoffs}}+1 or fail('handoff requires decision and next attempt');
       push @{$run->{handoffs}},$r;
     } else {
-      !exists($run->{$k}) or fail("duplicate $k record");
-      # Codex and OpenCode issue their own session id, so it is recorded once the CLI reports it.
-      if ($k eq 'session') { $run->{intent}{cli} =~ /^(?:codex|opencode)$/ && !$run->{station} or fail('session must precede Codex or OpenCode station'); }
-      if ($k eq 'station' && defined($r->{result})) { result_valid($r->{result},$run->{intent}{station}); }
+      # Each flagged clear may adopt another immutable snapshot of this run.
+      # Earlier snapshots remain in records; ordinary duplicates still fail.
+      !exists($run->{$k}) || ($k eq 'salvage' && exists($r->{rebaseline})) or fail("duplicate $k record");
+      # Record captured ids before the station, including confirmation that
+      # Claude actually started the caller-chosen session.
+      if ($k eq 'session') { !$run->{station} or fail('session must precede station'); }
+      if ($k eq 'station') {
+        my $warnings=defined($r->{result}) ? result_valid($r->{result},$run->{intent}{station}) : [];
+        $r->{warnings}=$warnings if $writing; # Leave historical records without this field readable.
+      }
       if ($k eq 'verify') { !$run->{decision} && $run->{station} && !defined($run->{station}{invalid_reason}) && ($run->{station}{result}{outcome}//'') eq 'submitted' && $r->{head} eq $run->{station}{result}{head} or fail('verify requires submitted station/head before decision'); }
       if ($k eq 'decision') {
         $run->{station} || member($r->{action},qw(ask hold)) or fail('decision requires station');
@@ -284,6 +333,126 @@ sub load_plan {
   lock_file($fh,LOCK_SH); my $data=bounded_read($fh,$MAX_BYTES,'ledger too large'); close $fh;
   return (decode_ledger($data,$plan))[0];
 }
+# Redact before taking the final byte window. Read one key-length of lookbehind
+# so a value straddling the left boundary cannot leave a clear-text suffix.
+sub redact {
+  my ($bytes)=@_;
+  my @keys=sort { length($b)<=>length($a) } grep { length } map { $ENV{$_}//'' } qw(ANTHROPIC_API_KEY OPENAI_API_KEY);
+  if (@keys) { my $pattern=join('|',map { quotemeta($_) } @keys); $bytes =~ s/(?:$pattern)/[redacted]/g; }
+  return $bytes;
+}
+sub output_tail {
+  my ($path,$cap)=@_;
+  my $look=0; for (qw(ANTHROPIC_API_KEY OPENAI_API_KEY)) { my $n=length($ENV{$_}//''); $look=$n if $n>$look; }
+  $look<=1024*1024 or fail('provider value exceeds cap');
+  sysopen(my $fh,$path,O_RDONLY|O_NONBLOCK|O_NOFOLLOW) or fail('cannot open diagnostic output');
+  -f $fh or fail('diagnostic input must be a regular file'); binmode $fh;
+  my $size=-s $fh; my $offset=$size>$cap+$look ? $size-$cap-$look : 0;
+  sysseek($fh,$offset,SEEK_SET); my $bytes=redact(bounded_read($fh,$cap+$look)); close $fh;
+  return length($bytes)>$cap ? substr($bytes,-$cap) : $bytes;
+}
+sub store_tails {
+  my ($plan,$run,$events,$stderr)=@_; plan_id($plan); my @p=run_parts($run,$plan);
+  my $station=load_plan($plan)->{runs}{$run}{station} or fail('missing station for output');
+  return unless defined($station->{invalid_reason});
+  my $dir=File::Spec->catdir($base,'runs',@p); prepare_directory($dir,1);
+  for my $input ([$events,'events.tail',256*1024],[$stderr,'stderr.tail',64*1024]) {
+    my ($source,$name,$cap)=@$input; next unless length($source);
+    my $path=File::Spec->catfile($dir,$name);
+    !-l $path && (!-e $path || -f $path) or fail('unsafe diagnostic destination');
+    my $bytes=output_tail($source,$cap);
+    my ($fh,$temp)=tempfile('.tail.XXXXXX',DIR=>$dir,UNLINK=>0); binmode $fh;
+    print {$fh} $bytes or fail('cannot write diagnostic tail'); $fh->sync or fail('cannot fsync diagnostic tail');
+    close $fh or fail('cannot close diagnostic tail'); rename($temp,$path) or fail('cannot publish diagnostic tail');
+  }
+  sync_directories($dir);
+}
+sub utf8_text { return decode('UTF-8',$_[0]); }
+sub clip_text { # UTF-8 byte ceiling, never split a code point
+  my ($s,$limit)=@_; my $out='';
+  for my $c (split //,$s) { last if length(encode('UTF-8',$out.$c))>$limit; $out.=$c; }
+  return $out;
+}
+sub bounded_comment {
+  my $body=utf8_text(redact(read_path($_[0],$MAX_LINE)));
+  if (length(encode('UTF-8',$body))>4096) {
+    # Keep the journal/hold marker and cause, plus the closing paths, retry and
+    # owner mention. Redact before clipping so a cut cannot expose a key suffix.
+    my $notice="\n[comment truncated to 4 KiB]\n";
+    my $end=reverse clip_text(scalar reverse($body),4096-3072-length($notice));
+    $body=clip_text($body,3072).$notice.$end;
+  }
+  return encode('UTF-8',$body);
+}
+sub diagnostic_note {
+  my ($plan,$run,$issue,$cause_file,$records_file)=@_; plan_id($plan);
+  run_parts($run,$plan) unless $run eq 'none';
+  $issue=~/^[1-9][0-9]{0,9}$/ or fail('invalid diagnostic issue');
+  my $records=parse_json(read_path($records_file,$MAX_BYTES)); ref($records) eq 'ARRAY' && @$records<=50000 or fail('invalid diagnostic records');
+  my ($intent,$station,$verify);
+  for my $r (@$records) { next unless ($r->{run}//'') eq $run;
+    $intent=$r if $r->{kind} eq 'intent'; $station=$r if $r->{kind} eq 'station'; $verify=$r if $r->{kind} eq 'verify'; }
+  my $cause=utf8_text(redact(read_path($cause_file,256*1024)));
+  my ($preflight_exit,$preflight_seconds,$preflight_tail);
+  if ($cause =~ /\A(station-infrastructure: Launch preflight failed before station start\. Exit: (\d+); seconds: (\d+)\.)\n(.*)\z/s) {
+    ($cause,$preflight_exit,$preflight_seconds,$preflight_tail)=($1,$2,$3,$4);
+  }
+  $cause =~ s/\s+/ /g;
+  my $header=clip_text($cause,300)."\nStation: ".($intent->{station}//'none')."; step: ".($intent->{step}//'none')."; run: $run; head: ".($station->{result}{head}//$intent->{base_head}//'none')."\n";
+  $header.='Exit: '.($preflight_exit//$station->{exit}//'n/a').'; seconds: '.($preflight_seconds//$station->{seconds}//'n/a').'; usage: '.$json->encode($station->{usage}//{input=>undef,output=>undef,cost_usd=>undef})."\n";
+  my @sections; my @paths=(File::Spec->catfile($base,"$plan.jsonl"));
+  push @sections,['Launch stderr',$preflight_tail,20] if defined($preflight_tail);
+  if ($verify) {
+    my $path=$verify->{record}//'';
+    my $dir=File::Spec->catdir(dirname($base),'verify');
+    if ($path =~ /^\Q$dir\E\/[a-f0-9]{40}\.json$/ && -f $path && !-l $path) {
+      my $record=parse_json(read_path($path,8*1024*1024));
+      my @commands=(@{$record->{commands}//[]});
+      unshift @commands,$record->{prepare} if !@commands && $record->{prepare} && $record->{prepare}{exit};
+      @commands<=100 or fail('too many diagnostic commands');
+      for my $c (@commands) { next unless $c->{exit};
+        push @sections,["Command: $c->{cmd}; exit: $c->{exit}",utf8_text(redact(encode('UTF-8',$c->{output_tail}//''))),30]; }
+    }
+    push @sections,['Verifier output',utf8_text(redact(encode('UTF-8',$verify->{tail}//''))),30] unless @sections;
+    push @paths,$path;
+  }
+  if ($station && defined($station->{invalid_reason}) && $run ne 'none') {
+    my @p=run_parts($run,$plan); my $dir=File::Spec->catdir($base,'runs',@p);
+    prepare_directory($dir,0) if -e $dir;
+    for my $name ('events.tail','stderr.tail') {
+      my $path=File::Spec->catfile($dir,$name); push @paths,$path;
+      my $text=-e $path ? utf8_text(output_tail($path,$name eq 'events.tail' ? 256*1024 : 64*1024)) : '(not retained)';
+      push @sections,[$name,$text,20];
+    }
+  }
+  my $answer='<answer-file>';
+  if ($run ne 'none') {
+    my @p=run_parts($run,$plan); $answer=File::Spec->catfile($base,'runs',@p,'decision.md');
+    $answer =~ s/'/'"'"'/g; $answer="'$answer'";
+  }
+  my $retry=$cause =~ /^station-infrastructure:/
+    ? "scripts/agentic-flow handoff $issue hold-clear --as approver --hold-id <hold-id>; then run the plan again"
+    : "scripts/agentic-flow handoff $issue resume --as approver --body-file $answer";
+  my $warning_line=$station && @{$station->{warnings}//[]}
+    ? 'Warnings: '.join('; ',@{$station->{warnings}})."\n" : '';
+  my $footer="Ledger: ".join("\n",@paths)."\nRetry: $retry\n";
+  # Leave room for the transition/hold markers and owner mention added by handoff.
+  my $budget=3200-length(encode('UTF-8',$header.$footer));
+  $budget>=0 or fail('diagnostic identity exceeds comment budget');
+  $budget-=length(encode('UTF-8',$warning_line));
+  $budget=0 if $budget<0; # Advisory warnings cannot turn a verdict into a refusal.
+  my $each=@sections ? int($budget/@sections) : 0; my $body='';
+  for my $section (@sections) {
+    my ($title,$text,$lines)=@$section; my @lines=split /\n/,$text; splice(@lines,0,@lines-$lines) if @lines>$lines;
+    my $title_text=utf8_text(redact(encode('UTF-8',$title)));
+    my $suffix=$title_text =~ s/(; exit: [0-9]+)$// ? $1 : '';
+    my $heading=clip_text($title_text,int($each/2)-length($suffix)).$suffix."\n";
+    my $remaining=$each-length(encode('UTF-8',$heading))-48;
+    my $per=@lines ? int(($remaining>0?$remaining:0)/@lines) : 0;
+    $body.=$heading."[last $lines lines; bounded excerpt]\n".join("\n",map { length(encode('UTF-8',$_))<=$per ? $_ : ($per>=3 ? clip_text($_,$per-3).'...' : '') } @lines)."\n";
+  }
+  print redact(encode('UTF-8',$header.$body.$warning_line.$footer));
+}
 sub store_body {
   my ($r,$plan)=@_; my $body=read_path($r->{body_file},$MAX_LINE);
   sha256_hex($body) eq $r->{body_sha256} or fail('decision body hash mismatch');
@@ -311,7 +480,7 @@ sub append_record {
   -f $fh or fail('ledger must be a regular file');
   lock_file($fh,LOCK_EX); sysseek($fh,0,SEEK_SET); my $data=bounded_read($fh,$MAX_BYTES,'ledger too large');
   my ($state,$tail)=decode_ledger($data,$plan);
-  apply_record($state,$r,$plan); store_body($r,$plan) if $kind eq 'decision';
+  apply_record($state,$r,$plan,1); store_body($r,$plan) if $kind eq 'decision';
   if (length($tail)) { $r->{discarded_tail_sha256}=sha256_hex($tail); $r->{discarded_tail_bytes}=length($tail); }
   my $line=$json->encode($r); length($line)<=$MAX_LINE or fail('oversized ledger record');
   my $separator=length($tail) || (length($data) && $data!~/\n\z/) ? "\n" : '';
@@ -327,7 +496,7 @@ sub summaries {
     my $c=$state->{chains}{$chain}; my $id=$c->{latest}; my $r=$state->{runs}{$id}; my $intent=$r->{intent};
     my ($invalid,$fixes,$recoveries)=(0,0,0);
     for my $run (@{$c->{runs}}) {
-      my $x=$state->{runs}{$run}; $invalid++ if $x->{station} && defined($x->{station}{invalid_reason});
+      my $x=$state->{runs}{$run}; $invalid++ if $x->{station} && defined($x->{station}{invalid_reason}) && $x->{station}{invalid_reason} !~ /^pre-launch failure/;
       $fixes++ if $x->{intent}{reason} eq 'fix';
       $recoveries++ if member($x->{intent}{reason},qw(relaunch resume-result resume-packet fresh-result resume-dirty fresh-dirty));
     }
@@ -336,9 +505,10 @@ sub summaries {
     my $ctx=$context->{$id}//{};
     if (!$closed) {
       if ($r->{decision}) { $pending='handoff'; }
+      elsif ($r->{station} && ($r->{station}{invalid_reason}//'') =~ /^pre-launch failure/) { $pending='infrastructure'; }
       elsif ($r->{station} && $r->{station}{exit}==124) { $pending='decide'; $escalation='station timed out'; }
       elsif ($r->{station} && ($r->{station}{invalid_reason}//'') eq 'bad claimed head') { $pending='decide'; $escalation='bad claimed head'; }
-      elsif ($r->{station} && defined($r->{station}{invalid_reason})) { $pending=$invalid<2 ? 'resume-valid' : 'decide'; $escalation='malformed station result' if $invalid>=2; }
+      elsif ($r->{station} && defined($r->{station}{invalid_reason})) { $pending=$invalid<2 ? 'resume-valid' : 'decide'; $escalation='malformed station result: '.$r->{station}{invalid_reason} if $invalid>=2; }
       elsif ($r->{verify}) { $pending=$r->{verify}{status} eq 'red' && !$fixes ? 'fix' : 'decide'; $escalation='gate still red after fix' if $r->{verify}{status} eq 'red' && $fixes; }
       elsif ($r->{station}) { $pending=($r->{station}{result}{outcome}//'') eq 'submitted' ? 'verify' : 'decide'; }
       else {
@@ -377,19 +547,24 @@ sub cache_rows {
 }
 sub within { my ($at,$since)=@_; return !defined($since) || (defined($at) && epoch($at)>=$since); }
 sub usage_sum {
-  my ($stations)=@_; my %usage;
+  my ($stations)=@_; my (%usage,%unknown);
   for my $field (qw(input output cost_usd)) {
-    my $sum=0; my $known=@$stations>0;
-    for my $s (@$stations) { if (defined($s->{usage}{$field})) { $sum+=$s->{usage}{$field}; } else { $known=0; } }
+    my ($sum,$known,$missing)=(0,0,0);
+    for my $s (@$stations) {
+      if (defined($s->{usage}{$field})) { $sum+=$s->{usage}{$field}; $known++; }
+      else { $missing++; }
+    }
     $usage{$field}=$known ? $sum : undef;
+    $unknown{$field}=$missing;
   }
-  return \%usage;
+  return (\%usage,\%unknown);
 }
 sub breakdown {
   my ($runs)=@_; my @stations=map { $_->{station} ? ($_->{station}) : () } @$runs;
   my @usage=map { $_->{station}//{usage=>{input=>undef,output=>undef,cost_usd=>undef}} } @$runs;
   my $seconds=0; $seconds+=$_->{seconds} for @stations;
-  return {runs=>scalar(@$runs),completed=>scalar(@stations),wall_seconds=>$seconds,usage=>usage_sum(\@usage)};
+  my ($usage,$unknown)=usage_sum(\@usage);
+  return {runs=>scalar(@$runs),completed=>scalar(@stations),wall_seconds=>$seconds,usage=>$usage,usage_unknown=>$unknown};
 }
 sub plan_metrics {
   my ($plan,$state,$rows,$since)=@_; my @runs; my %station_runs; my %step_runs; my %station_issues; my %issue_quality;
@@ -489,15 +664,31 @@ sub metrics {
     print "Plan $m->{plan}\n";
     print "  Lead seconds: ",show($m->{lead_seconds}),"; first-pass yield: ",show($m->{first_pass_yield}),"; bounce rate: ",show($m->{bounce_rate}),"\n";
     print "  Human touches: ",show($m->{human_touches}{total}),"; runs: $m->{runs}; wall seconds: $m->{wall_seconds}\n";
-    print "  Tokens input/output: ",show($m->{usage}{input}),"/",show($m->{usage}{output}),"; cost USD: ",show($m->{usage}{cost_usd}),"\n";
+    print "  Tokens input/output: ",show($m->{usage}{input}),"/",show($m->{usage}{output}),"; cost USD: ",show($m->{usage}{cost_usd}),"; unknown runs input/output/cost: ",join('/',@{$m->{usage_unknown}}{qw(input output cost_usd)}),"\n";
     print encode('UTF-8',"  Andon: ".join(', ',map { "$_=$m->{andon}{$_}" } sort keys %{$m->{andon}})),"\n";
     for my $step (@{$m->{steps}}) {
-      print "  $step->{step} $step->{station}: runs=$step->{runs} wall=$step->{wall_seconds} input=",show($step->{usage}{input})," output=",show($step->{usage}{output})," cost=",show($step->{usage}{cost_usd}),"\n";
+      print "  $step->{step} $step->{station}: runs=$step->{runs} wall=$step->{wall_seconds} input=",show($step->{usage}{input})," output=",show($step->{usage}{output})," cost=",show($step->{usage}{cost_usd})," unknown runs input/output/cost: ",join('/',@{$step->{usage_unknown}}{qw(input output cost_usd)}),"\n";
     }
   }
 }
 my $ok=eval {
-  if ($command eq 'append' && @args==3) { print $json->encode(append_record(@args)),"\n"; }
+  if ($command eq 'output-tail' && @args==2) {
+    $args[1] =~ /^(65536|16384|262144|4096)$/ or fail('invalid tail cap');
+    my $bytes=encode('UTF-8',utf8_text(output_tail(@args)));
+    if (length($bytes)>$args[1]) { $bytes=substr($bytes,-$args[1]); $bytes =~ s/^[\x80-\xbf]+//; }
+    print $bytes;
+  }
+  elsif ($command eq 'result-check' && @args==2) {
+    my $warnings=[];
+    my $valid=eval { $warnings=result_valid(parse_json(read_path($args[1],$MAX_LINE)),$args[0]); 1; };
+    my $reason=$valid ? undef : ($@ || 'cannot validate result');
+    if (defined($reason)) { $reason =~ s/^ledger: //; $reason =~ s/\n\z//; $reason=substr($reason,0,1100); }
+    print $json->encode({invalid_reason=>$reason,warnings=>$valid ? $warnings : []}),"\n";
+  }
+  elsif ($command eq 'comment' && @args==1) { print bounded_comment($args[0]); }
+  elsif ($command eq 'tails' && @args==4) { store_tails(@args); }
+  elsif ($command eq 'diagnostic' && @args==5) { diagnostic_note(@args); }
+  elsif ($command eq 'append' && @args==3) { print $json->encode(append_record(@args)),"\n"; }
   elsif ($command eq 'read' && @args==1) { print $json->encode(load_plan($args[0])->{records}),"\n"; }
   elsif ($command eq 'chains' && (@args==1 || @args==2)) {
     my $context=@args==2 ? parse_json(read_path($args[1],4*1024*1024)) : {};

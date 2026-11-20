@@ -1,18 +1,23 @@
 <!-- TRIAGE (first pass · 2026-11-17) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
 > Phase 2b of `product-harness-factory-optimization.md` (P-1 to P-7, plus T-1, T-3 and T-4 moved in from Phase 3 on 2026-11-17): make controller-run stations fail before launch, not mid-step, make the remaining failures cheap to diagnose, and make this phase's own test iterations fast. Found by running Phase 2's controller on its own steps C-6 and C-7. Part A is the analysis; Part B is the implementation brief, awaiting approval. Runs after Phase 2 (merged, PR #149) and before Phase 3 (`feature-test-streamlining.md`).
 
 # Feature — Station hardening
 
 ## Tracker
-<!-- Filled in when the brief is approved and plan-to-issues runs. -->
-- [x] Brief drafted and approved 2026-11-17; h-9 and h-10 added 2026-11-18. Tracker #150, steps #151 to #160, all approved and closed.
-- [x] Close-out gate: `make check && make test` green on `phase-2b` at `0a85379` (2026-11-18, about 80 minutes). Release notes `0.17.0` in `0258be2`.
-- [x] Accepted by the owner (2026-11-17, P3 from the h-2 review): h-1's per-scenario timing profile was never captured, so the DoD's before-and-after controller-group times per step are not reported. The only comparison is the full `make test`: about 32 minutes at `b6c1962`, about 80 minutes at `0a85379`.
-- [ ] PR #161's CI killed `make test` twice with SIGTERM after the self-test passed (2026-11-18). h-11 (#162, added 2026-11-18) fixes a watchdog leak found while investigating. A temporary CI monitor then showed the cause: shellcheck reached 7.3 GB on the 7 GB runner. h-12 (added 2026-11-18) lints one file per process; the diagnostic steps are removed with it, and the close-out gate is re-run.
-- [ ] The human runs `ship` and `doctor --stations`; Claude updates the roadmap.
-
+- [x] h-1 — #151; approved=732256d543cf3194e50300c7eeb4116525c407aa; submissions=732256d543cf3194e50300c7eeb4116525c407aa
+- [x] h-2 — #152; approved=4c6a6230857bbcf91de2805d0345857e9a0e0a2c; submissions=4c6a6230857bbcf91de2805d0345857e9a0e0a2c
+- [x] h-3 — #153; approved=1bb62506e8b86890ffa3bd74f9f8b841ce8b4308; submissions=1bb62506e8b86890ffa3bd74f9f8b841ce8b4308
+- [x] h-4 — #154; approved=effb5420282a309121edb59846e21169e426cc17; submissions=effb5420282a309121edb59846e21169e426cc17
+- [x] h-5 — #155; approved=8fcffac516b92a65c87f99a0f725c5ee190c8e65; submissions=8fcffac516b92a65c87f99a0f725c5ee190c8e65,cf5a97ee763971ac71fddd7d7e1768c7f02259ab
+- [x] h-6 — #156; approved=816e592b0f284a2679aa4bf54c26d46748ae04f2; submissions=816e592b0f284a2679aa4bf54c26d46748ae04f2
+- [x] h-7 — #157; approved=ce5d4b6d3dbfef1b17867712d4788134cbb3ae65; submissions=ce5d4b6d3dbfef1b17867712d4788134cbb3ae65
+- [x] h-8 — #158; approved=21ef1791fe8eec2171f7eaf0f375fdab6a87deab; submissions=21ef1791fe8eec2171f7eaf0f375fdab6a87deab
+- [x] h-9 — #159; approved=8b59c7247501413928893e5b2e5b5c2d9e343f7f; submissions=8b59c7247501413928893e5b2e5b5c2d9e343f7f
+- [x] h-10 — #160; approved=989e849124fa26dec8241b76020114c0b42b244f; submissions=989e849124fa26dec8241b76020114c0b42b244f
+- [x] h-11 — #163; approved=5f349c24e18a86a18daa9bfed1f9c76a6acb470f; submissions=5f349c24e18a86a18daa9bfed1f9c76a6acb470f
+- [x] h-12 — #164; approved=c074b507df9a395a2f66429c999b099dd232ede0; submissions=c074b507df9a395a2f66429c999b099dd232ede0
 ---
 
 # Part A — Analysis
@@ -548,10 +553,10 @@ Claude, on `phase-2b`, after the last approval, and before the human merges:
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/150
 - **Approval:** status=approved; by=wabkebab; at=2026-11-17; rev=eec0710365a73f77571d6c87d5318e7c225776fa
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** url=https://github.com/wabkebab/agentic-flow/pull/174
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
   the index in the last repository commit. After human push, obtain CI and a structured
   reviewer approval on the `Tracking issue` for that exact PR head and run attempt.

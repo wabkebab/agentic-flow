@@ -1,0 +1,18 @@
+# group or group:tag	ceiling in whole seconds
+export	560
+contracts	175
+upgrade	120
+hooks	125
+plan-to-issues	65
+lifecycle	135
+stations	435
+stations:launch	15
+stations:verify	105
+stations:handoff	305
+stations:packet	20
+controller	1950
+controller:launch	125
+controller:ship	10
+controller:andon	10
+controller:ledger	60
+controller:recovery	1750

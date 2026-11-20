@@ -15,13 +15,40 @@ review_normalize_comments() {
 
 # No output files: caller captures the child's inherited stdout in memory.
 review_bounded() {
-  local pid timer status=0
-  "$@" <&0 & pid=$!
-  ( sleep 20; kill "$pid" 2>/dev/null || true ) </dev/null >/dev/null 2>&1 & timer=$!
-  wait "$pid" || status=$?
-  kill "$timer" 2>/dev/null || true
-  wait "$timer" 2>/dev/null || true
-  return "$status"
+  local limit=${AGENTIC_REVIEW_TIMEOUT:-20}
+  case "$limit" in
+    [1-9]|1[0-9]|20) ;;
+    *) echo 'review_bounded: timeout must be an integer from 1 to 20' >&2; return 2 ;;
+  esac
+  # One supervisor owns both the alarm and the command: no sleep child to leak.
+  # Only signal an unreaped child, so a recycled PID can never be targeted.
+  perl -e '
+    use POSIX ();
+    my ($limit, @command) = @ARGV;
+    my $pid = fork;
+    die "review_bounded: fork failed: $!\n" unless defined $pid;
+    if (!$pid) {
+      exec { $command[0] } @command;
+      POSIX::_exit($!{ENOENT} ? 127 : 126);
+    }
+    my $status;
+    $SIG{ALRM} = sub {
+      local $?;
+      my $done = waitpid($pid, POSIX::WNOHANG());
+      if ($done == 0) { kill "TERM", $pid; }
+      elsif ($done == $pid) { $status = $?; }
+    };
+    alarm $limit;
+    while (!defined $status) {
+      my $done = waitpid($pid, 0);
+      if ($done == $pid) { $status = $?; }
+      elsif ($done < 0 && !$!{EINTR} && !defined $status) {
+        die "review_bounded: wait failed: $!\n";
+      }
+    }
+    alarm 0;
+    exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+  ' "$limit" "$@"
 }
 
 read_review_policy() {

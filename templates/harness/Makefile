@@ -31,9 +31,20 @@ test:           ## full test suite
 # END SHARED SHELL GATE
 #	npm run test:run
 
-test-one:       ## one targeted test:  make test-one F=path/to/file
-	@echo "TODO: define 'test-one' (uses F=...). Got F=$(F)"
-#	npx vitest run $(F)
+test-one:       ## one harness group: F=controller|stations supports S=tag[,tag]
+	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller [S=tag[,tag] (controller: launch,ledger,recovery,ship,andon; stations: launch,packet,verify,handoff)]" >&2; exit 2; }
+	@if [ "$(origin S)" = "command line" ]; then \
+	  { [ "$(F)" = controller ] || [ "$(F)" = stations ]; } || { echo "S= is valid only with F=controller or F=stations" >&2; exit 2; }; \
+	  scripts/self-test.sh --only "$(F)" --scenario "$(S)"; \
+	else scripts/self-test.sh --only "$(F)"; fi
+
+# Optional close-out gate: ship runs it before pushing when the target exists.
+# Define this for your stack's extra release checks. The scaffold source uses a
+# fresh export, whose exporter is deliberately absent from installed projects.
+# Force every installed harness group with scripts/self-test.sh --full --all-groups.
+#.PHONY: ship-gate
+#ship-gate:      ## optional extra release checks
+#	@your-release-check-command
 
 build:          ## production build
 	@echo "TODO: define 'build' in the Makefile."

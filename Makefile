@@ -23,9 +23,17 @@ test:           ## full test suite
 	@scripts/shell-inventory.sh --lint
 # END SHARED SHELL GATE
 
-test-one:       ## one targeted harness group: make test-one F=hooks
-	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller" >&2; exit 2; }
-	@scripts/self-test.sh --only "$(F)"
+test-one:       ## one harness group: F=controller|stations supports S=tag[,tag]
+	@[ -n "$(F)" ] || { echo "usage: make test-one F=export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller [S=tag[,tag] (controller: launch,ledger,recovery,ship,andon; stations: launch,packet,verify,handoff)]" >&2; exit 2; }
+	@if [ "$(origin S)" = "command line" ]; then \
+	  { [ "$(F)" = controller ] || [ "$(F)" = stations ]; } || { echo "S= is valid only with F=controller or F=stations" >&2; exit 2; }; \
+	  scripts/self-test.sh --only "$(F)" --scenario "$(S)"; \
+	else scripts/self-test.sh --only "$(F)"; fi
+
+.PHONY: ship-gate
+# The fresh exported runner receives --full --all-groups, regardless of Git scope.
+ship-gate:      ## full regression suite in a fresh exported layout (close-out / CI)
+	@scripts/self-test.sh --ship-gate
 
 build:          ## production build
 	@set -e; tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/agentic-flow-build.XXXXXX"); \

@@ -27,6 +27,10 @@ launch_environment() { # worktree scratch; array used with env -i for the CLI it
   local worktree=$1 scratch=$2 remote count=0
   LAUNCH_ENV=("HOME=$HOME" "PATH=$PATH" "LANG=${LANG:-C}" "TMPDIR=$scratch" "GH_CONFIG_DIR=$scratch/gh" "GIT_CONFIG_NOSYSTEM=1" "GIT_CONFIG_GLOBAL=/dev/null")
   mkdir -p "$scratch/gh"
+  if [ "$LAUNCH_CLI" = codex ]; then
+    launch_codex_home "$worktree" || return 6
+    LAUNCH_ENV+=("CODEX_HOME=$LAUNCH_CODEX_HOME")
+  fi
   # Only model-provider authentication crosses the boundary. No general env passthrough.
   [ -z "${ANTHROPIC_API_KEY:-}" ] || LAUNCH_ENV+=("ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
   [ -z "${OPENAI_API_KEY:-}" ] || LAUNCH_ENV+=("OPENAI_API_KEY=$OPENAI_API_KEY")
@@ -41,6 +45,54 @@ launch_environment() { # worktree scratch; array used with env -i for the CLI it
     count=$((count+1))
   done < <(git -C "$worktree" remote)
   LAUNCH_ENV+=("GIT_CONFIG_COUNT=$count")
+}
+
+# Keep sessions across launches, but never import the operator's instructions/config.
+launch_codex_home() { # worktree
+  local common installed="$HOME/.codex/agentic-station.config.toml" login="$HOME/.codex/auth.json"
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir) || return 6
+  [ -f "$login" ] || { launch_error "missing Codex login $login"; return 6; }
+  launch_profile_check || return 6
+  LAUNCH_CODEX_HOME="$common/agentic-flow/codex-home"
+  [ ! -L "$LAUNCH_CODEX_HOME" ] || { launch_error 'Codex station home is a symlink'; return 6; }
+  mkdir -p "$LAUNCH_CODEX_HOME" || return 6
+  local file
+  for file in config.toml agentic-station.config.toml AGENTS.md; do
+    [ ! -L "$LAUNCH_CODEX_HOME/$file" ] || { launch_error "Codex station $file is a symlink"; return 6; }
+  done
+  # Codex 0.169 reads --profile agentic-station from agentic-station.config.toml beside an
+  # otherwise empty config.toml, and refuses a legacy [profiles.*] table in config.toml.
+  # cat, not cp: the self-test wraps cp for copy counting, and that wrapper resets the probe traps.
+  cat "$installed" > "$LAUNCH_CODEX_HOME/agentic-station.config.toml" || return 6
+  : > "$LAUNCH_CODEX_HOME/config.toml" || return 6
+  : > "$LAUNCH_CODEX_HOME/AGENTS.md" || return 6
+  if [ -e "$LAUNCH_CODEX_HOME/auth.json" ] || [ -L "$LAUNCH_CODEX_HOME/auth.json" ]; then
+    [ -L "$LAUNCH_CODEX_HOME/auth.json" ] && [ "$(readlink "$LAUNCH_CODEX_HOME/auth.json")" = "$login" ] \
+      || { launch_error 'Codex station login must link to the operator login'; return 6; }
+  else ln -s "$login" "$LAUNCH_CODEX_HOME/auth.json" || return 6; fi
+}
+
+launch_fingerprint() { # station worktree; excludes changing sessions and token contents
+  local station=$1 worktree=$2 version file digest
+  launch_assignment "$station" "$worktree" || return 6
+  [ "$LAUNCH_CLI" != manual ] || return 6
+  version=$(launch_timed 15 - "$LAUNCH_CLI" --version) || return 6
+  [ "$LAUNCH_CLI" != codex ] || launch_codex_home "$worktree" || return 6
+  digest=$({
+    printf '%s\n%s\n' "$LAUNCH_ROW" "$version"
+    for file in scripts/lib/launch.sh scripts/lib/station-output.jq scripts/lib/station-config.pl; do
+      shasum -a 256 < "$LAUNCH_ROOT/$file" || return 6
+    done
+    shasum -a 256 < "$LAUNCH_PROFILE" || return 6
+    if [ "$LAUNCH_CLI" = codex ]; then
+      shasum -a 256 < "$LAUNCH_CODEX_HOME/config.toml" || return 6
+      shasum -a 256 < "$LAUNCH_CODEX_HOME/agentic-station.config.toml" || return 6
+      shasum -a 256 < "$LAUNCH_CODEX_HOME/AGENTS.md" || return 6
+      readlink "$LAUNCH_CODEX_HOME/auth.json" || return 6
+    fi
+  } | shasum -a 256) || return 6
+  # Hash contents and logical names, never checkout-dependent absolute paths.
+  printf '%s\n' "${digest%% *}"
 }
 
 launch_timed() { # seconds pgid-file|- command...; reap the whole group on every exit
@@ -162,7 +214,7 @@ launch_preflight() { # station [worktree=$PWD]; unattended checks, no model invo
   echo "preflight: $station contract_mode=$LAUNCH_CONTRACT_MODE" >&2
   [ "$LAUNCH_CONTRACT_MODE" != overridden ] || echo "warning: $station project instructions are overridden, not excluded" >&2
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/agentic-preflight.XXXXXX") || return 6
-  launch_environment "$worktree" "$scratch"
+  launch_environment "$worktree" "$scratch" || { rm -rf "$scratch"; return 6; }
   case "$LAUNCH_CLI" in
     codex) launch_codex_config "$worktree" "$scratch" || { rm -rf "$scratch"; return 6; } ;;
     opencode) launch_opencode_config "$worktree" "$scratch" || { rm -rf "$scratch"; return 6; } ;;
@@ -202,17 +254,24 @@ launch_bundle() { # station step packet scratch
   if [ "$station" = executor ]; then
     printf '\nCommit with Fixes #%s. Never amend a commit. Never push.\n' "${LAUNCH_ISSUE:-unknown}" >> "$scratch/prompt.md"
   fi
+  if [ "$LAUNCH_CLI" = opencode ]; then
+    printf '\nThe final message must be only the result JSON object, with no prose and no fences; summary is limited to 2000 characters.\n' >> "$scratch/prompt.md"
+  fi
 }
 
-launch_station() { # station worktree packet result [--resume session]
-  local station=$1 worktree=$2 packet=$3 result=$4 resume='' scratch started ended status=0 step
+launch_station() { # station worktree packet result [--resume session | --probe]
+  local station=$1 worktree=$2 packet=$3 result=$4 resume='' probe=false scratch started ended status=0 step
   shift 4
   worktree=$(cd "$worktree" && pwd -P) || return 2
   case "$packet" in /*) ;; *) packet="$PWD/$packet" ;; esac
   case "$result" in /*) ;; *) result="$PWD/$result" ;; esac
   launch_assignment "$station" "$worktree" || return 6
   [ "$LAUNCH_CLI" != manual ] || { echo "$station is manual: run it interactively" >&2; return 12; }
-  [ "$#" -eq 0 ] || { [ "$#" -eq 2 ] && [ "$1" = --resume ] || return 2; resume=$2; }
+  if [ "$#" -ne 0 ]; then
+    if [ "$#" -eq 1 ] && [ "$1" = --probe ]; then probe=true
+    elif [ "$#" -eq 2 ] && [ "$1" = --resume ]; then resume=$2
+    else return 2; fi
+  fi
   # The caller supplies the creating intent's identity. Fail closed if it has no
   # identity rather than assuming a session belongs to the newly selected CLI.
   if [ -n "$resume" ]; then
@@ -223,8 +282,14 @@ launch_station() { # station worktree packet result [--resume session]
   command -v perl >/dev/null 2>&1 || { launch_error 'missing timeout runtime perl'; return 6; }
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/agentic-launch.XXXXXX") || return 6
   step=${LAUNCH_STEP:-unknown}
-  launch_bundle "$station" "$step" "$packet" "$scratch" || { rm -rf "$scratch"; return 2; }
-  launch_environment "$worktree" "$scratch"
+  if [ "$probe" = true ]; then
+    # Probe differs only in its fixed prompt and bounded watchdog. All argv,
+    # environment, config inspection, sandbox roots and limits below are shared.
+    printf 'Run bash .agentic-flow-probe.sh %s. Return only the JSON it prints.\n' "$station" > "$scratch/bundle.md"
+    cat "$scratch/bundle.md" > "$scratch/prompt.md"
+    LAUNCH_TIMEOUT=120
+  else launch_bundle "$station" "$step" "$packet" "$scratch" || { rm -rf "$scratch"; return 2; }; fi
+  launch_environment "$worktree" "$scratch" || { rm -rf "$scratch"; return 6; }
   local -a argv
   case "$LAUNCH_CLI" in
     claude)
@@ -304,6 +369,10 @@ launch_station() { # station worktree packet result [--resume session]
     --arg cli "$LAUNCH_CLI" --arg turns "$LAUNCH_TURNS" --arg budget "$LAUNCH_BUDGET" \
     '. + {exit:$exit,seconds:$seconds,contract_mode:$mode,limits:{max_turns:$turns,budget_usd:$budget,mode:(if $cli=="claude" then "enforced" else "advisory" end)}}'
   cat "$scratch/stderr" >&2
+  # Transfer ownership of the original files; the caller validates after launch.
+  if declare -F launch_output_record >/dev/null; then
+    launch_output_record "$scratch/events" "$scratch/stderr" || { rm -rf "$scratch"; return 2; }
+  fi
   rm -rf "$scratch"
   return "$status"
 }

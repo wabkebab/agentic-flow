@@ -672,11 +672,21 @@ YAML.</figcaption>
 
 <h3>Keeping the gate cheap enough to keep</h3>
 <p>A gate that gets slow gets bypassed, so its cost is measured and budgeted.
-<code>self-test.sh --fast</code> runs four structural and hook smoke groups with no fixture
-tree copies. <code>--full</code> runs all six groups from one source snapshot, hard-linking
-unchanged files into isolated fixtures and copying only the files a test mutates. Each normal
-run asserts its copy budget, and <code>scripts/measure-harness.sh</code> reports groups,
-PATH scans, and copies deterministically.</p>
+<code>self-test.sh --fast</code> runs structural and hook smoke checks with no fixture
+tree copies. In the scaffold source, <code>--full</code> runs all eight groups from one source
+snapshot, hard-linking unchanged files into isolated fixtures and copying only files a test
+mutates. Each normal run asserts its copy budget, and
+<code>scripts/measure-harness.sh</code> reports groups, PATH scans, and copies deterministically.</p>
+<p>In an exported project, <code>make test</code> runs the local <code>contracts</code> and
+<code>hooks</code> groups, plus the scaffold groups when harness files change. Harness paths
+come from the payload manifest's export destinations. Detection includes committed, staged,
+unstaged and untracked files against the merge base with the first resolving integration ref:
+<code>AGENTIC_BASE_REF</code>, <code>origin/$GITHUB_BASE_REF</code>, <code>origin/HEAD</code>,
+<code>origin/main</code>, then <code>origin/master</code>. The feature branch's upstream is
+never used. If Git cannot resolve a base or compute the changed set, every group runs.
+The CI template fetches full history and supplies the PR base for the test step.</p>
+<p><code>scripts/self-test.sh --full --all-groups</code> forces every group. The scaffold's
+<code>make ship-gate</code> runs that command inside a fresh export for close-out and CI.</p>
 
 <h2><span class="num">07</span>Guardrails that don't depend on good intentions</h2>
 <p>Every rule above is also a hook. An agent that forgets the contract gets stopped by the

@@ -1,0 +1,2212 @@
+ancestry_case	'amended approved step' "$ALT_HEAD" BLOCKED "$ALT_HEAD.*$LIFE_HEAD"
+ancestry_case	'ancestor approved step' "$STEP_HEAD" READY 'review by reviewer'
+ancestry_case	'git ancestry error' "$STEP_HEAD" UNVERIFIED 'fatal: fixture ancestry error'
+ancestry_case	'missing approved step' cccccccccccccccccccccccccccccccccccccccc UNVERIFIED 'cccccccccccccccccccccccccccccccccccccccc.*git fetch'
+ancestry_case	'shallow ancestry' "$STEP_HEAD" UNVERIFIED 'git fetch --unshallow'
+approval_case	in unapproved missing-rev unknown-rev unrelated-rev
+assert_active_ci_workflow	"$SOURCE_FIXTURE/.github/workflows/ci.yml"
+assert_ci_gate_needs_asserted	"$TARGET/templates/ci/ci.yml"
+assert_ci_gate_needs_asserted	"$workflow"
+assert_cost_budget	"$LOCAL_EVENTS" "$SELF_TEST_MODE"
+assert_cost_budget	"$MEASURE_FIX/dispatch.events" fast
+assert_cost_budget	"$MEASURE_FIX/fast-files.events" fast
+assert_cost_budget	"$MEASURE_FIX/full-boundary.events" full
+assert_cost_budget	"$MEASURE_FIX/full-files.events" full
+assert_cost_budget	"$MEASURE_FIX/recopied.events" full
+assert_exported_harness_file	"$TARGET/AGENTS.md" "# AGENTS.md — $PROJECT_TOKEN"
+assert_exported_harness_file	"$TARGET/CLAUDE.md" "# CLAUDE.md — $PROJECT_TOKEN"
+assert_exported_harness_file	"$TARGET/Makefile" "# Stack profile — the ONE place this project's build/test/run commands live."
+assert_file	"$AGENTIC_FLOW_CLI"
+assert_file	"$ASSURANCE"
+assert_file	"$INIT_EXISTING/CLAUDE.md.agentic-new"
+assert_file	"$INIT_TARGET/.agentic-flow-version"
+assert_file	"$LEGACY_TARGET/.agentic-flow-installation"
+assert_file	"$LEGACY_TARGET/.codex/hooks.json"
+assert_file	"$NO_CI_TARGET/METHODOLOGY.md"
+assert_file	"$NO_CI_TARGET/docs/README.md"
+assert_file	"$SCOPED_TARGET/.agentic-flow-installation"
+assert_file	"$SCOPED_TARGET/.claude/settings.json"
+assert_file	"$SCOPED_TARGET/.claude/skills/plan-to-issues/SKILL.md"
+assert_file	"$SCOPED_TARGET/AGENTS.md"
+assert_file	"$SCOPED_TARGET/CLAUDE.md"
+assert_file	"$SCOPED_TARGET/METHODOLOGY.md"
+assert_file	"$TARGET/.agentic-flow-review-policy"
+assert_file	"$TARGET/.agentic-flow-source"
+assert_file	"$TARGET/.agentic-flow-version"
+assert_file	"$TARGET/.agents/skills/plan-to-issues/SKILL.md"
+assert_file	"$TARGET/.claude/settings.json"
+assert_file	"$TARGET/.codex/hooks.json"
+assert_file	"$TARGET/ADOPTION.md"
+assert_file	"$TARGET/CLAUDE.md.agentic-new"
+assert_file	"$TARGET/METHODOLOGY.md"
+assert_file	"$TARGET/config/payload.tsv"
+assert_file	"$TARGET/config/workflow.tsv"
+assert_file	"$TARGET/docs/README.md"
+assert_file	"$TARGET/docs/accepted_risks.md"
+assert_file	"$TARGET/docs/backlog/.gitkeep"
+assert_file	"$TARGET/docs/done/.gitkeep"
+assert_file	"$TARGET/docs/done/security/.gitkeep"
+assert_file	"$TARGET/docs/inprogress/.gitkeep"
+assert_file	"$TARGET/docs/templates/feature-analysis.md"
+assert_file	"$TARGET/profiles/generic.tsv"
+assert_file	"$TARGET/profiles/go.tsv"
+assert_file	"$TARGET/profiles/node.tsv"
+assert_file	"$TARGET/profiles/python.tsv"
+assert_file	"$TARGET/profiles/rust.tsv"
+assert_file	"$TARGET/scripts/doctor.sh"
+assert_file	"$TARGET/scripts/lib/payload-apply.sh"
+assert_file	"$TARGET/scripts/lib/workflow.sh"
+assert_file	"$TARGET/scripts/plan-to-issues.sh"
+assert_file	"$TARGET/scripts/render-stack-profile.sh"
+assert_file	"$TARGET/templates/ci/README.md"
+assert_file	"$TARGET/templates/ci/ci.yml"
+assert_file	"$TARGET/templates/ci/deploy.yml"
+assert_file	"$TARGET/templates/ci/release-native.yml"
+assert_file	"$UPGRADE_CLEAN/.agentic-flow-installation"
+assert_file	"$UPGRADE_CLEAN/.agentic-flow-source-applied"
+assert_file	"$UPGRADE_TARGET/.agentic-flow-candidate-version"
+assert_file	"$file"
+assert_file	"$second_candidate"
+assert_file	"$workflow"
+assert_no_file	"$CODEX_ONLY_TARGET/.opencode/agent/code-reviewer.md"
+assert_no_file	"$CODEX_ONLY_TARGET/CLAUDE.md"
+assert_no_file	"$DRIFT_TARGET"
+assert_no_file	"$INIT_RUST/.github"
+assert_no_file	"$INIT_RUST/.github/workflows/ci.yml"
+assert_no_file	"$INIT_RUST/.github/workflows/deploy.yml"
+assert_no_file	"$LEGACY_TARGET/.agentic-flow-installation"
+assert_no_file	"$LEGACY_TARGET/.codex/hooks.json"
+assert_no_file	"$NO_CI_TARGET/templates/ci/ci.yml"
+assert_no_file	"$NO_REMOTE_TARGET/.agentic-flow-source"
+assert_no_file	"$SCOPED_TARGET/.agents/skills/plan-to-issues/SKILL.md"
+assert_no_file	"$SCOPED_TARGET/.codex/hooks.json"
+assert_no_file	"$SCOPED_TARGET/.opencode/agent/code-reviewer.md"
+assert_no_file	"$SCOPED_TARGET/templates/shared"
+assert_no_file	"$SOURCE_ONLY_DIR_TARGET/scripts/private_probe"
+assert_no_file	"$SOURCE_ONLY_DIR_TARGET/scripts/private_probe/tool.sh"
+assert_no_file	"$TARGET/.agentic-flow-source"
+assert_no_file	"$TARGET/.github"
+assert_no_file	"$TARGET/.github/workflows/ci.yml"
+assert_no_file	"$TARGET/.github/workflows/deploy.yml"
+assert_no_file	"$TARGET/.github/workflows/release-native.yml"
+assert_no_file	"$TARGET/VERSION"
+assert_no_file	"$TARGET/docs/inprogress/feature-init-and-template-split.md"
+assert_no_file	"$TARGET/docs/inprogress/self-test-export-leak.md"
+assert_no_file	"$TARGET/scripts/export.sh"
+assert_no_file	"$TARGET/scripts/init.sh"
+assert_no_file	"$TARGET/templates/harness"
+assert_no_file	"$TARGET/templates/harness/README.md"
+assert_no_file	"$TIMEOUT_SENTINEL"
+assert_no_file	"$TMP/rejected-$required_scope"
+assert_no_file	"$TMP/unknown-scope-target"
+assert_no_file	"$UPGRADE_CLEAN/.agentic-flow-candidate-version"
+assert_no_file	"$UPGRADE_CLEAN/docs-index-sentinel"
+assert_no_file	"$UPGRADE_TARGET/.agentic-flow-installation"
+assert_no_file	"$UPGRADE_TARGET/docs-index-sentinel"
+assert_redirected_secret	"GIT_DIR=$alt_repo/.git GIT_INDEX_FILE=$alt_repo/.git/index git commit -m x" "$alt_repo/.git/index"
+assert_redirected_secret	"GIT_DIR=$alt_repo/.git git commit -m x" "$alt_repo/.git"
+assert_redirected_secret	"GIT_INDEX_FILE=$alt_index git commit -m x" "$alt_index"
+assert_redirected_secret	"GIT_WORK_TREE=$alt_repo git commit -m x" "$alt_repo"
+assert_redirected_secret	"cd '$alt_repo' && git commit -m x" "$alt_repo"
+assert_redirected_secret	"env -- GIT_INDEX_FILE=$alt_index git commit -m x" "$alt_index"
+assert_redirected_secret	"env GIT_INDEX_FILE=$alt_index git commit -m x" "$alt_index"
+assert_redirected_secret	"git --git-dir=$alt_repo/.git --work-tree=$alt_repo commit -m x" "$alt_repo/.git"
+assert_redirected_secret	"git -C ${space_repo// /\\ } commit -m x" "$alt_repo"
+assert_redirected_secret	"git -C '$space_repo' commit -m x" "$alt_repo"
+assert_redirected_secret	"git -C \"$space_repo\" commit -m x" "$alt_repo"
+assert_redirected_secret	'git -C ../secret-other-repo commit -m x' "$alt_repo"
+bound_case	"decimal order $ids" READY 'review by reviewer.*comment new' 1
+bound_case	'GraphQL partial error' UNVERIFIED 'GraphQL error' 0
+bound_case	'approval on PR or step issue only' UNVERIFIED 'no approval for PR head' 0
+bound_case	'authenticated correct binding' READY 'review by reviewer' 1
+bound_case	'changes requested on current head' BLOCKED 'does not approve PR' 0
+bound_case	'complete 100-node page' READY 'review by reviewer' 1
+bound_case	'copied successful run' BLOCKED 'differs from repository' 1
+bound_case	'deleted run' UNVERIFIED 'Actions run 100 unavailable' 1
+bound_case	'duplicate attempt' BLOCKED 'malformed review record' 0
+bound_case	'duplicate run' BLOCKED 'malformed review record' 0
+bound_case	'edited final approval' BLOCKED 'comment opaque-1 was edited' 0
+bound_case	'failed run' BLOCKED 'concluded failure' 1
+bound_case	'full incomplete page' UNVERIFIED 'exceed one page' 0
+bound_case	'live attempt advanced' BLOCKED 'attempt 2 differs' 1
+bound_case	'missing attempt' UNVERIFIED 'missing attempt=' 0
+bound_case	'missing edit indicator' UNVERIFIED 'comment opaque-1 missing lastEditedAt' 0
+bound_case	'missing pageInfo' UNVERIFIED 'pageInfo.hasNextPage missing' 0
+bound_case	'null node' UNVERIFIED 'node 1 unreadable' 0
+bound_case	'null nodes' UNVERIFIED 'nodes missing' 0
+bound_case	'null ordering key' UNVERIFIED 'comment opaque-1 missing valid fullDatabaseId' 0
+bound_case	'numeric ordering key' UNVERIFIED 'comment opaque-1 missing valid fullDatabaseId' 0
+bound_case	'recorded attempt greater' BLOCKED 'attempt 1 differs' 1
+bound_case	'rerun changed conclusion' BLOCKED 'attempt 2 differs' 1
+bound_case	'superseded approval only' UNVERIFIED 'no approval for PR head' 0
+bound_case	'workflow path with GitHub ref suffix' READY 'review by reviewer' 1
+bound_case	'wrong repository' BLOCKED 'differs from repository' 1
+bound_case	'wrong workflow' BLOCKED 'differs from repository' 1
+brief_run	--apply
+brief_run	--diff
+c2_expect	demo ".[]|select(.chain==\"demo/3/0/executor/1\")|.remaining.recovery==$((4-n)) and (.closed_runs|length)==$((n-1))"
+c2_expect	demo ".[]|select(.latest==\"$run\")|.head==null and .pending==null"
+c2_expect	demo '.[0].pending=="verify"'
+c2_expect	demo '.[0]|.head=="demo/1/0/executor/1/1" and .pending=="relaunch" and .remaining=={resume_valid:1,fix:1,recovery:3}'
+c2_expect	demo '.[0]|.head=="demo/1/0/executor/1/2" and .remaining.fix==0 and .closed_runs==["demo/1/0/executor/1/1"]'
+c2_expect	demo '.[0]|.pending=="decide" and .escalation=="malformed station result: malformed" and .remaining.resume_valid==0 and (.closed_runs|length)==2'
+c2_expect	demo '.[0]|.pending=="fix" and .remaining.fix==1'
+c2_expect	demo '.[0]|.pending=="resume-packet" and .session=="codex-session"'
+c2_expect	demo '.[0]|.pending=="resume-valid" and .counts.invalid_results==1 and .remaining.resume_valid==1'
+c2_expect	demo '.[]|select(.chain=="demo/2/0/executor/1")|.pending=="decide" and .escalation=="gate still red after fix" and .remaining.fix==0'
+c2_expect	demo '.[]|select(.chain=="demo/3/0/executor/1")|.pending=="decide" and .escalation=="station keeps failing to finish"'
+c2_expect	demo '.[]|select(.chain=="demo/4/0/reviewer/1")|.head==null and .pending==null and (.closed_runs|length)==1'
+c2_expect	demo '.[]|select(.chain=="demo/4/0/reviewer/1")|.pending=="decide"'
+c2_expect	demo '.[]|select(.chain=="demo/4/0/reviewer/1")|.pending=="handoff"'
+c2_expect	demo '.[]|select(.chain=="demo/4/0/reviewer/1")|.pending=="relaunch"'
+c2_expect	demo '.[]|select(.chain=="demo/5/0/executor/2")|.remaining=={resume_valid:1,fix:1,recovery:3}'
+c2_expect	green '.[0].head==null and .[0].closed_runs==["green/1/0/executor/1/1"]'
+c2_expect	green '.[0].head==null and .[0].pending==null'
+c2_expect	green '.[0].pending=="decide"'
+c2_expect	infrastructure '.[0]|.pending=="infrastructure" and .escalation==null and .counts.invalid_results==0 and .remaining.resume_valid==1'
+c2_expect	old '.[0]|.head=="old/1/0/executor/1/1" and .pending=="relaunch"'
+c2_expect	salvage '.[0].pending=="relaunch"'
+c4_run	0
+c4_run	0 --take-over
+c4_run	1
+c4_run	10
+c4_run	10 # The executor question still needs its ordinary human resume.
+c4_run	5
+c4_run	9
+c5_run	0
+c5_run	0 --once
+c5_run	0 --reconcile-only
+c5_run	1
+c5_run	10
+c5_run	10 --once
+c5_run	12
+c5_run	5
+c5_run	5 --once
+c5_run	6
+c5_run	calls
+close_run	finish docs/done/plan.md
+close_run	prep docs/done/plan.md --pr https://github.com/owner/repo/pull/7
+close_run	prep docs/inprogress/plan.md
+close_run	prep docs/inprogress/plan.md --pr https://github.com/owner/repo/pull/7
+close_run	prep docs/inprogress/plan.md --pr https://github.com/owner/repo/pull/7 --dry-run
+expected_run	pending invalid_left fix_left recovery_left closed_count
+fail	"$1 did not make exactly one tracking-thread query"
+fail	"$1 did not query exactly one Strict step thread"
+fail	"$1 did not report $2 and $3: $(cat "$TMP/lifecycle-review.out")"
+fail	"$1 made the wrong number of Actions lookups"
+fail	"$1 queried another review thread before selecting evidence"
+fail	"$1 unexpectedly failed: $(cat "$TMP/lifecycle-review.out")"
+fail	"$1 unexpectedly passed"
+fail	"$1 was not $2 with $3: $(cat "$TMP/lifecycle-bound.out")"
+fail	"$approval_case reached GitHub"
+fail	"$cli dead attempt reused session"
+fail	"$cli launcher change reused session"
+fail	"$cli live session did not resume"
+fail	"$cli reassignment reused session"
+fail	"$file contains scaffold-maintainer export note text"
+fail	"$file first non-empty line was '$actual_heading', expected '$expected_heading'"
+fail	"$mf does not forward controller scenario selection"
+fail	"$mf does not run fast self-test mode in 'make check'"
+fail	"$mf does not run full self-test mode in 'make test'"
+fail	"$mf does not run shellcheck in 'make test'"
+fail	"$mf skips shellcheck when absent instead of failing"
+fail	"$mf usage omits S="
+fail	"$missing failure skipped the other stream"
+fail	"$mode andon exceeded 4 KiB"
+fail	"$mode andon leaked provider value"
+fail	"$mode andon lost reason"
+fail	"$mode andon omitted $expected"
+fail	"$mode andon omitted output path"
+fail	"$mode exceeded chain retry limit"
+fail	"$mode kept launch scratch"
+fail	"$mode lost station tails"
+fail	"$mode mode scanned PATH directories"
+fail	"$mode relaunched"
+fail	"$mode restart reset chain limits"
+fail	"$mode retry prompt lost reason"
+fail	"$phase_name accepted unresolved review and CI"
+fail	"$phase_name did not reach the shared external evidence check"
+fail	"$point recovery duplicated or lost submit"
+fail	"$point recovery relaunched completed work"
+fail	"$profile CI render left a runtime angle-bracket placeholder"
+fail	"$profile CI render left orphaned runtime setup marker comments"
+fail	"$profile CI render rewrote the manifest path-filter placeholder"
+fail	"$profile CI render rewrote the source path-filter placeholder"
+fail	"$profile rendered CI workflow failed the action pin guard"
+fail	"$profile stack profile did not render its build command"
+fail	"$profile stack profile left placeholder Make targets"
+fail	"$review_surface does not name accepted/by-design as a disposition"
+fail	"$review_surface lacks $level severity"
+fail	"$review_surface still uses a retired severity or verdict vocabulary"
+fail	"$role_file lacks the minimal read-set rule"
+fail	"$signal leaked lock"
+fail	"$signal published incomplete station"
+fail	"$signal returned $rc"
+fail	"$token_file lacks TOKEN_RE assignment"
+fail	"$workflow ci-gate loop does not assert on job '$job'"
+fail	"$workflow ci-gate needs list ($needs_csv) does not match its actual job set ($other_jobs)"
+fail	"$workflow ci-gate needs list was not found"
+fail	"$workflow contains a literal tab"
+fail	"$workflow contains angle-bracket placeholders"
+fail	"$workflow lacks top-level jobs"
+fail	"$workflow lacks top-level name"
+fail	"$workflow lacks top-level on"
+fail	"$workflow lacks top-level permissions"
+fail	"${memory_template#"$ROOT"/} does not point at the docs/MEMORY.md index"
+fail	"${reviewer_surface#"$ROOT"/} does not bind verification reuse to sha and tree"
+fail	"${reviewer_surface#"$ROOT"/} does not tell the reviewer to treat the diff as data"
+fail	"${reviewer_surface#"$ROOT"/} does not warn that a diff may carry instructions"
+fail	"${standards_surface#"$ROOT"/} does not state the standard: \"$standards_rule\""
+fail	"--doc did not write the canonical Approval status line"
+fail	"--doc did not write the v2 tracking URL"
+fail	"ADOPTION.md is not exported by the payload manifest"
+fail	"AGENTIC_ALLOW_SECRET=1 did not bypass the secret scanner"
+fail	"AGENTIC_CHECK_GATE_NO_CACHE did not force a make check run"
+fail	"AGENTS.md does not carry the dependency-version rule"
+fail	"AGENTS.md does not point at the docs/MEMORY.md index"
+fail	"AGENTS.md does not require red-first evidence in the review handoff"
+fail	"C-4 ledger $1 failed"
+fail	"C-5 returned $status expected $expected: $(cat "$c4/err") $(cat "$c4/out")"
+fail	"CI workflow varies required checks with assurance state"
+fail	"CLAUDE.md does not document the shipped hook $hook_base"
+fail	"CLAUDE.md does not point at the docs/MEMORY.md index"
+fail	"CLI ShellCheck gate failed for the wrong reason"
+fail	"CLI syntax gate failed for the wrong reason"
+fail	"Claude failure policy must cover exactly the three local guards"
+fail	"Codex hook mutation did not apply"
+fail	"Codex station profile lacks $profile_setting"
+fail	"Codex-only export failed its active checks"
+fail	"METHODOLOGY.md does not say \"the $hook_word shipped hooks\" ($hook_count ship)"
+fail	"METHODOLOGY.md §$section reference has no matching section"
+fail	"METHODOLOGY.md §5 does not state \"$blocking_phrase\""
+fail	"METHODOLOGY.md §5 is not titled for every review surface"
+fail	"METHODOLOGY.md §8 does not require worktree isolation for concurrent editing agents"
+fail	"METHODOLOGY.md §8 has no multi-reviewer ensemble entry"
+fail	"Makefile accepted invalid scenario selection ($selection_make_case, status $selection_status): $(cat "$SELECT_FIX/make.err")"
+fail	"NUL path did not name its installation-state line"
+fail	"OpenCode failure cause missing: $mode"
+fail	"OpenCode review does not route engineering standards to AGENTS.md"
+fail	"README.md does not say \"the $hook_word hook scripts\" ($hook_count ship)"
+fail	"S-9 role did not shrink: $role"
+fail	"SessionStart is not wired in $session_adapter"
+fail	"ShellCheck gate accepted a fixture with a finding"
+fail	"ShellCheck gate failed for the wrong reason"
+fail	"ShellCheck gate lost the failing file's diagnostic"
+fail	"ShellCheck gate lost the failing file's path"
+fail	"ShellCheck gate missed a damaged scripts/agentic-flow"
+fail	"ShellCheck gate missed a manifest extensionless command"
+fail	"ShellCheck gate rejected clean files with a sourced helper"
+fail	"ShellCheck gate reported findings for clean files"
+fail	"ShellCheck gate reported the adopter-owned script"
+fail	"ShellCheck gate swept in an adopter-owned script under the destination"
+fail	"ShellCheck must lint every file separately with -x, in inventory order, after a failure"
+fail	"ShellCheck omitted or combined clean inventory files"
+fail	"Standard $phase_name failed: $(cat "$TMP/standard-life.out")"
+fail	"Standard $phase_name was not READY"
+fail	"Standard accepted $1"
+fail	"Standard document creation failed: $(cat "$TMP/std.out")"
+fail	"Standard document reapply failed: $(cat "$TMP/std.out")"
+fail	"Standard mutated GitHub before rejecting $1"
+fail	"Standard revision migration failed: $(cat "$TMP/std.out")"
+fail	"Stop gate allowed a red check after a cached green"
+fail	"Stop gate allowed a red commit on a clean tree"
+fail	"Stop gate allowed a stale docs index"
+fail	"Stop gate allowed a turn while 'make check' was red"
+fail	"Stop gate allowed an unknown failing check"
+fail	"Stop gate allowed broken clean HEAD after discarding a verified fix"
+fail	"Stop gate blocked a turn while 'make check' was green"
+fail	"Stop gate blocked after a second modification"
+fail	"Stop gate blocked after adding an untracked file"
+fail	"Stop gate blocked after modifying a tracked file"
+fail	"Stop gate blocked on an unchanged tree"
+fail	"Stop gate blocked the uncommitted fix"
+fail	"Stop gate blocked while the check was green (cache cold)"
+fail	"Stop gate blocked with no 'check' target in the Makefile"
+fail	"Stop gate blocked with no Makefile at all"
+fail	"Stop gate blocked with the cache disabled"
+fail	"Stop gate did not re-run after a tracked file changed"
+fail	"Stop gate did not warn-and-allow on the stop_hook_active retry"
+fail	"Stop gate expected exit $2, got $gate_status"
+fail	"Stop gate re-ran make check with nothing changed"
+fail	"Stop gate reused a stale verdict after a new file appeared"
+fail	"Stop gate reused a verdict across different content with identical git status"
+fail	"Stop gate stale-docs failure did not print the one-line remedy"
+fail	"Stop gate stale-docs failure printed the full diagnostic tail"
+fail	"Stop gate unknown failure did not include diagnostic tail"
+fail	"TOKEN_RE accepted invalid placeholder fixtures"
+fail	"TOKEN_RE assignment diverged in $token_file"
+fail	"TOKEN_RE rejected valid placeholder fixtures"
+fail	"a memory citing a line past end-of-file was not reported"
+fail	"a memory citing a nonexistent path was not reported"
+fail	"accepted $approval_case"
+fail	"acknowledged changing state reran the gate"
+fail	"acknowledged red reran the gate"
+fail	"acknowledged red skipped silently"
+fail	"adopter script was swept into source inventory"
+fail	"agentic-flow --help did not document --version as the project stamp"
+fail	"agentic-flow status succeeded outside an adopted project"
+fail	"an entry file with no index line was not reported"
+fail	"an index row with no entry file was not reported"
+fail	"andon missing $expected"
+fail	"approval conflict did not explain the preserved approver"
+fail	"approval stamp did not include approved-at"
+fail	"approval stamp did not land in the existing tracker marker"
+fail	"assurance raise failed"
+fail	"assurance status did not identify the legacy default"
+fail	"attested $close_mutation"
+fail	"attributed downgrade failed"
+fail	"block hook did not explain the block"
+fail	"bookkeeping finish failed ($close_profile): $(cat "$TMP/close.out")"
+fail	"bounce limit andon omitted $expected"
+fail	"brief accepted $mutation"
+fail	"cache fallback failed: $verify_bad"
+fail	"cache fallback failed: $verify_mutation"
+fail	"cache reused $verify_bad record"
+fail	"cache reused mismatch: $verify_mutation"
+fail	"captured $cli output did not parse"
+fail	"captured $cli session/result incorrect"
+fail	"captured $cli usage incorrect"
+fail	"changed diff wrote into the project tree"
+fail	"changed plan did not reconcile"
+fail	"changed plan reconciliation dropped the original approval"
+fail	"changed step body was not updated in place"
+fail	"changed-origin refusal did not explain the hard stop"
+fail	"changing gate did not stop after two runs"
+fail	"changing gate wrote a green stamp"
+fail	"changing retry did not record its final state"
+fail	"changing retry overwrote green stamp"
+fail	"check-gate.sh does not create a per-run log with mktemp"
+fail	"check-gate.sh still redirects output to a fixed /tmp path"
+fail	"clarification refused: $(cat "$TMP/clarification.out")"
+fail	"clean green state was not checked exactly once"
+fail	"clean upgrade did not advance the installed version"
+fail	"clean upgrade failed"
+fail	"close-out accepted a closed issue"
+fail	"close-out accepted an open issue without $missing_label"
+fail	"close-out did not name missing $missing_label label"
+fail	"close-out mismatch did not name the phase and state"
+fail	"code-reviewer.md does not name the $reviewer_group self-test group"
+fail	"cold Stop gate did not run make check exactly once"
+fail	"config/payload.tsv does not ship the docs/memory/ tree"
+fail	"configured identity did not mint: $(cat "$TMP/identity.err")"
+fail	"controller never acquired lock: $(cat "$c4/owner.err")"
+fail	"controller returned $status expected $expected: $(cat "$c4/err") $(cat "$c4/out")"
+fail	"controller scenario block '$block' never executed"
+fail	"could not extract the role-bundle ceiling snippet for its own regression test"
+fail	"critical hook is missing: $hook"
+fail	"current upgrader executed its replacement after upgrading"
+fail	"current upgrader failed while replacing itself"
+fail	"declared runner did not count as red: $(cat "$TMP/verify.err")"
+fail	"destination query swept in an adopter-owned file"
+fail	"diagnostic missing: $cause"
+fail	"diff --ref changed the project tree"
+fail	"diff --ref returned zero when override changes were available"
+fail	"diff --ref rewrote the recorded source ref"
+fail	"diff accepted a missing source ref"
+fail	"diff accepted a project with no recorded source"
+fail	"diff accepted a timed-out fetch"
+fail	"diff did not classify the changed payload file"
+fail	"diff did not report an already-current target"
+fail	"diff fetch failure did not name the failed operation"
+fail	"diff returned non-zero for an already-current target"
+fail	"diff returned zero when source changes were available"
+fail	"diff without .agentic-flow-source did not mention back-fill"
+fail	"disabled group did not report that it never executed"
+fail	"dispatch fixture failed to rename a should_run call site"
+fail	"docs-index accepted an undeclared docs stage"
+fail	"docs-index undeclared-stage failure did not explain the problem"
+fail	"docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
+fail	"docs/MEMORY.md is a manifest row — upgrade --force would overwrite an adopter's index"
+fail	"doctor --check failed on the scaffold repo"
+fail	"doctor --scope all exit status ($scope_all_status) differed from the default ($default_status)"
+fail	"doctor --scope all output differed from the default all-scope run"
+fail	"doctor accepted $failure_mode onFailure for $guard"
+fail	"doctor accepted --skip-make-check outside repo scope"
+fail	"doctor accepted Codex hooks that depend on the Claude project root"
+fail	"doctor accepted a missing active Codex adapter"
+fail	"doctor accepted a structurally unwired Codex hook configuration"
+fail	"doctor accepted an unresolved scaffold merge candidate"
+fail	"doctor accepted missing SessionStart in $session_adapter"
+fail	"doctor did not identify the missing active adapter"
+fail	"doctor did not name the missing failure policy for $guard ($failure_mode)"
+fail	"doctor did not name the non-portable Codex hook root"
+fail	"doctor did not report git-ignored payload paths"
+fail	"doctor did not report recorded digest drift"
+fail	"doctor did not warn about a stamped project with no source"
+fail	"doctor no longer requires ADOPTION.md"
+fail	"doctor omitted the SessionStart diagnostic for $session_adapter"
+fail	"doctor re-ran the docs index check the caller's gate already covered"
+fail	"doctor rejected explicit repo-scope --skip-make-check"
+fail	"doctor rejected repo-scope --skip-make-check"
+fail	"doctor rejected valid role identities: $(cat "$TMP/identity-doctor.out")"
+fail	"doctor report failed for a stamped project with no source"
+fail	"doctor report failed on a fixture with ignored payload paths"
+fail	"doctor required an excluded docs adapter"
+fail	"doctor skip-scope failure did not explain the constraint"
+fail	"doctor stopped checking the docs index when no gate was declared"
+fail	"doctor treated adopter-owned script as harness drift"
+fail	"downgrade audit did not persist attribution and reason"
+fail	"drifted call-site label did not name the problem"
+fail	"duplicate v2 field did not report its name"
+fail	"duplicate v2 field passed"
+fail	"duplicate-marker render changed a consumer"
+fail	"duplicated workflow labels in $contract"
+fail	"edited $verify_library reused a record"
+fail	"empty audit reason accepted"
+fail	"env-scope doctor did not print its active scope"
+fail	"env-scope doctor passed on stripped PATH without env tools"
+fail	"executor static role bundle exceeds its ceiling: $executor_words words (max 1090)"
+fail	"expected file: $1"
+fail	"export --dry-run added files to a populated target"
+fail	"export --dry-run failed against a populated target"
+fail	"export --dry-run failed against an empty target"
+fail	"export --dry-run overwrote an existing target file"
+fail	"export --dry-run wrote into the target directory"
+fail	"export accepted a stale generated skill"
+fail	"export accepted an unknown manifest scope"
+fail	"export accepted conflicting old and new scope state"
+fail	"export advanced installed version while merge conflicts remained"
+fail	"export clobbered an existing file"
+fail	"export copied files despite malformed installation state"
+fail	"export did not preserve a tag-shaped ref as opaque data"
+fail	"export did not record the default source ref"
+fail	"export did not record the pending candidate version"
+fail	"export did not record the source origin"
+fail	"export excluded required $required_scope scope"
+fail	"export failed from a source with no git remote"
+fail	"export failed with a tag-shaped source ref"
+fail	"export version stamp did not match source HEAD"
+fail	"export without remote did not explain why no source was recorded"
+fail	"exported CLAUDE.md came from the repo root instead of templates/harness"
+fail	"exported CLAUDE.md did not come from the tokenized harness template"
+fail	"exported assurance CLI could not raise baseline"
+fail	"exported full suite failed (group: $gate_group)"
+fail	"failed $missing transfer was reported successful"
+fail	"failed diff changed the project tree"
+fail	"failed downgrade changed state"
+fail	"failed shared render changed a consumer"
+fail	"fast dispatch included an unexpected group: $actual_fast_groups"
+fail	"fast mode made $file_copies fixture file copies; limit 33"
+fail	"fast self-test failed in a fresh export"
+fail	"final state stamp did not match the tree"
+fail	"final-head fallback failed: $(cat "$TMP/close.out")"
+fail	"fingerprint missed $file"
+fail	"first plan apply did not create one tracker and two steps"
+fail	"first plan apply failed against fake GitHub"
+fail	"fixture shell inventory missed a manifest source member"
+fail	"focused run passed with a drifted should_run call-site label"
+fail	"focused run passed with its group block disabled"
+fail	"forced export overwrote adopter assurance baseline"
+fail	"full mode made $file_copies fixture file copies; limit 190"
+fail	"fully checked schema-less document was not LEGACY"
+fail	"gap refusal lacked diagnosis: $(cat "$TMP/close.out")"
+fail	"gate cache fixture commit failed"
+fail	"gate cadence missing from $cadence_file"
+fail	"gate fixture commit failed (git exit $?) — fixture is not hermetic"
+fail	"generic CI render leaked runtime marker: $marker"
+fail	"git add -A was allowed"
+fail	"gitleaks did not inspect redirected staged index: $1"
+fail	"gitleaks did not receive redirected context: $1"
+fail	"gitleaks failure did not block with exit 2"
+fail	"go CI render lacks module download"
+fail	"go CI render leaked another runtime marker: $marker"
+fail	"handoff dropped the reviewer note: $(jq -c '.comments.nodes[-1]' "$STATION_STATE/1.json")"
+fail	"handoff returned $rc expected $expected ($*): $(cat "${STATION_OUTPUT:-$TMP/station.out}")"
+fail	"hard boundary $field refused"
+fail	"harness sync compared prose instead of section structure"
+fail	"harness sync failed in an adopted project with no templates/harness"
+fail	"harness sync missed a section present only in the root contract"
+fail	"harness sync missed a section present only in the template"
+fail	"harness sync rejected files with matching section structure"
+fail	"harness sync treated the WIRE THIS UP marker as a section difference"
+fail	"hook allowed without jq: $2 (status 0)"
+fail	"hook allowed: $2 (status 0)"
+fail	"hook blocked without jq: $2"
+fail	"hook blocked: $2"
+fail	"hook crashed/wrong contract without jq: $2 (status $status): $output"
+fail	"hook crashed/wrong contract: $2 (status $status): $output"
+fail	"identical reapply changed issue #$issue_number body"
+fail	"identical reapply changed issue #$issue_number title"
+fail	"identity returned $status, expected $expected: $(cat "$TMP/identity.err")"
+fail	"incorrect chain prefix: $operation"
+fail	"infrastructure hold omitted $expected"
+fail	"init accepted --yes without --name"
+fail	"init did not fill project name in CLAUDE.md.agentic-new"
+fail	"init did not stamp project name in AGENTS.md"
+fail	"init did not stamp project name in CLAUDE.md"
+fail	"init failed for a rust target"
+fail	"init failed for a target with existing CLAUDE.md"
+fail	"init failed for an empty target"
+fail	"init left an unfilled token in CLAUDE.md.agentic-new"
+fail	"init left unfilled template tokens in an empty target"
+fail	"init missing-name error did not explain --name requirement"
+fail	"init modified a pre-existing CLAUDE.md"
+fail	"init non-TTY fallback failed"
+fail	"injected partial GitHub failure unexpectedly succeeded"
+fail	"inline code spans in a description were misread as entry filenames"
+fail	"installation membership absorbed an adopter-owned script"
+fail	"installation state accepted $2"
+fail	"installation state accepted a NUL path"
+fail	"installation state accepted more than 2000 files"
+fail	"installed shell inventory included adopter-owned script"
+fail	"invalid $2 advanced installed version"
+fail	"invalid $2 did not name its installation-state line"
+fail	"invalid App login accepted: $invalid"
+fail	"invalid plan spec did not fail validation first"
+fail	"invalid plan spec was accepted"
+fail	"invalid verdict accepted: $mutation"
+fail	"invalid verdict reason missing: $mutation"
+fail	"inventory fixture unexpectedly installed excluded scope"
+fail	"journal assertion: $1: $STATION_REPLAY"
+fail	"journal library is missing"
+fail	"jq-less PATH accidentally removed ordinary git"
+fail	"jq-less PATH still contains jq"
+fail	"launch failed: $cli $station"
+fail	"ledger accepted $mutation"
+fail	"ledger chain expectation: $2"
+fail	"lifecycle did not classify $3 as $2"
+fail	"lifecycle-status did not recognize the machine-written Approval line"
+fail	"make build masked export failure"
+fail	"make build printed success after export failed"
+fail	"make check failed in a fresh export on stripped PATH"
+fail	"make check failed in a fresh export"
+fail	"make check failed in initialized target"
+fail	"malformed assurance audit accepted"
+fail	"malformed audit changed state"
+fail	"malformed audit identity accepted"
+fail	"malformed installation state allowed export mutation"
+fail	"malformed protected payload allowed: $guard_command (status $status)"
+fail	"manifest extensionless shell command missing from inventory"
+fail	"manual reviewer omitted $command"
+fail	"manual station omitted $command"
+fail	"manual station returned $rc instead of 12: $(cat "$c4/err") $(cat "$c4/out")"
+fail	"migration reinstated excluded Codex scope"
+fail	"missing --approved-by value did not explain the error"
+fail	"missing assurance state did not default to Standard"
+fail	"missing engineering-standards surface: $standards_surface"
+fail	"missing review diagnosis for $close_mutation: $(cat "$TMP/close.out")"
+fail	"missing review surface: $review_surface"
+fail	"missing reviewer surface: $reviewer_surface"
+fail	"missing tree-change diagnostic"
+fail	"missing usage guessed: $cli"
+fail	"moved clean HEAD reused another tree's stamp"
+fail	"multiline assurance state accepted"
+fail	"must_block accepted a hook crash as a policy block"
+fail	"must_block crash diagnostic omitted the exit status"
+fail	"must_block discarded hook stderr"
+fail	"must_block_nojq accepted a hook crash as a policy block"
+fail	"must_block_nojq crash diagnostic omitted the exit status"
+fail	"must_block_nojq discarded hook stderr"
+fail	"new export did not seed Standard assurance"
+fail	"new upgrader did not migrate $legacy_mode installation"
+fail	"no english number word for the shipped hook count ($hook_count) — extend the case above"
+fail	"no-CI export failed its active checks"
+fail	"node CI render lacks a concrete node-version"
+fail	"node CI render lacks npm ci"
+fail	"node CI render lacks setup-node"
+fail	"node CI render leaked another runtime marker: $marker"
+fail	"nohup Git commit bypassed the staged-secret hook"
+fail	"non-TTY init did not stamp project name"
+fail	"non-TTY init left unfilled template tokens"
+fail	"not enough TOKEN_RE assignments to guard parity"
+fail	"offline status failed when git was absent from PATH"
+fail	"old $legacy_mode upgrader rejected the new manifest"
+fail	"old upgrader advanced a pending installation"
+fail	"old upgrader rejected the new five-column manifest"
+fail	"one edit did not trigger exactly one rerun"
+fail	"open legacy document failed strict verification"
+fail	"open legacy document was not ACTIVE"
+fail	"ordinary red stop acknowledged a new state"
+fail	"over-bound installation state did not name its offending line"
+fail	"oversize $field accepted"
+fail	"oversize $field reason lost measured bound"
+fail	"packet changed $label bytes"
+fail	"packet status $rc expected $expected: $(cat "$TMP/packet.err")"
+fail	"partial resume duplicated or omitted plan issues"
+fail	"passing $station probe failed: $(cat "$C1/probe.json") $(cat "$C1/probe.err")"
+fail	"payload apply library was not safe to source twice"
+fail	"payload coverage accepted a brand-new unclassified adapter directory"
+fail	"payload coverage accepted an unclassified Codex adapter file"
+fail	"payload coverage still rejected a newly classified adapter directory"
+fail	"pin guard --strict did not fail on a stale stamp"
+fail	"pin guard accepted a SHA pin with no version comment"
+fail	"pin guard accepted a mutable tag pin"
+fail	"pin guard failed in a project with no workflow files"
+fail	"pin guard rejected a correctly pinned action or a local action"
+fail	"pin guard treated a stale stamp as fatal in default mode"
+fail	"plan apply accepted $1"
+fail	"plan apply called gh before rejecting $1"
+fail	"plan apply did not resume after a partial failure"
+fail	"plan apply mutated GitHub before rejecting $1"
+fail	"plan apply silently rewrote an existing approval"
+fail	"plan apply with --approved-by failed against fake GitHub"
+fail	"plan apply without --approved-by failed after approval"
+fail	"plan diff did not recognize the applied revision"
+fail	"plan diff failed against fake GitHub"
+fail	"plan with a removed step did not reconcile"
+fail	"plan-to-issues accepted --approved-by with no value"
+fail	"plan-to-issues adapter copies diverged"
+fail	"plan-to-issues guidance does not name CLAUDE.md as Stack profile owner"
+fail	"planner static role bundle exceeds its ceiling: $planner_words words (max 1530)"
+fail	"pre-launch boundary: exit=$exit seconds=$seconds tokens=$tokens session=$captured"
+fail	"pre-merge accepted an open issue"
+fail	"pre-merge attestation failed: $(cat "$TMP/close.out")"
+fail	"pre-merge mismatch did not name the phase and state"
+fail	"prep dry-run failed: $(cat "$TMP/close.out")"
+fail	"prep failed: $(cat "$TMP/close.out")"
+fail	"prestart hold omitted $expected"
+fail	"pristine shared render fixture drifted"
+fail	"probe accepted $mode"
+fail	"probe accepted $mode: $(cat "$C1/probe.json") $(cat "$C1/probe.err")"
+fail	"probe left a named branch ($mode): $(git -C "$C1/project" for-each-ref --format='%(refname) %(objectname)' refs/heads) $(cat "$C1/probe.err")"
+fail	"probe omitted cause: $mode"
+fail	"python CI render lacks locked dependency install"
+fail	"python CI render leaked another runtime marker: $marker"
+fail	"raise was not persisted"
+fail	"re-export overwrote a hand-edited source origin"
+fail	"re-export overwrote a tag-shaped source ref"
+fail	"recordless adopter make check failed"
+fail	"recordless adopter syntax gate failed"
+fail	"recordless inventory accepted a missing active script"
+fail	"recordless inventory accepted a missing mapped destination"
+fail	"recordless inventory did not check mapped destinations"
+fail	"recordless inventory did not name the missing installed script"
+fail	"red rerun was not attempted"
+fail	"red rerun wrote a green stamp"
+fail	"red retry did not record acknowledged state"
+fail	"red retry overwrote green stamp"
+fail	"red-first cache fallback failed: $verify_mutation"
+fail	"red-first cache reused: $verify_mutation"
+fail	"redirected commit did not block with exit 2: $1 (status $status)"
+fail	"redirected commit lacked a block diagnostic: $1"
+fail	"redirected commit printed staged secret text"
+fail	"removed plan step did not clear all workflow labels after closing"
+fail	"removed plan step retained workflow labels"
+fail	"removed plan step was not closed with history retained"
+fail	"renderer accepted a ci-setup row containing a literal tab"
+fail	"repeated apply changed the original approval timestamp"
+fail	"repeated export overwrote an existing merge candidate"
+fail	"repeated identical plan apply failed"
+fail	"repeated plan apply duplicated issues"
+fail	"repeated scoped export changed stable installation state"
+fail	"repo-scope doctor accepted a structurally unwired Codex hook configuration"
+fail	"repo-scope doctor did not print its active scope"
+fail	"repo-scope doctor failed on stripped PATH"
+fail	"required fixture tool missing: $tool"
+fail	"rerunning upgrade duplicated existing merge candidates"
+fail	"rerunning upgrade with pending candidates failed"
+fail	"reserved exit $verify_exit was red"
+fail	"review guidance does not route isolated red-first verification through verify-step"
+fail	"review guidance mutates the live checkout for red-first verification"
+fail	"review skill does not route engineering standards to AGENTS.md"
+fail	"reviewer static role bundle exceeds its ceiling: $reviewer_words words (max 1000)"
+fail	"role-bundle ceiling did not fire for an oversized CLAUDE.md inside the scaffold repo"
+fail	"role-bundle ceiling fired in an exported project (scripts/export.sh absent) — adopters must be allowed real project content of any size"
+fail	"rust CI render lacks Cargo toolchain setup"
+fail	"rust CI render lacks locked Cargo dependency fetch"
+fail	"rust CI render leaked another runtime marker: $marker"
+fail	"rust init did not render a Cargo runtime setup block"
+fail	"rust init did not render a locked Cargo dependency step"
+fail	"rust init leaked Node runtime marker into rendered CI template: $node_marker"
+fail	"rust init left the runtime setup replacement marker in the rendered template"
+fail	"rust init rewrote the project-specific manifest path placeholder"
+fail	"rust init rewrote the project-specific source path placeholder"
+fail	"salvage hold omitted $expected"
+fail	"same-version diff changed the project tree"
+fail	"scaffold shell inventory is incomplete against manifest source tree"
+fail	"scaffold shell inventory is missing"
+fail	"scenario dispatcher returned $status, expected $expected: $(cat "$SELECT_FIX/err")"
+fail	"scenario markers '$actual', expected '$1'"
+fail	"scope conflict advanced installation state"
+fail	"scope conflict did not identify the old/new state mismatch"
+fail	"scope dispatch $name: '$actual', expected '$expected'"
+fail	"scope dispatch failed: $name"
+fail	"scope fixture was missing before exclusion"
+fail	"scope validation accepted $scope_case declaration"
+fail	"scope validation did not explain $scope_case declaration"
+fail	"scoped export did not record its active Claude scope"
+fail	"scoped export recorded excluded Codex scope"
+fail	"secret scanner allowed a Codex wrapper commit"
+fail	"secret scanner allowed a hardcoded password with gitleaks unavailable"
+fail	"secret scanner allowed a hardcoded password"
+fail	"secret scanner allowed a private key block with gitleaks unavailable"
+fail	"secret scanner allowed a staged AWS-format key"
+fail	"secret scanner allowed a staged private key block"
+fail	"secret scanner allowed an AWS-format key with gitleaks unavailable"
+fail	"secret scanner allowed an AWS-format key with jq unavailable"
+fail	"secret scanner allowed an OpenCode wrapper commit"
+fail	"secret scanner blocked a commit with nothing staged"
+fail	"secret scanner blocked a non-commit command with jq unavailable"
+fail	"secret scanner blocked a non-commit command"
+fail	"secret scanner flagged an env lookup"
+fail	"secret scanner flagged an obvious placeholder"
+fail	"secret scanner flagged ordinary code"
+fail	"self-replacing upgrade did not install the new CLI"
+fail	"self-test group '$group' never executed in $([ -n "$ONLY_GROUP" ]  && echo "--only
+fail	"self-test ran unrelated group '$group'"
+fail	"session context omitted $expected"
+fail	"session hook noisy: $1"
+fail	"shared render accepted a duplicate marker"
+fail	"shared render accepted a missing marker"
+fail	"shared render missed a whole skill drift"
+fail	"shared render missed content drift under an unchanged heading"
+fail	"shared render missed severity drift"
+fail	"shell inventory disagrees with excluded manifest scope"
+fail	"shell inventory included an excluded-scope command"
+fail	"ship accepted a failing $phase gate"
+fail	"ship did not gate the $phase head before push"
+fail	"ship pushed after a failing $phase gate"
+fail	"ship refused a missing $phase gate"
+fail	"ship refused a passing $phase gate"
+fail	"shipped templates/ci workflows fail the pin guard"
+fail	"signal fixture never recorded a session: $(cat "$c4/signal-err")"
+fail	"signature-matched exit $verify_exit was not red"
+fail	"slice omitted $expected"
+fail	"stable rerun did not stamp its final state"
+fail	"state changed over malformed assurance audit"
+fail	"station doctor failed: $(cat "$C1/doctor.err") $(cat "$C1/doctor.json")"
+fail	"status accepted a git-ignored payload path"
+fail	"status accepted a project with pending merge candidates"
+fail	"status did not find the nearest stamped root from a nested directory"
+fail	"status did not name the unresolved merge candidate"
+fail	"status did not report adapter presence"
+fail	"status did not report the git-ignored payload path"
+fail	"status did not report the installed version"
+fail	"status did not report the pending candidate version"
+fail	"status did not report the recorded source"
+fail	"status outside a project did not explain the missing stamp"
+fail	"strict verification accepted fully checked legacy document"
+fail	"strict verification accepted unresolved v2 evidence"
+fail	"strict verified lifecycle accepted $1"
+fail	"strict verified lifecycle accepted $3"
+fail	"stripped PATH accidentally removed ordinary git"
+fail	"stripped PATH still contains $removed_tool"
+fail	"sudo Git commit bypassed the staged-secret hook"
+fail	"syntax gate failed for the wrong reason"
+fail	"syntax gate missed a damaged scripts/agentic-flow"
+fail	"syntax gate missed a manifest extensionless command"
+fail	"syntax gate reported the adopter-owned script"
+fail	"syntax gate swept in an adopter-owned script under the destination"
+fail	"templates/harness/AGENTS.md does not require red-first evidence in the handoff"
+fail	"the ensemble entry does not name the correlated-blind-spot failure mode"
+fail	"the ensemble entry does not say aggregation is not a vote"
+fail	"the ensemble entry restates the severity labels instead of routing to METHODOLOGY.md §5"
+fail	"the harness read-limit ceiling did not fire on a 205-entry index in an adopted project"
+fail	"the scaffold memory ceiling did not fire on a 60-entry index inside the scaffold"
+fail	"the scaffold-only memory ceiling fired in an adopted project — adopters must be allowed their own memories"
+fail	"unaudited downgrade succeeded"
+fail	"unexpected file: $1"
+fail	"unexpected prompt bytes: $cli $station"
+fail	"unknown assurance state accepted"
+fail	"unknown controller scenario block at call site: $2:$1"
+fail	"unknown runner was not invalid: $(cat "$TMP/verify.err")"
+fail	"unknown self-test group at call site: $1"
+fail	"unresolved v2 evidence was not UNVERIFIED"
+fail	"unwritable metadata reused a gate record"
+fail	"upgrade accepted a changed origin without --force"
+fail	"upgrade advanced installed version while candidates remained"
+fail	"upgrade clobbered an occupied merge candidate"
+fail	"upgrade did not create exactly one suffixed candidate for occupied content"
+fail	"upgrade did not explain that docs-index was not executed"
+fail	"upgrade did not report pending candidate version"
+fail	"upgrade overwrote customized assurance baseline"
+fail	"upgrade refusal did not name ownership: $(cat "$C1/upgrade.out")"
+fail	"upgrade with merge candidates failed"
+fail	"upgrade without --yes did not explain confirmation"
+fail	"upgrade wrote without --yes in a non-interactive run"
+fail	"v2 lifecycle accepted a negated approval"
+fail	"v2 lifecycle accepted continuation prose after approval"
+fail	"v2 lifecycle did not classify a negated approval as BLOCKED"
+fail	"v2 lifecycle did not name the malformed Approval continuation"
+fail	"valid local v2 Status failed report validation"
+fail	"valid local v2 Status was not READY in offline report"
+fail	"versioned merge candidate does not contain the new source content"
+fail	"workflow accepted $1"
+fail	"workflow accepted drift in $reader"
+fail	"workflow diagnostic omitted file and line: $output"
+fail	"workflow diagnostic: $output"
+fail	"wrong probe property: $mode: $(cat "$C1/probe.json") $(cat "$C1/probe.err")"
+fail	'--force reused a record'
+fail	'API-key Claude failed'
+fail	'API-key Claude lacks bare'
+fail	'App logins rejected by review policy'
+fail	'CI app job does not fetch history and export the PR base'
+fail	'CI does not run ship-gate after make test'
+fail	'CI for older head accepted'
+fail	'CI lost full self-test invocation'
+fail	'CI rerun approval failed'
+fail	'CLI change did not reset fields'
+fail	'CLI version absent from fingerprint'
+fail	'CLI version did not invalidate probe'
+fail	'Claude assignment failed'
+fail	'Claude reviewer received OpenCode session'
+fail	'Claude sandbox assignment failed'
+fail	'Claude sandbox assignment missing'
+fail	'Claude sandbox gap unnamed'
+fail	'Claude station profile does not deny raw GitHub reads'
+fail	'Claude without sandbox settings passed'
+fail	'Codex boundary failed'
+fail	'Codex built-in Apps remained enabled'
+fail	'Codex home lost sessions'
+fail	'Codex preflight failed'
+fail	'Codex resume assignment failed'
+fail	'Codex session callback missing'
+fail	'GC collected staged salvage'
+fail	'Linux keychain mint failed'
+fail	'Makefile did not forward S='
+fail	'Makefile did not run the whole group by default'
+fail	'Makefile selection failure omitted usage or cause'
+fail	'OpenCode assignment failed'
+fail	'OpenCode claimed tested boundary'
+fail	'OpenCode prose was turned into a verdict'
+fail	'OpenCode risk gap unnamed'
+fail	'OpenCode risk missing but preflight passed'
+fail	'OpenCode station profile does not deny gh'
+fail	'OpenCode verdict after prose was not extracted'
+fail	'OpenCode warning absent'
+fail	'Red-first proof was not parsed'
+fail	'Standard accepted a downgrade below the project baseline'
+fail	'Standard accepted an approved alternate commit'
+fail	'Standard accepted mismatched approval metadata'
+fail	'Standard accepted missing step review'
+fail	'Standard accepted stale final-head approval'
+fail	'Standard ancestry rejection lacked both SHAs'
+fail	'Standard apply could not write the work issue URL and approval to the document'
+fail	'Standard apply failed'
+fail	'Standard approval did not close out'
+fail	'Standard approval did not remain open in closing'
+fail	'Standard approval metadata was not recorded on work issue'
+fail	'Standard approval mismatch lacked diagnostic'
+fail	'Standard created a parent or more than one work issue'
+fail	'Standard created an issue without plan approval metadata'
+fail	'Standard creation missing journal stamp'
+fail	'Standard creation missing revision stamp'
+fail	'Standard document created a tracker'
+fail	'Standard document did not receive approval evidence'
+fail	'Standard document did not receive the work issue URL'
+fail	'Standard downgrade lacked diagnostic'
+fail	'Standard hold reopened a human-closed issue'
+fail	'Standard loop did not reach ready to ship'
+fail	'Standard loop launched extra stations'
+fail	'Standard missing approval lacked diagnostic'
+fail	'Standard missing review lacked diagnostic'
+fail	'Standard queried more than its one review thread'
+fail	'Standard reapply changed live labels'
+fail	'Standard reapply changed the body or journal eligibility'
+fail	'Standard reapply changed work issue metadata'
+fail	'Standard reapply failed'
+fail	'Standard reapply reset live work issue labels'
+fail	'Standard revision migration changed more than its stamp'
+fail	'Standard revision migration reset live labels'
+fail	'Standard stale final-head evidence lacked diagnostic'
+fail	'Standard work issue lacks executor packet'
+fail	'Standard work issue lacks topology stamp'
+fail	'Standard wrote an unapproved work issue'
+fail	'Status parser rejected close-out attestation'
+fail	'Strict apply failed'
+fail	'Strict approval did not approve'
+fail	'Strict did not create one tracker and two sub-issues'
+fail	'Strict parent lacks topology stamp'
+fail	'Strict step lacks executor packet'
+fail	'UNJOURNALED handoff mutated GitHub'
+fail	'UNJOURNALED refusal did not name the comment'
+fail	'UTF-8 repair exceeded tail cap'
+fail	'Unicode body bytes were changed'
+fail	'Unicode body path was serialized incorrectly'
+fail	'Unicode comment cap failed'
+fail	'Unicode comment exceeded byte cap'
+fail	'Unicode common-dir initialization failed'
+fail	'Unicode decision failed'
+fail	'Unicode intent failed'
+fail	'Unicode path fixture failed'
+fail	'Unicode station failed'
+fail	'accepted OpenCode preflight failed'
+fail	'accepted same-model pair gated'
+fail	'advisory journal omitted warnings'
+fail	'advisory overrun refused'
+fail	'advisory verdict was refused or changed'
+fail	'advisory warnings missing'
+fail	'after-decision fault posted'
+fail	'ambient or dirty signature provenance is incorrect'
+fail	'amended approval passed close-out'
+fail	'amended step closed target'
+fail	'analysis omitted'
+fail	'andon formatter lost advisory warnings'
+fail	'andon included more than 20 event lines'
+fail	'andon included more than 30 gate lines'
+fail	'andon leaked provider value'
+fail	'andon over 4 KiB'
+fail	'append after torn tail failed'
+fail	'append joined two JSON objects'
+fail	'approval bound to wrong revision'
+fail	'approval projection incorrect'
+fail	'approval staged unrelated paths'
+fail	'approval wait omitted evidence context'
+fail	'approved brief did not dry-run'
+fail	'approved document apply failed'
+fail	'approved labels not empty'
+fail	'approved stamp discarded legacy eligibility'
+fail	'arrived stream lost its ledger tail'
+fail	'ask counted as bounce'
+fail	'ask did not notify desktop'
+fail	'ask omitted owner mention'
+fail	'ask ownership lost after human resume'
+fail	'authorized rebaseline rejected for owned run'
+fail	'backslash step slice leaked close-out'
+fail	'bad fixture intent failed'
+fail	'bad head retried'
+fail	'bad head was verified'
+fail	'bad head wrote a verification record'
+fail	'bad operator row accepted'
+fail	'bad project CLI gap unnamed'
+fail	'bad project profile gap unnamed'
+fail	'bare Claude mode wrong'
+fail	'base64 keychain mint failed'
+fail	'before-notify fault did not fire'
+fail	'before-notify fault did not stop effect'
+fail	'body mismatch not held'
+fail	'bot author normalization conflated humans and Apps'
+fail	'bounce did not wait for submit lock'
+fail	'bounce limit andon exceeded cap'
+fail	'bounce packet lost findings'
+fail	'bounced executor did not resume'
+fail	'bound CI output omitted the resolved head or selected comment'
+fail	'boundary completion not recorded'
+fail	'boundary tail failed'
+fail	'bounds intent failed'
+fail	'bounds intent restore failed'
+fail	'bounds station failed'
+fail	'brief command is missing'
+fail	'brief diff failed'
+fail	'brief generated the wrong issue set'
+fail	'brief order changed'
+fail	'built-in Codex Apps were not disabled'
+fail	'cache included unadmitted comments or lost journal timestamps'
+fail	'cached preflight did not hold'
+fail	'cached unattended gate failed'
+fail	'cached unattended gate probed again'
+fail	'callback failure did not exercise a live station child'
+fail	'cannot load C-3 workflow'
+fail	'cannot load station workflow'
+fail	'canonical rendered workflow is missing'
+fail	'chain derivation failed'
+fail	'chain end failed'
+fail	'changed launcher passed resume flag'
+fail	'changed launcher reused session'
+fail	'changed verifier failed'
+fail	'changed workflow data was accepted as fresh'
+fail	'check mutated projection/cache'
+fail	'check omitted drift'
+fail	'check-only record skipped step gates'
+fail	'check-only verification failed'
+fail	'clean commit verification failed'
+fail	'clean prompt rejected'
+fail	'clear authorized two salvages'
+fail	'clear import or crash boundary lost'
+fail	'clear left cached hold'
+fail	'clear left needs-human'
+fail	'clear lost rebaseline in ledger'
+fail	'clear omitted rebaseline marker'
+fail	'clear post fault did not fire'
+fail	'clear repaired underlying Standard cause'
+fail	'clear retry posted twice'
+fail	'clear retry upgraded plain ledger clear'
+fail	'clear retry upgraded plain marker'
+fail	'clear reused for orphan salvage'
+fail	'close-out command is missing'
+fail	'closed plan was not recognized'
+fail	'closed plan was reopened or journaled again'
+fail	'codex reassign failed'
+fail	'command-line S accepted for hooks'
+fail	'command-line S did not override environment'
+fail	'command-line S failed'
+fail	'comment cut exposed provider value'
+fail	'comment tails failed'
+fail	'comment truncation lost retry'
+fail	'comment truncation split UTF-8'
+fail	'commit discarded dirty ownership'
+fail	'commit recovery with session wrong'
+fail	'commit recovery without session wrong'
+fail	'commit without session did not request fresh result'
+fail	'committed interrupted session did not request result'
+fail	'compatible resume failed'
+fail	'compatible resume not passed'
+fail	'complete JSON without LF was discarded'
+fail	'complete-no-LF intent failed'
+fail	'completed chain was replayed'
+fail	'completed command classified as timeout at the boundary'
+fail	'concurrent append interleaved records'
+fail	'concurrent approval failed'
+fail	'concurrent writer intent failed'
+fail	'concurrent writers admitted duplicate station'
+fail	'configured Codex connector was not disabled'
+fail	'controller cache fixture creation failed'
+fail	'controller cache key failed'
+fail	'controller cache record creation failed'
+fail	'controller cache verification failed'
+fail	'controller did not ledger reuse'
+fail	'controller did not refresh session cache'
+fail	'controller failed record path failed'
+fail	'controller fallback not recorded'
+fail	'controller launched verifier for fresh record'
+fail	'controller recovery is missing'
+fail	'controller recovery regressions failed'
+fail	'controller regressions failed'
+fail	'controller reran against resumed execution base'
+fail	'controller resumed fallback not recorded'
+fail	'controller resumed verification failed'
+fail	'controller reused failed record'
+fail	'controller reused verification against resumed execution base'
+fail	'controller salvage ledger regressions failed'
+fail	'controller verification reuse regressions failed'
+fail	'controller-generated ask lost executor ownership on resume'
+fail	'copied packet failed'
+fail	'correct hold projection reported a repair'
+fail	'correct projection reconciliation failed'
+fail	'correct projection reported a repair'
+fail	'crash before close not repaired'
+fail	'crash between salvage ref and ledger append created another snapshot'
+fail	'created issue lacks journal=v1'
+fail	'dead controller lock not released after clean reconcile'
+fail	'decision failed'
+fail	'default approved slice failed'
+fail	'default roles failed'
+fail	'default timeout assignment failed'
+fail	'default timeout has no controller watchdog'
+fail	'default timeout refused'
+fail	'defaults lost harness provenance'
+fail	'diagnostic intent failed'
+fail	'diagnostic kept beginning instead of end'
+fail	'diagnostic kept first bytes'
+fail	'diagnostic station failed'
+fail	'diagnostic tails exceed caps'
+fail	'different model pair gated'
+fail	'different model set failed'
+fail	'dirty clarification accepted'
+fail	'dirty doc applied'
+fail	'dirty doc reached GitHub'
+fail	'dirty recovery did not commit remaining edits'
+fail	'dirty recovery with session wrong'
+fail	'dirty recovery without captured tokens reused session or lost chain'
+fail	'dirty recovery without session wrong'
+fail	'dirty refusal not diagnosed'
+fail	'dirty reviewer result was approved before relaunch'
+fail	'dirty reviewer was not restored and retried exactly once'
+fail	'dirty submit became unexplained'
+fail	'dirty submit did not recover to a clean verified submit'
+fail	'dirty submit recovery opened a new chain'
+fail	'disabled timing changed stderr'
+fail	'disabled timing changed stdout'
+fail	'discovery admitted foreign or non-stamped issues'
+fail	'discovery read a rejected issue thread'
+fail	'divergent edits were not durably salvaged'
+fail	'doctor accepted broader permissions'
+fail	'doctor failed while reporting ambiguous session ownership'
+fail	'doctor leaked a token'
+fail	'doctor omitted ambiguous session branch warning'
+fail	'doctor skipped configured identity'
+fail	'done prep changed tree'
+fail	'done prep not idempotent'
+fail	'double repair lost records'
+fail	'double torn suffix became a record'
+fail	'double torn suffix broke read'
+fail	'double torn suffix could not be sealed'
+fail	'double-crash fixture intent failed'
+fail	'drift diagnostic omitted changing commit'
+fail	'drifted approval applied'
+fail	'drifted approval reached GitHub'
+fail	'drifted scenario call site was not rejected'
+fail	'dry-run moved doc'
+fail	'duplicate clear accepted'
+fail	'duplicate decision accepted'
+fail	'duplicate hold accepted'
+fail	'duplicate hold posted'
+fail	'duplicate ordinary salvage accepted'
+fail	'duplicate rebaseline changed ledger'
+fail	'duplicate salvage accepted'
+fail	'duplicate session accepted'
+fail	'duplicate ship accepted'
+fail	'duplicate station accepted'
+fail	'duplicate step diagnostic did not name both issue numbers'
+fail	'duplicate tracker diagnostic did not name both issue numbers'
+fail	'duplicate verification accepted'
+fail	'edited trusted comment not current'
+fail	'empty prefix has chain heads'
+fail	'empty selected run was not explained'
+fail	'end intent failed'
+fail	'ended generation not advanced'
+fail	'environment allowlist failed'
+fail	'escalated reviewer left edits in the worktree'
+fail	'escalated session failed'
+fail	'escalated session omitted approver resume guidance'
+fail	'everyday export checks invoked the nested --full marker'
+fail	'excluding Codex removed the vendor-neutral reviewer bundle'
+fail	'executor ask did not record return state'
+fail	'executor ask did not resume to submit'
+fail	'executor ask lost work in progress'
+fail	'executor authored notify'
+fail	'executor dirty ownership lost'
+fail	'executor lacks live standards'
+fail	'executor resume did not reset bounces'
+fail	'exit 124 retried as malformed JSON'
+fail	'explicit analysis slice failed'
+fail	'explicit plan base lost'
+fail	'explicit plan base rejected'
+fail	'export changed the default review policy'
+fail	'export checks did not run the exported fast suite'
+fail	'export fixture mutated the shared source snapshot'
+fail	'exported S affected test-one'
+fail	'exported S selected a scenario'
+fail	'exported workflow did not validate'
+fail	'failed CI accepted'
+fail	'failed CI was retried as missing'
+fail	'failed CI/lifecycle did not refuse'
+fail	'failed configured mint fell back to ambient'
+fail	'failed final approval posted'
+fail	'failed finish closed target'
+fail	'failed gate launched a station'
+fail	'failed identity gate launched a station'
+fail	'failed probe cached a pass'
+fail	'failed probe launched station or missed hold'
+fail	'failed run lost timing report'
+fail	'failed session callback did not fail the launch'
+fail	'failed session callback left the station group running'
+fail	'failed station reused stale result'
+fail	'failed unattended probe did not exit 10'
+fail	'fast fixture budget accepted 34 copies'
+fail	'fast fixture copy failure did not name the count and approved limit'
+fail	'fast mode built a source snapshot'
+fail	'fast mode copied a fixture tree'
+fail	'field edit failed'
+fail	'filtered metrics failed'
+fail	'final approval allowed failed CI'
+fail	'final approval failed'
+fail	'final approval reused old attempt'
+fail	'final close was not recovered'
+fail	'final marker context wrong'
+fail	'finish accepted pending CI'
+fail	'finish accepted red latest attempt'
+fail	'finish did not close target'
+fail	'finish left workflow labels'
+fail	'first attempt borrowed another plan base'
+fail	'first attempt red base changed'
+fail	'first attempt verification failed'
+fail	'first invalid station failed'
+fail	'first ship failed'
+fail	'first writer test process failed'
+fail	'fix replacement failed'
+fail	'fixture PATH accepted missing required tools'
+fail	'fixture budget accepted repeated tree copying with one snapshot'
+fail	'fixture budget did not identify repeated tree copying'
+fail	'fixture mutation leaked into the no-remote source'
+fail	'forced red-first verification failed'
+fail	'forced red-first verification reused'
+fail	'forced verification failed'
+fail	'foreign clear accepted'
+fail	'foreign hold projected'
+fail	'foreign search hits exhausted discovery'
+fail	'foreign takeover not recorded'
+fail	'forged login text bypassed author filter'
+fail	'framed comment exceeds cap'
+fail	'full discovery page lacked bound diagnostic'
+fail	'full fixture budget accepted 191 copies'
+fail	'full fixture budget rejected its approved 190-copy boundary'
+fail	'full fixture copy failure did not name the count and approved limit'
+fail	'full mode did not reuse one source snapshot'
+fail	'full mode exceeded one fixture tree copy'
+fail	'gate unexpectedly reads operator layer'
+fail	'gitleaks selected the redirected worktree as the Git directory'
+fail	'green command retained output'
+fail	'green handoff failed'
+fail	'green intent failed'
+fail	'green not classified'
+fail	'green red-first accepted'
+fail	'green station failed'
+fail	'green verification did not submit exactly once'
+fail	'green verify failed'
+fail	'handoff cache absent'
+fail	'handoff crash did not fire'
+fail	'handoff fault did not pause'
+fail	'handoff metrics cache projection failed'
+fail	'handoff posted the compatibility marker twice'
+fail	'handoff retry duplicated ask'
+fail	'handoff retry not completed'
+fail	'hard-coded workflow labels drifted from config/workflow.tsv'
+fail	'head refusal omitted rule or length'
+fail	'held chain did not advance generation'
+fail	'helper edit did not invalidate packet'
+fail	'history fixture failed'
+fail	'hold author boundary failed'
+fail	'hold clear did not start fresh generation'
+fail	'hold drift did not report actual repair'
+fail	'hold drift reconciliation failed'
+fail	'hold drift was not repaired'
+fail	'hold omitted projection/mention'
+fail	'hold posted without approver identity'
+fail	'hold projection receipts failed'
+fail	'hostile comment reached reviewer'
+fail	'hostile prompt exclusion silently skipped without ripgrep'
+fail	'hostile prompt failed for the wrong reason'
+fail	'human close not held'
+fail	'human close was undone'
+fail	'human reopen was repaired'
+fail	'identity check failed'
+fail	'identity check printed a token'
+fail	'identity failure printed credential material'
+fail	'identity fell back to ambient gh'
+fail	'identity library is missing'
+fail	'illegal successor accepted'
+fail	'infrastructure diagnostic failed'
+fail	'infrastructure diagnostic omitted hold clear'
+fail	'infrastructure diagnostic requested journal resume'
+fail	'infrastructure failure consumed invalid cap'
+fail	'infrastructure failure escalated or left chain open'
+fail	'infrastructure failure journaled ask'
+fail	'infrastructure failure retried'
+fail	'infrastructure hold did not advance generation'
+fail	'infrastructure intent failed'
+fail	'infrastructure recovery needed journal resume'
+fail	'infrastructure station failed'
+fail	'initial intent failed'
+fail	'installed project requires absent render sources'
+fail	'intent fault launched a station'
+fail	'intent without session did not relaunch'
+fail	'internal failure emitted a record'
+fail	'internal failure leaked worktree'
+fail	'internal verification failure did not exit 1'
+fail	'interrupt did not preserve signal status'
+fail	'interrupt fixture did not start'
+fail	'interrupt leaked worktree'
+fail	'interrupted executor lost edits'
+fail	'invalid ask posted'
+fail	'invalid bounce count accepted'
+fail	'invalid date accepted'
+fail	'invalid numeric field accepted'
+fail	'invalid output tails not retained'
+fail	'invalid policy made API calls'
+fail	'invalid policy was not UNVERIFIED'
+fail	'invalid review policy passed'
+fail	'invalid selection ran a test group'
+fail	'invalid set wrote project file'
+fail	'invalid station assignments'
+fail	'invalid workflow partially rewrote contracts'
+fail	'invalid workflow rendered successfully'
+fail	'issue lacks approved revision'
+fail	'journal library is missing'
+fail	'journal lost warning or verdict text'
+fail	'journal replay failed'
+fail	'journal-preserving reapply failed'
+fail	'journal=v1 did not disable legacy markers'
+fail	'kill probe never launched'
+fail	'label repair not reported'
+fail	'label repair posted another submit'
+fail	'large comment tails failed'
+fail	'large diagnostic failed'
+fail	'large diagnostics exceeded note budget'
+fail	'large diagnostics lost suffix'
+fail	'large-ledger fixture failed'
+fail	'last step slice leaked close-out'
+fail	'launch metadata missing'
+fail	'ledger FIFO fixture failed'
+fail	'ledger accepted oversized summary'
+fail	'ledger common-dir initialization failed'
+fail	'ledger initialization restore failed'
+fail	'ledger line cap absent'
+fail	'ledger lost warnings or result text'
+fail	'ledger refusal lost measured bound'
+fail	'ledger refused advisory overrun'
+fail	'ledger regressions failed'
+fail	'ledger restore after Unicode fixture failed'
+fail	'ledger worktree fixture cleanup failed'
+fail	'ledger worktree fixture failed'
+fail	'legacy record without warnings refused'
+fail	'legacy stamp migration failed'
+fail	'legacy stamp not parsed'
+fail	'lifecycle did not count racing loser'
+fail	'lifecycle gate has invalid syntax'
+fail	'lifecycle gate is missing'
+fail	'line-continuation fixture lacks a newline'
+fail	'linked worktree ledger initialization failed'
+fail	'literal backslash slice failed'
+fail	'literal backslash title lost the selected step'
+fail	'local hold did not clear'
+fail	'local hold duplicated'
+fail	'local hold missing from alerts'
+fail	'local hold omitted recovery command'
+fail	'lock did not serialize identical approvals'
+fail	'locked bounce failed'
+fail	'locked submit failed'
+fail	'loop leaked controller lock'
+fail	'make check fast gate accepted hand-edited bad project CLI'
+fail	'make check fast gate accepted missing project profile'
+fail	'malformed andon omitted cause or stderr'
+fail	'malformed capture failed'
+fail	'malformed interior record silently ignored'
+fail	'malformed record accepted'
+fail	'malformed stamp diagnostic did not name the issue'
+fail	'malformed stream guessed output'
+fail	'malformed trusted hit was skipped silently'
+fail	'malformed/API error was retried as missing'
+fail	'malformed/truncated read wrote a comment'
+fail	'manual preflight checked the station'
+fail	'manual probe assignment failed'
+fail	'manual reviewer launched a CLI'
+fail	'manual set failed'
+fail	'manual station launched'
+fail	'manual station was probed'
+fail	'manual unset failed'
+fail	'matrix assignment failed'
+fail	'measurement accepted a bundle above its baseline ceiling'
+fail	'measurement accepted a missing bundle input'
+fail	'measurement accepted a packet above the absolute cap'
+fail	'measurement accepted an invalid format'
+fail	'measurement duplicated shared words or miscounted work'
+fail	'measurement fixture failed'
+fail	'measurement output changed for unchanged inputs'
+fail	'merge command missing'
+fail	'merge range was attested'
+fail	'merge refusal lacked diagnosis'
+fail	'methodology workflow region is missing'
+fail	'metric ask decision failed'
+fail	'metric clear failed'
+fail	'metric executor failed'
+fail	'metric executor intent failed'
+fail	'metric final handoff failed'
+fail	'metric handoff retry failed'
+fail	'metric hold failed'
+fail	'metric repeated handoff failed'
+fail	'metric reviewer failed'
+fail	'metric reviewer intent failed'
+fail	'metric second intent failed'
+fail	'metric second station failed'
+fail	'metric ship failed'
+fail	'metrics command failed'
+fail	'metrics did not read all plans'
+fail	'metrics differ from hand-computed fixture'
+fail	'migration changed legacy eligibility'
+fail	'migration changed more than approved stamp'
+fail	'migration changed replay state, seq, bounces or heads'
+fail	'migration replay failed'
+fail	'migration stamp context failed'
+fail	'migration workflow load failed'
+fail	'mismatched session accepted'
+fail	'missing Codex profile gap unnamed'
+fail	'missing LF separator was not completed'
+fail	'missing approved revision did not name fetch command'
+fail	'missing approver lost local hold'
+fail	'missing assertion signature accepted'
+fail	'missing fixture tool was not identified'
+fail	'missing installed Codex profile accepted'
+fail	'missing journal cache guessed human touches'
+fail	'missing jq blocked session'
+fail	'missing jq was noisy'
+fail	'missing login target not named'
+fail	'missing notify identity not held'
+fail	'missing or stale approval did not wait'
+fail	'missing profile accepted'
+fail	'missing revision accepted'
+fail	'missing revision leaked content'
+fail	'missing signature not invalid'
+fail	'missing stream wrote a tail'
+fail	'missing verification record not identified'
+fail	'moved document did not verify before tracker close'
+fail	'multi-source cp was not counted per file'
+fail	'multiline provider value leaked'
+fail	'mutable fixture did not isolate the changed skill'
+fail	'native failure exit was not preserved'
+fail	'nested fast dispatch failed'
+fail	'new CLI received old CLI session'
+fail	'new fixture did not move both copy counters'
+fail	'new generation failed'
+fail	'new stamp not parsed'
+fail	'no controller scenario block executed'
+fail	'no-op hold repair was repeated'
+fail	'no-remote fixture mutated the shared source snapshot'
+fail	'non-UTF-8 output rejected'
+fail	'non-approver named in approval'
+fail	'normal station exit left a background child running'
+fail	'normal station exit was changed by cleanup'
+fail	'normal-exit test did not launch a background child'
+fail	'normalization changed content bytes'
+fail	'normalization erased plan content outside Status'
+fail	'normalized ID collision lacked a useful error'
+fail	'normalized approval diff missing'
+fail	'notify crash recovery duplicated comments'
+fail	'notify used caller instead of configured reviewer'
+fail	'old open chain disappeared'
+fail	'old pending intent failed'
+fail	'old pending run disappeared behind completed chains'
+fail	'older commit verification failed under a newer signature source'
+fail	'once auto-probed'
+fail	'once mode raised a preflight hold'
+fail	'once mode ran unattended preflight'
+fail	'once probe gate failed'
+fail	'operator error lacks line'
+fail	'operator precedence wrong'
+fail	'operator set failed'
+fail	'operator unset failed'
+fail	'ordinary missing CI wait did not refuse'
+fail	'origin push not disabled'
+fail	'original salvage append failed'
+fail	'other step leaked into analysis slice'
+fail	'out-of-role ask accepted'
+fail	'over-limit plan mutated issues'
+fail	'oversize ledger not held'
+fail	'oversize ledger was partially read'
+fail	'oversize prestart stderr was not truncated'
+fail	'oversized packet did not name findings'
+fail	'oversized salvage hold regression failed'
+fail	'oversized salvage hold was not posted'
+fail	'packet command is missing'
+fail	'packet evidence verification failed'
+fail	'packet included excluded thread text'
+fail	'packet lost record provenance'
+fail	'packet omitted dropped author count'
+fail	'packet overflow lacked bound diagnostic'
+fail	'parse error omitted line'
+fail	'partial station output was not retained'
+fail	'partial tail leaked provider value'
+fail	'partial transfer left raw controller output'
+fail	'partial usage unknown counts missing'
+fail	'partial-transfer intent failed'
+fail	'partial-transfer regression failed'
+fail	'partial-transfer station failed'
+fail	'passing red-first record did not reuse'
+fail	'passing red-first record reran'
+fail	'payload manifest is missing'
+fail	'pending effect omitted recovery command'
+fail	'plain clear rebaselined salvage'
+fail	'plain clear requested rebaseline'
+fail	'plain packet omitted dropped count'
+fail	'plan driver has invalid syntax'
+fail	'plan driver is missing'
+fail	'planner contract passed to station'
+fail	'post-completion salvage failed'
+fail	'post-salvage changes not held'
+fail	'pre-merge did not report READY after tracker close'
+fail	'preamble is not first'
+fail	'preassigned session lost before launch'
+fail	'prefix decision failed'
+fail	'prefix fixture first apply failed'
+fail	'prefix fixture reapply failed'
+fail	'prefix green gate failed'
+fail	'prefix handoff completion failed'
+fail	'prefix handoff retry failed'
+fail	'prefix intent failed'
+fail	'prefix red gate failed'
+fail	'prefix replacement failed'
+fail	'prefix session failed'
+fail	'prefix station failed'
+fail	'prep accepted executing journals'
+fail	'prep accepted missing PR'
+fail	'prep did not stage changes'
+fail	'prestart fixture did not pass cached preflight'
+fail	'prestart hold exceeded 4 KiB'
+fail	'prestart hold kept more than last 20 stderr lines'
+fail	'prestart hold leaked provider value'
+fail	'prestart hold left chain open'
+fail	'prestart hold lost elapsed seconds'
+fail	'prestart launch diagnostics failed'
+fail	'prestart launch failure did not hold'
+fail	'pristine Makefile is missing'
+fail	'probe changed real status'
+fail	'probe executor assignment failed'
+fail	'probe left a linked worktree'
+fail	'probe left branch reflog'
+fail	'probe left forbidden write'
+fail	'probe left scratch files'
+fail	'probe moved real HEAD'
+fail	'probe report omitted passing properties'
+fail	'probe reviewer assignment failed'
+fail	'probe role change failed'
+fail	'probe role restore failed'
+fail	'project assignment not staged'
+fail	'project set failed'
+fail	'public ship did not record human touch'
+fail	'public ship setup failed'
+fail	'pushed feature fixture is not clean'
+fail	'question replay failed'
+fail	'question was rewritten'
+fail	'queued exact-head run was not visible'
+fail	'quoted key failed for wrong reason'
+fail	'race-losing approval did not return 4'
+fail	'racing loser changed replay'
+fail	'racing loser overwrote projection'
+fail	'reader accepted a blocking ledger FIFO'
+fail	'ready ship failed'
+fail	'ready to ship launched a station'
+fail	'real hold label drift was not repaired'
+fail	'reapply changed legacy eligibility'
+fail	'reapply changed live reviewer labels'
+fail	'reapply discarded an existing journal value'
+fail	'reapply reintroduced spec labels on a reviewed step'
+fail	'reassigned recovery lost dirty paths'
+fail	'reassigned recovery reset the chain'
+fail	'rebaseline changed worktree'
+fail	'rebaseline immediately raised hold again'
+fail	'rebaseline ledger lost original/history'
+fail	'rebaseline lost dirty edits'
+fail	'rebaseline overwrote original salvage'
+fail	'rebaseline replay duplicated ledger salvage'
+fail	'rebaseline was not recorded once at new HEAD'
+fail	'reconcile JSON did not report plan replay'
+fail	'reconcile launched a station'
+fail	'reconcile restored reviewer edits'
+fail	'record FIFO fixture failed'
+fail	'record writer accepted a blocking FIFO'
+fail	'recorded submit was verified during reconcile'
+fail	'recovery intent failed'
+fail	'recovery limit did not escalate without station record'
+fail	'recovery replacement failed'
+fail	'recursive cp flags did not count trees and copied files'
+fail	'red gate andon omitted failed recipe/output'
+fail	'red verification failed'
+fail	'red verify did not remain pending'
+fail	'red-chain fix failed'
+fail	'red-chain fixed station failed'
+fail	'red-chain intent failed'
+fail	'red-chain station failed'
+fail	'red-chain verify failed'
+fail	'red-first evidence missing'
+fail	'red-first leaked worktree'
+fail	'refused packet leaked content'
+fail	'regenerated workflow is stale'
+fail	'rejected record created ledger'
+fail	'rejected salvage changed ledger'
+fail	'rejected station changed ledger'
+fail	'rejected upgrade touched project roles'
+fail	'removed step did not require re-plan'
+fail	'removed step reapproved'
+fail	'reopened hold duplicated'
+fail	'repeated hold reconciliation failed'
+fail	'repeated reviewer edits not escalated'
+fail	'replacement intent revived old head'
+fail	'replacement recovery exceeded chain limit'
+fail	'replay duplicated salvage ref'
+fail	'reported zero usage became missing'
+fail	'repository policy did not count owner review as skipped'
+fail	'reserved marker character lacked a validation error'
+fail	'resolved reopen retained needs-human'
+fail	'restored verifier failed'
+fail	'resume lost current diff base'
+fail	'resume schema not passed'
+fail	'resumed attempt red-first used green implementation base'
+fail	'retired same-model risk accepted'
+fail	'retry and pre-launch boundary regressions failed'
+fail	'retry did not repair labels'
+fail	'retry duplicated a submit'
+fail	'retry prompt lost refusal reason'
+fail	'retryable handoff failed'
+fail	'reuse did not print stored record'
+fail	'reuse was not reported'
+fail	'reused pid prevented stale recovery'
+fail	'review_bounded accepted an invalid timeout'
+fail	'review_bounded changed command I/O or status'
+fail	'review_bounded changed command-not-found status'
+fail	'review_bounded default limit changed'
+fail	'review_bounded did not terminate an over-limit command'
+fail	'review_bounded left a failed-command watchdog alive'
+fail	'review_bounded left a success watchdog alive'
+fail	'review_bounded left a timeout watchdog alive'
+fail	'review_bounded left its timed-out command alive'
+fail	'review_bounded started a watchdog for invalid input'
+fail	'review_bounded success watchdog was not observed'
+fail	'review_bounded timeout watchdog was not observed'
+fail	'review_bounded true failed'
+fail	'reviewer ask failed'
+fail	'reviewer ask resumed wrong station'
+fail	'reviewer edits were not salvaged'
+fail	'reviewer intent failed'
+fail	'reviewer lacks reviewer contract'
+fail	'reviewer omitted accepted submit'
+fail	'reviewer packet included unrelated comments'
+fail	'reviewer reassignment reused stale session'
+fail	'reviewer restore not pending'
+fail	'reviewer resume accepted wrong return'
+fail	'reviewer-state reapply failed'
+fail	'reviewing session failed'
+fail	'reviewing state omitted'
+fail	'role defaults upgrade failed'
+fail	'role upgrade regressions failed'
+fail	'roles JSON display failed'
+fail	'roles row absent from fingerprint'
+fail	'root and template Makefile test-one call sites differ'
+fail	'run attempt not printed'
+fail	'run ledger is missing'
+fail	'salvage accepted missing clear'
+fail	'salvage accepted plain clear'
+fail	'salvage chain end failed'
+fail	'salvage changed real index bytes'
+fail	'salvage changed worktree bytes'
+fail	'salvage clear append failed'
+fail	'salvage hold append failed'
+fail	'salvage hold exceeded 4 KiB'
+fail	'salvage hold leaked provider value'
+fail	'salvage intent failed'
+fail	'salvage ledger fixture creation failed'
+fail	'salvage ledger intent failed'
+fail	'salvage record failed'
+fail	'salvage restore lost staged/unstaged split'
+fail	'salvage trees do not preserve staged split'
+fail	'same moved document did not verify after tracker close'
+fail	'same pair executor set failed'
+fail	'same pair set failed'
+fail	'same-model gap unnamed'
+fail	'same-model pair passed without risk'
+fail	'scenario selection leaked into CI'
+fail	'scenario without controller ran a test group'
+fail	'schema advisory bounds changed'
+fail	'sealed fragment broke subsequent read'
+fail	'second bounce did not execute'
+fail	'second bounced executor did not resume'
+fail	'second dirty submit did not escalate'
+fail	'second dirty submit lost edits'
+fail	'second invalid station failed'
+fail	'second provider value leaked'
+fail	'second red gate failed'
+fail	'second remote push not disabled'
+fail	'second step omitted'
+fail	'second writer test process failed'
+fail	'self-test groups do not declare scopes'
+fail	'serialized bounce did not execute'
+fail	'session context exceeded word limit'
+fail	'session context failed'
+fail	'session context hook is missing'
+fail	'session hook blocked'
+fail	'session hook exceeded timeout bound'
+fail	'session record failed'
+fail	'shallow fixture unexpectedly has a merge base'
+fail	'ship command is missing'
+fail	'ship did not admit, push and open against plan base'
+fail	'ship did not continue without a gate'
+fail	'ship did not stop for close-out commit'
+fail	'ship did not wait for pushed PR head and CI visibility'
+fail	'ship lost plan branch, default base or title'
+fail	'ship omitted the missing-target notice'
+fail	'ship phases ran out of order'
+fail	'ship skipped prep'
+fail	'ship swallowed failing group diagnostics'
+fail	'ship treated a broken gate dependency as an absent optional target'
+fail	'ship-gate accepted a failing exported suite'
+fail	'ship-gate did not name the failing exported group'
+fail	'ship-gate did not run the exported full suite'
+fail	'ship-gate export failed'
+fail	'ship-gate rejected a passing exported suite'
+fail	'ship-gate requires the scaffold source checkout'
+fail	'shipping regressions failed'
+fail	'shipping visibility regressions failed'
+fail	'signature source tree mismatch'
+fail	'since filter used local time or wrong record'
+fail	'single-operator evidence lacked the independence warning'
+fail	'slice leaked unrelated or dirty content'
+fail	'slow helper blocked session'
+fail	'staged clarification overwritten when working bytes matched HEAD'
+fail	'staged dirty doc applied'
+fail	'staged dirty doc reached GitHub'
+fail	'stale hold label survived'
+fail	'stale lock claimed before clean reconciliation'
+fail	'stale record content included'
+fail	'stale record offered for reuse'
+fail	'stale replacement gap unnamed'
+fail	'stale replaces accepted'
+fail	'stale submit failed to converge'
+fail	'stale submit restored reviewing labels'
+fail	'station bundle swept Codex-only skills back in'
+fail	'station contract export regression failed'
+fail	'station copied stale login'
+fail	'station doctor report incomplete'
+fail	'station failure exit was lost'
+fail	'station launcher is missing'
+fail	'station probe is missing'
+fail	'station record failed'
+fail	'station timeout not enforced'
+fail	'station with background child failed normally'
+fail	'stderr not redacted'
+fail	'step coverage gap was attested'
+fail	'step evidence did not print comment and author'
+fail	'step verification after check-only failed'
+fail	'step-1 did not update its exact issue'
+fail	'step-1 update rewrote step-10'
+fail	'stored body changed bytes'
+fail	'stored body unavailable'
+fail	'stranger comments not counted'
+fail	'strict brief parser is missing'
+fail	'stub accepted quoted -c key'
+fail	'stub accepted unknown session'
+fail	'submit did not land before projection failure'
+fail	'submit projection not repaired'
+fail	'successful exact-head CI rejected'
+fail	'successful handoff failed'
+fail	'superseded chain not ended'
+fail	'superseded decision posted again'
+fail	'superseded decision projected old state'
+fail	'superseded intent still pending'
+fail	'superseded retry not reported'
+fail	'supervised run did not skip gate'
+fail	'symlinked run accepted'
+fail	'symlinked tail accepted'
+fail	'tail boundary exposed key suffix'
+fail	'tail wrote through symlink'
+fail	'tampered body leaked to replay'
+fail	'tampered body was posted'
+fail	'tampered decision body accepted'
+fail	'template Makefile does not document the optional ship-gate target'
+fail	'terminal decision failed'
+fail	'terminal handoff failed'
+fail	'terminal intent failed'
+fail	'terminal station failed'
+fail	'text metrics failed'
+fail	'third bounce did not escalate'
+fail	'third bounce did not stop the loop'
+fail	'timed-out successful post duplicated'
+fail	'timeout andon omitted cause'
+fail	'timeout assignment failed'
+fail	'timeout emitted partial context'
+fail	'timeout left a live descendant'
+fail	'timeout metadata missing'
+fail	'timeout not recorded'
+fail	'timeout/interrupt with assertion was not invalid'
+fail	'timing calls are not sorted slowest first'
+fail	'timing changed failing status'
+fail	'timing changed stdout'
+fail	'timing did not cap slow calls at 15'
+fail	'timing disabled errexit'
+fail	'timing fixture changed status'
+fail	'timing lost caller line'
+fail	'timing lost elapsed seconds'
+fail	'timing lost nested resets'
+fail	'timing omitted block'
+fail	'timing polluted cost events'
+fail	'topology change lacked migration diagnostic'
+fail	'torn intent failed'
+fail	'torn ledger broke metrics'
+fail	'torn recovery rewrote existing bytes'
+fail	'torn tail broke read'
+fail	'torn tail warning absent'
+fail	'torn tail was treated as committed'
+fail	'tracker notify did not close out'
+fail	'tracker notify duplicated'
+fail	'tracker replay failed'
+fail	'tracker-only change invalidated approval'
+fail	'trusted findings absent'
+fail	'two ship touches were not counted'
+fail	'unauthorized clear rebaselined'
+fail	'unauthorized role wrote a comment'
+fail	'unchanged station probed again'
+fail	'unchanged verification failed'
+fail	'unchanged verification reran make'
+fail	'uncleared hold relaunched station'
+fail	'uncommitted doc applied'
+fail	'uncommitted doc reached GitHub'
+fail	'uncommitted prep was pushed'
+fail	'uncommitted refusal omitted reason'
+fail	'unfinished run hid known usage or unknown count'
+fail	'unjournaled history not held'
+fail	'unjournaled refusal lacked diagnosis'
+fail	'unknown CLI accepted'
+fail	'unknown base runner counted as red'
+fail	'unknown prefix-table operation'
+fail	'unknown session failed for wrong reason'
+fail	'unknown slice step accepted'
+fail	'unknown state labels accepted'
+fail	'unknown step leaked content'
+fail	'unmodeled GIT_* diagnostic omitted variable name'
+fail	'unmodeled GIT_* environment variable was allowed'
+fail	'unowned edits not held'
+fail	'unowned rebaseline re-raised hold'
+fail	'unowned salvage missing'
+fail	'unowned/clean rebaseline not saved once'
+fail	'unready ship ran finish'
+fail	'unsafe Codex Apps gap unnamed'
+fail	'unsafe Codex gap unnamed'
+fail	'unsafe OpenCode gap unnamed'
+fail	'unsafe merged Codex settings passed'
+fail	'unsafe plan checkout launched a station'
+fail	'unsafe plan checkout omitted its hold or wrote a launch intent'
+fail	'unsafe plan filter accepted'
+fail	'unsafe probe did not raise hold'
+fail	'unset did not fall back'
+fail	'unstarted Claude attempt did not get a new id'
+fail	'unstarted preassigned session resumed'
+fail	'untracked salvage restored to real index'
+fail	'unverified submit decision accepted'
+fail	'upgrade admitted project-owned role destination'
+fail	'upgrade did not replace harness defaults'
+fail	'upgrade touched project roles'
+fail	'valid PR rejected'
+fail	'valid brief parser failed'
+fail	'valid output helper failed'
+fail	'valid output intent failed'
+fail	'valid output station failed'
+fail	'valid result stored output'
+fail	'valid station wrote diagnostic tails'
+fail	'valid workflow rejected'
+fail	'validity retry failed'
+fail	'verdict bounds failed'
+fail	'verification leaked worktree'
+fail	'verification provenance is missing'
+fail	'verification record invalid'
+fail	'verification timeout default is not 1800 seconds'
+fail	'verification timeout passed'
+fail	'verification tree mismatch'
+fail	'verified submit decision failed'
+fail	'verify failure output not bounded/redacted'
+fail	'verify runner failed to record exit'
+fail	'verify success failed'
+fail	'visibility timeout did not stop at two minutes'
+fail	'visibility timeout omitted head'
+fail	'visibility wait did not poll both delayed resources'
+fail	'wait-review did not finish after approval'
+fail	'wait-review did not observe later approval'
+fail	'wait-review did not refresh CI attempt'
+fail	'warning changed verdict outcome'
+fail	'warning decision failed'
+fail	'warning diagnostic failed'
+fail	'weakened OpenCode settings passed'
+fail	'whole-group run did not catch a missing scenario block'
+fail	'workflow drift diagnostic missing'
+fail	'workflow drift did not name generated source'
+fail	'workflow library is missing'
+fail	'workflow regeneration failed'
+fail	'workflow render is stale'
+fail	'workflow restore failed'
+fail	'workflow validation failed'
+fail	'worktree got a private ledger'
+fail	'wrong PR base accepted'
+fail	'wrong Tracker line count'
+fail	'wrong close target'
+fail	'wrong contract mode'
+fail	'wrong minted value'
+fail	'zero usage intent failed'
+fail	'zero usage metrics failed'
+fail	'zero usage station failed'
+fail	before
+gate_run	false
+gate_run	true
+identity_run	"$@"
+identity_run	executor
+identity_run	executor --check
+must_allow	"$ADD_GUARD" 'git --no-pager add README.md'
+must_allow	"$ADD_GUARD" 'git -C /some/path add README.md'
+must_allow	"$ADD_GUARD" 'git add README.md'
+must_allow	"$ADD_GUARD" 'git add docs/inprogress/feature-x.md scripts/doctor.sh'
+must_allow	"$ADD_GUARD" 'rg "git add -A" scripts/self-test.sh'
+must_allow	"$PUSH_GUARD" 'echo git push'
+must_allow	"$PUSH_GUARD" 'echo push'
+must_allow	"$PUSH_GUARD" 'echo use git to push'
+must_allow	"$PUSH_GUARD" 'gh pr view 12'
+must_allow	"$PUSH_GUARD" 'git commit -m push'
+must_allow	"$PUSH_GUARD" 'git pull --rebase'
+must_allow	"$PUSH_GUARD" 'man git'
+must_allow	"$PUSH_GUARD" 'rg "git push" METHODOLOGY.md'
+must_allow	"$PUSH_GUARD" 'rg "git push" METHODOLOGY.md; echo done'
+must_allow	"$PUSH_GUARD" 'sudo echo git push'
+must_allow	"$ROOT/scripts/hooks/$guard.sh" "$literal_body"
+must_allow	"$ROOT/scripts/hooks/$guard.sh" "echo '\`git push\`'"
+must_allow	"$ROOT/scripts/hooks/$guard.sh" "echo \$(date); echo '\`git push\`'"
+must_allow	"$ROOT/scripts/hooks/block-git-add-all.sh" 'git add scripts/self-test.sh'
+must_allow	"$ROOT/scripts/hooks/block-push.sh" $'cat <<\'ONE\'
+must_allow	"$ROOT/scripts/hooks/block-push.sh" $'git commit -F - <<\'EOF\'\nRun `make check` first.\nEOF
+must_allow	"$ROOT/scripts/hooks/block-push.sh" 'echo $(date); git status'
+must_allow	"$ROOT/scripts/hooks/block-push.sh" 'git status --short'
+must_allow	"$ROOT/scripts/hooks/require-step-comment.sh" 'cd /tmp; gh issue view 1'
+must_allow	"$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow handoff 1 ask --as executor --body-file question'
+must_allow	"$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow roles --json'
+must_allow	"$ROOT/scripts/hooks/scan-secrets.sh" 'b=$(basename a); git merge-file -p a "$b" c'
+must_allow	"$SECRET_GUARD" $'git commit -F - <<\'EOF\'\nRun `make check` first.\nEOF
+must_allow	"$STEP_HOOK" "$read_command"
+must_allow	"$STEP_HOOK" 'gh issue close 1'
+must_allow	"$guard_path" $'cat > body.md <<\'EOF\'\nUses `vite.config.ts`\nEOF\ngh issue create --body-file body.md
+must_allow	"$guard_path" 'echo "$(date)"; grep -n "git push" README.md'
+must_allow	"$guard_path" 'echo $(date); echo '\''$(git push)'\'''
+must_allow	"$guard_path" 'echo $(date); grep -n "use git push here" README.md'
+must_allow	"$guard_path" 'eval "$(scripts/build-image.sh --print-env)" && docker compose ps'
+must_allow	"$guard_path" 'for p in a b; do v=$(jq -r .x package.json); done; git log -5; gh pr view 22'
+must_allow	"$guard_path" 'gh issue create --title t --body-file body.md'
+must_allow	"$guard_path" 'v=$(jq -r .x package.json); echo "$v"'
+must_allow_nojq	"$ADD_GUARD" 'git add README.md'
+must_allow_nojq	"$PUSH_GUARD" 'git pull --rebase'
+must_allow_nojq	"$PUSH_GUARD" 'rg "git push" METHODOLOGY.md'
+must_block	"$ADD_GUARD" 'git --git-dir=/tmp/x add --all'
+must_block	"$ADD_GUARD" 'git --no-pager -C /some/path add -A'
+must_block	"$ADD_GUARD" 'git --no-pager add -A'
+must_block	"$ADD_GUARD" 'git -C /some/path -c core.pager=cat add --all'
+must_block	"$ADD_GUARD" 'git -C /some/path add -A'
+must_block	"$ADD_GUARD" 'git -c user.name=x add .'
+must_block	"$ADD_GUARD" 'git -p add .'
+must_block	"$ADD_GUARD" 'git add .'
+must_block	"$ADD_GUARD" 'git-claude add --all'
+must_block	"$ADD_GUARD" 'nohup git add .'
+must_block	"$ADD_GUARD" 'sudo git add -A'
+must_block	"$HOOK_CRASH" 'git add -A'
+must_block	"$PUSH_GUARD" "$continued_push"
+must_block	"$PUSH_GUARD" "echo \"\$(git push)\""
+must_block	"$PUSH_GUARD" "git -C \"\$(pwd)\" push"
+must_block	"$PUSH_GUARD" '! git push'
+must_block	"$PUSH_GUARD" '2>&1 git push'
+must_block	"$PUSH_GUARD" '>out git push'
+must_block	"$PUSH_GUARD" 'env GIT_INDEX_FILE=/tmp/other git push'
+must_block	"$PUSH_GUARD" 'gh -R owner/repo pr merge 12'
+must_block	"$PUSH_GUARD" 'gh pr merge 12'
+must_block	"$PUSH_GUARD" 'git --git-dir=/tmp/x push'
+must_block	"$PUSH_GUARD" 'git --no-pager push'
+must_block	"$PUSH_GUARD" 'git -C "a path" push'
+must_block	"$PUSH_GUARD" 'git -C /some/path push'
+must_block	"$PUSH_GUARD" 'git -C a\ path push'
+must_block	"$PUSH_GUARD" 'git -p push'
+must_block	"$PUSH_GUARD" 'git push "unterminated'
+must_block	"$PUSH_GUARD" 'git push origin main --force'
+must_block	"$PUSH_GUARD" 'git push'
+must_block	"$PUSH_GUARD" 'git push;'
+must_block	"$PUSH_GUARD" 'git status && git push'
+must_block	"$PUSH_GUARD" 'git status; git push'
+must_block	"$PUSH_GUARD" 'git-claude push origin HEAD'
+must_block	"$PUSH_GUARD" 'git-codex push origin HEAD'
+must_block	"$PUSH_GUARD" 'git-opencode push origin HEAD'
+must_block	"$PUSH_GUARD" 'if git push; then :; fi'
+must_block	"$PUSH_GUARD" 'nice git push'
+must_block	"$PUSH_GUARD" 'nohup git push'
+must_block	"$PUSH_GUARD" 'sudo gh pr merge 12'
+must_block	"$PUSH_GUARD" 'sudo git push'
+must_block	"$PUSH_GUARD" 'time git push'
+must_block	"$PUSH_GUARD" 'timeout 10 git push'
+must_block	"$PUSH_GUARD" '{ git push; }'
+must_block	"$ROOT/scripts/hooks/block-git-add-all.sh" "${literal_body}git add -A"
+must_block	"$ROOT/scripts/hooks/block-git-add-all.sh" 'echo $(date); git add '"$broad_add"
+must_block	"$ROOT/scripts/hooks/block-git-add-all.sh" 'git add -A'
+must_block	"$ROOT/scripts/hooks/block-push.sh" "${literal_body}git push"
+must_block	"$ROOT/scripts/hooks/block-push.sh" $'git push <<\'EOF\'\nmissing delimiter
+must_block	"$ROOT/scripts/hooks/block-push.sh" 'echo "$('"$protected_command"'</dev/null)"'
+must_block	"$ROOT/scripts/hooks/block-push.sh" 'echo "$('"$protected_command"'>out)"'
+must_block	"$ROOT/scripts/hooks/block-push.sh" 'echo "`'"$protected_command"'`"'
+must_block	"$ROOT/scripts/hooks/block-push.sh" 'echo $(date); gh pr merge 12'
+must_block	"$ROOT/scripts/hooks/block-push.sh" 'echo $(date); git-claude push'
+must_block	"$ROOT/scripts/hooks/block-push.sh" 'git commit -m "Run `make check` first."'
+must_block	"$ROOT/scripts/hooks/block-push.sh" 'git push origin main'
+must_block	"$ROOT/scripts/hooks/require-step-comment.sh" "rtk proxy scripts/agentic-flow roles $action reviewer claude"
+must_block	"$ROOT/scripts/hooks/require-step-comment.sh" "scripts/agentic-flow roles $action reviewer claude"
+must_block	"$ROOT/scripts/hooks/require-step-comment.sh" 'cd /tmp; gh issue close 1'
+must_block	"$ROOT/scripts/hooks/require-step-comment.sh" 'gh issue edit 1 --add-label "bug, needs-review"'
+must_block	"$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow approve docs/inprogress/plan.md --by owner'
+must_block	"$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow handoff 1 hold-clear --as approver --hold-id fixture/hold/1'
+must_block	"$ROOT/scripts/hooks/require-step-comment.sh" 'scripts/agentic-flow hold clear docs/inprogress/plan.md fixture/hold/1'
+must_block	"$ROOT/scripts/hooks/scan-secrets.sh" $'git commit -F - <<EOF\n$(date)\nEOF'
+must_block	"$ROOT/scripts/hooks/scan-secrets.sh" 'echo "$(git commit</dev/null)"'
+must_block	"$ROOT/scripts/hooks/scan-secrets.sh" 'echo "$(git commit>out)"'
+must_block	"$ROOT/scripts/hooks/scan-secrets.sh" 'echo "`git commit`"'
+must_block	"$ROOT/scripts/hooks/scan-secrets.sh" 'git commit -m "Run `make check` first."'
+must_block	"$SECRET_GUARD" $'git commit -F - <<\'EOF\'\nRun `make check` first.\nEOF
+must_block	"$STEP_HOOK" "$mutation"
+must_block	"$STEP_HOOK" 'gh issue close 1'
+must_block	"$STEP_HOOK" 'gh issue reopen 1'
+must_block_nojq	"$ADD_GUARD" 'git -C /some/path add --all'
+must_block_nojq	"$ADD_GUARD" 'git add -A'
+must_block_nojq	"$HOOK_CRASH" 'git add -A'
+must_block_nojq	"$PUSH_GUARD" 'gh pr merge 12'
+must_block_nojq	"$PUSH_GUARD" 'git -C "a path" push'
+must_block_nojq	"$PUSH_GUARD" 'git push'
+must_block_nojq	"$PUSH_GUARD" 'git-claude push origin HEAD'
+packet_run	0 --station executor
+packet_run	0 --station executor --json
+packet_run	0 --station reviewer --json
+packet_run	3 --station executor --json
+partial_run	arrived rc issue=0
+plan_reject_without_mutation	'100-result discovery page' "$PLAN_SPEC" "$TMP/plan-full-page.json"
+plan_reject_without_mutation	'duplicate remote step stamps' "$PLAN_SPEC" "$TMP/plan-duplicate-step.json"
+plan_reject_without_mutation	'duplicate remote tracker stamps' "$PLAN_SPEC" "$TMP/plan-duplicate-tracker.json"
+plan_reject_without_mutation	'implicit/explicit step-1 collision' "$TMP/plan-collision.json"
+plan_reject_without_mutation	'malformed remote stamp' "$PLAN_SPEC" "$TMP/plan-malformed-stamp.json"
+plan_reject_without_mutation	'reserved marker character in step ID' "$TMP/plan-reserved-id.json"
+policy_case	in 'version=2'
+reject_before_gh	'duplicate v2 field' "$REJECT_DOC" 'Test User'
+reject_before_gh	'invalid v2 selector' "$REJECT_DOC" 'Test User'
+reject_before_gh	'legacy document' "$REJECT_DOC" 'Test User'
+reject_before_gh	'missing document' "$TMP/no-such-doc.md" 'Test User'
+reject_before_gh	'newline in approver' "$REJECT_DOC" "$(printf 'Test\nUser')"
+reject_before_gh	'semicolon in approver' "$REJECT_DOC" 'Test;User'
+reject_before_gh	'surrounding whitespace in approver' "$REJECT_DOC" ' Test User '
+reject_before_gh	'trailing dot in approver' "$REJECT_DOC" 'John D.'
+reject_before_gh	'trailing hyphen in approver' "$REJECT_DOC" 'user-'
+reject_before_gh	'unknown schema' "$REJECT_DOC" 'Test User'
+reject_before_gh	'unwritable document' "$REJECT_DOC" 'Test User'
+review_case	"$1" "$3" "$4"
+review_case	'accepted approval with losing bounce' READY 'review by reviewer'
+review_case	'accepted bounce with losing approval' BLOCKED 'journal state executing'
+review_case	'accepted journal approval edited' BLOCKED 'was edited'
+review_case	'adjacent high step ids and same-second verdicts' BLOCKED 'comment new-rejection does not approve'
+review_case	'authenticated final and step' READY 'review by reviewer'
+review_case	'complete 100-node step page' READY 'review by reviewer'
+review_case	'conflicting second final marker' BLOCKED 'has multiple review markers'
+review_case	'conflicting second step marker' BLOCKED 'has multiple review markers'
+review_case	'distinct account reviewer' READY 'review by reviewer'
+review_case	'edited authoritative step verdict' BLOCKED 'step f-1 comment step-review was edited'
+review_case	'false role claim' BLOCKED 'role claim differs'
+review_case	'fresh verdict recovers edit' READY 'review by reviewer'
+review_case	'human slug cannot impersonate App reviewer' UNVERIFIED 'no approval for PR head'
+review_case	'identical repeated final marker' READY 'review by reviewer'
+review_case	'identical repeated step marker' READY 'review by reviewer'
+review_case	'legacy latest marker selects bounce' BLOCKED 'does not approve'
+review_case	'missing PR object' UNVERIFIED 'cccccccccccccccccccccccccccccccccccccccc.*git fetch origin pull/2/head'
+review_case	'missing final author' UNVERIFIED 'no approval for PR head'
+review_case	'missing role logins' UNVERIFIED 'review policy missing or invalid'
+review_case	'normalized duplicate database id' BLOCKED 'duplicate fullDatabaseId'
+review_case	'open Strict step' BLOCKED 'step f-1 issue 3 is OPEN'
+review_case	'overlapping reviewer account' UNVERIFIED 'review policy missing or invalid'
+review_case	'partial step page' UNVERIFIED 'step f-1 comments exceed one page'
+review_case	'removing marker recovers edit' READY 'review by reviewer'
+review_case	'repository policy rejects owner review' BLOCKED 'journal state reviewing'
+review_case	'reviewer handoff rejected' BLOCKED 'is not an executor'
+review_case	'same-second authoritative edit' BLOCKED 'comment new-rejection was edited'
+review_case	'stale approval after PR commit' UNVERIFIED 'no approval for PR head'
+review_case	'step GraphQL error' UNVERIFIED 'step f-1 GraphQL error'
+review_case	'step missing edit indicator' UNVERIFIED 'step f-1 comment step-review missing lastEditedAt'
+review_case	'step missing pageInfo' UNVERIFIED 'step f-1 pageInfo.hasNextPage missing'
+review_case	'step null node' UNVERIFIED 'step f-1 comment node 2 unreadable'
+review_case	'step null ordering key' UNVERIFIED 'step f-1 comment step-review missing valid fullDatabaseId'
+review_case	'stranger malformed marker and later handoff' READY 'review by reviewer'
+review_case	'typed App verdicts and handoff' READY 'review by review-app'
+review_case	'unauthorized author' UNVERIFIED 'no approval for PR head'
+review_case	'unauthorized step handoff' UNVERIFIED 'no full implementation SHA handoff'
+review_case	'unlinked accepted risk' UNVERIFIED 'review policy missing or invalid'
+scope_case	in missing unknown invalid duplicate
+scope_expect	"$SELF_TEST_GROUPS" "git $scope_command error"
+scope_expect	"$SELF_TEST_GROUPS" 'committed harness edit'
+scope_expect	"$SELF_TEST_GROUPS" 'forced groups' --all-groups
+scope_expect	"$SELF_TEST_GROUPS" 'malformed manifest'
+scope_expect	"$SELF_TEST_GROUPS" 'missing manifest'
+scope_expect	"$SELF_TEST_GROUPS" 'missing origin refs'
+scope_expect	"$SELF_TEST_GROUPS" 'no remote'
+scope_expect	"$SELF_TEST_GROUPS" 'not a repository'
+scope_expect	"$SELF_TEST_GROUPS" 'pushed feature upstream equals HEAD'
+scope_expect	"$SELF_TEST_GROUPS" 'renamed harness path'
+scope_expect	"$SELF_TEST_GROUPS" 'shallow clone without merge base'
+scope_expect	"$SELF_TEST_GROUPS" 'source full suite'
+scope_expect	"$SELF_TEST_GROUPS" 'staged-only harness edit'
+scope_expect	"$SELF_TEST_GROUPS" 'unstaged harness edit'
+scope_expect	"$SELF_TEST_GROUPS" 'untracked harness edit'
+scope_expect	"$scope_locals" 'PR base precedence'
+scope_expect	"$scope_locals" 'clean integration base'
+scope_expect	"$scope_locals" 'detached PR merge'
+scope_expect	"$scope_locals" 'explicit CI base'
+scope_expect	"$scope_locals" 'explicit base precedence'
+scope_expect	"$scope_locals" 'first resolving base'
+scope_expect	"$scope_locals" 'source-only destination'
+scope_expect	"$scope_locals" 'untracked application file'
+select_markers	"$selection:$selection "
+select_markers	'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship '
+select_markers	'launch:launch launch:timing '
+select_markers	'ledger:ledger ship:ship '
+select_markers	'ship:ship '
+select_run	0 --only controller
+select_run	0 --only controller --scenario "$selection"
+select_run	0 --only controller --scenario ship,ledger
+select_run	0 --only controller --scenario ship,ship
+select_run	1 --only controller
+select_run	1 --only controller --scenario ship
+select_run	2 --full --scenario ship
+select_run	2 --only controller --scenario
+select_run	2 --only controller --scenario "$selection"
+select_run	2 --only hooks --scenario ship
+selection_make_case	in wrong-group empty no-group
+session_quiet	'all steps approved'
+session_quiet	'ambiguous branch'
+session_quiet	'corrupt cache'
+session_quiet	'detached HEAD'
+session_quiet	'duplicate cache rows'
+session_quiet	'incomplete cache'
+session_quiet	'main branch'
+session_quiet	'missing cache'
+ship_run	false
+ship_run	true
+should_run	"$scope_group"
+should_run	contracts
+should_run	controller
+should_run	export
+should_run	hook
+should_run	hooks
+should_run	lifecycle
+should_run	plan-to-issues
+should_run	stations
+should_run	upgrade
+slice_run	absent
+slice_run	s-1
+slice_run	s-1 --at missing
+slice_run	s-2 --at "$SLICE_REV" --analysis
+slice_run	s-2 --at HEAD
+standard_reject	'Strict without parent specification' "$TMP/strict-no-parent.json"
+standard_reject	'packet overflow' "$TMP/packet-overflow.json"
+standard_reject	'topology-changing reapply' "$TMP/topology-change.json"
+standard_reject	'two steps' "$TMP/standard-two.json"
+standard_reject	'zero steps' "$TMP/standard-zero.json"
+state_rejects	"$(sed -n '/^file=/{p;q;}' "$TMP/scoped-installation.orig")" 'duplicate path'
+state_rejects	"file=$state_digest  .codex/hooks.json" 'excluded scope'
+state_rejects	"file=$state_digest  /tmp/bad.sh" 'absolute path'
+state_rejects	"file=$state_digest  scripts/../bad.sh" 'parent segment'
+state_rejects	"file=$state_digest  scripts/linked/bad.sh" 'symlink component'
+state_rejects	"file=1234  scripts/bad.sh" 'short digest'
+state_rejects	"file=bad  scripts/bad.sh" 'malformed digest'
+station_expect	'.seq==0 and .state=="executing" and .skipped==2'
+station_expect	'.seq==0 and .state=="executing"'
+station_expect	'.seq==14 and .bounces==0 and .state=="executing" and ([.accepted[].id]|unique|length)==14'
+station_expect	'.seq==2 and .skipped==2'
+station_expect	'.seq==4 and .state=="approved" and .bounces==1'
+station_expect	'.seq==6 and .state=="escalated" and .bounces==3'
+station_expect	'.state=="approved" and .seq==2 and .skipped==3 and .accepted[1].comment_id=="3"'
+station_expect	'.state=="executing" and .bounces==1 and .skipped==1'
+station_expect	'.state=="open" and .seq==0 and .skipped==1 and (.accepted|length)==0'
+station_expect	'.unjournaled=="r2"'
+station_run	0 1 approve --as reviewer --head "$CLOSE_HEAD"
+station_run	0 1 approve --as reviewer --head "$STATION_A"
+station_run	0 1 approve --as reviewer --head "$STATION_B"
+station_run	0 1 ask --as executor --body-file "$TMP/c3-question"
+station_run	0 1 ask --as reviewer --body-file "$TMP/c3-question"
+station_run	0 1 bounce --as reviewer --body-file "$STATION_FIX/note"
+station_run	0 1 bounce --as reviewer --body-file "$TMP/c3-question"
+station_run	0 1 bounce --as reviewer --body-file "$TMP/close-findings"
+station_run	0 1 hold --as approver --reason identity-missing
+station_run	0 1 hold --as approver --reason reopened --body-file "$TMP/c3-question"
+station_run	0 1 reconcile
+station_run	0 1 reconcile --check
+station_run	0 1 reconcile --json
+station_run	0 1 resume --as approver --body-file "$TMP/c3-question"
+station_run	0 1 resume --as approver --return reviewing --body-file "$TMP/c3-question"
+station_run	0 1 submit --as executor --head "$CLOSE_HEAD"
+station_run	0 1 submit --as executor --head "$STATION_A"
+station_run	0 1 submit --as executor --head "$STATION_A" --after 0
+station_run	0 1 submit --as executor --head "$STATION_B"
+station_run	0 2 approve --as reviewer --head "$CLOSE_HEAD"
+station_run	0 2 hold-clear --as approver --hold-id "$C3_HOLD_ID"
+station_run	0 2 hold-clear --as approver --hold-id "$C3_HOLD_ID" --body-file "$TMP/c3-question" --rebaseline
+station_run	0 2 hold-clear --as approver --hold-id "$C3_LOCAL_HOLD"
+station_run	0 2 hold-clear --as approver --hold-id "$C3_LOCAL_HOLD" --rebaseline
+station_run	0 2 reconcile
+station_run	0 2 reconcile --json
+station_run	0 2 submit --as executor --head "$CLOSE_HEAD"
+station_run	10 1 hold --as approver --reason identity-missing
+station_run	2 1 hold --as approver --reason reopened --rebaseline
+station_run	2 1 resume --as approver --rebaseline
+station_run	3 1 approve --as reviewer --head "$STATION_A"
+station_run	3 1 ask --as executor --body-file "$TMP/c3-empty"
+station_run	3 1 ask --as reviewer --body-file "$TMP/c3-question"
+station_run	3 1 resume --as approver --return executing --body-file "$TMP/c3-question"
+station_run	3 1 resume --as approver --return reviewing --body-file "$TMP/c3-question"
+station_run	3 1 submit --as executor --head "$STATION_A"
+station_run	3 1 submit --as executor --head "$STATION_C"
+station_run	3 2 notify --as reviewer
+station_run	4 1 approve --as reviewer --head "$STATION_A"
+station_run	4 1 submit --as executor --head "$STATION_B" --after 0
+station_run	5 1 approve --as reviewer --head "$STATION_B" --body-file "$TMP/review-with-marker"
+station_run	5 1 reconcile
+station_run	5 1 submit --as executor --head "$STATION_A"
+station_run	7 1 reconcile
+v2_case	'/^- \*\*Approval:/d' UNVERIFIED approval
+v2_case	's/Evidence schema:\*\* v2/Evidence schema:** v3/' BLOCKED 'Evidence schema'
+v2_case	's/Review verdict:/Unknown key:/' BLOCKED 'unknown field'
+v2_case	's/source=pr-head/source=not-pr-head/' BLOCKED implementation-head
+v2_case	's/status=approved/status=not approved/' BLOCKED approval
+verify_fixture_run	--force
+verify_reuse_run	--force
+verify_review_run	--force
+verify_run	"$c2" 'bash failing-command'
+verify_run	"$c2" 'printf success'
+workflow_reject	"$defect" "$diagnostic"

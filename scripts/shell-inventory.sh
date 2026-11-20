@@ -90,9 +90,11 @@ case "${1:---list}" in
     while IFS= read -r rel; do bash -n "$root/$rel"; done <<< "$inventory" ;;
   --lint)
     inventory=$(shell_files) || exit 1
-    files=()
-    while IFS= read -r rel; do [ -n "$rel" ] && files+=("$root/$rel"); done <<< "$inventory"
-    [ "${#files[@]}" -gt 0 ] || { echo 'shell inventory: no shell files' >&2; exit 1; }
-    shellcheck "${files[@]}" ;;
+    [ -n "$inventory" ] || { echo 'shell inventory: no shell files' >&2; exit 1; }
+    lint_status=0
+    while IFS= read -r rel; do
+      shellcheck -x "$root/$rel" || lint_status=1
+    done <<< "$inventory"
+    exit "$lint_status" ;;
   *) echo 'usage: shell-inventory.sh --list|--syntax|--lint|--scope-state SCOPE' >&2; exit 2 ;;
 esac

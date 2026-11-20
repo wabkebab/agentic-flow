@@ -12,13 +12,14 @@ usage:
   agentic-flow ship <doc> [--wait-review]
   agentic-flow final-approve <doc> [--body-file <path>]
   agentic-flow packet <issue> --station executor|reviewer [--json]
-  agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--json]
+  agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--force] [--json]
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
   agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
+  agentic-flow doctor --stations [--station executor|reviewer] [--json]
   agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]
   agentic-flow approve <doc> --by <login>
-  agentic-flow hold clear <doc> <hold-id> [--note <text>]
+  agentic-flow hold clear <doc> <hold-id> [--rebaseline] [--note <text>]
   agentic-flow token <executor|reviewer|approver> [--check]
   agentic-flow status [--json]
   agentic-flow diff [--ref <ref>] [--json]
@@ -509,6 +510,11 @@ subcommand="${1:-}"
       # shellcheck disable=SC1091
       . "$(dirname "$0")/lib/controller.sh"
       controller_cmd "$@" ;;
+    doctor)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/probe.sh"
+      probe_cmd "$@" ;;
     metrics)
       shift
       # shellcheck disable=SC1091

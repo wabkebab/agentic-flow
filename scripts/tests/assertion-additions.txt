@@ -1,0 +1,115 @@
+assert_file	.agentic-flow-candidate-version
+fail	"adopter twin holdout missing from $twin_group group"
+fail	"adopter twin lost extra hooks in $twin_adapter"
+fail	"adopter twin upgrade omitted the pristine candidate for $twin_file"
+fail	"missing self-test group file: contracts"
+fail	"missing self-test group file: controller"
+fail	"missing self-test group file: export"
+fail	"missing self-test group file: hooks"
+fail	"missing self-test group file: lifecycle"
+fail	"missing self-test group file: plan-to-issues"
+fail	"missing self-test group file: stations"
+fail	"missing self-test group file: upgrade"
+fail	"split group is missing: $group"
+fail	"stations markers '$actual', expected '$1'"
+fail	"stations scenario block '$block' never executed"
+fail	"stations selector returned $status expected $expected: $(cat "$fixture/err")"
+fail	"unknown stations scenario block at call site: $2:$1"
+fail	'Codex home config.toml must stay empty'
+fail	'Codex home profile file differs from the installed profile'
+fail	'Makefile accepted an empty stations selector'
+fail	'Makefile did not forward stations union'
+fail	'adopter twin Stop hook allowed a failing customized check'
+fail	'adopter twin Stop hook blocked a green customized check'
+fail	'adopter twin accepted an overwritten customized Makefile'
+fail	'adopter twin added fixture file copies'
+fail	'adopter twin commit lost its literal message'
+fail	'adopter twin could not execute its real commit command'
+fail	'adopter twin lost project customizations or installed state'
+fail	'adopter twin make check ignored the customized lint target'
+fail	'adopter twin mutated the shared source snapshot'
+fail	'adopter twin overwrite failed for an unrelated reason'
+fail	'adopter twin repeated upgrade changed pending files'
+fail	'adopter twin session hook failed without an active plan'
+fail	'adopter twin upgrade did not report pending merges'
+fail	'adopter twin upgrade wrote without confirmation'
+fail	'assertion deletion fixture did not delete an assertion'
+fail	'assertion inventory accepted a deleted assertion'
+fail	'assertion inventory accepted a deleted helper call'
+fail	'assertion inventory did not identify the deleted assertion'
+fail	'assertion inventory did not identify the deleted helper call'
+fail	'assertion inventory differs after the split'
+fail	'dispatcher accepted a renamed group file'
+fail	'dispatcher did not name the missing group file'
+fail	'empty stations selection lacked a diagnosis'
+fail	'environment S affected stations'
+fail	'helper deletion fixture did not delete an assertion'
+fail	'invalid stations selection ran a group'
+fail	'make check failed in the adopter twin'
+fail	'missing test helpers did not produce an assertion'
+fail	'missing test helpers returned the wrong status'
+fail	'no stations scenario block executed'
+fail	'scenario accepted for an unsupported group'
+fail	'split changed the full-suite completion message'
+fail	'split changed the full-suite group order'
+fail	'split changed the self-test group names'
+fail	'split export group is missing'
+fail	'split full dispatcher failed'
+fail	'stations accepted a drifted block tag'
+fail	'stations whole group missed a deleted block'
+fail	'unconfirmed adopter twin upgrade changed the project'
+must_allow	"$twin_hooks/$twin_guard.sh" "$twin_command"
+must_allow	"$twin_hooks/$twin_guard.sh" "$twin_heredoc"
+must_allow	"$twin_hooks/block-git-add-all.sh" 'git add CLAUDE.md Makefile'
+must_allow	"$twin_hooks/block-push.sh" 'make test-adopter'
+must_allow	"$twin_hooks/require-step-comment.sh" 'make adopter-lint'
+must_block	"$twin_hooks/block-git-add-all.sh" 'git add -A'
+must_block	"$twin_hooks/block-push.sh" 'git push origin main'
+must_block	"$twin_hooks/scan-secrets.sh" 'git -c commit.gpgsign=false commit -F .adopter-commit-message'
+stations_select_markers	'handoff:cli handoff:closeout handoff:journal '
+stations_select_markers	'handoff:cli handoff:closeout handoff:journal launch:settings launch:slice launch:watchdogs packet:packet verify:cache verify:interrupt verify:red-first '
+stations_select_markers	'launch:settings launch:slice launch:watchdogs '
+stations_select_markers	'launch:settings launch:slice launch:watchdogs packet:packet '
+stations_select_markers	'packet:packet '
+stations_select_markers	'verify:cache verify:interrupt verify:red-first '
+stations_select_run	0 --only stations
+stations_select_run	0 --only stations --scenario "$selection"
+stations_select_run	0 --only stations --scenario packet,launch
+stations_select_run	0 --only stations --scenario packet,packet
+stations_select_run	1 --only stations
+stations_select_run	1 --only stations --scenario packet
+stations_select_run	2 --full --scenario launch
+stations_select_run	2 --only "$group" --scenario launch
+stations_select_run	2 --only stations --scenario
+stations_select_run	2 --only stations --scenario "$selection"
+fail	"parallel dispatcher omitted failed shard status for $shard"
+fail	"parallel dispatcher returned $status expected $want: $(cat "$fixture/out")"
+fail	"parallel shard logs out of order: $actual"
+fail	"parallel shards shared a fixture directory or process (field $group)"
+fail	'contracts shard did not overlap export'
+fail	'injected export shard failure'
+fail	'injected hooks shard failure'
+fail	'parallel dispatcher accepted a missing group marker'
+fail	'parallel dispatcher did not overlap the first two shards within the CPU limit'
+fail	'parallel dispatcher duplicated the source snapshot'
+fail	'parallel dispatcher exceeded two CPUs'
+fail	'parallel dispatcher missed the combined copy budget'
+fail	'parallel dispatcher omitted another failing shard'
+fail	'parallel dispatcher stopped after a failed shard'
+fail	"make check accepted a missing wall-time ceiling for $missing"
+fail	"make check did not identify the missing wall-time ceiling for $missing"
+fail	"wall ceiling ($*) returned $status, expected $expected: $(cat "$fixture/out")"
+fail	'disjoint tag blocks did not sum their seconds'
+fail	'full run did not record its aggregate group seconds'
+fail	'full run did not record the over-ceiling group'
+fail	'full suite missed the combined seconds for a tagged group'
+fail	'group boundary did not record its seconds'
+fail	'missing wall-time ceiling file: config/test-wall-ceilings.tsv'
+fail	'partial run recorded a group or an unselected tag'
+fail	'scenario union missed an over-ceiling selected tag'
+fail	'tag boundary did not record its seconds'
+fail	'tag ceiling failure lacked the tag and measured and allowed seconds'
+fail	'whole tagged group missed its group ceiling'
+fail	'whole-group ceiling failure lacked the group and measured and allowed seconds'
+fail	'handled termination was not recorded as a timeout'
+verify_run	"$VERIFY_TMP" "trap 'exit 2' TERM; sleep 30"

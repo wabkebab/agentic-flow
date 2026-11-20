@@ -45,9 +45,15 @@ approve_cmd() (
 
 hold_cmd() (
   [ "$#" -ge 3 ] && [ "$1" = clear ] || return 2
-  local doc=$2 id=$3 note='' root tmp spec issue repo
+  local doc=$2 id=$3 note='' root tmp spec issue repo rebaseline=()
   shift 3
-  if [ "$#" -gt 0 ]; then [ "$#" -eq 2 ] && [ "$1" = --note ] || return 2; note=$2; fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --note) [ "$#" -ge 2 ] || return 2; note=$2; shift 2 ;;
+      --rebaseline) rebaseline=(--rebaseline); shift ;;
+      *) return 2 ;;
+    esac
+  done
   [ "${#note}" -le 1200 ] || return 2
   root=$(git rev-parse --show-toplevel) || return 2
   cd "$root" || return 2
@@ -63,5 +69,5 @@ hold_cmd() (
   issue=$(sed -n "s@^- \*\*Tracking issue:\*\* url=https://github.com/$repo/issues/@@p" "$tmp/doc")
   [[ "$issue" =~ ^[1-9][0-9]{0,9}$ ]] || return 3
   printf '%s\n' "$note" > "$tmp/note"
-  handoff_cmd "$issue" hold-clear --as approver --hold-id "$id" --body-file "$tmp/note"
+  handoff_cmd "$issue" hold-clear --as approver --hold-id "$id" --body-file "$tmp/note" ${rebaseline[@]+"${rebaseline[@]}"}
 )

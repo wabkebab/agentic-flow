@@ -39,3 +39,4 @@ config/payload.tsv	config/payload.tsv	core	preserve	export
 config/workflow.tsv	config/workflow.tsv	core	preserve	export
 config/stations	config/stations	core	preserve	export
 config/roles.tsv	config/roles.tsv	core	preserve	export
+config/test-wall-ceilings.tsv	config/test-wall-ceilings.tsv	core	preserve	export

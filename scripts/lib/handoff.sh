@@ -113,7 +113,11 @@ handoff_post() { # number event role head body; replay MUST have just been read
   local next_state andon_reason='bounce cap reached'
   if [ "$event" = ask ]; then andon_reason=$(printf '%s\n' "$note" | awk 'NF {print substr($0,1,200); exit}'); fi
   next_state=$(workflow_successor "$JOURNAL_TOPOLOGY" "$from" "$event" "$(printf '%s' "$HANDOFF_REPLAY" | jq .bounces)" "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)") || return 3
-  if [ "$next_state" = escalated ]; then andon_mention "$andon_reason" >> "$file"; fi
+  if [ "$next_state" = escalated ]; then
+    andon_mention "$andon_reason" >> "$file"
+    ledger_comment "$file" > "$HANDOFF_TMP/redacted-comment" || return 5
+    mv "$HANDOFF_TMP/redacted-comment" "$file"
+  fi
   posted=$(handoff_gh issue comment "$number" --repo "$HANDOFF_REPO" --body-file "$file") || rc=$?
   posted_dbid=${posted##*#issuecomment-}
   [[ "$posted_dbid" =~ ^[0-9]+$ ]] || posted_dbid=''
@@ -136,6 +140,7 @@ handoff_post() { # number event role head body; replay MUST have just been read
 handoff_project() { # number; always re-read immediately before projection, then verify
   local number=$1 attempt=0 state labels current target remove label issue_state expected
   local -a args
+  HANDOFF_PROJECT_CHANGED=false
   while [ "$attempt" -lt 3 ]; do
     handoff_read "$number" || return $?
     state=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .state)
@@ -162,12 +167,16 @@ handoff_project() { # number; always re-read immediately before projection, then
     args=(issue edit "$number" --repo "$HANDOFF_REPO")
     [ "$labels" = '-' ] || args+=(--add-label "$labels")
     [ -z "$remove" ] || args+=(--remove-label "$remove")
-    if [ "$current" != "$expected" ] && [ "${#args[@]}" -gt 5 ]; then handoff_gh "${args[@]}" >/dev/null || return 5; fi
+    if [ "$current" != "$expected" ] && [ "${#args[@]}" -gt 5 ]; then
+      handoff_gh "${args[@]}" >/dev/null || return 5
+      HANDOFF_PROJECT_CHANGED=true
+    fi
     issue_state=$(printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' -v t="$JOURNAL_TOPOLOGY" -v s="$state" '$1=="state"&&$2==t&&$3==s{print $5}')
     if [ "${HANDOFF_LABELS_ONLY:-false}" = false ] && [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r '.state|ascii_downcase')" != "$issue_state" ]; then
       local verb=close
       [ "$issue_state" != open ] || verb=reopen
       handoff_gh issue "$verb" "$number" --repo "$HANDOFF_REPO" >/dev/null || return 5
+      HANDOFF_PROJECT_CHANGED=true
     fi
     handoff_fault after-labels || return 5
     handoff_read "$number" || return $?
@@ -256,7 +265,7 @@ handoff_write_cache() { # common-dir issue-numbers; shared by handoff and contro
 handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   set +x
   local requested_return='' HANDOFF_LABELS_ONLY=false
-  local number=${1:-} event=${2:-} role='' head=none after='' body_file='' json=false check=false project_only=false reason='' run=none hold_id=''
+  local number=${1:-} event=${2:-} role='' head=none after='' body_file='' json=false check=false project_only=false reason='' run=none hold_id='' rebaseline=false
   [[ "$number" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$#" -ge 2 ] || { handoff_error 'usage: handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]'; return 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -266,6 +275,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
         case "$1" in --return) requested_return=$2 ;; --reason) reason=$2 ;; --run) run=$2 ;; --hold-id) hold_id=$2 ;; --as) role=$2 ;; --head) head=$2 ;; --after) after=$2 ;; --body-file) body_file=$2 ;; esac
         shift 2 ;;
       --check) check=true; shift ;;
+      --rebaseline) rebaseline=true; shift ;;
       --labels-only) HANDOFF_LABELS_ONLY=true; project_only=true; shift ;;
       --project-only) project_only=true; shift ;;
       --json) json=true; shift ;;
@@ -274,6 +284,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   done
   case "$event" in submit|bounce|resume|approve|notify|close|ask|hold|hold-clear) [ "$json" = false ] && [ -n "$role" ] || return 2 ;; reconcile) [ -z "$role" ] && [ "$head" = none ] && [ -z "$after" ] && [ -z "$body_file" ] || return 2 ;; *) return 2 ;; esac
   if [ "$check" = true ] || [ "$project_only" = true ]; then [ "$event" = reconcile ] || return 2; fi
+  [ "$rebaseline" = false ] || [ "$event" = hold-clear ] || return 2
   case "$event" in
     hold) [ "$head" = none ] && [ -z "$after$hold_id$requested_return" ] || return 2 ;;
     hold-clear) [ "$head" = none ] && [ -z "$after$reason$requested_return" ] && [ "$run" = none ] || return 2 ;;
@@ -333,11 +344,15 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
     handoff_drift "$number"
     return $?
   fi
-  if [ "$project_only" = true ]; then handoff_project "$number"; return $?; fi
+  if [ "$project_only" = true ]; then
+    handoff_project "$number" || return $?
+    [ "$json" = false ] || printf '{"changed":%s}\n' "$HANDOFF_PROJECT_CHANGED"
+    return 0
+  fi
   if [ "$event" = hold ] || [ "$event" = hold-clear ]; then
     [ "$role" = approver ] || return 3
     status=0
-    hold_transition "$number" "$event" "$reason" "$run" "$hold_id" "$note" || status=$?
+    hold_transition "$number" "$event" "$reason" "$run" "$hold_id" "$note" "$rebaseline" || status=$?
     if [ "$status" -ne 0 ]; then
       [ "$status" -ne 10 ] || hold_cache "$common" || return 5
       return "$status"

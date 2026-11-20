@@ -9,6 +9,23 @@ ship_clean() {
   dirty=$(git status --porcelain) || return 1
   [ -z "$dirty" ] || { ship_error 'commit the staged/uncommitted close-out before shipping:'; printf '%s\n' "$dirty" >&2; return 1; }
 }
+# Query without executing recipes; status 1 means an existing target is out of date.
+# Only an explicitly missing target is optional. Parse/build errors fail closed.
+ship_gate() {
+  local rc=0
+  LC_ALL=C make -C "$SHIP_ROOT" -q ship-gate > "$HANDOFF_TMP/ship-gate-probe" 2>&1 || rc=$?
+  case "$rc" in
+    0|1) ;;
+    *)
+      if grep -q "No rule to make target .ship-gate'" "$HANDOFF_TMP/ship-gate-probe"; then
+        printf 'ship: ship-gate target is not defined; continuing.\n'
+        return 0
+      fi
+      cat "$HANDOFF_TMP/ship-gate-probe" >&2
+      ship_error 'could not inspect ship-gate target'; return 1 ;;
+  esac
+  make -C "$SHIP_ROOT" ship-gate || { ship_error 'ship-gate failed; stopping before push'; return 1; }
+}
 ship_pr() {
   local prs
   prs=$(handoff_gh pr list --repo "$HANDOFF_REPO" --head "$SHIP_BRANCH" --state open --limit 100 --json number,url,headRefOid,baseRefName,isCrossRepository) || return 5
@@ -98,6 +115,7 @@ ship_run() {
     case "$SHIP_DOC" in docs/inprogress/*) ;; *) return 1 ;; esac
     brief_approved_at_head "$SHIP_DOC" "$(brief_approval "$SHIP_DOC" | cut -f1)" || return 3
     close_out_load "$SHIP_ROOT" "$SHIP_DOC" "$HANDOFF_TMP" || return $?
+    ship_gate || return 1
     git push -- origin "refs/heads/$SHIP_BRANCH:refs/heads/$SHIP_BRANCH" || return 1
     handoff_gh pr create --repo "$HANDOFF_REPO" --head "$SHIP_BRANCH" --base "$SHIP_BASE" \
       --title "$SHIP_TITLE" --body "Implementation of https://github.com/$HANDOFF_REPO/issues/$CLOSE_TARGET" || return 5
@@ -108,6 +126,7 @@ ship_run() {
     close_out_cmd prep "$SHIP_DOC" --pr "$(printf '%s' "$SHIP_PR" | jq -r .url)" || return $?
     printf 'commit the staged close-out, then run ship again\n'; return 0 ;;
   esac
+  ship_gate || return 1
   git push -- origin "refs/heads/$SHIP_BRANCH:refs/heads/$SHIP_BRANCH" || return 1
   ship_wait_visibility || return $?
   ship_wait_ci || return $?

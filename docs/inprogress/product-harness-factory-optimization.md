@@ -1,6 +1,6 @@
 <!-- TRIAGE (first pass · 2026-11-11) -->
 > **Type:** Product Analysis · **Status:** ✅ Decided
-> Audit of the harness at `0.13.3` (`757d299`) against current model and CLI capabilities, with a phased remediation plan that turns the human from relay into supervisor. Decided 2026-11-11. Phase 0 shipped as `0.14.0` (PR #121) and Phase 1 as `0.15.0` (PR #135, merged 2026-11-15). The identity flip shipped as PR #148 (merged 2026-11-15). Phase 2 (line controller) shipped as `0.16.0` in PR #149 (merged 2026-11-17). Next: Phase 2b (`feature-station-hardening.md`).
+> Audit of the harness at `0.13.3` (`757d299`) against current model and CLI capabilities, with a phased remediation plan that turns the human from relay into supervisor. Decided 2026-11-11. Phase 0 shipped as `0.14.0` (PR #121) and Phase 1 as `0.15.0` (PR #135, merged 2026-11-15). The identity flip shipped as PR #148 (merged 2026-11-15). Phase 2 (line controller) shipped as `0.16.0` in PR #149 (merged 2026-11-17). Phases 2b and 3 ship together as `0.17.0` and `0.18.0` in PR #174 (close-out 2026-11-20; a merge commit, which also marks #161 merged). Next: Phase 4 (`feature-harness-simplification.md`).
 
 # Product Analysis — Harness optimization and the software-factory step
 
@@ -285,6 +285,8 @@ Added 2026-11-17. Running Phase 2's controller on its own steps C-6 and C-7 hit 
 | T-4 | Moved from Phase 3 (2026-11-17), controller group only. Scenario selection by tag (`launch`, `ledger`, `recovery`, `ship`, `andon`): `make test-one F=controller S=<tag>`. | Group growth |
 | T-1 | Moved from Phase 3 (2026-11-17), after P-1. Verify once per commit, with a reuse key that also covers the step, red base and command list. | Repeat runs |
 
+**Result (close-out 2026-11-20).** `0.17.0`, tracker #150, steps h-1 to h-12 all approved. It ships on Phase 3's PR #174, because #161's CI stayed red until Phase 3's `7304024` bounded shellcheck's memory (see `docs/accepted_risks.md#phase2b-closes-on-phase3-pr`). The run took ten human `resume`s against C-7's five: four infrastructure faults on h-1 and h-2, one real defect on h-4, and five approving verdicts refused only for summary length. From h-6 on, a pre-launch failure raised a hold instead of costing a `resume`. h-12's length refusals, and Phase 3's t-5, came from running `agentic-flow run` from the main checkout, whose controller still had the old 1200-character limit.
+
 ### Phase 3 — Streamline the tests
 
 Added 2026-11-17. A step whose Verify line names the controller group runs that group three to four times per commit (executor, controller `verify-step`, reviewer) and twice more per full `make test`, because the export group nests a second full suite. The group grew from 32 s to 673 s across C-3 to C-6 and no check noticed. Analysis: `docs/inprogress/feature-test-streamlining.md`.
@@ -300,6 +302,16 @@ Added 2026-11-17. A step whose Verify line names the controller group runs that 
 | T-7 | Gate cadence in the contracts: per step `make check` plus the step's Verify command; full `make test` once at the end; reviewer runs nothing by default. | Repeat runs |
 | T-8 | Adopter test scope: groups are `local` or `scaffold`; an exported project's `make test` runs `scaffold` groups only when a change touches harness-owned paths. Adopters stop running the controller and stations groups on every `make test`. | Adopter cost |
 | R-15 | Moved here from the cleanup list. Split `self-test.sh` into `tests/<group>.sh`. Add an adopter-twin fixture (customized `CLAUDE.md` and `Makefile`, realistic commit commands) and run upgrade, hooks and `make check` against it as holdout scenarios. | C-4, F-1 |
+
+**Result (close-out 2026-11-20).** `0.18.0`, tracker #165, steps t-1 to t-8 all approved on the first submission. Wall times are from this 8-CPU macOS machine at `8e8c134`, with everything green:
+
+| Run | Before (`4cfefaa`) | After |
+|---|---|---|
+| Everyday `make test` | about 49 min (2940 s) | 1173 s (19.6 min) |
+| Same, serial (`AGENTIC_TEST_JOBS=1`) | — | 1702 s (28.4 min) |
+| `make ship-gate` (exported layout, close-out and CI only) | inside `make test` | 1036 s (17.3 min) |
+
+Taking the nested exported suite out of `make test` saved about 1240 s (2940 to 1702 s, serial). Parallel shards saved about 530 s more (1702 to 1173 s). The controller's `recovery` shard (about 1165 s) is now the floor of a parallel run. A CI fix after t-8, `7304024`, keeps `shellcheck -x` from following the dispatcher's imports, which reached 7.7 GB on the 7 GB runner. A second CI fix at close-out, `146670e`, came after the first close-out push's `make ship-gate` failed in CI (run 44726328649, stations/verify). `verify-step` counted a timeout only from a signal exit, and GNU make on Linux handles TERM and exits 2. It was reviewed and approved with no findings ([#173 comment](https://github.com/wabkebab/agentic-flow/issues/173#issuecomment-7039867608)). The run took one human `resume` and three hold clears (`metrics` counts 10 human touches in all). The `resume` (t-5, a verdict refused for length) and two `ledger-invalid` holds came from running the controller from the main checkout. The third hold was a `station-infrastructure` hold for Codex 0.169's profile change, fixed in `577420d`, which raised a hold instead of costing a `resume`.
 
 ### Phase 4 — Remove what the above makes redundant
 
@@ -371,8 +383,8 @@ One cost follows from the R-4 correction: a clean worktree has no installed depe
 - [x] `docs/done/feature-distinct-identities.md` — the identity flip, Phase 1 decision 1's one-step follow-up (Strict). Drafted 2026-11-15; approved 2026-11-15 (rev `f7593c9`); shipped in PR #148 (merged 2026-11-15), tracker #146, step #147 approved clean. This repo now runs `identity-mode=distinct-account`: executor, reviewer and approver each post as their own App, the owner stays a second `approver=` for `plan-to-issues` issue creation (Option A), and `single-operator-review` (F-3) is retired with its anchor kept. The tracker closed as `flow-approver[bot]`, and the real reviewer-App login replayed correctly. Decision 4's required-review test is deferred, because the private repo cannot have branch protection; it moves to the publish step (R-0f) or Phase 4's R-13.
 - [x] `docs/done/feature-line-controller.md` — Phase 2 (Strict). Drafted 2026-11-15; approved 2026-11-15 after five review rounds (rev `4a8e46d`); tracker #138, steps #139–#145. Covers R-7 to R-11, R-20 and R-21. The identity flip it waited on has shipped, it shipped as `0.16.0` in PR #149 (merged 2026-11-17), tracker #138, steps #139–#145 all approved. Measured human touches and tokens per step are not recorded here: `agentic-flow metrics --plan 138` has no ledger in this checkout.
 - [ ] `docs/inprogress/feature-role-signing.md` — role-signed commits, part 1 of the signing follow-up (Strict). Drafted 2026-11-15; awaiting review. Runs after Phase 2. Part 2 is R-22 in Phase 4.
-- [ ] `docs/inprogress/feature-station-hardening.md` — Phase 2b (Strict). Part A drafted 2026-11-17 from the C-6 and C-7 controller runs; covers P-1 to P-7, plus T-1, T-3 and T-4 (controller group) moved in from Phase 3 on 2026-11-17. Brief drafted 2026-11-17 (steps h-1 to h-8); awaiting approval. Phase 2 has merged.
-- [ ] `docs/inprogress/feature-test-streamlining.md` — Phase 3 (Strict). Part A drafted 2026-11-17; covers T-1 to T-8 and R-15; T-1, T-3 and T-4 (controller group) moved to Phase 2b on 2026-11-17. Brief drafted 2026-11-19 (steps t-1 to t-8); awaiting approval. Runs after Phase 2b, based on `phase-2b` while PR #161's CI is cancelled by the runner.
+- [x] `docs/done/feature-station-hardening.md` — Phase 2b (Strict). Approved 2026-11-17 (rev `eec0710`); tracker #150, steps h-1 to h-12 (#151 to #160, #163, #164) all approved. Covers P-1 to P-7, plus T-1, T-3 and T-4 (controller group) moved in from Phase 3. Shipped as `0.17.0` in PR #174, together with Phase 3.
+- [x] `docs/done/feature-test-streamlining.md` — Phase 3 (Strict). Approved 2026-11-19, re-approved at `dd09d82`; tracker #165, steps t-1 to t-8 (#166 to #173) all approved, with no bounces. Covers T-2, T-4 (stations), T-5 to T-8 and R-15. Shipped as `0.18.0` in PR #174, based on `phase-2b`.
 - [ ] `docs/inprogress/feature-harness-simplification.md` — Phase 4 (Strict; R-14 is a public compatibility change). Not drafted. Covers R-12, R-13, R-14a, R-14b, R-16, R-17, R-22, R-23 and R-24.
 
 ## Sources

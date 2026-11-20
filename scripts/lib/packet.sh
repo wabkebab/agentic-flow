@@ -4,6 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/handoff.sh"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/verify-record.sh"
 
 packet_error() { printf 'packet: %s\n' "$*" >&2; }
 packet_words() {
@@ -15,7 +16,7 @@ packet_words() {
 }
 
 packet_cmd() (
-  local number=${1:-} station='' json=false root tmp initial body author stamp approved doc step plan query comments accepted submit_id submit_index findings submit dropped brief journal verification common head tree implementation record packet words part count largest='' maximum=0
+  local number=${1:-} station='' json=false root tmp initial body author stamp approved doc step plan query comments accepted submit_id submit_index findings submit dropped brief journal verification common head selected red_base key command_plan record packet words part count largest='' maximum=0
   [[ "$number" =~ ^[1-9][0-9]{0,9}$ ]] || return 2
   shift
   while [ "$#" -gt 0 ]; do
@@ -93,15 +94,17 @@ packet_cmd() (
       record="$common/agentic-flow/verify/$head.json"
       if [ -f "$record" ]; then
         [ "$(wc -c < "$record" | tr -d ' ')" -le 262144 ] || { packet_error 'packet exceeds cap; largest part: verification'; return 3; }
-        tree=$(git rev-parse --verify "$head^{tree}" 2>/dev/null) || tree=''
-        implementation=$(shasum -a 256 "$root/scripts/lib/verify-step.sh") || return 3
-        implementation=${implementation%% *}
-        if jq -e --arg sha "$head" --arg tree "$tree" --arg impl "$implementation" '
-          .v==1 and .sha==$sha and .tree==$tree and .verifier.implementation_sha256==$impl and
-          (.verifier.signature_source.sha|type)=="string" and (.verifier.signature_source.tree|type)=="string" and
-          (.verifier.signature_source.pattern|type)=="string"' "$record" >/dev/null 2>&1; then
-          verification=$(cat "$record")
-        else verification='"stale or invalid record; run verify-step"'; fi
+        selected=$(jq -c --arg s "$step" '.steps[]|select(.id==$s)' "$tmp/spec") || return 3
+        command_plan=$(verify_record_plan "$selected") || return 3
+        # The verifier may use an explicit pre-submit base spanning several commits.
+        # Retain that base, but require it to be a real ancestor of this head.
+        red_base=$(jq -er '.red_base|select(type=="string")' "$record" 2>/dev/null) || red_base=''
+        verification='"stale or invalid record; run verify-step"'
+        if [ -n "$red_base" ] && git merge-base --is-ancestor "$red_base" "$head" 2>/dev/null &&
+          key=$(verify_record_key "$head" "$doc" "$step" "$red_base" "$command_plan") &&
+          part=$(verify_record_fresh "$record" "$key"); then
+          verification=$part
+        fi
       fi
     fi
   fi
