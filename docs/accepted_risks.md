@@ -9,6 +9,64 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="phase2b-closes-on-phase3-pr"></a>
+## h-12 — Phase 2b ships and closes on Phase 3's PR #174
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-20
+**Decided by:** Human owner, at the Phase 3 close-out
+**Tracking:** docs/done/feature-station-hardening.md; tracker #150; PR #161; PR #174
+
+### Finding / proposal
+Phase 2b's PR #161 stays red at `4cfefaa`. `shellcheck -x` followed every `source`
+and ran out of memory on the CI runner, and h-12's per-file split did not bound it.
+The fix, `7304024`, is on `phase-3` (#173). Phase 2b's brief names branch `phase-2b`,
+so `ship` and `final-approve` refuse to run for it on `phase-3` (`scripts/lib/ship.sh`,
+branch check).
+
+### Proposed mitigation / implementation
+Cherry-pick the fix onto `phase-2b`, get #161 green, and ship Phase 2b alone first, as
+Phase 3's Prerequisite planned. The alternative was teaching `ship` to accept a doc
+whose Implementation PR is on the current branch, which is a reviewed code change.
+
+### Acceptance rationale
+`phase-3` contains every Phase 2b commit, and #174's CI runs the whole suite on them.
+#174 merges as a merge commit, not a squash, so GitHub also marks #161 merged. Phase
+2b's close-out is prepped on `phase-3` with #174 as its Implementation PR. The reviewer
+posts the final-head approval on #150 by hand, in the format `final-approve` writes,
+and `close-out finish` (which has no branch check) then closes #150. #174's CI stands
+in for h-12's DoD clause "the next CI run on PR #161 finishes the Test suite step".
+
+### Revisit if
+- Another plan has to ship on a later plan's PR. Then make `ship` and `final-approve`
+  accept it rather than repeating the manual marker.
+
+<a id="phase2b-h1-timing-not-captured"></a>
+## h-1 — Phase 2b's per-step controller timings were not captured
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-17
+**Decided by:** Human owner, on the P3 finding from the h-2 review
+**Tracking:** docs/done/feature-station-hardening.md; tracker #150; issue #152
+
+### Finding / proposal
+Phase 2b's DoD asked for the controller group's wall time per step, before (h-1's
+per-scenario profile) and after (`S=` runs). h-1's profile was never captured, so
+those per-step times are not reported.
+
+### Proposed mitigation / implementation
+Check out the pre-h-2 commit, run the controller group with `AGENTIC_TEST_TIMING=1`
+to rebuild the profile, then time each step's `S=` selection.
+
+### Acceptance rationale
+The only comparison recorded is the full `make test`: about 32 minutes at `b6c1962`
+and about 80 minutes at `0a85379`. Phase 3 then replaced per-step timing with
+reviewed wall-time ceilings per group and tag (`config/test-wall-ceilings.tsv`), so
+growth now fails a run instead of needing a report.
+
+### Revisit if
+- A later phase needs a before-and-after per-step cost that the ceilings cannot show.
+
 <a id="phase2-merged-before-final-approval"></a>
 ## C-8 — Phase 2 merged before final-head approval
 
