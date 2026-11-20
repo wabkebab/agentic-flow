@@ -1,13 +1,16 @@
 <!-- TRIAGE (first pass · 2026-11-17) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > **Assurance:** Strict
-> Phase 3 of `product-harness-factory-optimization.md` (T-1 to T-8, R-15): run each test group once per commit and once per full suite, make per-step runs scenario-sized, stop a group from growing unnoticed, and stop adopters running the harness's internal tests on every `make test`. Part A is the analysis; Part B is the implementation brief (steps t-1 to t-8), drafted 2026-11-19 and awaiting approval. T-1, T-3 and the controller-group half of T-4 moved into Phase 2b on 2026-11-17 and are not part of this phase's brief. Runs after Phase 2b (`feature-station-hardening.md`).
+> Phase 3 of `product-harness-factory-optimization.md` (T-1 to T-8, R-15): run each test group once per commit and once per full suite, make per-step runs scenario-sized, stop a group from growing unnoticed, and stop adopters running the harness's internal tests on every `make test`. Part A is the analysis; Part B is the implementation brief (steps t-1 to t-8), approved 2026-11-19 and implemented; close-out is pending. T-1, T-3 and the controller-group half of T-4 moved into Phase 2b on 2026-11-17 and are not part of this phase's brief. Runs after Phase 2b (`feature-station-hardening.md`).
 
 # Feature — Test streamlining
 
 ## Tracker
 <!-- Filled in when the brief is approved and plan-to-issues runs. -->
-- [ ] Brief drafted 2026-11-19 (t-1 to t-8); awaiting the owner's approval. Branch `phase-3`, based on `phase-2b` while PR #161's CI is cancelled by the runner (see `feature-station-hardening.md`).
+- [x] Brief drafted and approved 2026-11-19, then re-approved at `dd09d82` with t-6's Verify fix. Tracker #165, steps #166 to #173, all approved and closed. Branch `phase-3`, based on `phase-2b`; PR #174.
+- [x] CI fix after t-8's approval. PR #174's run 44633318154 was killed twice, each time about 2.5 minutes after `self-test passed.`, with "The runner has received a shutdown signal". `shellcheck -x` on `scripts/self-test.sh` followed the dispatcher's eight group imports and reached 7.7 GB on the roughly 7 GB runner, so h-12's per-file split did not bound it. `7304024` (`Fixes #173`) marks the imports `source=/dev/null`; the whole lint now peaks at about 2.1 to 2.5 GB. It was reviewed after t-8's approval and approved with no findings ([#173 comment](https://github.com/wabkebab/agentic-flow/issues/173#issuecomment-7030414928)). CI run 44668198709 is green at `7304024`. The trap is recorded in `docs/memory/shellcheck-follow-sources-oom.md` (`7bd5757`).
+- [ ] Merge order needs the owner's decision. Phase 2b's PR #161 is still red at `4cfefaa`, because it does not have the fix, so the Prerequisite's order (`phase-2b` first, after its CI passes) cannot happen as written. Option (a): merge #174 as a merge commit; it contains every Phase 2b commit, so #161 is marked merged too. Option (b): fix `phase-2b` first and get #161 green.
+- [ ] Close-out: `make check && make test && make ship-gate` at the close-out head, `VERSION` and `CHANGELOG.md`, `ship`, and the roadmap update.
 
 ---
 
