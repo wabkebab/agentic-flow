@@ -233,6 +233,11 @@ station result schema (config/stations/result.schema.json):
   + "evidence": optional array, ≤ 20 strings of ≤ 300 characters; rendered in <details>; absent = no block
 
 brief template **Risks:** a bullet list under the label (one bullet per risk); a one-line value still parses
+
+bounce hidden block: + "findings-complete=true|false; findings-shown=K/N"
+findings file: <git-common-dir>/agentic-flow/findings/<plan>/<issue>/<bounce-seq>.json (full findings, exact)
+  controller stations get a copy in their scratch dir (TMPDIR); the packet names path, count and sha256
+packet findings part: inline when the packet fits in 3,000 words; else an index ≤ 1,200 words plus the file
 ```
 
 ## Threat model
@@ -262,7 +267,7 @@ The untrusted inputs are station-written text (summaries, findings, questions), 
 | `git fetch` in `clean` | exit 5; nothing removed | n/a | n/a |
 | `git worktree remove` / `git update-ref -d` in `clean` | n/a | n/a | report what was removed and what was not; exit 3; a re-run re-checks the tip against the same base and finishes the rest |
 
-Bounds: fetch 120 s; PR visibility 120 s (unchanged); CI wait 3600 s by default; rendered comment ≤ 60,000 characters after escaping (reduced in e-2's documented order, with the full findings kept for the executor through the ledger); findings ≤ 100 (the schema cap); step packet ≤ 800 words (unchanged).
+Bounds: fetch 120 s; PR visibility 120 s (unchanged); CI wait 3600 s by default; rendered comment ≤ 60,000 characters after escaping (reduced in e-2's documented order); findings ≤ 100 (the schema cap); packet ≤ 3,000 words (unchanged), with full findings delivered as a referenced file and an inline index ≤ 1,200 words; step packet ≤ 800 words (unchanged).
 
 ## Out of scope / What NOT to build in this pass
 
@@ -338,7 +343,13 @@ Do not raise a ceiling. Only e-9 edits contracts; leave the reviewer skill alone
 1. **Both marker forms replay.** For every journal event (submit, approve, bounce, ask, resume, notify, close) and for hold and hold-clear, a comment in the old form and the same comment in the hidden-block form give identical replay output from `journal.jq`, identical `handoff` post lookup, identical lifecycle verdicts and identical `packet` and `andon` reads. A hidden-block comment whose first line is not exactly `<!-- ` plus a valid marker is skipped, as a malformed old-form comment is today. A comment from an unauthorized login is ignored in both forms.
 2. **Journal comments read well.** `handoff` and the controller write the hidden-block form. In the rendered Markdown, the first visible line is a level-3 heading naming the event, step id and step title. A bounce shows a findings table (Severity, Location, Finding) with `|` escaped, newlines flattened and the location in backticks. Station-supplied text containing `<!--`, `-->`, a marker line, `@someone` or `<placeholder>` is rendered inert: no comment opens or closes, no mention is created, and the placeholder stays visible. A marker line in supplied text is not parsed by any reader (`journal.jq`, lifecycle, `ship`, `andon`, `packet`), whether bare, inside inline code or inside a fenced block. The same holds for `Implemented in <sha>` anywhere in the text.
 
-**Size.** No rendered comment exceeds 60,000 characters after escaping. A bounce with 100 findings at the schema maximum is reduced in the documented order and says "Showing K of N findings". The executor's next packet still holds all N findings, read from the ledger station record. With that record missing or mismatched, the controller holds with `findings-incomplete` and launches no executor. An over-budget interactive `handoff` body exits 2 and posts nothing. The andon mention the harness adds still notifies. A result with `evidence` renders it inside a collapsed `<details>` block; a result without it renders no block; a result whose `evidence` breaks the schema limits is rejected like any other schema violation. A submit comment shows a Checks line built from the verify record for the submitted head; with no record it says "Checks: not recorded" rather than inventing a result.
+**Size.** No rendered comment exceeds 60,000 characters after escaping. A bounce with 100 findings at the schema maximum is reduced in the documented order and says "Showing K of N findings". An over-budget interactive `handoff` body exits 2 and posts nothing. The executor's next packet:
+- **Rows dropped:** K < N rows shown. The findings file holds all N findings exactly as in the ledger station record (same sha256 as a re-serialization of `result.findings`).
+- **Rows kept, text shortened:** every row is shown but a location or text was cut, so the comment is `findings-complete=false`. The findings file holds the unshortened locations and texts from the ledger, not the comment's.
+- **Over the packet limit with nothing cut:** findings that fit the comment unchanged but would make the packet exceed 3,000 words. The packet is ≤ 3,000 words, inlines an index of at most 1,200 words, and names the findings file, its count and its sha256. The file holds every finding in full.
+- **Fits:** a small bounce inlines its findings and still writes the file.
+- **Station can read it:** for each station CLI profile (claude, codex, opencode, via the fake CLIs), the launched station's environment can read the copied findings file in its scratch directory.
+- **Fail closed:** a missing or mismatched ledger record, a failed file write or copy, or a sha256 mismatch each hold with `findings-incomplete` and launch no executor. The andon mention the harness adds still notifies. A result with `evidence` renders it inside a collapsed `<details>` block; a result without it renders no block; a result whose `evidence` breaks the schema limits is rejected like any other schema violation. A submit comment shows a Checks line built from the verify record for the submitted head; with no record it says "Checks: not recorded" rather than inventing a result.
 3. **Step issues read well.** A step issue body has, in order: a heading with the step id and title; a facts line linking the tracker, the profile and the brief (a GitHub link to the doc at the approved revision); sections for Definition of done, Verify, Verification commands (in a fenced block, so `<group>` survives) and Risks (one bullet per risk from the brief's bullet list; a one-line legacy value is one bullet); then the existing hidden stamps. The feature and security templates write `**Risks:**` as a bullet list, and `brief.sh` parses both forms. No line is parsed as a setext heading. The packet is still ≤ 800 words, and the packet the controller hands to a station holds the same facts as before.
 4. **The tracker reads well.** The tracker body has a title heading, a facts line (profile, branch → base, linked brief at the approved revision), the plan's tracking body when present, and a `### Steps` task list whose lines still carry the parsed `#N [id]` tokens without repeating the id in the visible title. `plan-to-issues` discovery and re-apply work on new trackers and on trackers in the old layout.
 
@@ -415,8 +426,12 @@ scripts/doctor.sh --check
    3. truncate each finding's location to 200 characters and its text to 600, both ending in `…`;
    4. drop findings from the end, after a stable sort by severity (P1 first, so P3s go first), and write "Showing K of N findings" above the table.
 
-   Each reduction says so in the visible text. Step 4 also writes `findings-shown=K/N` into the hidden block.
-5. **No finding is lost to the executor.** `packet.sh` today hands bounce comment bodies to the executor (`packet.sh:87`). When a bounce's hidden block says `findings-shown=K/N` with K < N, the packet takes the full findings from the controller's ledger station record for that run (`kind=station`, `result.findings`). If that record is missing or does not match the comment's run and head, the controller holds with `findings-incomplete` instead of launching the executor. Interactive `handoff --body-file` bodies are never truncated: over budget, `handoff` exits 2 and posts nothing.
+   Each reduction says so in the visible text. Whenever step 3 or 4 changed any finding (a shortened location or text, or a dropped row), the hidden block records `findings-complete=false; findings-shown=K/N`. A comment whose findings are byte-for-byte the station's records `findings-complete=true`.
+5. **No finding is lost to the executor, and the packet stays bounded.** `packet.sh` today hands bounce comment bodies to the executor (`packet.sh:87`) and refuses any packet over 3,000 words (`packet.sh:123`). A 60,000-character comment can be about 9,000 words, so inlining every finding cannot work even when nothing was cut. The 3,000-word limit and the copy budgets stay as they are.
+   - **Source of the full findings.** When `findings-complete=false`, the packet reads them from the controller's ledger station record for that run (`kind=station`, `result.findings`), never from the shortened comment. When `findings-complete=true`, or for an interactive bounce, the comment body is the full source. Interactive `handoff --body-file` bodies are never shortened: over budget, `handoff` exits 2 and posts nothing.
+   - **Findings file.** The packet always writes the full findings (JSON, exactly as the source has them) to `<git-common-dir>/agentic-flow/findings/<plan>/<issue>/<bounce-seq>.json`. For a controller station it copies that file into the station's scratch directory (its `TMPDIR`), so every station profile can read it without widening the sandbox. The packet names the file's path, its finding count and its sha256.
+   - **Bounded packet.** The packet inlines the full findings only when the whole packet still fits in 3,000 words. Otherwise it inlines a findings index: one line per finding (severity, location cut to 120 characters, the first 25 words of the text), capped at 1,200 words. If the index itself is cut, it says "index shows M of N; read the file for all". The station prompt says: when the packet names a findings file, read it in full before changing code.
+   - **Fail closed.** The controller holds with `findings-incomplete` and launches no executor when any of these happens: the ledger record is missing or does not match the comment's run and head; the file cannot be written or copied; or the copy's sha256 differs from the one in the packet.
 6. Update the station prompt (`config/stations/preamble.md` or the result-schema description) so stations write `summary` as short Markdown (a sentence, then bullets) and put reused-evidence detail in `evidence`.
 7. Add the optional `evidence` field to `config/stations/result.schema.json` (Interface). `required` is unchanged, so results without it stay valid. Check that every CLI's schema mode (`claude --json-schema`, `codex --output-schema`, OpenCode's prompt-only schema) accepts an optional array. Strict structured-output modes often require every property in `required`; if so, make `evidence` required with type `array|null`, which the existing schema already does for `head` and `question`, and treat `null` as absent. Ledger validation (`ledger.pl` `result_valid`) must accept the field.
 8. The submit Checks line reads the verify record for the submitted head through the existing verify-record reader. Do not re-run anything.
@@ -424,14 +439,14 @@ scripts/doctor.sh --check
 **Test:** scenario 2, rendered for every event against golden files. Failure path first:
 - hostile summaries: comment openers and closers, marker lines bare and inside fenced and inline code, a non-anchored `Implemented in <sha>`, mentions, a pipe-heavy finding;
 - the size budget: 100 findings at schema maximum, a 70 KB interactive body;
-- the packet after a truncated bounce, with the ledger record present, missing and mismatched;
+- the packet after a bounce with rows dropped, with every row kept but text shortened, and with nothing cut but over 3,000 words; each with the ledger record present, missing and mismatched; a failed findings-file write; a sha256 mismatch on the copy;
 - an over-limit `evidence`, and a submit with no verify record.
 
 Re-run scenario 1 on renderer output, and run every marker reader over the hostile fixtures.
 
 **DoD:** scenarios 1 and 2 pass; every comment the harness writes comes from the renderer.
-**Verify:** `make test-one F=stations S=handoff` and `make test-one F=controller S=ship`
-**Risks:** a changed byte in the marker breaking journal ids; the andon mention escaped by mistake; a marker reader missed by the neutralizing rule; truncation hiding a finding from the executor.
+**Verify:** `make test-one F=stations S=handoff,packet` and `make test-one F=controller S=ship`
+**Risks:** a changed byte in the marker breaking journal ids; the andon mention escaped by mistake; a marker reader missed by the neutralizing rule; shortening hiding a finding or its full text from the executor; the packet limit raised instead of bounded; a findings file outside what the station sandbox can read.
 **Red-first:** `scripts/self-test.sh --only stations --scenario handoff` — scripts/tests/stations.sh
 **Commit:** `Render journal comments as Markdown with the markers in a hidden block`
 
