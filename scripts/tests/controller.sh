@@ -873,6 +873,10 @@ test_timing_begin block launch
 case "${PLAN_FAULT:-}:${1:-}:${2:-}" in
   slow:fetch:*) exec sleep 30 ;;
   broken:fetch:*|offline:fetch:*|offline:ls-remote:*) exit 1 ;;
+  long-listing:worktree:list)
+    "$PLAN_FIXTURE_GIT" "$@" || exit
+    printf '%200000s\n' ''
+    exit ;;
   template:worktree:add)
     "$PLAN_FIXTURE_GIT" "$@" || exit
     shift $(( $# - 2 ))
@@ -1038,6 +1042,14 @@ GIT
   git update-ref refs/remotes/origin/main "$PLAN_MOVED_TIP"
   plan_cli 0 clean racing --no-fetch
   absent racing
+
+  plan_cli 0 start checked-out --no-fetch
+  git -C "$worktrees/checked-out" commit -qm 'Add plan checked out elsewhere'
+  tip=$(git rev-parse refs/heads/checked-out)
+  git update-ref refs/remotes/origin/main "$tip"
+  git worktree move "$worktrees/checked-out" "$fixture/moved-worktree"
+  PLAN_FAULT=long-listing plan_cli 3 clean checked-out --no-fetch
+  [ "$(git -C "$fixture/moved-worktree" rev-parse HEAD)" = "$tip" ] || fail 'clean deleted a branch still checked out elsewhere'
 )
 
 # Advisory verdict lengths warn; hard bounds and structural rules still refuse.

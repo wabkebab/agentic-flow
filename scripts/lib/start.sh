@@ -275,7 +275,7 @@ plan_clean() (
     fi
     if [ "$worktree_present" = false ]; then
       listing=$(git worktree list --porcelain) || return 3
-      if printf '%s\n' "$listing" | grep -Fxq "branch $branch_ref"; then
+      if grep -Fxq "branch $branch_ref" <<< "$listing"; then
         plan_error "$branch is checked out in another worktree"; return 3
       fi
     fi
@@ -302,7 +302,7 @@ plan_clean() (
   fi
   if [ -n "$tip" ]; then
     listing=$(git worktree list --porcelain) || return 3
-    if printf '%s\n' "$listing" | grep -Fxq "branch $branch_ref" ||
+    if grep -Fxq "branch $branch_ref" <<< "$listing" ||
        ! git update-ref -d "$branch_ref" "$tip" --no-deref; then
       plan_error "could not delete $branch_ref; branch and salvage refs kept"; return 3
     fi
