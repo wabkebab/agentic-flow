@@ -7,7 +7,7 @@ usage() {
 usage:
   agentic-flow handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]
   agentic-flow handoff <issue> reconcile [--json] [--check]
-  agentic-flow close-out prep <doc> --pr <url> [--dry-run]
+  agentic-flow close-out prep <doc> [--pr <url>] [--dry-run]
   agentic-flow close-out finish <doc>
   agentic-flow ship <doc> [--wait-review]
   agentic-flow final-approve <doc> [--body-file <path>]

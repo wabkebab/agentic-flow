@@ -85,7 +85,7 @@ close_out_attest() { # repo head tmp; lifecycle's parsed doc and evidence helper
   base=$(git -C "$ROOT" merge-base main "$head") || return 1
   [ -z "$(git -C "$ROOT" rev-list --merges "$base..$head")" ] || { echo 'merge commit in attestation range'; return 1; }
   previous=''
-  while IFS="$(printf '\t')" read -r step number approved submissions; do
+  while IFS="$(printf '\t')" read -r step number approved submissions _; do
     verify_step_review "$repo" "$number" "$step" "$tmp/attest" "$head" || return 1
     [ "$STEP_VERIFIED_HEAD" = "$approved" ] || return 1
     first=$(jq -r '[.accepted[]|select(.event=="submit")]|first|.head' "$tmp/attest/$number.replay")

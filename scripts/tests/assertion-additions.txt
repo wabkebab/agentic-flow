@@ -140,3 +140,51 @@ station_run	0 1 reconcile --check --json
 station_run	0 1 submit --as executor --head "$STATION_A" --body-file "$TMP/station-run-marker"
 station_run	5 1 approve --as reviewer --head "$STATION_A" --body-file "$TMP/review-with-prefixed-markers"
 fail	'journal_jq lost its marker module after a directory change'
+fail	"Standard final approval lookup failed: $(cat "$TMP/standard-source.out")"
+fail	"ship continued after $mode: $(cat "$stored/out")"
+fail	"ship could not resume a manual commit: $(cat "$stored/out")"
+fail	"single-push shipping failed: $(cat "$stored/out")"
+fail	"wrong final approval source result: $(cat "$TMP/source.out")"
+fail	'PR creation failure lost the committed push'
+fail	'PR did not link to the approved brief'
+fail	'PR did not link to the tracker'
+fail	'PR did not show the approved title'
+fail	'PR step row omitted replay facts or escaping'
+fail	'Standard final approval lookup did not reach READY'
+fail	'Status parser rejected the final approval PR source'
+fail	'close-out updated the remote more than once'
+fail	'closer failure discarded staging'
+fail	'closer failure omitted recovery details'
+fail	'closer saw an unexpected staged path'
+fail	'failed CI advanced close-out'
+fail	'final approval bound a closed unmerged PR'
+fail	'final approval bound a superseded PR head'
+fail	'final approval bound an unrelated PR with the same head'
+fail	'final approval did not select the newest matching verdict'
+fail	'final approval for another repository was accepted'
+fail	'legacy ship omitted the existing pull URL'
+fail	'legacy ship prep failed'
+fail	'long PR body exceeded the limit or lost a step'
+fail	'long PR body rendering failed'
+fail	'malformed final approval was accepted'
+fail	'manual close-out pushed before the commit'
+fail	'manual prep omitted the PR source'
+fail	'missing final approval was accepted'
+fail	'non-reviewer final approval was accepted'
+fail	'prep staged the wrong paths'
+fail	'ship accepted an invalid CI timeout'
+fail	'ship could not retry PR creation'
+fail	'ship did not honor a custom CI wait bound'
+fail	'ship did not render an escaped goal'
+fail	'ship did not stage close-out before its first push'
+fail	'ship reran a staged close-out'
+fail	'single-push close-out regressions failed'
+fail	'single-push shipping phases ran out of order'
+fail	'stray staged file reached preparation'
+fail	'the closer did not create exactly one commit'
+fail	'valid final approval did not resolve the PR'
+fail	ci-fail
+fail	commit-noop
+source_case	BLOCKED
+source_case	NEEDS-REVIEW
+source_case	READY

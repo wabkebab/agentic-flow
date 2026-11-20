@@ -15,6 +15,7 @@ journal_render() ( # event subject markers facts run-marker result-file [owner r
 )
 
 journal_summary() { printf '%s' "$1" | jq -Rs '{summary:.}'; }
+journal_render_pr() { perl "$JOURNAL_COMMENT_HELPER"; } # JSON context on stdin
 journal_run_marker() {
   if [ -n "${HANDOFF_CONTROLLER_RUN:-}" ] && [ -n "${HANDOFF_CONTROLLER_HOST:-}" ]; then
     printf 'agentic-flow-run: run=%s; host=%s' "$HANDOFF_CONTROLLER_RUN" "$HANDOFF_CONTROLLER_HOST"

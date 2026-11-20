@@ -41,9 +41,10 @@ close_out_load() { # root doc tmp; read-only, all decisions come from replay
       [ "$profile" != standard ] || { expected=${CLOSE_TARGET_STATE:-closing}; target=$n; }
       [ "$state" = "$expected" ] || { close_out_error "#$n journal state $state; expected $expected"; return 3; }
       jq -e 'any(.accepted[];.event=="approve")' "$tmp/$n.replay" >/dev/null || return 3
-      printf '%s\t%s\t%s\t%s\n' "$step" "$n" \
-        "$(jq -r '[.accepted[]|select(.event=="approve")]|last|.head' "$tmp/$n.replay")" \
-        "$(jq -r '[.accepted[]|select(.event=="submit")|.head]|unique|join(",")' "$tmp/$n.replay")" >> "$tmp/steps"
+      jq -r --arg step "$step" --argjson issue "$n" '
+        [$step, $issue, ([.accepted[]|select(.event=="approve")]|last|.head),
+         ([.accepted[]|select(.event=="submit")|.head]|unique|join(",")),
+         ([.accepted[]|select(.event=="bounce")]|length)] | @tsv' "$tmp/$n.replay" >> "$tmp/steps" || return 3
     done
     [ "$count" = 1 ] || { close_out_error "expected exactly one issue for $step"; return 3; }
   done < <(printf '%s' "$spec" | jq -r '.steps[].id')
@@ -65,12 +66,12 @@ close_out_load() { # root doc tmp; read-only, all decisions come from replay
 }
 
 close_out_cmd() (
-  local action=${1:-} doc=${2:-} pr='' dry=false root tmp dest tracking
+  local action=${1:-} doc=${2:-} pr='' pr_source=source=final-approval dry=false root tmp dest tracking dirty
   [ "$#" -ge 2 ] || return 2
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --pr) [ "$#" -ge 2 ] || return 2; pr=$2; shift 2 ;;
+      --pr) [ "$#" -ge 2 ] && [ -n "$2" ] || return 2; pr=$2; shift 2 ;;
       --dry-run) dry=true; shift ;;
       *) return 2 ;;
     esac
@@ -93,27 +94,33 @@ close_out_cmd() (
     handoff_cmd "${tracking##*/}" close --as approver
     return $?
   fi
-  [[ "$pr" =~ ^https://github.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$ ]] || { close_out_error 'prep requires a real PR URL'; return 3; }
+  if [ -n "$pr" ]; then
+    [[ "$pr" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$ ]] || { close_out_error 'prep requires a real PR URL when --pr is supplied'; return 3; }
+  fi
   # A done document is an idempotent no-op, including after finish.
   case "$doc" in docs/done/*) printf 'Already prepared: %s\n' "$doc"; return 0 ;; esac
-  [ -z "$(git status --porcelain)" ] || { close_out_error 'prep requires a clean worktree'; return 3; }
+  dirty=$(git status --porcelain) || return 3
+  [ -z "$dirty" ] || { close_out_error 'prep requires a clean worktree'; return 3; }
   brief_approved_at_head "$doc" "$(brief_approval "$doc" | cut -f1)" || return 3
   CLOSE_TARGET_STATE=closing
   close_out_load "$root" "$doc" "$tmp" || return $?
-  case "$pr" in "https://github.com/$HANDOFF_REPO/pull/"*) ;; *) close_out_error 'PR repository differs from origin'; return 3 ;; esac
-  review_bounded gh api "repos/$HANDOFF_REPO/pulls/${pr##*/}" > "$tmp/pr" || return 3
-  jq -e --arg repo "$HANDOFF_REPO" --argjson number "${pr##*/}" '.number==$number and .base.repo.full_name==$repo and (.head.sha|test("^[a-f0-9]{40}$"))' "$tmp/pr" >/dev/null || return 3
+  if [ -n "$pr" ]; then
+    case "$pr" in "https://github.com/$HANDOFF_REPO/pull/"*) ;; *) close_out_error 'PR repository differs from origin'; return 3 ;; esac
+    review_bounded gh api "repos/$HANDOFF_REPO/pulls/${pr##*/}" > "$tmp/pr" || return 3
+    jq -e --arg repo "$HANDOFF_REPO" --argjson number "${pr##*/}" '.number==$number and .base.repo.full_name==$repo and (.head.sha|test("^[a-f0-9]{40}$"))' "$tmp/pr" >/dev/null || return 3
+    pr_source="url=$pr"
+  fi
   dest="docs/done/${doc##*/}"
   [ ! -e "$dest" ] || { close_out_error "destination exists: $dest"; return 3; }
   tracking="https://github.com/$HANDOFF_REPO/issues/$CLOSE_TARGET"
-  awk -v steps="$tmp/steps" -v tracking="$tracking" -v pr="$pr" '
+  awk -v steps="$tmp/steps" -v tracking="$tracking" -v pr_source="$pr_source" '
     /^## Tracker$/ {print; while((getline row < steps)>0) {split(row,a,"\t"); print "- [x] " a[1] " — #" a[2] "; approved=" a[3] "; submissions=" a[4]}; close(steps); tracker=1; next}
     tracker && /^##? |^---$/ {tracker=0}
     tracker {next}
     /^> \*\*Type:\*\* .* · \*\*Status:\*\* / {sub(/ · \*\*Status:\*\* .*/," · **Status:** ✅ Done")}
     /^- \*\*Tracking issue:\*\* / {$0="- **Tracking issue:** url=" tracking}
     /^- \*\*Implementation head:\*\* / {$0="- **Implementation head:** source=pr-head"}
-    /^- \*\*Implementation PR:\*\* / {$0="- **Implementation PR:** url=" pr}
+    /^- \*\*Implementation PR:\*\* / {$0="- **Implementation PR:** " pr_source}
     /^- \*\*Verification evidence:\*\* / {$0="- **Verification evidence:** source=final-approval-run"}
     /^- \*\*Review verdict:\*\* / {$0="- **Review verdict:** source=close-out-attestation"}
     /^- \*\*Memory:\*\* pending$/ {$0="- **Memory:** status=n/a"}

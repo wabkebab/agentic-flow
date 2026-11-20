@@ -324,9 +324,11 @@ c6_tests() (
   HANDOFF_TMP=$fixture SHIP_ROOT=$fixture SHIP_DOC=docs/inprogress/plan.md
   HANDOFF_REPO=owner/repo SHIP_PLAN=shipping SHIP_BRANCH=feature SHIP_BASE=release SHIP_TITLE=Shipping
   SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  SHIP_CI_TIMEOUT=3600
   SHIP_RUN_URL=https://github.com/owner/repo/actions/runs/7 SHIP_ATTEMPT=2
   local pr='{"number":3,"url":"https://github.com/owner/repo/pull/3","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"release","isCrossRepository":false}'
   SHIP_PR=null
+  local AGENTIC_CLOSER_COMMIT=''
   git() {
     case "$1" in status) [ "$mode" != dirty ] || printf ' M docs/done/plan.md\n' ;;
       push) printf 'push\n' >> "$fixture/actions" ;;
@@ -334,13 +336,10 @@ c6_tests() (
       update-ref) printf 'delete %s\n' "$3" >> "$fixture/actions" ;;
       *) return 99 ;; esac
   }
-  brief_approved_at_head() { return 0; }
   brief_approval() { printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\towner\n'; }
-  close_out_load() { CLOSE_TARGET=1; printf 'admit\n' >> "$fixture/actions"; }
-  close_out_cmd() { printf '%s\n' "$1" >> "$fixture/actions"; }
+  close_out_cmd() { printf '%s\n' "$*" >> "$fixture/actions"; }
   handoff_gh() {
     case "$1 $2" in
-      'pr create') printf '%s\n' "$*" >> "$fixture/actions" ;;
       'pr list') printf '[%s]\n' "$pr" ;;
       *) return 99 ;; esac
   }
@@ -355,9 +354,12 @@ c6_tests() (
       *) printf 'READY fixture\n' ;; esac
   }
   ship_run false > "$fixture/out" || fail 'first ship failed'
-  [ "$(head -3 "$fixture/actions" | tr '\n' /)" = 'admit/push/pr create --repo owner/repo --head feature --base release --title Shipping --body Implementation of https://github.com/owner/repo/issues/1/' ] || fail 'ship did not admit, push and open against plan base'
-  grep -q '^prep$' "$fixture/actions" || fail 'ship skipped prep'
+  [ "$(cat "$fixture/actions")" = 'prep docs/inprogress/plan.md' ] || fail 'ship did not stage close-out before its first push'
   grep -q 'commit the staged close-out' "$fixture/out" || fail 'ship did not stop for close-out commit'
+  SHIP_PR=$pr
+  : > "$fixture/actions"
+  ship_run false > "$fixture/out" || fail 'legacy ship prep failed'
+  grep -Fxq "prep $SHIP_DOC --pr https://github.com/owner/repo/pull/3" "$fixture/actions" || fail 'legacy ship omitted the existing pull URL'
   SHIP_DOC=docs/done/plan.md
   mode=dirty; : > "$fixture/actions"
   rc=0; ship_run false > "$fixture/out" 2>&1 || rc=$?
@@ -371,17 +373,17 @@ c6_tests() (
           grep -q "$value" "$fixture/out" || fail 'approval wait omitted evidence context'
         done ;;
     esac
-    if grep -q '^finish$' "$fixture/actions"; then fail 'unready ship ran finish'; fi
+    if grep -q '^finish ' "$fixture/actions"; then fail 'unready ship ran finish'; fi
   done
   mode=ready; : > "$fixture/actions"
   ship_run false > "$fixture/out" || fail 'ready ship failed'
-  [ "$(head -5 "$fixture/actions" | tr '\n' /)" = 'push/ci/close-out/finish/pre-merge/' ] || fail 'ship phases ran out of order'
+  [ "$(head -5 "$fixture/actions" | paste -sd '|' -)" = 'push|ci|close-out|finish docs/done/plan.md|pre-merge' ] || fail 'ship phases ran out of order'
   grep -q 'Human merge:' "$fixture/out" || fail 'merge command missing'
   mode=review; : > "$fixture/actions"
   sleep() { mode=ready; SHIP_ATTEMPT=3; }
   ship_run true > "$fixture/out" || fail 'wait-review did not observe later approval'
   [ "$(grep -c '^ci$' "$fixture/actions")" = 2 ] || fail 'wait-review did not refresh CI attempt'
-  grep -q '^finish$' "$fixture/actions" || fail 'wait-review did not finish after approval'
+  grep -q '^finish ' "$fixture/actions" || fail 'wait-review did not finish after approval'
   unset -f sleep
   # Wrong PR base and malformed listings are refused at the boundary.
   pr=$(printf '%s' "$pr" | jq '.baseRefName="main"')
@@ -460,8 +462,210 @@ SHIP_PLAN
   ship_cmd ship docs/inprogress/plan.md || fail 'explicit plan base rejected'
   grep -q '^phase-2/release/' "$fixture/setup" || fail 'explicit plan base lost'
   ledger_read line-controller | jq -e 'length==2' >/dev/null || fail 'two ship touches were not counted'
+  rc=0
+  AGENTIC_SHIP_CI_TIMEOUT=0 ship_cmd ship docs/inprogress/plan.md > "$fixture/out" 2>&1 || rc=$?
+  [ "$rc" = 2 ] || fail 'ship accepted an invalid CI timeout'
 )
 c6_tests || fail 'shipping regressions failed'
+
+single_push_tests() (
+  . "$ROOT/scripts/lib/ship.sh"
+  local fixture="$TMP/single-push" stored="$TMP/single-push-state" rev tip rc mode ready
+  local source=docs/inprogress/plan.md dest=docs/done/plan.md
+  mkdir -p "$fixture"/{config,docs/inprogress,scripts} "$stored"
+  cd "$fixture" || return 1
+  command git init -q
+  command git checkout -qb feature
+  command git config user.name Fixture
+  command git config user.email fixture@example.invalid
+  command git config commit.gpgsign false
+  command git remote add origin https://github.com/owner/repo.git
+  ln "$ROOT/config/workflow.tsv" config/workflow.tsv
+  ln -s "$ROOT/scripts/hooks" scripts/hooks
+  ln -s "$ROOT/scripts/lib" scripts/lib
+  cp "$ROOT/docs/README.md" docs/README.md
+  printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=owner owner=owner > .agentic-flow-review-policy
+  cat > "$source" <<'SHIP_DOC'
+> **Type:** Feature · **Status:** 🚧 In progress
+> **Assurance:** Standard
+> Ship <example> without mentioning @someone.
+
+# Feature — Single push
+
+## Tracker
+- [ ] alpha — open
+# Part B — Implementation brief
+```agentic-flow-plan
+id: shipping-fixture
+profile: standard
+branch: feature
+base: release
+steps: alpha
+```
+## Alpha — Ship | <!-- note --> @someone
+**DoD:** ship finishes
+**Verify:** make check
+**Risks:** stale head
+**Red-first:** none
+
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** pending
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=close-out-attestation
+- **Memory:** pending
+SHIP_DOC
+  printf '%s\n' fixture > fixture.txt
+  export FIXTURE_SCRIPTS="$ROOT/scripts" SHIP_TEST_STATE=$stored SHIP_TEST_MODE=''
+  cat > scripts/docs-index.sh <<'INDEX'
+#!/usr/bin/env bash
+set -e
+"$FIXTURE_SCRIPTS/docs-index.sh" "$@"
+printf 'prep\n' >> "$SHIP_TEST_STATE/actions"
+if [ "$SHIP_TEST_MODE" = prep-stray ]; then
+  printf '%s\n' stray >> fixture.txt
+  command git add -- fixture.txt
+fi
+INDEX
+  cat > scripts/lifecycle-status.sh <<'LIFECYCLE'
+#!/usr/bin/env bash
+if [ "$3" = --validate-doc-status ]; then exec "$FIXTURE_SCRIPTS/lifecycle-status.sh" "$@"; fi
+printf 'READY fixture\n'
+LIFECYCLE
+  chmod +x scripts/docs-index.sh scripts/lifecycle-status.sh
+  AGENTIC_PROJECT_ROOT=$fixture scripts/docs-index.sh >/dev/null
+  command git add -- .agentic-flow-review-policy config/workflow.tsv docs/README.md "$source" fixture.txt \
+    scripts/docs-index.sh scripts/lifecycle-status.sh scripts/hooks scripts/lib
+  command git commit -qm brief
+  rev=$(command git rev-parse HEAD)
+  sed "/^- \*\*Approval:\*\*/s/pending$/status=approved; by=owner; at=2026-01-01; rev=$rev/" "$source" > "$stored/approved"
+  cp "$stored/approved" "$source"
+  command git add -- "$source"
+  command git commit -qm approval
+  tip=$(command git rev-parse HEAD)
+  export AGENTIC_CLOSER_COMMIT="$stored/closer"
+  cat > "$AGENTIC_CLOSER_COMMIT" <<'CLOSER'
+#!/usr/bin/env bash
+printf 'commit\n' >> "$SHIP_TEST_STATE/actions"
+[ "$1" = commit ] && [ "$3" = 'Close out Single push.' ] && [ "$6" = -- ] &&
+  [ "$7 $8 $9" = 'docs/README.md docs/done/plan.md docs/inprogress/plan.md' ] || exit 37
+case "$SHIP_TEST_MODE" in
+  commit-fail) exit 38 ;;
+  commit-noop) exit 0 ;;
+esac
+exec git -c user.name=Closer "$@"
+CLOSER
+  chmod +x "$AGENTIC_CLOSER_COMMIT"
+  handoff_plan_read() {
+    HANDOFF_ISSUES=1
+    jq -n --arg rev "$rev" '{body:("<!-- agentic-flow:plan:shipping-fixture step:alpha spec:"+$rev+" approved="+$rev+" journal=v1 -->\n<!-- agentic-flow:topology:standard -->")}' > "$HANDOFF_TMP/1.issue"
+    jq -n --arg head "$tip" '{state:"closing",accepted:[{event:"submit",head:$head},{event:"bounce"},{event:"approve",head:$head}]}' > "$HANDOFF_TMP/1.replay"
+  }
+  git() {
+    if [ "$1" = push ]; then
+      [ "$4" = "$SHIP_HEAD:refs/heads/feature" ] && command git cat-file -e "$SHIP_HEAD:$dest" || return 39
+      printf 'push\n' >> "$stored/actions"
+      if [ ! -f "$stored/remote-head" ] || [ "$(cat "$stored/remote-head")" != "$SHIP_HEAD" ]; then
+        printf 'update\n' >> "$stored/actions"
+      fi
+      printf '%s\n' "$SHIP_HEAD" > "$stored/remote-head"
+    else
+      command git "$@"
+    fi
+  }
+  handoff_gh() {
+    case "$1 $2" in
+      'pr list')
+        if [ -f "$stored/pr" ]; then cat "$stored/pr"; else printf '[]\n'; fi ;;
+      'pr create')
+        printf 'create\n' >> "$stored/actions"
+        [ "$SHIP_TEST_MODE" != create-fail ] || return 1
+        [ "${*:3:6}" = '--repo owner/repo --head feature --base release' ] &&
+          [ "${10}" = 'Single push' ] && [ "${11}" = --body-file ] || fail 'ship did not admit, push and open against plan base'
+        cp "${12}" "$stored/pr-body"
+        jq -n --arg head "$(cat "$stored/remote-head")" '[{number:3,url:"https://github.com/owner/repo/pull/3",headRefOid:$head,baseRefName:"release",isCrossRepository:false}]' > "$stored/pr" ;;
+      *) return 99 ;;
+    esac
+  }
+  ship_gate() { printf 'gate\n' >> "$stored/actions"; }
+  ship_ci() {
+    [ "$SHIP_TEST_MODE" != ci-fail ] || { ship_error 'CI failed'; return 1; }
+    SHIP_RUN_URL=https://github.com/owner/repo/actions/runs/7 SHIP_ATTEMPT=1
+  }
+  ship_lifecycle() {
+    printf '%s\n' "$1" >> "$stored/actions"
+    if [ "$ready" = false ]; then printf 'NEEDS-REVIEW fixture\n'; return 1; fi
+    printf 'READY fixture\n'
+  }
+  handoff_cmd() {
+    [ "$1 $2" = '1 close' ] || return 41
+    printf 'finish\n' >> "$stored/actions"
+  }
+  sleep() { ready=true; }
+  for mode in dirty prep-stray commit-fail commit-noop manual create-fail ci-fail happy; do
+    command git reset --hard "$tip" >/dev/null
+    rm -f "$stored/pr" "$stored/remote-head" "$stored/pr-body"
+    : > "$stored/actions"
+    SHIP_TEST_MODE=$mode ready=true rc=0
+    case "$mode" in
+      dirty) printf 'dirty\n' >> fixture.txt; git add -- fixture.txt ;;
+      happy) ready=false ;;
+    esac
+    if [ "$mode" = manual ]; then
+      AGENTIC_CLOSER_COMMIT='' ship_cmd ship "$source" > "$stored/out" 2>&1 || rc=$?
+    else
+      ship_cmd ship "$source" --wait-review > "$stored/out" 2>&1 || rc=$?
+    fi
+    case "$mode" in
+      dirty) [ "$rc" = 1 ] && [ ! -s "$stored/actions" ] || fail 'stray staged file reached preparation' ;;
+      prep-stray) [ "$rc" = 1 ] && [ "$(cat "$stored/actions")" = prep ] || fail 'closer saw an unexpected staged path' ;;
+      commit-fail|commit-noop)
+        [ "$rc" = 1 ] && [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit' ] || fail "ship continued after $mode: $(cat "$stored/out")"
+        [ -n "$(git diff --cached --name-only)" ] || fail 'closer failure discarded staging'
+        if [ "$mode" = commit-fail ]; then
+          grep -q "$dest" "$stored/out" && grep -qF "$AGENTIC_CLOSER_COMMIT" "$stored/out" || fail 'closer failure omitted recovery details'
+        fi
+        rc=0; ship_cmd ship "$source" >> "$stored/out" 2>&1 || rc=$?
+        [ "$rc" = 1 ] && [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit' ] || fail 'ship reran a staged close-out' ;;
+      manual)
+        [ "$rc" = 0 ] && [ "$(cat "$stored/actions")" = prep ] || fail 'manual close-out pushed before the commit'
+        grep -Fxq -- '- **Implementation PR:** source=final-approval' "$dest" || fail 'manual prep omitted the PR source'
+        [ "$(git diff --cached --name-only --no-renames)" = "$(printf '%s\n' docs/README.md "$dest" "$source")" ] || fail 'prep staged the wrong paths'
+        git commit -qm manual
+        ship_cmd ship "$source" > "$stored/out" 2>&1 || fail "ship could not resume a manual commit: $(cat "$stored/out")" ;;
+      create-fail)
+        [ "$rc" = 5 ] && [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit|gate|push|update|create' ] || fail 'PR creation failure lost the committed push'
+        SHIP_TEST_MODE=retry
+        ship_cmd ship "$source" > "$stored/out" 2>&1 || fail 'ship could not retry PR creation' ;;
+      ci-fail)
+        [ "$rc" = 1 ] && [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit|gate|push|update|create' ] || fail 'failed CI advanced close-out' ;;
+      happy)
+        [ "$rc" = 0 ] || fail "single-push shipping failed: $(cat "$stored/out")"
+        grep -q '^prep$' "$stored/actions" || fail 'ship skipped prep'
+        [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit|gate|push|update|create|close-out|close-out|finish|pre-merge' ] || fail 'single-push shipping phases ran out of order'
+        [ "$(git log -1 --format=%an)" = Closer ] && [ "$(git rev-parse HEAD^)" = "$tip" ] || fail 'the closer did not create exactly one commit'
+        grep -qF -- 'Ship &lt;example&gt; without mentioning @‍someone.' "$stored/pr-body" || fail 'ship did not render an escaped goal'
+        grep -qF -- "Alpha — Ship \| &lt;!-- note --&gt; @‍someone | [#1](https://github.com/owner/repo/issues/1) | \`${tip:0:12}\` | 1" "$stored/pr-body" || fail 'PR step row omitted replay facts or escaping'
+        grep -qF -- "https://github.com/owner/repo/blob/$rev/$source" "$stored/pr-body" || fail 'PR did not link to the approved brief'
+        grep -qF -- '[Tracking issue](https://github.com/owner/repo/issues/1)' "$stored/pr-body" || fail 'PR did not link to the tracker'
+        grep -qFx -- '## Feature — Single push' "$stored/pr-body" || fail 'PR did not show the approved title' ;;
+    esac
+    case "$mode" in manual|create-fail|ci-fail|happy)
+      [ "$(grep -c '^update$' "$stored/actions")" = 1 ] || fail 'close-out updated the remote more than once' ;;
+    esac
+  done
+  jq -n --arg head "$tip" '
+    {pull_request:{title:"Large plan",goal:"Long goal",brief:"brief",tracker:"tracker",issue_root:"issues",
+      steps:[range(1;21) | {title:("Step \(.) — "+("<!-- @user <placeholder> --> | " * 200)),issue:.,head:$head,bounces:0}]}}' |
+    journal_render_pr > "$stored/large-body" || fail 'long PR body rendering failed'
+  jq -Rse 'length <= 65536 and (split("\n") | map(select(contains("[#"))) | length == 20)' "$stored/large-body" >/dev/null ||
+    fail 'long PR body exceeded the limit or lost a step'
+)
+single_push_tests || fail 'single-push close-out regressions failed'
+
 c6_visibility_tests() (
   . "$ROOT/scripts/lib/ship.sh"
   local fixture="$TMP/ship-visibility" now=0 polls=0 scenario=delayed rc=0
@@ -470,7 +674,7 @@ c6_visibility_tests() (
   SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   REVIEW_WORKFLOW=.github/workflows/ci.yml
   date() { printf '%s\n' "$now"; }
-  sleep() { now=$((now+10)); }
+  sleep() { now=$((now+$1)); }
   ship_pr() {
     polls=$((polls+1))
     case "$scenario" in
@@ -506,8 +710,11 @@ c6_visibility_tests() (
     esac
   done
   scenario=missing polls=3 now=0 rc=0
-  ship_wait_ci > "$fixture/out" 2>&1 || rc=$?
+  ship_wait_ci 3600 > "$fixture/out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && [ "$now" = 0 ] || fail 'ordinary missing CI wait did not refuse'
+  scenario=queued now=0 rc=0
+  ship_wait_ci 15 > "$fixture/out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && [ "$now" = 15 ] || fail 'ship did not honor a custom CI wait bound'
 )
 c6_visibility_tests || fail 'shipping visibility regressions failed'
 

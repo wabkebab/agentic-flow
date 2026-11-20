@@ -78,6 +78,30 @@ sub code {
   return "$ticks$s$ticks";
 }
 sub shortened { my ($s,$max)=@_; return length($s)>$max ? substr($s,0,$max-1).'…' : $s; }
+
+sub render_pull_request {
+  my ($pr)=@_;
+  my $title=outside_code(neutralize_markers(flatten(shortened($pr->{title},1000))));
+  my $goal=markdown(flatten(shortened($pr->{goal},4000)));
+  my @lines=("## $title", '', $goal, '',
+    '[Approved brief]('.$pr->{brief}.') · [Tracking issue]('.$pr->{tracker}.')', '',
+    '| Step | Issue | Approved head | Bounces |', '| --- | --- | --- | --- |');
+  for my $step (@{$pr->{steps}}) {
+    my $label=cell(outside_code(neutralize_markers(flatten(shortened($step->{title},300)))));
+    my $issue=$step->{issue};
+    push @lines, '| '.join(' | ',$label,'[#'.$issue.']('.$pr->{issue_root}.'/'.$issue.')',
+      code(substr($step->{head},0,12)),$step->{bounces}).' |';
+  }
+  return join("\n",@lines)."\n";
+}
+
+if (exists $c->{pull_request}) {
+  my $body=render_pull_request($c->{pull_request});
+  if (length($body)>65_536) { print STDERR "PR body exceeds 65,536 characters\n"; exit 2; }
+  print encode('UTF-8',$body);
+  exit 0;
+}
+
 sub evidence_item {
   my $s=markdown($_[0]);
   $s =~ s/\n(?!\z)/\n  /g;

@@ -70,7 +70,7 @@ valid_value() { # <key> <value>
     'Tracking issue') [[ "$2" =~ ^url=https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$ ]] ;;
     Approval) [[ "$2" =~ ^status=approved\;\ by=[A-Za-z0-9]([A-Za-z0-9._\ -]*[A-Za-z0-9])?\;\ at=[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9](\;\ rev=[a-f0-9]{40})?$ ]] ;;
     'Implementation head') [ "$2" = source=pr-head ] ;;
-    'Implementation PR') [[ "$2" =~ ^url=https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$ ]] ;;
+    'Implementation PR') [ "$2" = source=final-approval ] || [[ "$2" =~ ^url=https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$ ]] ;;
     'Verification evidence') [ "$2" = source=final-approval-run ] ;;
     'Review verdict') [ "$2" = source=pr-head-approval ] || [ "$2" = source=close-out-attestation ] ;;
     Memory) [ "$2" = status=n/a ] || [[ "$2" =~ ^path=docs/memory/[A-Za-z0-9._-]+\.md$ ]] ;;
@@ -386,11 +386,42 @@ verify_strict_steps() { # <repo> <tracking-body> <tmp-dir> <pr-head>
   fi
 }
 
-verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
-  local tracking=$1 pr_url=$2 tracking_body=$3 topology=$4 repo workflow pr_number issue_number owner name \
+review_run_id() { # <repo> <comment-id> <pr-source>
+  local repo=$1 id=$2 source=$3
+  if [ -z "$REVIEW_ATTEMPT" ] && [ "$source" != source=final-approval ]; then
+    unverified_evidence "comment $id missing attempt="; return 1
+  fi
+  if ! [[ "$REVIEW_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+    blocked_evidence "comment $id has malformed attempt="; return 1
+  fi
+  case "$REVIEW_RUN" in "https://github.com/$repo/actions/runs/"*) ;; *)
+    blocked_evidence "comment $id run repository differs from origin"; return 1 ;; esac
+  run_id=${REVIEW_RUN##*/}
+  if ! [[ "$run_id" =~ ^[1-9][0-9]*$ ]]; then
+    blocked_evidence "comment $id has malformed run="; return 1
+  fi
+}
+
+review_pr_head() { # <tmp> <repo> <number> <branch> <base>
+  local tmp=$1 repo=$2 number=$3 branch=$4 base=$5 file
+  file="$tmp/pr-$number"
+  if [ ! -f "$file" ] && ! bounded_gh "$file" api "repos/$repo/pulls/$number"; then
+    unverified_evidence "Implementation PR $number unavailable"; return 1
+  fi
+  if ! head=$(jq -er --arg repo "$repo" --arg number "$number" --arg branch "$branch" --arg base "$base" '
+    select((.number|tostring)==$number and .base.repo.full_name==$repo and .head.repo.full_name==$repo and
+           .head.ref==$branch and .base.ref==$base) |
+    if .state=="closed" and .merged!=true then "" else .head.sha | select(test("^[a-f0-9]{40}$")) end' "$file"); then
+    blocked_evidence "Implementation PR $number differs from the approved branch, base or origin repository"; return 1
+  fi
+}
+
+verify_evidence() { # <tracking-url> <pr-url or source> <tracking-body> <topology> <doc>
+  local tracking=$1 pr_url=$2 tracking_body=$3 topology=$4 doc=$5 repo workflow pr_number issue_number owner name \
     tmp pr_json comments_json run_json head query nodes id dbid body marker edited \
     selected_id="" selected_dbid="" selected_marker="" selected_edited="" selected_author="" \
-    null_index run_id live_attempt conclusion run_repo run_path run_head normalized step_id
+    null_index run_id live_attempt conclusion run_repo run_path run_head normalized step_id \
+    pr_source=$2 pr_branch pr_base pr_spec selected_pr="" verdict_logins author
   evidence_status=UNVERIFIED
   evidence_reason='external evidence unresolved'
   # shellcheck disable=SC1091 # The library is resolved from the installed script root.
@@ -411,33 +442,47 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   owner=${repo%%/*}; name=${repo#*/}
   case "$tracking" in "https://github.com/$repo/issues/"*) ;; *)
     blocked_evidence 'Tracking issue repository differs from origin'; return ;; esac
-  case "$pr_url" in "https://github.com/$repo/pull/"*) ;; *)
+  case "$pr_url" in source=final-approval|"https://github.com/$repo/pull/"*) ;; *)
     blocked_evidence 'Implementation PR repository differs from origin'; return ;; esac
   issue_number=${tracking##*/}; pr_number=${pr_url##*/}
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/agentic-flow-evidence.XXXXXX") || {
     unverified_evidence 'cannot prepare evidence lookup'; return;
   }
-  if ! bounded_gh "$tmp/pr" api "repos/$repo/pulls/$pr_number"; then
-    unverified_evidence 'Implementation PR unavailable'; rm -rf "$tmp"; return
-  fi
-  pr_json=$(cat "$tmp/pr")
-  head=$(printf '%s' "$pr_json" | jq -r '.head.sha // empty' 2>/dev/null) || head=""
-  if ! [[ "$head" =~ ^[[:xdigit:]]{40}$ ]]; then
-    unverified_evidence 'Implementation PR head unavailable'; rm -rf "$tmp"; return
+  if [ "$pr_source" = source=final-approval ]; then
+    # shellcheck source=/dev/null
+    . "$SCRIPT_ROOT/scripts/lib/brief.sh"
+    pr_spec=$(brief_parse "$doc" "$doc" "") || {
+      blocked_evidence 'Implementation PR requires a valid plan brief'; rm -rf "$tmp"; return;
+    }
+    pr_branch=$(printf '%s' "$pr_spec" | jq -r .branch)
+    pr_base=$(printf '%s' "$pr_spec" | jq -r '.base//"main"')
+    verdict_logins=$REVIEW_REVIEWERS
+  else
+    if ! bounded_gh "$tmp/pr" api "repos/$repo/pulls/$pr_number"; then
+      unverified_evidence 'Implementation PR unavailable'; rm -rf "$tmp"; return
+    fi
+    pr_json=$(cat "$tmp/pr")
+    head=$(printf '%s' "$pr_json" | jq -r '.head.sha // empty' 2>/dev/null) || head=""
+    if ! [[ "$head" =~ ^[[:xdigit:]]{40}$ ]]; then
+      unverified_evidence 'Implementation PR head unavailable'; rm -rf "$tmp"; return
+    fi
+    verdict_logins=$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS
   fi
   if [ "${review_source:-}" = source=close-out-attestation ]; then
     # shellcheck disable=SC1091
     . "$SCRIPT_ROOT/scripts/lib/close-out-attestation.sh"
     local attestation_reason
-    if close_out_attest "$repo" "$head" "$tmp" > "$tmp/attestation" 2>&1; then
-      evidence_status=READY
-      evidence_reason=$(cat "$tmp/attestation")
-      rm -rf "$tmp"; return
+    if [ "$pr_source" != source=final-approval ]; then
+      if close_out_attest "$repo" "$head" "$tmp" > "$tmp/attestation" 2>&1; then
+        evidence_status=READY
+        evidence_reason=$(cat "$tmp/attestation")
+        rm -rf "$tmp"; return
+      fi
+      attestation_reason=$(cat "$tmp/attestation")
+      printf 'NEEDS-REVIEW %s\n' "$attestation_reason"
+      # Existing final-head evidence remains the fallback, with its original checks.
+      evidence_status=UNVERIFIED evidence_reason='external evidence unresolved'
     fi
-    attestation_reason=$(cat "$tmp/attestation")
-    printf 'NEEDS-REVIEW %s\n' "$attestation_reason"
-    # Existing final-head evidence remains the fallback, with its original checks.
-    evidence_status=UNVERIFIED evidence_reason='external evidence unresolved'
   fi
   # shellcheck disable=SC2016 # GraphQL variables belong in the literal query.
   query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){body comments(first:100){pageInfo{hasNextPage endCursor} nodes{id fullDatabaseId body author{login __typename} createdAt lastEditedAt}}}}}'
@@ -451,6 +496,9 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   fi
   if ! printf '%s' "$comments_json" | jq -e '.data.repository.issue.comments.nodes | type == "array"' >/dev/null 2>&1; then
     unverified_evidence 'Tracking issue comments nodes missing'; rm -rf "$tmp"; return
+  fi
+  if ! printf '%s' "$comments_json" | jq -e '.data.repository.issue.comments.nodes | length <= 100' >/dev/null; then
+    unverified_evidence 'Tracking issue comments exceed one page; resolve the thread'; rm -rf "$tmp"; return
   fi
   if ! printf '%s' "$comments_json" | jq -e '.data.repository.issue.comments.pageInfo.hasNextPage | type == "boolean"' >/dev/null 2>&1; then
     unverified_evidence 'Tracking issue comments pageInfo.hasNextPage missing'; rm -rf "$tmp"; return
@@ -467,9 +515,9 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
     unverified_evidence 'comment author normalization failed'; rm -rf "$tmp"; return;
   }
   comments_json=$(printf '%s' "$comments_json" | jq --argjson nodes "$normalized_comments" '.data.repository.issue.comments.nodes=$nodes')
-  ignored=$(printf '%s' "$comments_json" | jq --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '[.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) == null)] | length')
+  ignored=$(printf '%s' "$comments_json" | jq --arg roles "$verdict_logins" '[.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) == null)] | length')
   [ "$ignored" -eq 0 ] || printf 'EVIDENCE ignored %s comment(s) from authors outside the review policy\n' "$ignored"
-  printf '%s' "$comments_json" | jq -c --arg roles "$REVIEW_REVIEWERS$REVIEW_EXECUTORS$REVIEW_APPROVERS" '.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)' > "$tmp/nodes"
+  printf '%s' "$comments_json" | jq -c --arg roles "$verdict_logins" '.data.repository.issue.comments.nodes[] | select(.author.login as $login | ($roles | split(" ") | index($login)) != null)' > "$tmp/nodes"
   while IFS= read -r nodes; do
     body=$(printf '%s' "$nodes" | jq -r '.body // empty')
     marker=$(printf '%s\n' "$body" | sed -n '/^[[:space:]]*agentic-flow-review:/p')
@@ -488,6 +536,19 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
     marker=${marker#"${marker%%[![:space:]]*}"}
     if ! parse_review_marker "$marker"; then
       blocked_evidence "comment $id has malformed review record"; break
+    fi
+    author=$(printf '%s' "$nodes" | jq -r '.author.login // empty')
+    if [ "$pr_source" = source=final-approval ]; then
+      # A Standard work issue also contains reviewer-authored step verdicts.
+      if [ -n "$REVIEW_STEP" ] && [ -z "$REVIEW_PR$REVIEW_RUN$REVIEW_ATTEMPT" ]; then continue; fi
+      if [ -n "$REVIEW_STEP" ] || ! [[ "$REVIEW_PR" =~ ^[1-9][0-9]*$ ]]; then
+        blocked_evidence "comment $id has malformed final review record"; break
+      fi
+      authenticate_verdict "$id" "$author" "$REVIEW_ROLE" || break
+      review_run_id "$repo" "$id" "$pr_source" || break
+      pr_number=$REVIEW_PR
+      review_pr_head "$tmp" "$repo" "$pr_number" "$pr_branch" "$pr_base" || break
+      pr_url="https://github.com/$repo/pull/$pr_number"
     fi
     if [ "$REVIEW_HEAD" != "$head" ]; then
       printf 'EVIDENCE %s  superseded comment %s head=%s\n' "$pr_url" "$id" "$REVIEW_HEAD"
@@ -512,7 +573,7 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
         printf 'EVIDENCE %s  superseded comment %s head=%s\n' "$pr_url" "$selected_id" "$head"
       fi
       selected_id=$id selected_dbid=$dbid selected_marker=$marker selected_edited=$edited
-      selected_author=$(printf '%s' "$nodes" | jq -r '.author.login // empty')
+      selected_author=$author selected_pr=$pr_number
     elif [ "$dbid" = "$selected_dbid" ]; then
       blocked_evidence "comments $selected_id and $id share fullDatabaseId"; break
     else
@@ -521,30 +582,28 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   done < "$tmp/nodes"
   if [ "$evidence_reason" != 'external evidence unresolved' ]; then rm -rf "$tmp"; return; fi
   if [ -z "$selected_id" ]; then
-    unverified_evidence "Tracking issue has no approval for PR head $head"; rm -rf "$tmp"; return
+    if [ "$pr_source" = source=final-approval ]; then
+      printf 'NEEDS-REVIEW Tracking issue has no final approval for a current PR head\n'
+      unverified_evidence 'Tracking issue has no final approval for a current PR head'
+    else
+      unverified_evidence "Tracking issue has no approval for PR head $head"
+    fi
+    rm -rf "$tmp"; return
+  fi
+  parse_review_marker "$selected_marker"
+  if [ "$pr_source" = source=final-approval ]; then
+    pr_number=$selected_pr head=$REVIEW_HEAD pr_url="https://github.com/$repo/pull/$selected_pr"
   fi
   printf 'EVIDENCE %s  comment %s fullDatabaseId=%s lastEditedAt=%s head=%s author=%s\n' \
     "$pr_url" "$selected_id" "$selected_dbid" "${selected_edited:-null}" "$head" "${selected_author:-unavailable}"
   if [ -n "$selected_edited" ]; then
     blocked_evidence "comment $selected_id was edited at $selected_edited"; rm -rf "$tmp"; return
   fi
-  parse_review_marker "$selected_marker"
   authenticate_verdict "$selected_id" "$selected_author" "$REVIEW_ROLE" || { rm -rf "$tmp"; return; }
   if [ "$REVIEW_STATUS" != approved ] || [ "$REVIEW_PR" != "$pr_number" ]; then
     blocked_evidence "comment $selected_id does not approve PR $pr_number head $head"; rm -rf "$tmp"; return
   fi
-  if [ -z "$REVIEW_ATTEMPT" ]; then
-    unverified_evidence "comment $selected_id missing attempt="; rm -rf "$tmp"; return
-  fi
-  if ! [[ "$REVIEW_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
-    blocked_evidence "comment $selected_id has malformed attempt="; rm -rf "$tmp"; return
-  fi
-  case "$REVIEW_RUN" in "https://github.com/$repo/actions/runs/"*) ;; *)
-    blocked_evidence "comment $selected_id run repository differs from origin"; rm -rf "$tmp"; return ;; esac
-  run_id=${REVIEW_RUN##*/}
-  if ! [[ "$run_id" =~ ^[1-9][0-9]*$ ]]; then
-    blocked_evidence "comment $selected_id has malformed run="; rm -rf "$tmp"; return
-  fi
+  review_run_id "$repo" "$selected_id" "$pr_source" || { rm -rf "$tmp"; return; }
   if ! bounded_gh "$tmp/run" api "repos/$repo/actions/runs/$run_id"; then
     unverified_evidence "Actions run $run_id unavailable"; rm -rf "$tmp"; return
   fi
@@ -565,8 +624,14 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   conclusion=$(printf '%s' "$run_json" | jq -r '.conclusion')
   live_attempt=$(printf '%s' "$run_json" | jq -r '.run_attempt')
   if [ "${review_source:-}" = source=close-out-attestation ]; then
-    if ! close_out_ci "$repo" "$head" "$tmp" > "$tmp/latest-ci" 2>&1 ||
-       [ "$run_id" != "${CLOSE_CI_RUN:-}" ] || [ "$live_attempt" != "${CLOSE_CI_ATTEMPT:-}" ]; then
+    if ! close_out_ci "$repo" "$head" "$tmp" > "$tmp/latest-ci" 2>&1; then
+      blocked_evidence 'final-head fallback does not name the latest successful workflow run and attempt'
+      rm -rf "$tmp"; return
+    fi
+    if [ "$run_id" != "$CLOSE_CI_RUN" ] || [ "$live_attempt" != "$CLOSE_CI_ATTEMPT" ]; then
+      if [ "$pr_source" = source=final-approval ]; then
+        printf 'NEEDS-REVIEW Final approval is for a superseded policy workflow run\n'
+      fi
       blocked_evidence 'final-head fallback does not name the latest successful workflow run and attempt'
       rm -rf "$tmp"; return
     fi
@@ -574,6 +639,9 @@ verify_evidence() { # <tracking-url> <pr-url> <tracking-body> <topology>
   if [ "$run_repo" != "$repo" ] || [ "$run_path" != "$workflow" ] || [ "$run_head" != "$head" ]; then
     blocked_evidence "Actions run $REVIEW_RUN differs from repository, workflow, or PR head $head"
   elif [ "$live_attempt" != "$REVIEW_ATTEMPT" ]; then
+    if [ "$pr_source" = source=final-approval ]; then
+      printf 'NEEDS-REVIEW Final approval is for a superseded CI attempt\n'
+    fi
     blocked_evidence "Actions run $REVIEW_RUN attempt $live_attempt differs from comment $selected_id attempt $REVIEW_ATTEMPT"
   elif [ "$conclusion" != success ]; then
     blocked_evidence "Actions run $REVIEW_RUN concluded $conclusion"
@@ -730,7 +798,7 @@ check_doc() { # <doc>
       blocked=$((blocked + 1)); return
     fi
   fi
-  verify_evidence "$tracking" "$pr_url" "$issue_body" "$topology"
+  verify_evidence "$tracking" "$pr_url" "$issue_body" "$topology" "$doc"
   printf '%-10s %s  %s\n' "$evidence_status" "$rel" "$evidence_reason"
   case "$evidence_status" in
     BLOCKED) blocked=$((blocked + 1)) ;;

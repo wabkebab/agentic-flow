@@ -172,8 +172,9 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
 - **Memory:** pending
-- Close-out: finalize Status/Tracker, set TRIAGE to Done, move this document and update
-  the index in the last repository commit. After human push, obtain CI and a structured
-  reviewer approval on the `Tracking issue` for that exact PR head and run attempt.
-  Verify this moved file with `--phase close-out`, close the tracker without another
-  repository edit, then recheck with `--phase pre-merge` before human merge.
+- Close-out: `ship` finalizes Status and Tracker, sets TRIAGE to Done, and commits this
+  document's move and the updated index before the first push. It opens the PR and
+  waits for CI. The reviewer runs `final-approve` to record the PR, head, and run attempt
+  on the tracking issue. `ship` verifies that evidence, closes the issue, and runs
+  the pre-merge check before the human merges. If a closer command is unavailable,
+  commit the staged close-out and rerun `ship`.
