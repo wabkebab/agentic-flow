@@ -464,7 +464,7 @@ controller_replay_handoff() { # Rule f: immutable body plus the original CAS pos
       controller_foreign || foreign_status=$?
       [ "$foreign_status" -eq 0 ] || [ "$foreign_status" -eq 10 ] || return "$foreign_status" ;;
     3|7)
-      reason=illegal-transition; [ "$rc" -ne 7 ] || reason=plan-effect-pending
+      reason=illegal-transition; [ "$rc" -ne 7 ] || reason='plan-effect-pending'
       controller_hold "$number" "$reason" "Handoff for $run exited $rc; $(cat "$CT_TMP/handoff-output")" "$run" || return $?
       controller_end "$(printf '%s' "$intent" | jq -r .chain)" held || return 5 ;;
     *) return 5 ;;
@@ -523,7 +523,7 @@ controller_completed_effects() { # A crash after a completing exit 3/7 must not 
   while IFS= read -r item; do
     run=$(printf '%s' "$item" | jq -r .latest)
     code=$(printf '%s' "$CT_RECORDS" | jq -r --arg run "$run" '[.[]|select(.kind=="handoff" and .run==$run)]|last|.exit//0')
-    case "$code" in 3) reason=illegal-transition ;; 7) reason=plan-effect-pending ;; *) continue ;; esac
+    case "$code" in 3) reason=illegal-transition ;; 7) reason='plan-effect-pending' ;; *) continue ;; esac
     if printf '%s' "$CT_RECORDS" | jq -e --arg chain "$(printf '%s' "$item" | jq -r .chain)" 'any(.[];.kind=="end" and .chain==$chain)' >/dev/null; then continue; fi
     if [ "$code" = 7 ] && printf '%s' "$CT_REPORT" | jq -e --argjson n "$CT_TRACKER" 'any(.issues[];.number==$n and .state!="open")' >/dev/null; then continue; fi
     intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
