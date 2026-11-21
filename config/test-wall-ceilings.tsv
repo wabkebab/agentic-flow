@@ -9,10 +9,10 @@ stations	435
 stations:launch	15
 stations:verify	105
 stations:handoff	305
-stations:packet	20
+stations:packet	40
 controller	1950
-controller:launch	125
-controller:ship	10
+controller:launch	150
+controller:ship	20
 controller:andon	10
 controller:ledger	60
 controller:recovery	1750
