@@ -495,7 +495,7 @@ fail	"fixture shell inventory missed a manifest source member"
 fail	"focused run passed with a drifted should_run call-site label"
 fail	"focused run passed with its group block disabled"
 fail	"forced export overwrote adopter assurance baseline"
-fail	"full mode made $file_copies fixture file copies; limit 190"
+fail	"full mode made $file_copies fixture file copies; limit 194"
 fail	"fully checked schema-less document was not LEGACY"
 fail	"gap refusal lacked diagnosis: $(cat "$TMP/close.out")"
 fail	"gate cache fixture commit failed"
@@ -1204,8 +1204,8 @@ fail	'foreign takeover not recorded'
 fail	'forged login text bypassed author filter'
 fail	'framed comment exceeds cap'
 fail	'full discovery page lacked bound diagnostic'
-fail	'full fixture budget accepted 191 copies'
-fail	'full fixture budget rejected its approved 190-copy boundary'
+fail	'full fixture budget accepted 195 copies'
+fail	'full fixture budget rejected its approved 194-copy boundary'
 fail	'full fixture copy failure did not name the count and approved limit'
 fail	'full mode did not reuse one source snapshot'
 fail	'full mode exceeded one fixture tree copy'

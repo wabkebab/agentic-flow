@@ -348,7 +348,9 @@ assert_cost_budget() { # <event-file> <fast|full>
     # Approved 2026-11-18: the first full run with the snapshot uncounted
     # (989e849) measured 190 test copies; the derived 188 was two short.
     # The snapshot is counted once above; retain the one-tree and fast limits.
-    [ "$file_copies" -le 190 ] || fail "full mode made $file_copies fixture file copies; limit 190"
+    # Raised to 194 on 2026-11-21 (owner-approved): the first source-layout run of flow-ergonomics
+    # measured 194 copies in CI (run 44872894369); the exported ship-gate does not count them.
+    [ "$file_copies" -le 194 ] || fail "full mode made $file_copies fixture file copies; limit 194"
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
