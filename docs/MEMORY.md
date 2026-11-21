@@ -18,3 +18,6 @@ Gotchas bullet or a `make check` assertion and delete the line.
 | `timeout-exit-not-a-signal` | trap | GNU make on Linux handles TERM and exits 2, so a timeout check that only maps 137/143 to 124 misses real timeouts; decide from the watchdog's marker. |
 | `relative-source-path-after-cd` | trap | `BASH_SOURCE` is relative at call time after the caller `cd`s; resolve a library's directory once at source time. |
 | `fixes-trailer-on-fix-commits` | trap | A hand-made commit on a controller-run step branch needs `Fixes #N`, or the head becomes an `ask`. |
+| `brief-prose-frozen-at-close-out` | trap | `ship` compares the closed doc to the approved brief; at close-out change only the Status block and Tracker, never the brief's prose. |
+| `library-sources-its-dependencies` | trap | A library that calls another library's function must source that library itself; a shard that sources only part of the set hits `command not found`. |
+| `lint-before-push` | trap | `make check` and the ship gate skip shellcheck and the source-layout copy budget; run `make test` (or at least `scripts/shell-inventory.sh --lint`) before pushing. |
