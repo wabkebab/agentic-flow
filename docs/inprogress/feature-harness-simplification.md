@@ -197,9 +197,11 @@ Replace in two steps so the guard never lapses:
      - if any merge or check fails (an unparseable file, a conflicting key), it removes nothing. The hooks stay live and the upgrade reports `pending: command policy not active`. `doctor --check` fails until the policy is active;
      - it sets `core.hooksPath` when it is unset. It then retires the old `scan-secrets.sh` PreToolUse entry only after a working pre-commit path is shown by an **isolated probe**:
        - the probe runs in a new temporary repository, never in the adopter's repository (a commit through a throwaway index still moves the adopter's `HEAD` if the hook lets it through);
-       - that repository is given the adopter's effective hook configuration: the resolved `core.hooksPath` and the scanner it reaches;
+       - **it runs with an explicit Git environment boundary.** Every probe Git command runs with the repository-selection variables cleared: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES` and `GIT_CONFIG_*`. `git -C <probe>` alone still selects the adopter's repository when `GIT_DIR` and `GIT_WORK_TREE` are inherited;
+       - before staging anything it checks, inside the probe repository, that `git rev-parse --absolute-git-dir`, `--show-toplevel` and `--git-path index` all resolve under the temporary directory. Any mismatch aborts the probe, and the old entry stays;
+       - that repository is given the adopter's effective hook configuration: the resolved `core.hooksPath` and the scanner it reaches. It gets its own local `user.name` and `user.email`;
        - it commits a planted credential, built with `printf`, with signing disabled for that one command;
-       - it passes only on the **scanner's own rejection**. `scan-secrets.sh` prints a fixed marker line when it blocks, and the probe requires that marker together with a failed commit. A commit that fails for another reason (signing, a missing identity, another hook) is not proof, so the old entry stays;
+       - it passes only on the **scanner's own rejection**. `scan-secrets.sh` prints a fixed marker line when it blocks, and the probe requires that marker together with a failed commit. A commit that fails for another reason (another hook in the chain, an error in the hook path) is not proof, so the old entry stays. So is a commit that succeeds;
        - the temporary repository is deleted afterwards. The adopter's repository, index and refs are never touched;
      - it reports a custom `core.hooksPath` (husky, lefthook and the like) and doesn't change it, printing the line to chain the secret scan from the existing hook. `doctor --check` fails until the scan is reachable from the active hook path.
    - No stubs. Every retired script keeps its current behaviour in this release, so the fallback really guards. The scripts are deleted in a later release whose upgrade pre-flight refuses to run until the policy is active (Out of scope).
@@ -240,13 +242,12 @@ So the new library carries a **bridge**:
 - It fires **only** from a legacy `upgrade_cmd` (checked through bash's `FUNCNAME` stack), never from the legacy `diff` or `status`, which also load the library. Under `diff` the library stays read-only, as today.
 - It runs `exec "$source/scripts/agentic-flow" upgrade --bridged-from "$FETCH_PARENT" --confirmed` against the same project root, passing the caller's `--force` and `--ref`.
   - **Confirmation carries forward.** The legacy `confirm_upgrade` has already run before the fetch (`scripts/agentic-flow:285`): either `--yes` was given or the human answered yes. Either way, a successful answer leaves `yes=false`. So the bridge passes an internal `--confirmed`, and the new process asks nothing.
-  - `--confirmed` and `--bridged-from` are accepted only together and are not in the usage text. A direct call with them and without a verified fetch directory exits 2.
-- **Cleanup is restricted.** The new process takes over cleanup, because `exec` skips the old EXIT trap. It deletes only a directory that passes all of these checks:
+  - `--confirmed` and `--bridged-from` are accepted only together and are not in the usage text.
+- **Entry validation, before any write.** The new process first validates the `--bridged-from` directory, before it reads the project or writes anything. If any check below fails, it exits 2 and the adopter's files, records and refs are unchanged:
   - a single directory directly under `${TMPDIR:-/tmp}`, named `agentic-flow-fetch.XXXXXX` (the legacy `mktemp` pattern, `scripts/agentic-flow:145`);
   - owned by the current user and not a symlink;
   - contains the fetched clone the new process is running from.
-
-  Anything else is left in place with a warning, and the upgrade continues.
+- **Cleanup after a valid bridged upgrade.** The new process takes over cleanup, because `exec` skips the old EXIT trap. It deletes only the directory it validated at entry. If that deletion fails, it prints a warning naming the directory, and the upgrade's result stands. A warning is the outcome only at cleanup, never at entry.
 - It happens before the old loop applies any file.
 
 An adopter therefore needs one upgrade run, and every s-5 migration and s-6 record write runs on it. The bridge is tested from the twin's actual 0.19.0 `scripts/agentic-flow` (the file at `3a8930a`), not from the new one.
@@ -367,7 +368,8 @@ scripts/publish-scan.sh --resolve <location-id>   # terminal only; never written
 # s-5  legacy bridge (internal; not in usage)
 agentic-flow upgrade --bridged-from <fetch-dir> --confirmed [--force] [--ref <ref>]
 #   fires only from a legacy upgrade_cmd; never from diff or status
-#   cleanup only of ${TMPDIR:-/tmp}/agentic-flow-fetch.XXXXXX owned by the user
+#   entry: <fetch-dir> must be ${TMPDIR:-/tmp}/agentic-flow-fetch.XXXXXX, user-owned, not a symlink -> else exit 2, no writes
+#   exit: delete only that validated directory; a failed delete is a warning
 # s-5  scan-secrets.sh prints a fixed marker line when it blocks; the isolated probe requires it
 # s-5  upgrade migration
 #   removes retired hook entries by command path; sets core.hooksPath if unset; reports a custom one
@@ -491,8 +493,14 @@ Base: `main`. One branch and one PR for the whole brief: `phase-4`. Each step is
      - **still denies**: running the kept hook entries against `git push`, `git add -A` and a workflow-label edit blocks each one;
      - a commit of a planted credential is still blocked by the kept `scan-secrets.sh` entry.
    - **No pre-commit path, no retirement.** A twin with a custom `core.hooksPath` that doesn't chain the scan keeps its `scan-secrets.sh` PreToolUse entry.
-   - **The probe never touches the adopter's repository.** After every migration run, passing or failing, the twin's `HEAD`, branch refs, index and working tree are byte-identical to before. A probe commit that a broken hook lets through lands only in the temporary repository, and the old entry stays.
-   - **Only the scanner counts.** With commit signing forced to fail (a fake `gpg.program`) and no scanner marker, the probe fails and the old entry stays. The same holds for a commit refused by another hook.
+   - **The probe never touches the adopter's repository.** The test snapshots the twin's `HEAD`, all refs, the index and the working tree immediately before the probe runs and immediately after it returns, separately from the migration's own settings edits. The two snapshots are identical in each case:
+     - the probe passes;
+     - the probe fails;
+     - a broken hook path lets the probe's commit through, which then lands only in the temporary repository, and the old entry stays;
+     - the probe runs with `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` exported and pointing at the adopter. The boundary check either isolates it or aborts it, and the adopter's refs and index stay untouched.
+   - **Only the scanner counts.** Two cases fail the probe and keep the old entry:
+     - the effective hook path chains another hook that rejects the commit before the scanner runs, so no scanner marker appears;
+     - the hook path never reaches the scanner, so the commit succeeds in the temporary repository.
    - **Custom hook path.** The same twin with a custom `core.hooksPath` keeps it unchanged and gets the chaining instruction, and `doctor --check` fails until the scan is reachable.
 
 **Upgrade**
@@ -669,7 +677,7 @@ scripts/doctor.sh --check
 - the upgrade migration from a 0.19.0 adopter twin, with a denial checked immediately after upgrade;
 - an interactive bridged upgrade that prompts once;
 - a legacy `diff` that stays read-only;
-- a forged `--bridged-from` path;
+- a forged `--bridged-from` path (wrong name, another owner, a symlink, a directory outside the temp root), which exits 2 with the adopter unchanged;
 - failed activation;
 - the custom hook path;
 - the isolated probe's no-touch and scanner-only checks. Failure path first: a credential-shaped fixture committed from a script, from a station, by a human and from the upgraded twin; and `--no-verify` refused by each CLI's policy.
