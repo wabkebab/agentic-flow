@@ -15,6 +15,7 @@
 - [ ] s-7 Scenario-first brief template with a word cap; red-first opt-in — open
 - [ ] s-8 Methodology reference split, roadmap cut to the open queue, explainer rewritten — open
 - [ ] s-9 Contracts, adoption notes and release notes — open
+- [ ] s-10 Pre-publication scan: secrets, local information and other sensitive content — open
 
 ---
 
@@ -84,6 +85,20 @@ Every adopter customizes `CLAUDE.md`, `AGENTS.md`, `Makefile` and `.claude/setti
 
 The last four Strict briefs had Part A of 3,000–8,900 words and Part B of 4,200–8,100 words. `METHODOLOGY.md` is 7,396 words, and §9–§11 (stack assessment, CI shape, engineering standards) are reference material that no routine planning, execution or review step loads. The roadmap is 45 KB, and most of it is decided history. `docs/agentic-flow-explained.html` is hand-maintained, outside the payload, and describes the 0.14 flow (B-4).
 
+### Publication readiness (owner request, 2026-11-21)
+
+The roadmap decided on 2026-11-11 to publish the repo (R-0f), and R-13 waits on it. Publishing exposes more than the current tree:
+- every commit in history (461 today);
+- every issue, PR and comment (about 186 issues, mostly journal comments written by agents and the controller);
+- commit metadata: author names, emails and signing keys.
+
+Before this brief, nothing has scanned all of that together. A quick count on `41638d4` found:
+- no `/Users/`, `/private/tmp`, `/var/folders` or `.local` hostname in the tree;
+- email-shaped strings in 17 tracked files, not yet classified;
+- no `/Users/` path or owner name in issue bodies.
+
+Neither history nor comment bodies have been scanned. Journal comments carry a `host=` field, and station output went into comments during earlier phases, so both need a scan.
+
 ## Proposed approach
 
 ### Scope: what this pass takes, and what it hands on
@@ -99,6 +114,7 @@ The roadmap lists twelve Phase 4 items. Taking them in one brief would mix three
 | R-16 | s-8, without the reviewer-contract merge | Reviewer-contract merge goes with R-22 | Merging the reviewer files now would be redone by R-22's role-named files |
 | R-14b, R-22 | | **1.0 brief** | Both breaking, both rework `CLAUDE.md`/`AGENTS.md`/`Makefile`; the roadmap already says to plan them together |
 | R-13 | | **After publishing (R-0f)** | Required reviews and branch protection return 403 on this private repo; nothing to build against |
+| Pre-publication scan (owner request) | s-10 | | Publishing (R-0f) exposes history, issues and comments; a scan has to come first, and R-13 waits on publishing |
 | R-23 | | **Re-measure first** | The drift that motivated it did not occur on the last run; a store removal in the controller core needs a measured reason |
 
 ### Ship (s-1 to s-3)
@@ -161,6 +177,33 @@ A record without `upstream=` lines is an older installation, so it behaves as to
   - Cut the roadmap to the open queue plus a link to a `docs/done/` history file.
   - Rewrite `docs/agentic-flow-explained.html` by hand for the current flow (owner's choice, 2026-11-21). It is 59 KB in 11 sections, last changed in substance at 0.14.0, and never mentions `agentic-flow run`, the controller, `ship`, `start`, `verify-step`, andon or the journal. To stop it drifting again, a contracts test checks that it names every subcommand in `scripts/agentic-flow`'s usage text.
 
+### Pre-publication scan (s-10)
+
+The step checks whether the repo is fit to publish and reports the answer. It does not publish anything. The scan is one script, `scripts/publish-scan.sh`, so adopters can reuse it before publishing their own repos. It covers four surfaces:
+
+| Surface | What is scanned | How |
+|---|---|---|
+| Tree | Every tracked file at `HEAD` | `gitleaks dir` plus the local-information patterns |
+| History | Every commit on every ref, including deleted files and old versions | `gitleaks git --log-opts=--all` plus the patterns over `git log -p --all` |
+| Metadata | Author and committer names and emails, signer keys, tag messages | `git log --all --format` |
+| GitHub | Issue and PR bodies and comments, release notes | Read-only `gh api` with pagination |
+
+The local-information patterns (`config/publish-scan.tsv`, built with `printf` where a literal would self-match):
+- absolute home and temp paths (`/Users/<name>`, `/home/<name>`, `/private/tmp`, `/var/folders`);
+- machine hostnames (`*.local`, the `host=` value in run markers);
+- personal email addresses other than GitHub `noreply` addresses and the role bots;
+- private keys and key file names;
+- tokens and `.env`-style assignments;
+- internal URLs and IP addresses;
+- names of the owner's other private projects.
+
+An allow-list file records reviewed false positives with a reason. Each entry is keyed by path, rule and the hash of the matched value, never the value itself.
+
+What happens to findings:
+- **Tree findings** are fixed in the s-10 commit.
+- **History, metadata and GitHub findings** are reported only. Rewriting history and editing or deleting comments are the owner's decisions and are irreversible, so s-10 changes neither.
+- **The report never prints a matched value.** It lists the surface, location, rule and a short hash. The report is committed as `docs/reference/publish-scan.md` with a GO or NO-GO verdict and the reasons.
+
 ## Interface (before the implementation)
 
 ```
@@ -202,6 +245,13 @@ core.hooksPath=scripts/git-hooks ; scripts/git-hooks/pre-commit -> scripts/hooks
 upstream=<sha256>  <path>
 # payload_apply classification adds: kept
 
+# s-10  publish scan
+scripts/publish-scan.sh [--surface tree|history|metadata|github|all] [--report <path>]
+  exit 0 = no unreviewed finding (GO); 1 = findings (NO-GO); 5 = a scanner or API failed (no verdict)
+config/publish-scan.tsv          rule-id<TAB>surface<TAB>pattern<TAB>reason
+config/publish-scan-allow.tsv    path<TAB>rule-id<TAB>sha256-12<TAB>reason
+report line: <surface>  <location>  <rule-id>  <sha256-12>   # never the value
+
 # s-7  brief.sh
 bad("Part B is N words; cap C")         # C = 1500 + 500 * steps; counts '# Part B' up to '## Status'
 ```
@@ -220,6 +270,7 @@ What changes:
 - **Secret scan.** It moves from an agent-only hook to a git hook. It now also covers human commits and commits made from inside a script, which the PreToolUse hook missed.
 - **Lost check.** `require-step-comment.sh`'s check that a commit-closing step has a comment is dropped. That check predates `handoff`: `handoff submit` now owns step evidence, and the controller verifies `Fixes #N` on the head.
 - **Remote head check.** s-2 reads the remote branch over the API with the operator's existing `gh` token, which is read-only use of an existing credential.
+- **Publish scan.** s-10 reads secrets in order to find them, so its output is the risk. It never prints, logs or commits a matched value, only hashes. Its GitHub reads are read-only.
 
 ## Failure behavior
 
@@ -230,6 +281,8 @@ What changes:
 | Desktop notification (s-2) | ignored; the printed line remains | ignored | n/a |
 | Gate record read (s-2) | n/a | missing or invalid record → run the gate | a record for another tree is ignored |
 | Codex/OpenCode rule install (s-4) | n/a | `doctor --stations` fails the station probe and names the CLI | a CLI that ignores the rule keeps its hook until s-5's probe passes |
+| `gh api` paging over issues and comments (s-10) | exit 5, no verdict; never GO on a partial scan | exit 5 | a truncated page fails the scan, not a pass |
+| `gitleaks` (s-10) | exit 5, no verdict | exit 5 | n/a |
 | `pre-commit` hook (s-5) | `scan-secrets.sh` keeps its bounded gitleaks run | a scan error blocks the commit (fail closed, as today) | n/a |
 
 Bounds: the gate record is one file per plan. The policy TSV is capped at 100 rows by the renderer. Upgrade reads one record line per payload file.
@@ -242,6 +295,7 @@ Bounds: the gate record is one file per plan. The policy TSV is capped at 100 ro
 - Merging the two reviewer contract files (R-16 part). That happens with R-22.
 - Parallel App jobs in CI. They are deferred until CI is stable (accepted risk `fe-1`).
 - Any change to the controller's journal, ledger or recovery.
+- Publishing the repo, rewriting history, or editing or deleting issue comments. s-10 only reports; the owner decides and acts.
 - A `ship` that pushes over HTTPS by default. The operator's git protocol stays theirs. s-2 only makes the push short and announced.
 
 ## Decisions (owner, 2026-11-21)
@@ -251,6 +305,7 @@ Bounds: the gate record is one file per plan. The policy TSV is capped at 100 ro
 - **Explainer:** rewrite by hand for the current flow, with a contracts test against drift.
 - **Role-signing:** `feature-role-signing.md` ships after the 1.0 brief that reworks roles.
 - **Brief word cap:** Part B at 1,500 + 500 × steps.
+- **Pre-publication scan:** added as the last step, s-10 (owner request, 2026-11-21).
 
 ## Open questions
 
@@ -272,7 +327,7 @@ id: harness-simplification
 profile: strict
 tracking: Plan: Harness simplification (Phase 4)
 branch: phase-4
-steps: s-1 s-2 s-3 s-4 s-5 s-6 s-7 s-8 s-9
+steps: s-1 s-2 s-3 s-4 s-5 s-6 s-7 s-8 s-9 s-10
 ```
 
 ## Prerequisite
@@ -311,6 +366,15 @@ Base: `main`. One branch and one PR for the whole brief: `phase-4`. Each step is
 9. **Template and cap.** A brief from the new template parses and has Acceptance scenarios before the first step. Red-first lines are `none` except in steps that name a selector. A Part B over 1,500 + 500 × steps words fails `brief_parse`, naming the count and the cap; exactly the cap passes. Every approved brief in `docs/done/` still normalizes to its recorded hash; the cap applies only to briefs approved after this pass (a brief with an `Approval:` rev before the s-7 commit is exempt).
 10. **Reference split.** `METHODOLOGY.md` §9–§11 live in `docs/reference/` with pointers left behind. The roadmap holds only open items and a history link. The explainer describes the current flow, and a contracts test fails when a subcommand in `scripts/agentic-flow`'s usage text is missing from it. `scripts/docs-index.sh`, `check-harness-sync.sh` and the payload manifest agree with the new paths, in this repo and in a fresh export.
 
+**Publication**
+11. **The scan finds and never leaks.** The fixture repo plants, with `printf`:
+    - a credential-shaped token and a home path in a tracked file;
+    - a home path that exists only in a deleted file in history;
+    - a personal email as a commit author;
+    - a `.local` hostname in a fake issue comment.
+
+    `publish-scan.sh --surface all` exits 1 and reports each finding with its surface, location, rule and hash. The report and stdout contain none of the planted values. An allow-listed finding (matching path, rule and hash) is not reported; the same value at another path is. A failing `gitleaks` or a `gh` page error exits 5 with no verdict. A clean fixture exits 0.
+
 ## Invariants (every step)
 - Bash 3.2: no `mapfile`, no associative arrays; guard empty arrays under `set -u`.
 - Payload membership lives in `config/payload.tsv` only.
@@ -326,6 +390,7 @@ Base: `main`. One branch and one PR for the whole brief: `phase-4`. Each step is
 - `make check`, `make test`, `make ship-gate`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
 - This plan's own `ship` runs the gate once and pushes once. A re-run after the final review runs neither. The close-out records gate runs, pushes and CI runs.
 - #109 can be closed with a link to scenario 8's test.
+- `docs/reference/publish-scan.md` records a GO or NO-GO verdict for this repo at the s-10 commit, with every history, metadata and GitHub finding listed for the owner's decision.
 
 ## Verification commands
 ```bash
@@ -336,6 +401,7 @@ make test                           # end of brief
 make ship-gate
 make build
 scripts/shell-inventory.sh --lint
+scripts/publish-scan.sh --surface all   # s-10, needs gh auth
 scripts/doctor.sh --check
 ```
 
@@ -495,6 +561,33 @@ scripts/doctor.sh --check
 **Risks:** root and template contracts drifting; a word ceiling raised instead of text cut.
 **Red-first:** none
 **Commit:** `Document the command policy, pre-commit secret scan and ship re-runs; release 0.20.0`
+
+## s-10 — Pre-publication scan: secrets, local information and other sensitive content
+**Why last:** it has to scan the final tree, including everything this brief adds, and publishing (R-0f) comes only after it.
+
+**Approach:**
+1. Add `scripts/publish-scan.sh`, `config/publish-scan.tsv` and `config/publish-scan-allow.tsv` (Interface), and add them to the payload, so adopters can run the scan before publishing. Reuse `gitleaks` (already required) for credentials. The local-information patterns sit next to it, and the script never adds a second secret detector.
+2. Scan the four surfaces in Part A. Page through every issue and PR with its comments, failing on any truncated page. Review each finding:
+   - a real tree finding is fixed in this commit;
+   - a false positive goes on the allow-list with a reason;
+   - history, metadata and GitHub findings go into the report for the owner.
+3. Write `docs/reference/publish-scan.md`, listing:
+   - the commit scanned, the date and the tool versions;
+   - the count per surface and rule;
+   - every unresolved finding by location, rule and hash, never by value;
+   - for each, the owner's options: rewrite history, edit or delete the comment, rotate the credential, or accept;
+   - a GO or NO-GO verdict.
+
+   If a real credential is found anywhere, the report says to rotate it first, whatever else is decided.
+4. Do not rewrite history, edit or delete GitHub content, or change repo visibility.
+
+**Test:** scenario 11. Failure path first: a planted value in deleted history, a `gh` page error mid-scan, and a check that no output contains a planted value.
+
+**DoD:** scenario 11 passes; the report for this repo is committed with its verdict; the tree has no unreviewed finding.
+**Verify:** `make test-one F=contracts` and `scripts/publish-scan.sh --surface tree`
+**Risks:** a report or log that leaks a matched value; a partial GitHub scan read as GO; an allow-list entry broad enough to hide a real secret (key on path, rule and value hash); patterns that match this script's own rule file (build them with `printf`).
+**Red-first:** `scripts/self-test.sh --only contracts` — scripts/tests/contracts.sh
+**Commit:** `Add a pre-publication scan of tree, history, metadata and GitHub content`
 
 ---
 
