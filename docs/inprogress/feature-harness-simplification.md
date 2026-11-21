@@ -791,7 +791,7 @@ scripts/doctor.sh --check
 ## Status / Implementation status
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
-- **Tracking issue:** pending
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/188
 - **Approval:** status=approved; by=wabkebab; at=2026-11-21; rev=6e81d87232518b09f1e1a40e10113b3612868254
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
