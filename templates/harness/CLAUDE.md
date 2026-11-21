@@ -25,12 +25,19 @@
   answers andon, runs `agentic-flow ship`, and merges. Use supervised `run --once`
   until the unattended entry gate is satisfied (see `ADOPTION.md`).
 
-Controller stations return result JSON and never call `handoff`; the controller verifies
-and journals results. Interactive executors use `brief`, `verify-step`, and `handoff submit`;
-reviewers use `packet`, `verify-step`, and `handoff approve|bounce` (§6). `ship` handles
-push, PR and close-out gates; commit its staged close-out when prompted, then run it again.
-
 **Exactly one role reviews.** An opt-out reassigns the review; it never leaves it to both.
+
+### Station commands
+
+Controller stations return result JSON and never call `handoff`; the controller verifies
+and journals their results. Interactive executors use `brief`, `verify-step`, and
+`handoff submit`; reviewers use `packet`, `verify-step`, and `handoff approve|bounce`.
+States live in `METHODOLOGY.md` §6. Before the first push, run `close-out prep <doc>`
+and commit the staged close-out. The human runs `ship <doc> --wait-review` to push once
+and open the PR.
+`ship` can also prepare and commit the close-out with the configured closer. After CI
+and final-head approval, `ship` runs `close-out finish <moved-doc>` and the pre-merge gate.
+A closed Strict step means reviewed clean. The Status block and CI record shipping.
 
 <!-- OPT-OUT: state any opt-out here, e.g.:
      "Claude-only: no Codex executor and no OpenCode reviewer; Claude plans, executes, and
@@ -129,14 +136,12 @@ Six hooks in `.claude/settings.json` enforce the contract (`METHODOLOGY.md` §8)
 
 ## Document workflow
 
-- New work → copy the matching template from `docs/templates/` into `docs/inprogress/`.
+- Start new Feature or Security work with `agentic-flow start <plan-id> [--type feature|security]`.
+  It creates the plan branch, worktree, and draft in `docs/inprogress/`.
+- Draft and approve the plan on its branch, and edit its roadmap pointers there.
+  Merge updates from `main` into the plan branch. Never rebase it.
 - Security/Feature docs carry an **inlined implementation brief** (approach + ordered steps
   + DoD + verification commands from the Stack profile — **not code**).
-- Approved plan → run the **`plan-to-issues`** skill.
-- States live in `METHODOLOGY.md` §6. Use `brief`, `verify-step`, `handoff submit`
-  for execution and `packet`, `verify-step`, `handoff approve|bounce` for review.
-  Closers use `close-out prep <doc> --pr <url>`, commit, then `close-out finish
-  <moved-doc>` after the human pushes and final-head evidence passes. The human
-  checks lifecycle `--phase pre-merge` immediately before merging.
-- On done (shipped & verified, or risk accepted) → move the doc to `docs/done/`
-  (or `docs/done/security/`); record accepted risks in `docs/accepted_risks.md`.
+- Use the **`plan-to-issues`** skill from the plan worktree after approval.
+- Use close-out to move an implemented plan to `docs/done/`. Record accepted risks in
+  `docs/accepted_risks.md` and move the doc to the applicable done stage.

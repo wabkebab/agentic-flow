@@ -5,9 +5,11 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 usage:
+  agentic-flow start <plan-id> [--type feature|security] [--base <branch>] [--branch <name>] [--no-fetch]
+  agentic-flow clean <plan-id> [--dry-run] [--no-fetch]
   agentic-flow handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]
   agentic-flow handoff <issue> reconcile [--json] [--check]
-  agentic-flow close-out prep <doc> --pr <url> [--dry-run]
+  agentic-flow close-out prep <doc> [--pr <url>] [--dry-run]
   agentic-flow close-out finish <doc>
   agentic-flow ship <doc> [--wait-review]
   agentic-flow final-approve <doc> [--body-file <path>]
@@ -470,6 +472,11 @@ subcommand="${1:-}"
   case "$subcommand" in
     ""|-h|--help) usage; exit 0 ;;
     --version) version_cmd ;;
+    start|clean)
+      shift
+      # shellcheck disable=SC1091 # Installed alongside the CLI.
+      . "$(dirname "$0")/lib/start.sh"
+      plan_worktree_cmd "$subcommand" "$@" ;;
     handoff)
       shift
       # shellcheck disable=SC1091 # Installed alongside the CLI.

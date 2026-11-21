@@ -9,6 +9,32 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="flow-parallel-app-jobs"></a>
+## fe-1 — Parallel App jobs deferred until CI is stable
+
+**Status:** Declined feature
+**Decision date:** 2026-11-20
+**Decided by:** Human owner, when approving the flow-ergonomics brief
+**Tracking:** docs/done/feature-flow-ergonomics.md; tracker #175
+
+### Finding / proposal
+The App job runs the test suite (about 16 minutes) and the exported-layout check (about
+13.5 minutes) one after the other, so a green run takes about 30 minutes. Splitting them into
+parallel jobs would roughly halve the wait.
+
+### Proposed mitigation / implementation
+Two App jobs with `ci-gate` requiring both. 0.19.0 instead cuts the number of App runs per plan
+(one push, bookkeeping filter, App-result carry-forward).
+
+### Acceptance rationale
+CI has been unstable (runner kills, shellcheck memory), and a parallel split adds a new place
+for it to fail. The owner chose to wait until CI is stable and before the repo goes public.
+
+### Revisit if
+- CI stays green for several plans in a row.
+- The repo is about to go public.
+- A single App run grows well beyond 30 minutes.
+
 <a id="phase2b-closes-on-phase3-pr"></a>
 ## h-12 — Phase 2b ships and closes on Phase 3's PR #174
 

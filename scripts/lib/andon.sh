@@ -2,10 +2,9 @@
 # Andon markers are separate from the transition journal. Caller holds the plan lock.
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/ledger.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/journal-comment.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/journal.sh" # journal_jq, used by the hold counter below
 
-andon_mention() {
-  [ -z "${REVIEW_OWNER:-}" ] || printf '\n@%s needs a decision: %s\n' "$REVIEW_OWNER" "$1"
-}
 andon_desktop() {
   if command -v osascript >/dev/null 2>&1; then
     review_bounded osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "agentic-flow"' -e 'end run' "$1" >/dev/null 2>&1 || true
@@ -14,11 +13,13 @@ andon_desktop() {
   fi
 }
 hold_replay() { # normalized comments on stdin; plan -> open authorized markers
-  jq --arg mode "${2:-open}" --arg plan "$1" --arg approvers "$REVIEW_APPROVERS" '
+  # shellcheck disable=SC2016 # jq variables
+  journal_jq --arg mode "${2:-open}" --arg plan "$1" --arg approvers "$REVIEW_APPROVERS" '
+    include "journal-marker";
     if type!="array" or length>100 then error("invalid hold thread") else . end |
     reduce .[] as $c ({holds:[],cleared:[]};
       if ($approvers|split(" ")|index($c.author))==null then . else
-        ($c.body|split("\n")[0]) as $line |
+        ($c.body|journal_marker_line) as $line |
         if ($line|startswith("agentic-flow-hold: ")) then
           ([try ($line|capture("^agentic-flow-hold: v=1; id=(?<plan>[a-z0-9][a-z0-9._-]*)/hold/(?<n>[1-9][0-9]{0,5}); issue=#(?<issue>[1-9][0-9]{0,9}); reason=(?<reason>[a-z0-9][a-z0-9-]{0,79}); run=(?<run>[a-zA-Z0-9/._-]+)$"))]|first) as $h |
           if $h==null or $h.plan!=$plan then . else
@@ -76,7 +77,7 @@ hold_record() { # plan id issue reason run comment_id; imports journal holds bef
 }
 
 hold_transition() { # affected issue event reason run hold-id note [rebaseline]
-  local issue=$1 event=$2 reason=$3 run=$4 id=$5 note=$6 rebaseline=${7:-false} tracker holds match n file="$HANDOFF_TMP/hold-comment" records marker=''
+  local issue=$1 event=$2 reason=$3 run=$4 id=$5 note=$6 rebaseline=${7:-false} tracker holds match n file="$HANDOFF_TMP/hold-comment" records marker='' subject
   handoff_plan_read || return $?
   tracker=$HANDOFF_TRACKER
   if [ -z "$tracker" ]; then
@@ -87,6 +88,7 @@ hold_transition() { # affected issue event reason run hold-id note [rebaseline]
   # shellcheck disable=SC2034 # Returned to handoff_cmd.
   HANDOFF_HOLD_TRACKER=$tracker
   handoff_read "$tracker" || return $?
+  subject=$(journal_subject "$JOURNAL_STEP" "$(jq -r '.title//""' <<< "$HANDOFF_ISSUE")")
   holds=$(hold_snapshot "$HANDOFF_ISSUE") || return 5
   if [ "$event" = hold ]; then
     if [ "$run" != none ]; then
@@ -100,8 +102,11 @@ hold_transition() { # affected issue event reason run hold-id note [rebaseline]
     fi
     ledger_init "$HANDOFF_ROOT" || return 5
     if [ "${HANDOFF_LEDGER_UNAVAILABLE:-false}" = true ]; then records='[]'; else records=$(ledger_read "$HANDOFF_PLAN") || return 5; fi
-    n=$(printf '%s' "$records" | jq --argjson comments "$(printf '%s' "$HANDOFF_ISSUE" | jq .comments.nodes)" --arg p "$HANDOFF_PLAN" '
-      . as $records | [($records[]|select(.kind=="hold")|.hold),($comments[].body|split("\n")[0]|try capture("^agentic-flow-hold: v=1; id=(?<id>[^;]+);").id)] |
+    printf '%s\n' "$HANDOFF_ISSUE" > "$HANDOFF_TMP/hold-tracker" || return 5
+    # shellcheck disable=SC2016 # jq variables
+    n=$(printf '%s' "$records" | journal_jq --slurpfile tracker "$HANDOFF_TMP/hold-tracker" --arg p "$HANDOFF_PLAN" '
+      include "journal-marker";
+      . as $records | [($records[]|select(.kind=="hold")|.hold),($tracker[0].comments.nodes[].body|journal_marker_line|try capture("^agentic-flow-hold: v=1; id=(?<id>[^;]+);").id)] |
       [.[]|select(startswith($p+"/hold/"))|split("/")[-1]|try tonumber] | (max//0)+1') || return 5
     [ "$n" -le 999999 ] || return 5
     id="$HANDOFF_PLAN/hold/$n"
@@ -112,10 +117,12 @@ hold_transition() { # affected issue event reason run hold-id note [rebaseline]
       handoff_error "hold $id: approver unavailable; run agentic-flow handoff $issue hold --as approver --reason $reason where the approver identity exists"
       return 10
     fi
-    printf 'agentic-flow-hold: v=1; id=%s; issue=#%s; reason=%s; run=%s\n%s\n' "$id" "$issue" "$reason" "$run" "$note" > "$file"
-    andon_mention "$reason" >> "$file"
-    ledger_comment "$file" > "$HANDOFF_TMP/redacted-hold" || return 5
-    mv "$HANDOFF_TMP/redacted-hold" "$file"
+    marker="agentic-flow-hold: v=1; id=$id; issue=#$issue; reason=$reason; run=$run"
+    printf '%s' "$note" > "$file.note" || return 5
+    note=$(ledger_comment_redact "$file.note") || return 5
+    journal_summary "$note" > "$file.result" || return 5
+    journal_render hold "$subject" "$marker" \
+      "Issue: #$issue · Reason: $reason" "$(journal_run_marker)" "$file.result" "${REVIEW_OWNER:-}" "$reason" > "$file" || return $?
     handoff_comment "$tracker" "$file" || return $?
     hold_record "$HANDOFF_PLAN" "$id" "$issue" "$reason" "$run" "$HANDOFF_COMMENT_ID" || return 5
     andon_desktop "$reason"
@@ -135,7 +142,9 @@ hold_transition() { # affected issue event reason run hold-id note [rebaseline]
       rebaseline=$(printf '%s' "$match" | jq -r '.rebaseline//false')
     else
       [ "$rebaseline" = false ] || marker='; rebaseline=true'
-      printf 'agentic-flow-hold-clear: id=%s%s\n%s\n' "$id" "$marker" "$note" > "$file"
+      journal_summary "$note" > "$file.result" || return 5
+      journal_render hold-clear "$subject" \
+        "agentic-flow-hold-clear: id=$id$marker" "Hold: $id" '' "$file.result" > "$file" || return $?
       handoff_comment "$tracker" "$file" || return $?
       handoff_fault after-hold-clear-post || return 5
     fi

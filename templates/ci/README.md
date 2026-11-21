@@ -13,9 +13,9 @@ so adopting the harness never activates CI or a deploy behind your back.
 ## Activating `ci.yml`
 
 1. Copy it into `.github/workflows/`.
-2. Fill the path-filter `<ANGLE-BRACKET>` spots for your project. The runtime setup block
-   is filled by `init.sh --stack <profile>` in the inert template before activation.
-   Everything else works unmodified.
+2. Fill the runtime setup block with `init.sh --stack <profile>` in the inert template
+   before activation. App checks run for every path outside the bookkeeping list.
+   Extend that list only when the Docs job covers every check that reads those files.
 3. Confirm `make check`, `make test`, and `make build` are real recipes — the workflow
    calls Make targets so CI green means the same thing as local green.
 4. Re-verify the pinned action SHAs against current releases (§9). A pin you inherited

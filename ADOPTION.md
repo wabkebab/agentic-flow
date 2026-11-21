@@ -119,8 +119,9 @@ identical CLI/model pair. OpenCode has no OS network boundary: before using it u
 accept [opencode-station-network](docs/accepted_risks.md#opencode-station-network)
 in the adopting project's risk register, or assign another CLI. Use supervised
 `run <doc> --once` when the gate is not satisfied; it skips the entry gate and runs
-one station. Answer andon, then run `ship <doc>` when ready; commit the staged close-out
-when prompted, run `ship` again, and merge after its gates pass.
+one station. Answer andon, then run `ship <doc>` from the plan worktree when ready. For
+a new PR, `ship` prepares and commits the close-out before its first push. If it stops
+with a staged close-out, commit it before resuming `ship`. Merge after its gates pass.
 
 For an identical effective CLI and model on both stations, add and approve this entry
 in the project's `docs/accepted_risks.md` before unattended use:
@@ -202,6 +203,13 @@ own. Copy it to `.github/workflows/ci.yml`, fill the `<ANGLE-BRACKET>` spots, an
 **`CI gate`** the only required status check in branch protection. `templates/ci/deploy.yml`
 is the optional deploy counterpart; read its runbook comment before enabling it. See
 `templates/ci/README.md` and `METHODOLOGY.md` §10.
+
+The CI template includes carry-forward for green App checks. It reuses a result only
+when the PR merge checkout has the same tracked App inputs and links the source run.
+To extend the bookkeeping list, add negated path globs to `app` in the active workflow's
+`changes` job path filter. Keep App inputs and payload files out of those globs. Extend
+the Docs filter to cover the new paths and run any checks that can fail on those paths in
+the Docs job. The App input key reads the same bookkeeping list from the active workflow.
 
 Run `scripts/export.sh` from the source scaffold for low-level installs or update
 candidates. It is intentionally source-only; adopted projects receive runtime checks and

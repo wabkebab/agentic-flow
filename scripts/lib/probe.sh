@@ -32,7 +32,7 @@ attempt ledger_dir write_file "$common/agentic-flow/ledger/.probe-$nonce"
 head=$(git rev-parse HEAD)
 outcome=submitted; [ "$1" != reviewer ] || outcome=approve
 jq -cn --arg station "$1" --arg outcome "$outcome" --arg head "$head" \
-  '{v:1,station:$station,outcome:$outcome,head:$head,summary:"Station probe",findings:[],question:null}'
+  '{v:1,station:$station,outcome:$outcome,head:$head,summary:"Station probe",findings:[],question:null,evidence:null}'
 SCRIPT
 }
 

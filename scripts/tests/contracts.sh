@@ -2,6 +2,233 @@
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
 
+# Flow ergonomics scenario 8. Parse the pinned action's single-quoted filter lists.
+ci_bookkeeping_check() (
+  # shellcheck source=scripts/lib/ci-bookkeeping.sh
+  . "$ROOT/scripts/lib/ci-bookkeeping.sh"
+  local active=$1 template=$2 probe=$3 workflow globs template_globs source path matched status=0
+  globs=$(ci_bookkeeping_globs "$active" --check-docs) || fail "$active must use an all-negated App filter with the every predicate"
+  template_globs=$(ci_bookkeeping_globs "$template" --check-docs) || fail "$template must use an all-negated App filter with the every predicate"
+  [ "$globs" = "$template_globs" ] || fail 'CI workflows have different bookkeeping lists'
+
+  # Git ignore patterns and the workflow patterns share literal paths, * and **.
+  # Anchor the patterns and check in an empty repo so the project's ignore rules
+  # and index cannot affect classification.
+  mkdir -p "$probe"
+  git -C "$probe" init -q --template=
+  printf '%s\n' "$globs" | sed 's|^|/|' > "$probe/.gitignore"
+  {
+    while IFS=$'\t' read -r source _rest; do
+      case "$source" in ''|\#*) continue ;; esac
+      printf '%s\0' "$source"
+      if [ -d "$ROOT/$source" ]; then
+        while IFS= read -r -d '' path; do printf '%s\0' "${path#"$ROOT"/}"; done \
+          < <(find "$ROOT/$source" \( -type f -o -type l \) -print0)
+      fi
+    done < "$ROOT/config/payload.tsv"
+    printf '%s\0' README.md docs/README.md docs/accepted_risks.md .editorconfig .gitignore
+  } | git -C "$probe" -c core.excludesFile=/dev/null check-ignore --no-index -z --stdin \
+    > "$probe/matches" || status=$?
+  [ "$status" -le 1 ] || fail 'could not check CI bookkeeping against the payload manifest'
+  if IFS= read -r -d '' matched < "$probe/matches"; then
+    fail "CI bookkeeping matches an App input: $matched"
+  fi
+
+  for path in docs/inprogress/plan.md docs/done/plan.md docs/done/security/plan.md \
+      docs/backlog/plan.md docs/memory/entry.md docs/MEMORY.md ROADMAP.md docs/agentic-flow-explained.html; do
+    git -C "$probe" -c core.excludesFile=/dev/null check-ignore --no-index -q -- "$path" \
+      || fail "CI bookkeeping does not cover $path"
+  done
+  for workflow in "$active" "$template"; do
+    assert_ci_gate_needs_asserted "$workflow"
+    awk -v enabled="if: needs.changes.outputs.docs == 'true'" '
+      /^  [^ ]/ { docs=($1=="docs:") }
+      docs && $0=="    " enabled { condition++ }
+      docs && /^        run: scripts\/docs-index\.sh --check$/ { index_check++ }
+      docs && /^        run: scripts\/check-memory-index\.sh$/ { memory++ }
+      END { exit !(condition==1 && index_check==1 && memory==1) }
+    ' "$workflow" || fail "$workflow Docs job must run the docs and memory index checks"
+  done
+)
+
+# Flow ergonomics scenario 9. Use an actual merge tree with the same PR head
+# before and after the base moves, and mutate tracked inputs in the index.
+ci_app_key_tests() (
+  local fixture="$TMP/ci-app-key" expected key base pr change file
+  git init -q -b main --template= "$fixture"
+  cd "$fixture"
+  git config user.name Fixture
+  git config user.email fixture@example.invalid
+  git config commit.gpgsign false
+  mkdir -p .github/workflows docs/done/security ROADMAP.md
+  cp "$ci_active" .github/workflows/ci.yml
+  printf 'base\n' > base.txt
+  printf 'app\n' > 'app input.sh'
+  printf 'nested App input\n' > ROADMAP.md/input
+  printf 'notes\n' > docs/done/security/plan.md
+  printf 'memory\n' > docs/MEMORY.md
+  git add -- base.txt 'app input.sh' ROADMAP.md/input docs/done/security/plan.md docs/MEMORY.md
+  git commit -qm base
+  base=$(git rev-parse HEAD)
+  git checkout -qb pr
+  printf 'PR\n' > pr.txt
+  git add -- pr.txt
+  git commit -qm pr
+  pr=$(git rev-parse HEAD)
+  git checkout -q --detach "$base"
+  git merge --no-ff -qm 'Original PR merge' "$pr"
+  key=$("$ROOT/scripts/app-input-key.sh") || fail 'could not compute the App key on the merge checkout'
+  expected=$(git -c core.quotePath=true ls-files -s -- base.txt 'app input.sh' ROADMAP.md/input pr.txt | shasum -a 256)
+  [ "$key" = "${expected%% *}" ] || fail 'App key did not hash the staged App inputs'
+
+  printf 'edited notes\n' > docs/done/security/plan.md
+  printf 'new notes\n' > docs/done/.draft.md
+  git add -- docs/done
+  [ "$key" = "$("$ROOT/scripts/app-input-key.sh")" ] || fail 'bookkeeping changed the App key'
+  git reset -q --hard HEAD
+  for change in mode rename delete add contents; do
+    file='app input.sh'
+    case "$change" in
+      mode) git update-index --chmod=+x -- "$file" ;;
+      rename) git mv -- "$file" app-renamed.sh ;;
+      delete) git rm -q -- "$file" ;;
+      add) printf 'added\n' > added.sh; git add -- added.sh ;;
+      contents) printf 'app!\n' > "$file"; git add -- "$file" ;;
+    esac
+    expected=$("$ROOT/scripts/app-input-key.sh") || fail "could not compute the App key after $change"
+    [ "$key" != "$expected" ] || fail "$change did not change the App key"
+    git reset -q --hard HEAD
+  done
+
+  git checkout -q main
+  printf 'new base\n' > base.txt
+  git add -- base.txt
+  git commit -qm 'Move base'
+  git checkout -q --detach main
+  git merge --no-ff -qm 'Updated PR merge' "$pr"
+  expected=$("$ROOT/scripts/app-input-key.sh") || fail 'could not compute the App key after the base moved'
+  [ "$key" != "$expected" ] || fail 'new base content kept the same App key'
+)
+
+ci_job_step() { # <workflow> <job> <step name>
+  awk -v job="$2:" -v step="      - name: $3" '
+    /^  [^ ]/ { in_job=($1==job); in_step=0 }
+    in_job && /^      - / { in_step=($0==step) }
+    in_step { print }
+  ' "$1"
+}
+
+ci_app_cache_tests() (
+  local workflow=$1 checkout key restore report marker save body source result
+  checkout=$(ci_job_step "$workflow" changes Checkout)
+  key=$(ci_job_step "$workflow" changes 'Compute App input key')
+  restore=$(ci_job_step "$workflow" changes 'Restore green App result')
+  report=$(ci_job_step "$workflow" changes 'Report reused App checks')
+  marker=$(ci_job_step "$workflow" app 'Record green App result')
+  save=$(ci_job_step "$workflow" app 'Save green App result')
+  if ! grep -q 'uses: actions/checkout@' <<< "$checkout" || grep -q '^[[:space:]]*ref:' <<< "$checkout"; then
+    fail "$workflow changes job must use the default PR merge checkout"
+  fi
+  grep -Fq 'scripts/app-input-key.sh' <<< "$key" || fail "$workflow does not compute the App key"
+  grep -q 'continue-on-error: true' <<< "$restore" || fail "$workflow cache lookup errors fail the changes job"
+  grep -Fxq "        if: steps.app_cache.outcome == 'success' && steps.app_cache.outputs.cache-hit == 'true'" \
+    <<< "$report" || fail "$workflow cache lookup errors or misses can be reused"
+  grep -Fxq "      app_cached: \${{ steps.app_source.outcome == 'success' && steps.app_source.outputs.cached || 'false' }}" \
+    "$workflow" || fail "$workflow accepts a cache hit without source evidence"
+  grep -Fxq "    if: needs.changes.outputs.app == 'true' && needs.changes.outputs.app_cached != 'true'" \
+    "$workflow" || fail "$workflow App job ignores the cache verdict"
+  grep -Fxq "          key: app-green-v1-\${{ steps.app_key.outputs.key }}" <<< "$restore" \
+    || fail "$workflow restores a cache entry with the wrong key"
+  grep -Fxq "          key: app-green-v1-\${{ needs.changes.outputs.app_key }}" <<< "$save" \
+    || fail "$workflow saves a cache entry with the wrong key"
+  grep -Fxq "        if: success() && steps.app_green.outcome == 'success'" <<< "$save" \
+    || fail "$workflow could save after an App failure"
+  awk '/^  app:/ { app=1 } /^  docs:/ { app=0 }
+    app && /^      - name:/ { before=last; last=$0 }
+    END { exit !(before ~ /Record green App result$/ && last ~ /Save green App result$/) }
+  ' "$workflow" || fail "$workflow saves the green result before App checks finish"
+
+  export APP_CACHE_FILE="$TMP/ci-app-green" GITHUB_STEP_SUMMARY="$TMP/ci-app-summary" \
+    GITHUB_OUTPUT="$TMP/ci-app-output" GITHUB_SERVER_URL=https://github.com \
+    GITHUB_REPOSITORY=owner/repo GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=2
+  source=https://github.com/owner/repo/actions/runs/123/attempts/2
+  body=$(sed -n '/^        run: |$/,$s/^          //p' <<< "$marker")
+  bash -e -c "$body"
+  body=$(sed -n '/^        run: |$/,$s/^          //p' <<< "$report")
+  : > "$GITHUB_OUTPUT"
+  bash -e -c "$body"
+  if ! grep -Fq "$source" "$GITHUB_STEP_SUMMARY" || ! grep -Fxq 'cached=true' "$GITHUB_OUTPUT"; then
+    fail "$workflow does not identify the reused run and attempt"
+  fi
+  : > "$GITHUB_OUTPUT"
+  : > "$APP_CACHE_FILE"
+  bash -e -c "$body" 2>/dev/null && fail "$workflow accepted an empty green marker"
+  [ ! -s "$GITHUB_OUTPUT" ] || fail "$workflow emitted a cache hit for an empty marker"
+
+  for result in skipped failure cancelled; do
+    body=$(ci_job_step "$workflow" ci-gate 'Assert no upstream job failed or was cancelled' \
+      | sed -n '/^        run: |$/,$s/^          //p' \
+      | sed -e "s/\${{ needs\.app\.result }}/$result/g" -e 's/${{ needs\.[a-z-]*\.result }}/success/g')
+    case "$result" in
+      skipped) bash -e -c "$body" || fail "$workflow rejected a skipped App job" ;;
+      *) if bash -e -c "$body" >/dev/null; then fail "$workflow accepted an App job that ended in $result"; fi ;;
+    esac
+  done
+)
+
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  ci_active="$ROOT/.github/workflows/ci.yml"
+  ci_template="$ROOT/templates/ci/ci.yml"
+  if [ "$SELF_TEST_MODE" = fast ] && [ -z "$ONLY_GROUP" ]; then
+    ci_bookkeeping_check "$ci_active" "$ci_template" "$TMP/ci-bookkeeping"
+  else
+    ci_app_key_tests
+    ci_bookkeeping_check "$ci_active" "$ci_template" "$TMP/ci-bookkeeping"
+    ci_app_cache_tests "$ci_active"
+    ci_app_cache_tests "$ci_template"
+    ci_bad="$TMP/ci-invalid"
+    mkdir -p "$ci_bad"
+    for ci_mutation in payload drift gate result readers; do
+      ci_probe_active=$ci_active
+      ci_probe_template=$ci_template
+      case "$ci_mutation" in
+        payload)
+          ci_probe_active="$ci_bad/active"
+          ci_probe_template="$ci_bad/template"
+          sed "s|'!docs/done/\*\*/\*.md'|'!docs/done/**'|" "$ci_active" > "$ci_probe_active"
+          sed "s|'!docs/done/\*\*/\*.md'|'!docs/done/**'|" "$ci_template" > "$ci_probe_template"
+          ci_expected='CI bookkeeping matches an App input'
+          ;;
+        drift)
+          ci_probe_template="$ci_bad/template"
+          sed '/!ROADMAP\.md/d' "$ci_template" > "$ci_probe_template"
+          ci_expected='CI workflows have different bookkeeping lists'
+          ;;
+        gate)
+          ci_probe_active="$ci_bad/active"
+          sed 's/needs: \[changes, secrets-scan, app, docs\]/needs: [changes, secrets-scan, app]/' \
+            "$ci_active" > "$ci_probe_active"
+          ci_expected='does not match its actual job set'
+          ;;
+        result)
+          ci_probe_active="$ci_bad/active"
+          sed 's/needs\.docs\.result/needs.app.result/' "$ci_active" > "$ci_probe_active"
+          ci_expected="ci-gate loop does not assert on job 'docs'"
+          ;;
+        readers)
+          ci_probe_active="$ci_bad/active"
+          sed '/run: scripts\/check-memory-index\.sh/d' "$ci_active" > "$ci_probe_active"
+          ci_expected='Docs job must run the docs and memory index checks'
+          ;;
+      esac
+      ci_bookkeeping_check "$ci_probe_active" "$ci_probe_template" "$TMP/ci-bookkeeping" > "$ci_bad/out" 2>&1 \
+        && fail "CI bookkeeping check accepted the $ci_mutation fixture"
+      grep -Fq "$ci_expected" "$ci_bad/out" || fail "CI bookkeeping check missed the $ci_mutation diagnostic"
+    done
+  fi
+fi
+if [ "$SELF_TEST_MODE" = fast ] && [ -z "$ONLY_GROUP" ]; then return 0; fi
+
 # Scenario 11: advance a private clock from inert group and scenario bodies.
 wall_ceiling_tests() (
   local fixture="$TMP/wall-ceilings" key tag gate missing
@@ -183,7 +410,7 @@ SHARD_PROBE
   git -C "$fixture" init -q
   : > "$fixture/scripts/export.sh"
   parallel_probe 1 budget --jobs 2
-  grep -q 'full mode made 240 fixture file copies; limit 190' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
+  grep -q 'full mode made 240 fixture file copies; limit 194' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
   [ "$(cost_count "$fixture/events" source_snapshot_copy)" -eq 1 ] || fail 'parallel dispatcher duplicated the source snapshot'
 
   expected='export contracts upgrade hooks plan-to-issues lifecycle stations/launch stations/verify stations/handoff stations/packet controller/launch controller/ship controller/andon controller/ledger controller/recovery '
@@ -1615,19 +1842,6 @@ if [ -d "$ROOT/templates/harness" ]; then
   done
 fi
 
-# docs-index.sh treats every .md under docs/ as a lifecycle document and fails make check on
-# anything outside its four stages. The memory tree is not a lifecycle stage, so it has to be
-# skipped explicitly — assert with a real file rather than by reading the case statement.
-MEMDOC_FIXTURE="$ROOT/docs/memory/self-test-stage-probe.md"
-if active_scope docs; then
-  printf '%s\n' '# probe' > "$MEMDOC_FIXTURE"
-  if ! "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1; then
-    rm -f "$MEMDOC_FIXTURE"
-    fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
-  fi
-  rm -f "$MEMDOC_FIXTURE"
-fi
-
 # The tree ships empty. docs/MEMORY.md must NOT be payload: it accumulates adopter-local
 # entries in place, and upgrade --force overwrites a manifest row unconditionally.
 grep -q '^docs/memory/\.gitkeep' "$ROOT/config/payload.tsv" \
@@ -1775,6 +1989,14 @@ AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check \
 grep -q "undeclared docs stage" "$TMP/docs-stage.err" \
   || fail "docs-index undeclared-stage failure did not explain the problem"
 
+# Memory entries must leave the fixture's lifecycle index unchanged.
+rm -r "$DOC_STAGE_FIX/docs/unknown"
+mkdir "$DOC_STAGE_FIX/docs/memory"
+AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" >/dev/null
+printf '%s\n' '# probe' > "$DOC_STAGE_FIX/docs/memory/self-test-stage-probe.md"
+AGENTIC_PROJECT_ROOT="$DOC_STAGE_FIX" "$ROOT/scripts/docs-index.sh" --check >/dev/null 2>&1 \
+  || fail "docs-index.sh rejects a .md under docs/memory/ — extend its skip list"
+
 MEASURE_FIX="$TMP/measure"
 mkdir -p "$MEASURE_FIX/root/docs" "$MEASURE_FIX/root/.agents/skills/review-execution" \
   "$MEASURE_FIX/events"
@@ -1809,17 +2031,17 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
     || fail 'fixture budget did not identify repeated tree copying'
   printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
-  for ((copy_i=0; copy_i<191; copy_i++)); do
+  for ((copy_i=0; copy_i<195; copy_i++)); do
     printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   done
   ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
     > "$MEASURE_FIX/full-files.out" 2>&1 \
-    && fail 'full fixture budget accepted 191 copies'
-  grep -q 'full mode made 191 fixture file copies; limit 190' "$MEASURE_FIX/full-files.out" \
+    && fail 'full fixture budget accepted 195 copies'
+  grep -q 'full mode made 195 fixture file copies; limit 194' "$MEASURE_FIX/full-files.out" \
     || fail 'full fixture copy failure did not name the count and approved limit'
   sed '$d' "$MEASURE_FIX/full-files.events" > "$MEASURE_FIX/full-boundary.events"
   assert_cost_budget "$MEASURE_FIX/full-boundary.events" full \
-    || fail 'full fixture budget rejected its approved 190-copy boundary'
+    || fail 'full fixture budget rejected its approved 194-copy boundary'
 fi
 : > "$MEASURE_FIX/fast-files.events"
 for ((copy_i=0; copy_i<34; copy_i++)); do

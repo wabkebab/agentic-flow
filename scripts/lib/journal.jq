@@ -1,4 +1,6 @@
 # Input is already normalized at the API boundary. No GitHub I/O here.
+include "journal-marker";
+
 def authorized($role; $author):
   (if $role=="executor" then $executors elif $role=="reviewer" then $reviewers
    elif $role=="approver" then $approvers else "" end | split(" ") | index($author)) != null;
@@ -27,8 +29,8 @@ def accept($t; $c; $old):
     elif $t.event=="ask" then .return_to=$t.from
     elif $t.event=="resume" then .bounces=0 else . end
   end;
-def transition($c):
-  try ($c.body|split("\n")[0] |
+def transition($line):
+  try ($line |
     capture("^agentic-flow-transition: v=1; id=(?<plan>[a-z0-9][a-z0-9._-]*)/(?<step>[a-z0-9][a-z0-9._-]*)/(?<seq>[1-9][0-9]{0,5})/(?<event>submit|bounce|resume|approve|notify|close|ask); event=(?<same>submit|bounce|resume|approve|notify|close|ask); from=(?<from>[a-z-]+); role=(?<role>executor|reviewer|approver); head=(?<head>[a-f0-9]{40}|none)(; return=(?<return>executing|reviewing))?$") |
     select(.event==.same and ($plan=="" or .plan==$plan) and ($step=="" or .step==$step)) |
     .seq|=tonumber | .id="\(.plan)/\(.step)/\(.seq)/\(.event)") catch null;
@@ -48,9 +50,10 @@ reduce .[] as $c
   ({state:(if $topology=="tracker" then "open" else "executing" end), seq:0,
     return_to:"executing",bounces:0,submitted_head:"none",approved_head:"none",last_bounced_head:"none",
     latest:null,skipped:0,accepted:[],unjournaled:null,prefix:$legacy};
+    ($c.body|journal_marker_line) as $line |
     if .unjournaled!=null then .
-    elif ($c.body|startswith("agentic-flow-transition:")) then
-      .prefix=false | ([transition($c)] | map(select(.!=null)) | .[0]) as $t |
+    elif ($line|startswith("agentic-flow-transition:")) then
+      .prefix=false | ([transition($line)] | map(select(.!=null)) | .[0]) as $t |
       if $t==null then .skipped+=1 else accept($t;$c;false) end
     elif .prefix then
       ([legacy_marker($c)]|map(select(.!=null))|.[0]) as $t |

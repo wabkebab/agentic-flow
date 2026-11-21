@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034 # Context globals are the replay/lifecycle interface.
 # Pure journal derivation. Call workflow_load and read_review_policy before replay.
+# Resolved once, when this file is sourced: BASH_SOURCE is relative if the caller sourced it by a
+# relative path, and it no longer resolves after the caller changes directory.
+JOURNAL_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+journal_jq() { # jq with the shared journal marker module on its search path
+  jq -L "$JOURNAL_LIB_DIR" "$@"
+}
+
 journal_stamp() { # issue body -> {plan,step,topology,legacy}
   jq -Rsc '
     [split("\n")[] | select(startswith("<!-- agentic-flow:plan:"))] as $lines |
@@ -33,9 +40,9 @@ journal_context() { # body; caller retains globals for replay
 journal_replay() { # normalized comments JSON, topology; stamp context via JOURNAL_*
   local rules
   rules=$(printf '%s\n' "$WORKFLOW_DATA" | jq -Rsc 'split("\n") | map(select(length>0)|split("\t"))') || return 1
-  printf '%s' "$1" | jq --arg topology "$2" --arg plan "${JOURNAL_PLAN:-}" \
+  printf '%s' "$1" | journal_jq --arg topology "$2" --arg plan "${JOURNAL_PLAN:-}" \
     --arg step "${JOURNAL_STEP:-}" --argjson legacy "${JOURNAL_LEGACY:-false}" \
     --arg reviewers "$REVIEW_REVIEWERS" --arg executors "$REVIEW_EXECUTORS" \
     --arg approvers "$REVIEW_APPROVERS" --argjson rules "$rules" \
-    -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/journal.jq"
+    -f "$JOURNAL_LIB_DIR/journal.jq"
 }

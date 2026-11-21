@@ -324,9 +324,11 @@ c6_tests() (
   HANDOFF_TMP=$fixture SHIP_ROOT=$fixture SHIP_DOC=docs/inprogress/plan.md
   HANDOFF_REPO=owner/repo SHIP_PLAN=shipping SHIP_BRANCH=feature SHIP_BASE=release SHIP_TITLE=Shipping
   SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  SHIP_CI_TIMEOUT=3600
   SHIP_RUN_URL=https://github.com/owner/repo/actions/runs/7 SHIP_ATTEMPT=2
   local pr='{"number":3,"url":"https://github.com/owner/repo/pull/3","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"release","isCrossRepository":false}'
   SHIP_PR=null
+  local AGENTIC_CLOSER_COMMIT=''
   git() {
     case "$1" in status) [ "$mode" != dirty ] || printf ' M docs/done/plan.md\n' ;;
       push) printf 'push\n' >> "$fixture/actions" ;;
@@ -334,13 +336,10 @@ c6_tests() (
       update-ref) printf 'delete %s\n' "$3" >> "$fixture/actions" ;;
       *) return 99 ;; esac
   }
-  brief_approved_at_head() { return 0; }
   brief_approval() { printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\towner\n'; }
-  close_out_load() { CLOSE_TARGET=1; printf 'admit\n' >> "$fixture/actions"; }
-  close_out_cmd() { printf '%s\n' "$1" >> "$fixture/actions"; }
+  close_out_cmd() { printf '%s\n' "$*" >> "$fixture/actions"; }
   handoff_gh() {
     case "$1 $2" in
-      'pr create') printf '%s\n' "$*" >> "$fixture/actions" ;;
       'pr list') printf '[%s]\n' "$pr" ;;
       *) return 99 ;; esac
   }
@@ -355,9 +354,12 @@ c6_tests() (
       *) printf 'READY fixture\n' ;; esac
   }
   ship_run false > "$fixture/out" || fail 'first ship failed'
-  [ "$(head -3 "$fixture/actions" | tr '\n' /)" = 'admit/push/pr create --repo owner/repo --head feature --base release --title Shipping --body Implementation of https://github.com/owner/repo/issues/1/' ] || fail 'ship did not admit, push and open against plan base'
-  grep -q '^prep$' "$fixture/actions" || fail 'ship skipped prep'
+  [ "$(cat "$fixture/actions")" = 'prep docs/inprogress/plan.md' ] || fail 'ship did not stage close-out before its first push'
   grep -q 'commit the staged close-out' "$fixture/out" || fail 'ship did not stop for close-out commit'
+  SHIP_PR=$pr
+  : > "$fixture/actions"
+  ship_run false > "$fixture/out" || fail 'legacy ship prep failed'
+  grep -Fxq "prep $SHIP_DOC --pr https://github.com/owner/repo/pull/3" "$fixture/actions" || fail 'legacy ship omitted the existing pull URL'
   SHIP_DOC=docs/done/plan.md
   mode=dirty; : > "$fixture/actions"
   rc=0; ship_run false > "$fixture/out" 2>&1 || rc=$?
@@ -371,17 +373,18 @@ c6_tests() (
           grep -q "$value" "$fixture/out" || fail 'approval wait omitted evidence context'
         done ;;
     esac
-    if grep -q '^finish$' "$fixture/actions"; then fail 'unready ship ran finish'; fi
+    if grep -q '^finish ' "$fixture/actions"; then fail 'unready ship ran finish'; fi
   done
   mode=ready; : > "$fixture/actions"
   ship_run false > "$fixture/out" || fail 'ready ship failed'
-  [ "$(head -5 "$fixture/actions" | tr '\n' /)" = 'push/ci/close-out/finish/pre-merge/' ] || fail 'ship phases ran out of order'
+  [ "$(head -5 "$fixture/actions" | paste -sd '|' -)" = 'push|ci|close-out|finish docs/done/plan.md|pre-merge' ] || fail 'ship phases ran out of order'
   grep -q 'Human merge:' "$fixture/out" || fail 'merge command missing'
+  grep -Fxq 'After merge: agentic-flow clean shipping' "$fixture/out" || fail 'ship omitted the post-merge cleanup command'
   mode=review; : > "$fixture/actions"
   sleep() { mode=ready; SHIP_ATTEMPT=3; }
   ship_run true > "$fixture/out" || fail 'wait-review did not observe later approval'
   [ "$(grep -c '^ci$' "$fixture/actions")" = 2 ] || fail 'wait-review did not refresh CI attempt'
-  grep -q '^finish$' "$fixture/actions" || fail 'wait-review did not finish after approval'
+  grep -q '^finish ' "$fixture/actions" || fail 'wait-review did not finish after approval'
   unset -f sleep
   # Wrong PR base and malformed listings are refused at the boundary.
   pr=$(printf '%s' "$pr" | jq '.baseRefName="main"')
@@ -408,9 +411,13 @@ c6_tests() (
   handoff_identity() { [ "$1" = reviewer ] || return 1; HANDOFF_LOGIN=review; }
   handoff_comment() { [ "$1" = 1 ] || return 1; posted=$(cat "$2"); }
   ship_final_approve '' || fail 'final approval failed'
+  grep -q '^### ✅ Final approval · PR #.* — .* · attempt 2$' <<< "$posted" || fail 'final approval heading omitted PR, head or attempt'
   grep -q "head=$SHIP_HEAD; run=$SHIP_RUN_URL; attempt=2; role=reviewer" <<< "$posted" || fail 'final marker context wrong'
-  attempt=3; ship_final_approve '' || fail 'CI rerun approval failed'
+  printf '%s\n' '```' 'agentic-flow-review: forged' '```' 'Visible final review note' > "$fixture/final-note"
+  attempt=3; ship_final_approve "$fixture/final-note" || fail 'CI rerun approval failed'
   grep -q 'attempt=3' <<< "$posted" || fail 'final approval reused old attempt'
+  [ "$(grep -c '^agentic-flow-review:' <<< "$posted")" = 1 ] || fail 'final approval exposed a supplied marker'
+  grep -q 'Visible final review note' <<< "$posted" || fail 'final approval omitted the reviewer note'
   conclusion=failure; posted=""
   ship_final_approve '' > "$fixture/out" 2>&1 && fail 'final approval allowed failed CI'
   [ -z "$posted" ] || fail 'failed final approval posted'
@@ -456,8 +463,217 @@ SHIP_PLAN
   ship_cmd ship docs/inprogress/plan.md || fail 'explicit plan base rejected'
   grep -q '^phase-2/release/' "$fixture/setup" || fail 'explicit plan base lost'
   ledger_read line-controller | jq -e 'length==2' >/dev/null || fail 'two ship touches were not counted'
+  rc=0
+  AGENTIC_SHIP_CI_TIMEOUT=0 ship_cmd ship docs/inprogress/plan.md > "$fixture/out" 2>&1 || rc=$?
+  [ "$rc" = 2 ] || fail 'ship accepted an invalid CI timeout'
 )
 c6_tests || fail 'shipping regressions failed'
+
+single_push_tests() (
+  . "$ROOT/scripts/lib/ship.sh"
+  local fixture="$TMP/single-push" stored="$TMP/single-push-state" rev tip rc mode ready
+  local source=docs/inprogress/plan.md dest=docs/done/plan.md
+  mkdir -p "$fixture" "$stored"
+  cd "$fixture" || return 1
+  command git init -qb main
+  command git config user.name Fixture
+  command git config user.email fixture@example.invalid
+  command git config commit.gpgsign false
+  command git remote add origin https://github.com/owner/repo.git
+  command git commit --allow-empty -qm base
+  local plan_worktree="$fixture/.git/agentic-flow/worktrees/shipping-fixture"
+  command git worktree add -qb feature "$plan_worktree" || fail 'shipping fixture could not create a linked worktree'
+  cd "$plan_worktree" || return 1
+  mkdir -p config docs/inprogress scripts
+  ln "$ROOT/config/workflow.tsv" config/workflow.tsv
+  ln -s "$ROOT/scripts/hooks" scripts/hooks
+  ln -s "$ROOT/scripts/lib" scripts/lib
+  cp "$ROOT/docs/README.md" docs/README.md
+  printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=owner owner=owner > .agentic-flow-review-policy
+  cat > "$source" <<'SHIP_DOC'
+> **Type:** Feature · **Status:** 🚧 In progress
+> **Assurance:** Standard
+> Ship <example> without mentioning @someone.
+
+# Feature — Single push
+
+## Tracker
+- [ ] alpha — open
+# Part B — Implementation brief
+```agentic-flow-plan
+id: shipping-fixture
+profile: standard
+branch: feature
+base: release
+steps: alpha
+```
+## Alpha — Ship | <!-- note --> @someone
+**DoD:** ship finishes
+**Verify:** make check
+**Risks:** stale head
+**Red-first:** none
+
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** pending
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=close-out-attestation
+- **Memory:** pending
+SHIP_DOC
+  printf '%s\n' fixture > fixture.txt
+  export FIXTURE_SCRIPTS="$ROOT/scripts" SHIP_TEST_STATE=$stored SHIP_TEST_MODE=''
+  cat > scripts/docs-index.sh <<'INDEX'
+#!/usr/bin/env bash
+set -e
+"$FIXTURE_SCRIPTS/docs-index.sh" "$@"
+printf 'prep\n' >> "$SHIP_TEST_STATE/actions"
+if [ "$SHIP_TEST_MODE" = prep-stray ]; then
+  printf '%s\n' stray >> fixture.txt
+  command git add -- fixture.txt
+fi
+INDEX
+  cat > scripts/lifecycle-status.sh <<'LIFECYCLE'
+#!/usr/bin/env bash
+if [ "$3" = --validate-doc-status ]; then exec "$FIXTURE_SCRIPTS/lifecycle-status.sh" "$@"; fi
+printf 'READY fixture\n'
+LIFECYCLE
+  chmod +x scripts/docs-index.sh scripts/lifecycle-status.sh
+  AGENTIC_PROJECT_ROOT=$plan_worktree scripts/docs-index.sh >/dev/null
+  command git add -- .agentic-flow-review-policy config/workflow.tsv docs/README.md "$source" fixture.txt \
+    scripts/docs-index.sh scripts/lifecycle-status.sh scripts/hooks scripts/lib
+  command git commit -qm brief
+  rev=$(command git rev-parse HEAD)
+  sed "/^- \*\*Approval:\*\*/s/pending$/status=approved; by=owner; at=2026-01-01; rev=$rev/" "$source" > "$stored/approved"
+  cp "$stored/approved" "$source"
+  command git add -- "$source"
+  command git commit -qm approval
+  tip=$(command git rev-parse HEAD)
+  export AGENTIC_CLOSER_COMMIT="$stored/closer"
+  cat > "$AGENTIC_CLOSER_COMMIT" <<'CLOSER'
+#!/usr/bin/env bash
+printf 'commit\n' >> "$SHIP_TEST_STATE/actions"
+[ "$1" = commit ] && [ "$3" = 'Close out Single push.' ] && [ "$6" = -- ] &&
+  [ "$7 $8 $9" = 'docs/README.md docs/done/plan.md docs/inprogress/plan.md' ] || exit 37
+case "$SHIP_TEST_MODE" in
+  commit-fail) exit 38 ;;
+  commit-noop) exit 0 ;;
+esac
+exec git -c user.name=Closer "$@"
+CLOSER
+  chmod +x "$AGENTIC_CLOSER_COMMIT"
+  handoff_plan_read() {
+    HANDOFF_ISSUES=1
+    jq -n --arg rev "$rev" '{body:("<!-- agentic-flow:plan:shipping-fixture step:alpha spec:"+$rev+" approved="+$rev+" journal=v1 -->\n<!-- agentic-flow:topology:standard -->")}' > "$HANDOFF_TMP/1.issue"
+    jq -n --arg head "$tip" '{state:"closing",accepted:[{event:"submit",head:$head},{event:"bounce"},{event:"approve",head:$head}]}' > "$HANDOFF_TMP/1.replay"
+  }
+  git() {
+    if [ "$1" = push ]; then
+      [ "$4" = "$SHIP_HEAD:refs/heads/feature" ] && command git cat-file -e "$SHIP_HEAD:$dest" || return 39
+      printf 'push\n' >> "$stored/actions"
+      if [ ! -f "$stored/remote-head" ] || [ "$(cat "$stored/remote-head")" != "$SHIP_HEAD" ]; then
+        printf 'update\n' >> "$stored/actions"
+      fi
+      printf '%s\n' "$SHIP_HEAD" > "$stored/remote-head"
+    else
+      command git "$@"
+    fi
+  }
+  handoff_gh() {
+    case "$1 $2" in
+      'pr list')
+        if [ -f "$stored/pr" ]; then cat "$stored/pr"; else printf '[]\n'; fi ;;
+      'pr create')
+        printf 'create\n' >> "$stored/actions"
+        [ "$SHIP_TEST_MODE" != create-fail ] || return 1
+        [ "${*:3:6}" = '--repo owner/repo --head feature --base release' ] &&
+          [ "${10}" = 'Single push' ] && [ "${11}" = --body-file ] || fail 'ship did not admit, push and open against plan base'
+        cp "${12}" "$stored/pr-body"
+        jq -n --arg head "$(cat "$stored/remote-head")" '[{number:3,url:"https://github.com/owner/repo/pull/3",headRefOid:$head,baseRefName:"release",isCrossRepository:false}]' > "$stored/pr" ;;
+      *) return 99 ;;
+    esac
+  }
+  ship_gate() { printf 'gate\n' >> "$stored/actions"; }
+  ship_ci() {
+    [ "$SHIP_TEST_MODE" != ci-fail ] || { ship_error 'CI failed'; return 1; }
+    SHIP_RUN_URL=https://github.com/owner/repo/actions/runs/7 SHIP_ATTEMPT=1
+  }
+  ship_lifecycle() {
+    printf '%s\n' "$1" >> "$stored/actions"
+    if [ "$ready" = false ]; then printf 'NEEDS-REVIEW fixture\n'; return 1; fi
+    printf 'READY fixture\n'
+  }
+  handoff_cmd() {
+    [ "$1 $2" = '1 close' ] || return 41
+    printf 'finish\n' >> "$stored/actions"
+  }
+  sleep() { ready=true; }
+  close_out_cmd prep "$source" --dry-run > "$stored/out" || fail 'close-out prep failed in a linked worktree'
+  grep -Fq "Would move $source to $dest" "$stored/out" && [ -z "$(git status --porcelain)" ] ||
+    fail 'close-out dry run changed or omitted the worktree paths'
+  for mode in dirty prep-stray commit-fail commit-noop manual create-fail ci-fail happy; do
+    command git reset --hard "$tip" >/dev/null
+    rm -f "$stored/pr" "$stored/remote-head" "$stored/pr-body"
+    : > "$stored/actions"
+    SHIP_TEST_MODE=$mode ready=true rc=0
+    case "$mode" in
+      dirty) printf 'dirty\n' >> fixture.txt; git add -- fixture.txt ;;
+      happy) ready=false ;;
+    esac
+    if [ "$mode" = manual ]; then
+      AGENTIC_CLOSER_COMMIT='' ship_cmd ship "$source" > "$stored/out" 2>&1 || rc=$?
+    else
+      ship_cmd ship "$source" --wait-review > "$stored/out" 2>&1 || rc=$?
+    fi
+    case "$mode" in
+      dirty) [ "$rc" = 1 ] && [ ! -s "$stored/actions" ] || fail 'stray staged file reached preparation' ;;
+      prep-stray) [ "$rc" = 1 ] && [ "$(cat "$stored/actions")" = prep ] || fail 'closer saw an unexpected staged path' ;;
+      commit-fail|commit-noop)
+        [ "$rc" = 1 ] && [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit' ] || fail "ship continued after $mode: $(cat "$stored/out")"
+        [ -n "$(git diff --cached --name-only)" ] || fail 'closer failure discarded staging'
+        if [ "$mode" = commit-fail ]; then
+          grep -q "$dest" "$stored/out" && grep -qF "$AGENTIC_CLOSER_COMMIT" "$stored/out" || fail 'closer failure omitted recovery details'
+        fi
+        rc=0; ship_cmd ship "$source" >> "$stored/out" 2>&1 || rc=$?
+        [ "$rc" = 1 ] && [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit' ] || fail 'ship reran a staged close-out' ;;
+      manual)
+        [ "$rc" = 0 ] && [ "$(cat "$stored/actions")" = prep ] || fail 'manual close-out pushed before the commit'
+        grep -Fxq -- '- **Implementation PR:** source=final-approval' "$dest" || fail 'manual prep omitted the PR source'
+        [ "$(git diff --cached --name-only --no-renames)" = "$(printf '%s\n' docs/README.md "$dest" "$source")" ] || fail 'prep staged the wrong paths'
+        git commit -qm manual
+        ship_cmd ship "$source" > "$stored/out" 2>&1 || fail "ship could not resume a manual commit: $(cat "$stored/out")" ;;
+      create-fail)
+        [ "$rc" = 5 ] && [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit|gate|push|update|create' ] || fail 'PR creation failure lost the committed push'
+        SHIP_TEST_MODE=retry
+        ship_cmd ship "$source" > "$stored/out" 2>&1 || fail 'ship could not retry PR creation' ;;
+      ci-fail)
+        [ "$rc" = 1 ] && [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit|gate|push|update|create' ] || fail 'failed CI advanced close-out' ;;
+      happy)
+        [ "$rc" = 0 ] || fail "single-push shipping failed: $(cat "$stored/out")"
+        grep -q '^prep$' "$stored/actions" || fail 'ship skipped prep'
+        [ "$(paste -sd '|' "$stored/actions")" = 'prep|commit|gate|push|update|create|close-out|close-out|finish|pre-merge' ] || fail 'single-push shipping phases ran out of order'
+        [ "$(git log -1 --format=%an)" = Closer ] && [ "$(git rev-parse HEAD^)" = "$tip" ] || fail 'the closer did not create exactly one commit'
+        grep -qF -- 'Ship &lt;example&gt; without mentioning @‍someone.' "$stored/pr-body" || fail 'ship did not render an escaped goal'
+        grep -qF -- "Alpha — Ship \| &lt;!-- note --&gt; @‍someone | [#1](https://github.com/owner/repo/issues/1) | \`${tip:0:12}\` | 1" "$stored/pr-body" || fail 'PR step row omitted replay facts or escaping'
+        grep -qF -- "https://github.com/owner/repo/blob/$rev/$source" "$stored/pr-body" || fail 'PR did not link to the approved brief'
+        grep -qF -- '[Tracking issue](https://github.com/owner/repo/issues/1)' "$stored/pr-body" || fail 'PR did not link to the tracker'
+        grep -qFx -- '## Feature — Single push' "$stored/pr-body" || fail 'PR did not show the approved title' ;;
+    esac
+    case "$mode" in manual|create-fail|ci-fail|happy)
+      [ "$(grep -c '^update$' "$stored/actions")" = 1 ] || fail 'close-out updated the remote more than once' ;;
+    esac
+  done
+  jq -n --arg head "$tip" '
+    {pull_request:{title:"Large plan",goal:"Long goal",brief:"brief",tracker:"tracker",issue_root:"issues",
+      steps:[range(1;21) | {title:("Step \(.) — "+("<!-- @user <placeholder> --> | " * 200)),issue:.,head:$head,bounces:0}]}}' |
+    journal_render_pr > "$stored/large-body" || fail 'long PR body rendering failed'
+  jq -Rse 'length <= 65536 and (split("\n") | map(select(contains("[#"))) | length == 20)' "$stored/large-body" >/dev/null ||
+    fail 'long PR body exceeded the limit or lost a step'
+)
+single_push_tests || fail 'single-push close-out regressions failed'
+
 c6_visibility_tests() (
   . "$ROOT/scripts/lib/ship.sh"
   local fixture="$TMP/ship-visibility" now=0 polls=0 scenario=delayed rc=0
@@ -466,7 +682,7 @@ c6_visibility_tests() (
   SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   REVIEW_WORKFLOW=.github/workflows/ci.yml
   date() { printf '%s\n' "$now"; }
-  sleep() { now=$((now+10)); }
+  sleep() { now=$((now+$1)); }
   ship_pr() {
     polls=$((polls+1))
     case "$scenario" in
@@ -502,8 +718,11 @@ c6_visibility_tests() (
     esac
   done
   scenario=missing polls=3 now=0 rc=0
-  ship_wait_ci > "$fixture/out" 2>&1 || rc=$?
+  ship_wait_ci 3600 > "$fixture/out" 2>&1 || rc=$?
   [ "$rc" = 1 ] && [ "$now" = 0 ] || fail 'ordinary missing CI wait did not refuse'
+  scenario=queued now=0 rc=0
+  ship_wait_ci 15 > "$fixture/out" 2>&1 || rc=$?
+  [ "$rc" = 1 ] && [ "$now" = 15 ] || fail 'ship did not honor a custom CI wait bound'
 )
 c6_visibility_tests || fail 'shipping visibility regressions failed'
 
@@ -632,6 +851,264 @@ fi # scenario
 if should_run_scenario launch launch; then
 test_timing_begin block launch
 
+# Local origin and real worktrees exercise the plan lifecycle without GitHub.
+(
+  set -e
+  fixture="$(cd "$TMP" && pwd -P)/plan-launch"
+  project="$fixture/project" origin="$fixture/origin"
+  mkdir -p "$project/docs/templates" "$project/docs/inprogress" "$project/scripts" "$fixture/bin"
+  cp "$ROOT/docs/templates/feature-analysis.md" "$ROOT/docs/templates/security-review.md" "$project/docs/templates/"
+  cp "$ROOT/docs/README.md" "$project/docs/README.md"
+  cp "$ROOT/scripts/docs-index.sh" "$project/scripts/"
+  git -C "$project" init -qb main
+  git -C "$project" config user.name 'Plan fixture'
+  git -C "$project" config user.email 'fixture@example.invalid'
+  git -C "$project" config commit.gpgsign false
+  touch "$project/docs/inprogress/.gitkeep"
+  git -C "$project" add docs scripts
+  git -C "$project" commit -qm 'Seed plan templates'
+  initial=$(git -C "$project" rev-parse HEAD)
+  git clone -q --bare --shared "$project" "$origin"
+  git -C "$project" remote add origin "$origin"
+  cd "$project"
+  worktrees="$project/.git/agentic-flow/worktrees"
+  unset AGENTIC_WORKTREE_ROOT
+  cli="$ROOT/scripts/agentic-flow"
+  export PLAN_FIXTURE_GIT; PLAN_FIXTURE_GIT=$(command -v git)
+  cat > "$fixture/bin/git" <<'GIT'
+#!/usr/bin/env bash
+case "${PLAN_FAULT:-}:${1:-}:${2:-}" in
+  slow:fetch:*) exec sleep 30 ;;
+  broken:fetch:*|offline:fetch:*|offline:ls-remote:*) exit 1 ;;
+  long-listing:worktree:list)
+    "$PLAN_FIXTURE_GIT" "$@" || exit
+    printf '%200000s\n' ''
+    exit ;;
+  template:worktree:add)
+    "$PLAN_FIXTURE_GIT" "$@" || exit
+    shift $(( $# - 2 ))
+    rm -- "$1/docs/templates/feature-analysis.md"
+    exit ;;
+  interrupt:update-ref:-d)
+    [[ "$3" == refs/heads/* ]] && exit 1 ;;
+  moved:update-ref:-d)
+    if [[ "$3" == refs/heads/* ]]; then
+      "$PLAN_FIXTURE_GIT" update-ref "$3" "$PLAN_MOVED_TIP" "$4" || exit
+    fi ;;
+esac
+exec "$PLAN_FIXTURE_GIT" "$@"
+GIT
+  chmod +x "$fixture/bin/git"
+  export PATH="$fixture/bin:$PATH"
+
+  plan_cli() {
+    local expected=$1 status=0
+    shift
+    "$cli" "$@" > "$fixture/output" 2>&1 || status=$?
+    [ "$status" = "$expected" ] || fail "agentic-flow $* returned $status, expected $expected: $(cat "$fixture/output")"
+  }
+  absent() {
+    [ ! -e "$worktrees/$1" ] || fail "start left worktree $1"
+    if git show-ref --verify --quiet "refs/heads/${2:-$1}"; then fail "start left branch ${2:-$1}"; fi
+  }
+  git branch local-taken
+  git -C "$origin" branch remote-taken
+  plan_cli 3 start local-taken
+  plan_cli 3 start remote-taken
+  absent remote-taken
+  mkdir -p "$worktrees/path-taken"
+  plan_cli 3 start path-taken
+  [ -d "$worktrees/path-taken" ] || fail 'start removed a preexisting directory'
+  if git show-ref --verify --quiet refs/heads/path-taken; then fail 'start created a branch for an existing path'; fi
+  touch docs/inprogress/feature-doc-taken.md
+  plan_cli 3 start doc-taken
+  absent doc-taken
+  [ -f docs/inprogress/feature-doc-taken.md ] || fail 'start removed a preexisting doc'
+  rm docs/inprogress/feature-doc-taken.md
+  plan_cli 3 start '../outside'
+  plan_cli 3 start invalid-branch --branch 'bad..name'
+  plan_cli 3 start invalid-branch --branch ''
+  plan_cli 3 start unknown-base --base missing
+  absent invalid-branch
+  absent unknown-base
+  plan_cli 2 start demo-plan --type product
+  plan_cli 3 clean unknown-plan --no-fetch
+  absent unknown-plan
+  plan_cli 3 clean '../outside'
+  PLAN_FAULT=slow AGENTIC_FLOW_FETCH_TIMEOUT=1 plan_cli 5 start timed-out
+  absent timed-out
+  PLAN_FAULT=broken plan_cli 5 start fetch-failed
+  absent fetch-failed
+  PLAN_FAULT=template plan_cli 3 start write-failed
+  absent write-failed
+  if git worktree list --porcelain | grep -Fq "$worktrees/write-failed"; then fail 'template failure left worktree metadata'; fi
+
+  git checkout -qb caller
+  git commit --allow-empty -qm 'Caller-only work'
+  caller=$(git rev-parse HEAD)
+  git checkout -qb integration main
+  touch docs/inprogress/feature-base-taken.md
+  git add docs/inprogress/feature-base-taken.md
+  git commit -qm 'Advance remote base'
+  base=$(git rev-parse HEAD)
+  git -C "$origin" update-ref refs/heads/main "$base"
+  git checkout -q caller
+  plan_cli 3 start base-taken --base integration --no-fetch
+  absent base-taken
+  plan_cli 0 start demo-plan --base main
+  wt="$worktrees/demo-plan" doc=docs/inprogress/feature-demo-plan.md
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$base" ] && [ "$(git -C "$wt" branch --show-current)" = demo-plan ] || fail 'start did not create the plan branch at the remote base'
+  [ "$(git rev-parse HEAD)" = "$caller" ] && [ -z "$(git status --porcelain)" ] || fail 'start changed the caller checkout'
+  [ "$(git -C "$origin" for-each-ref --format='%(refname)' refs/heads/demo-plan)" = '' ] || fail 'start published a branch'
+  for field in 'id: demo-plan' 'branch: demo-plan'; do
+    grep -Fxq "$field" "$wt/$doc" || fail "start omitted $field"
+  done
+  grep -Fq 'Base: `main`.' "$wt/$doc" || fail 'start omitted the brief base'
+  grep -Fxq "<!-- TRIAGE (first pass · $(date +%F)) -->" "$wt/$doc" || fail 'start omitted the TRIAGE date'
+  grep -Fq '# Feature — <topic>' "$wt/$doc" || fail 'start replaced an unrelated placeholder'
+  [ "$(git -C "$wt" diff --cached --name-only)" = "$(printf '%s\n' docs/README.md "$doc")" ] || fail 'start did not stage only the index and doc'
+  (cd "$wt" && scripts/docs-index.sh --check) >/dev/null || fail 'start generated a stale index'
+  grep -Fq "$wt" "$fixture/output" && grep -Fq "$doc" "$fixture/output" || fail 'start omitted the plan paths'
+
+  cat > "$wt/$doc" <<'PLAN'
+# Feature — Worktree commands
+
+# Part B — Implementation Brief
+```agentic-flow-plan
+id: demo-plan
+profile: standard
+branch: demo-plan
+steps: alpha
+```
+
+## Branch
+Base: `main`. One branch and one PR: `demo-plan`.
+
+## Alpha — Exercise worktree commands
+**DoD:** The commands use the plan worktree.
+**Verify:** make check
+**Risks:** Uncommitted planner edits
+**Red-first:** none
+
+## Status
+- **Approval:** pending
+PLAN
+  git -C "$wt" add -- "$doc"
+  git -C "$wt" commit -qm 'Publish plan doc locally'
+  rev=$(git -C "$wt" rev-parse HEAD)
+  sed "s/Approval:\*\* pending/Approval:** status=approved; by=owner; at=2026-01-01; rev=$rev/" "$wt/$doc" > "$fixture/approved-plan"
+  cat "$fixture/approved-plan" > "$wt/$doc"
+  git -C "$wt" add -- "$doc"
+  git -C "$wt" commit -qm 'Approve worktree plan'
+  tip=$(git -C "$wt" rev-parse HEAD)
+
+  printf 'planner edit\n' >> "$wt/docs/README.md"
+  git -C "$wt" add -- docs/README.md
+  printf 'planner notes\n' > "$wt/notes.txt"
+  (cd "$wt" && plan_cli 3 run "$doc" --once)
+  grep -Fq 'plan worktree is dirty' "$fixture/output" && grep -Fq docs/README.md "$fixture/output" &&
+    grep -Fq notes.txt "$fixture/output" || fail 'run did not name dirty plan worktree paths'
+  [ "$(git -C "$wt" status --porcelain)" = "$(printf 'M  docs/README.md\n?? notes.txt')" ] &&
+    [ "$(cat "$wt/notes.txt")" = 'planner notes' ] || fail 'run changed planner edits'
+  git -C "$wt" restore --staged --worktree -- docs/README.md
+  rm "$wt/notes.txt"
+
+  git checkout -q main
+  plan_cli 3 run "$doc" --once
+  grep -Fxq "  cd $wt" "$fixture/output" || fail 'run omitted the unique plan worktree path'
+  git branch ambiguous-plan "$tip"
+  plan_cli 3 run "$doc" --once
+  if grep -q '^  cd ' "$fixture/output"; then fail 'run chose between branches containing the same plan doc'; fi
+  [ "$(git branch --show-current)" = main ] && [ "$(git rev-parse HEAD)" = "$initial" ] || fail 'run changed the caller checkout'
+  git branch -D ambiguous-plan >/dev/null
+  (cd "$wt" && "$ROOT/scripts/plan-to-issues.sh" --doc "$doc") > "$fixture/issues" || fail 'plan-to-issues could not read the worktree brief'
+  grep -Fq 'Exercise worktree commands' "$fixture/issues" || fail 'plan-to-issues omitted the worktree step'
+  git checkout -q caller
+
+  salvage=refs/agentic-flow/salvage/demo-plan/run
+  other=refs/agentic-flow/salvage/demo-plans/run
+  git update-ref "$salvage" "$tip"
+  git update-ref "$other" "$tip"
+  plan_cli 3 clean demo-plan --no-fetch
+  grep -qi squash "$fixture/output" || fail 'unmerged refusal omitted squash-merge behavior'
+  git -C "$origin" update-ref refs/heads/main "$tip"
+  PLAN_FAULT=slow AGENTIC_FLOW_FETCH_TIMEOUT=1 plan_cli 5 clean demo-plan
+  touch "$wt/untracked"
+  plan_cli 3 clean demo-plan
+  rm "$wt/untracked"
+  (cd "$wt" && plan_cli 3 clean demo-plan)
+  [ "$(git rev-parse refs/heads/demo-plan)" = "$tip" ] && git show-ref --verify --quiet "$salvage" || fail 'clean refusal deleted plan refs'
+  git -C "$origin" update-ref refs/heads/demo-plan "$base"
+  git update-ref refs/remotes/origin/demo-plan "$base"
+  git branch -q --set-upstream-to=origin/demo-plan demo-plan
+  git checkout -q main
+
+  plan_cli 0 clean demo-plan --dry-run
+  for item in "$wt" refs/heads/demo-plan "$salvage"; do
+    grep -Fq "$item" "$fixture/output" || fail "dry-run omitted $item"
+  done
+  [ -d "$wt" ] && git show-ref --verify --quiet "$salvage" || fail 'dry-run removed plan artifacts'
+  [ "$(git rev-parse refs/remotes/origin/main)" = "$base" ] || fail 'dry-run updated the local remote-tracking ref'
+  [ "$(git rev-parse HEAD)" = "$initial" ] || fail 'fixture local main was not stale'
+  plan_cli 0 clean demo-plan
+  absent demo-plan
+  if git show-ref --verify --quiet "$salvage"; then fail 'clean kept plan salvage refs'; fi
+  git show-ref --verify --quiet "$other" || fail 'clean deleted another plan salvage ref'
+  plan_cli 0 clean demo-plan
+  grep -qi 'nothing to remove' "$fixture/output" || fail 'clean retry gave no completion message'
+
+  git -C "$origin" update-ref refs/heads/integration "$tip"
+  git update-ref refs/remotes/origin/integration "$tip"
+  AGENTIC_WORKTREE_ROOT="$fixture/custom worktrees" PLAN_FAULT=offline plan_cli 0 start security-plan --type security --branch plans/custom --base integration --no-fetch
+  custom="$fixture/custom worktrees/security-plan"
+  security_doc=docs/inprogress/security-security-plan.md
+  grep -Fq '# Security Review — <topic>' "$custom/$security_doc" || fail 'start used the wrong template'
+  grep -Fxq 'branch: plans/custom' "$custom/$security_doc" && grep -Fq 'Base: `integration`.' "$custom/$security_doc" || fail 'start omitted custom branch or base'
+  git -C "$custom" commit -qm 'Add security plan'
+  mkdir -p "$custom/docs/done/security"
+  git -C "$custom" mv "$security_doc" "docs/done/security/${security_doc##*/}"
+  git -C "$custom" commit -qm 'Archive the security plan'
+  tip=$(git -C "$custom" rev-parse HEAD)
+  git update-ref refs/remotes/origin/integration "$tip"
+  custom_salvage=refs/agentic-flow/salvage/security-plan/run
+  git update-ref "$custom_salvage" "$tip"
+  AGENTIC_WORKTREE_ROOT="$fixture/custom worktrees" PLAN_FAULT=interrupt plan_cli 3 clean security-plan --no-fetch
+  [ ! -e "$custom" ] && git show-ref --verify --quiet refs/heads/plans/custom && git show-ref --verify --quiet "$custom_salvage" || fail 'interrupted clean did not preserve refs after removing the worktree'
+  AGENTIC_WORKTREE_ROOT="$fixture/custom worktrees" plan_cli 0 clean security-plan --no-fetch
+  if git show-ref --verify --quiet refs/heads/plans/custom || git show-ref --verify --quiet "$custom_salvage"; then fail 'resumed clean kept plan refs'; fi
+
+  plan_cli 0 start no-doc --base integration --branch plans/no-doc --no-fetch
+  fallback="$worktrees/no-doc"
+  git -C "$fallback" rm -fq -- docs/inprogress/feature-no-doc.md
+  git -C "$fallback" commit -qm 'Keep only the index changes'
+  no_doc_tip=$(git -C "$fallback" rev-parse HEAD)
+  git update-ref refs/remotes/origin/integration "$no_doc_tip"
+  plan_cli 0 clean no-doc --no-fetch
+  absent no-doc plans/no-doc
+
+  plan_cli 0 start racing --no-fetch
+  racing="$worktrees/racing"
+  git -C "$racing" commit -qm 'Add racing plan'
+  tip=$(git -C "$racing" rev-parse HEAD)
+  git update-ref refs/remotes/origin/main "$tip"
+  git update-ref refs/agentic-flow/salvage/racing/run "$tip"
+  PLAN_MOVED_TIP=$(printf 'Moved branch\n' | git commit-tree "$tip^{tree}" -p "$tip")
+  PLAN_MOVED_TIP="$PLAN_MOVED_TIP" PLAN_FAULT=moved plan_cli 3 clean racing --no-fetch
+  [ "$(git rev-parse refs/heads/racing)" = "$PLAN_MOVED_TIP" ] && git show-ref --verify --quiet refs/agentic-flow/salvage/racing/run || fail 'clean deleted the moved branch or its salvage ref'
+  plan_cli 3 clean racing --no-fetch
+  git update-ref refs/remotes/origin/main "$PLAN_MOVED_TIP"
+  plan_cli 0 clean racing --no-fetch
+  absent racing
+
+  plan_cli 0 start checked-out --no-fetch
+  git -C "$worktrees/checked-out" commit -qm 'Add plan checked out elsewhere'
+  tip=$(git rev-parse refs/heads/checked-out)
+  git update-ref refs/remotes/origin/main "$tip"
+  git worktree move "$worktrees/checked-out" "$fixture/moved-worktree"
+  PLAN_FAULT=long-listing plan_cli 3 clean checked-out --no-fetch
+  [ "$(git -C "$fixture/moved-worktree" rev-parse HEAD)" = "$tip" ] || fail 'clean deleted a branch still checked out elsewhere'
+)
+
 # Advisory verdict lengths warn; hard bounds and structural rules still refuse.
 (
   . "$ROOT/scripts/lib/controller.sh"
@@ -668,14 +1145,17 @@ test_timing_begin block launch
   printf '%s' "$CONTROLLER_RESULT_WARNINGS" | jq -e '.==["summary 2311 > 2000","findings[0].text 1500 > 1200"]' >/dev/null || fail 'advisory warnings missing'
   # Render from durable station evidence; retain all text and the bounce outcome.
   CT_TMP="$TMP/verdict-render"; mkdir -p "$CT_TMP"
-  CT_REVIEWER_ESCALATE=''; CT_HOST=fixture
+  CT_REVIEWER_ESCALATE=''; CT_HOST=fixture CT_PLAN=fixture
+  CT_SPEC='{"steps":[{"id":"alpha","title":"Repair fixture"}]}'
+  workflow_load "$ROOT" || fail 'warning decision workflow unavailable'
   CT_RECORDS=$(jq -nc --slurpfile result "$verdict" --argjson warnings "$CONTROLLER_RESULT_WARNINGS" '
-    [{kind:"intent",run:"fixture",issue:1,station:"reviewer"},
+    [{kind:"intent",run:"fixture",issue:1,station:"reviewer",step:"alpha"},
      {kind:"station",run:"fixture",result:$result[0],warnings:$warnings,invalid_reason:null}]')
-  CT_REPORT=$(jq -nc '{issues:[{number:1,replay:{submitted_head:("a"*40),bounces:0}}]}')
+  CT_REPORT=$(jq -nc '{issues:[{number:1,topology:"step-strict",replay:{seq:1,state:"reviewing",return_to:"executing",submitted_head:("a"*40),bounces:0}}]}')
   controller_record() { :; }; controller_fault() { :; }
   controller_decide '{"head":"fixture"}' || fail 'warning decision failed'
-  jq -e '.action=="bounce"' "$CT_TMP/record" >/dev/null || fail 'warning changed verdict outcome'
+  jq -e '.action=="bounce" and .body_format=="markdown-v1"' "$CT_TMP/record" >/dev/null || fail 'controller did not record the rendered verdict'
+  grep -q '^<!-- agentic-flow-transition:' "$CT_TMP/body" || fail 'controller wrote a bare transition'
   jq -n --rawfile body "$CT_TMP/body" --slurpfile verdict "$verdict" '
     ($body|contains($verdict[0].summary)) and ($body|contains($verdict[0].findings[0].text)) and
     ($body|contains("Warnings: summary 2311 > 2000; findings[0].text 1500 > 1200"))' | grep -qx true || fail 'journal lost warning or verdict text'
@@ -772,6 +1252,11 @@ mkdir -p "$out"
 printf '%s\n' "$@" > "$out/argv"
 env > "$out/env"
 cat > "$out/prompt"
+if grep -q '^Findings file:' "$out/prompt"; then
+  printf 'findings read by %s\n' "$cli" > "$out/findings-reader"
+  jq -e '.[0].text=="complete finding"' "$TMPDIR/findings.json" >/dev/null || exit 34
+  grep -Fq "Findings file: $TMPDIR/findings.json" "$out/prompt" || exit 35
+fi
 [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}${GH_ENTERPRISE_TOKEN:-}${GITHUB_ENTERPRISE_TOKEN:-}" ] || exit 31
 if gh auth status; then exit 32; fi
 git remote get-url --push origin > "$out/pushurl"
@@ -949,6 +1434,13 @@ launch_tests() (
       jq -e --arg mode "$mode" '.contract_mode==$mode' "$C1/launch.json" >/dev/null || fail 'wrong contract mode'
       LAUNCH_RESUME_CLI=wrong LAUNCH_RESUME_PROFILE=wrong launch_station "$station" "$C1/project" "$C1/packet with spaces.md" "$C1/result" --resume old > /dev/null 2>&1 && fail 'mismatched session accepted'
     done
+    roles_cmd set executor "$cli" --scope project > /dev/null 2>&1 || fail 'findings reader assignment failed'
+    scratch=$(mktemp -d "$C1/findings-scratch.XXXXXX")
+    printf '%s\n' '[{"severity":"P2","file":"src/a","line":1,"text":"complete finding"}]' > "$scratch/findings.json"
+    printf 'Findings file: %s/findings.json\n' "$scratch" > "$C1/findings-packet"
+    LAUNCH_SCRATCH="$scratch" launch_station executor "$C1/project" "$C1/findings-packet" "$C1/result" > "$C1/launch.json" ||
+      fail "$cli could not read findings from station scratch"
+    [ "$(cat "$C1/observed/findings-reader")" = "findings read by $cli" ] || fail "$cli did not read the full findings"
   done
   roles_cmd set executor claude --scope project > /dev/null 2>&1 || fail 'Claude assignment failed'
   ANTHROPIC_API_KEY=fixture launch_station executor "$C1/project" "$C1/packet with spaces.md" "$C1/result" > "$C1/launch.json" || fail 'API-key Claude failed'
@@ -1217,7 +1709,8 @@ launch_tests() (
     ledger_generation() { printf '1\n'; }
     ledger_read() { printf '%s\n' "$CT_RECORDS"; }
     controller_end() { printf '%s %s\n' "$1" "$2" > "$CT_TMP/ended"; }
-    handoff_cmd() {
+    handoff_transaction() {
+      shift
       printf '%s\n' "$*" > "$CT_TMP/hold-argv"
       while [ "$#" -gt 0 ]; do
         if [ "$1" = --body-file ]; then ledger_comment "$2" > "$CT_TMP/note"; return; fi
@@ -1253,6 +1746,13 @@ launch_tests() (
         grep -Fq '...' "$CT_TMP/note" || fail 'oversize prestart stderr was not truncated'
       fi
     done
+    # A findings refusal must hold before even a preflight or probe can launch.
+    rm "$CT_TMP/gate"
+    printf '#!/usr/bin/env bash\nexit 13\n' > "$CT_WORKTREE/scripts/agentic-flow"
+    CT_RECORDS='[]' CT_RAISED=false
+    rc=0; controller_dispatch > "$CT_TMP/out" 2> "$CT_TMP/err" || rc=$?
+    [ "$rc" = 10 ] && [ "$CT_RAISED" = true ] && [ ! -f "$CT_TMP/gate" ] || fail 'findings failure did not prevent launch'
+    grep -Fq -- '--reason findings-incomplete' "$CT_TMP/hold-argv" || fail 'findings failure used the wrong hold reason'
   ) || fail 'prestart launch diagnostics failed'
   return 0
 )
@@ -1533,6 +2033,7 @@ FAIL_COMMAND
   (
     . "$ROOT/scripts/lib/andon.sh"
     HANDOFF_ROOT="$c2/project" HANDOFF_TMP="$c2" HANDOFF_PLAN=diagnostic HANDOFF_TRACKER=1
+    JOURNAL_STEP=tracker
     HANDOFF_ISSUE='{"comments":{"nodes":[]}}' REVIEW_OWNER=owner
     handoff_plan_read() { :; }
     handoff_read() { :; }
@@ -1547,8 +2048,7 @@ FAIL_COMMAND
       printf '%s\nRetry: scripts/agentic-flow handoff 1 resume --as approver --body-file answer.md\n' "$secret"
     } > "$c2/long-hold-note"
     hold_transition 1 hold unexplained-worktree-changes none '' "$(cat "$c2/long-hold-note")" > "$c2/hold-result" || fail 'oversized salvage hold was not posted'
-    [ "$(wc -c < "$c2/posted-hold")" -le 4096 ] || fail 'salvage hold exceeded 4 KiB'
-    for expected in 'agentic-flow-hold: v=1; id=diagnostic/hold/1;' 'Unowned edits saved' 'truncated' 'handoff 1 resume --as approver' '@owner needs a decision'; do
+    for expected in 'agentic-flow-hold: v=1; id=diagnostic/hold/1;' 'Unowned edits saved' 'salvage-19-' 'handoff 1 resume --as approver' '@owner needs a decision'; do
       grep -Fq "$expected" "$c2/posted-hold" || fail "salvage hold omitted $expected"
     done
     ! grep -q provider-value "$c2/posted-hold" || fail 'salvage hold leaked provider value'
@@ -2220,7 +2720,7 @@ NOTIFY
   printf '[]\n' > "$state/1.timeline"
   c4_run 10
   [ "$(jq -r .state "$state/issue-1.json")" = CLOSED ] || fail 'crash before close not repaired'
-  ref=$(jq -r '[.comments.nodes[].body|select(startswith("agentic-flow-hold: "))]|last|split("; ")[1]|ltrimstr("id=")' "$state/issue-2.json")
+  ref=$(jq -r '[.comments.nodes[].body|select(startswith("<!-- agentic-flow-hold: "))]|last|split("; ")[1]|ltrimstr("id=")' "$state/issue-2.json")
   c4_handoff 2 hold-clear --as approver --hold-id "$ref"
   c4_run 0
   jq -e 'all(.labels.nodes[];.name!="needs-human")' "$state/issue-2.json" >/dev/null || fail 'resolved reopen retained needs-human'
@@ -2576,7 +3076,7 @@ MODEL
   c5_run() {
     test_timing_begin call c5_run 1
     local expected=$1 status=0; shift
-    (cd "$project" && PATH="$bin:$PATH" XDG_CONFIG_HOME="$c4/operator" AGENTIC_WORKTREE_ROOT="$c4/worktrees" \
+    (cd "${C5_CHECKOUT:-$project}" && PATH="$bin:$PATH" XDG_CONFIG_HOME="$c4/operator" AGENTIC_WORKTREE_ROOT="$c4/worktrees" \
       scripts/agentic-flow run docs/inprogress/plan.md --json "$@") > "$c4/out" 2> "$c4/err" || status=$?
     [ "$status" = "$expected" ] || fail "C-5 returned $status expected $expected: $(cat "$c4/err") $(cat "$c4/out")"
     test_timing_end
@@ -2657,6 +3157,14 @@ REGRESSION
   [ "$(cat "$state/launches")" = 2 ] || fail 'Standard loop launched extra stations'
   c5_run 0
   [ "$(cat "$state/launches")" = 2 ] || fail 'ready to ship launched a station'
+  c5_reset
+  local worktrees_before
+  worktrees_before=$(git -C "$project" worktree list --porcelain | sed -n '/^worktree /p')
+  C5_CHECKOUT="$wt" c5_run 0 --once
+  [ "$(cat "$state/launches")" = 1 ] && [ "$(git -C "$wt" log -1 --format=%s)" = 'Implement fixture. Fixes #1' ] ||
+    fail 'run --once did not execute in the existing plan worktree'
+  [ "$(git -C "$project" worktree list --porcelain | sed -n '/^worktree /p')" = "$worktrees_before" ] &&
+    [ "$(git -C "$project" rev-parse HEAD)" = "$head" ] || fail 'run changed the worktree list or main checkout'
   c5_reset
   jq '.sandbox.enabled=false' "$wt/config/stations/claude.settings.json" > "$c4/weak-profile"
   cat "$c4/weak-profile" > "$wt/config/stations/claude.settings.json"

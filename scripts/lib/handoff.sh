@@ -38,7 +38,7 @@ handoff_identity() { # role, exit 7 means unavailable here, 5 means configured b
 handoff_read() { # number; results in HANDOFF_ISSUE/HANDOFF_REPLAY and journal context
   local response body comments
   # shellcheck disable=SC2016
-  local query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number body state labels(first:100){pageInfo{hasNextPage} nodes{name}} comments(first:100){pageInfo{hasNextPage} nodes{id fullDatabaseId body author{login __typename} createdAt lastEditedAt}}}}}'
+  local query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title body state labels(first:100){pageInfo{hasNextPage} nodes{name}} comments(first:100){pageInfo{hasNextPage} nodes{id fullDatabaseId body author{login __typename} createdAt lastEditedAt}}}}}'
   response=$(handoff_gh api graphql -f "query=$query" -f "owner=${HANDOFF_REPO%%/*}" \
     -f "name=${HANDOFF_REPO#*/}" -F "number=$1") || return 5
   HANDOFF_ISSUE=$(printf '%s' "$response" | jq -ec --argjson n "$1" '
@@ -77,53 +77,74 @@ handoff_fault() { # Enabled only in hermetic tests; no fault controls in station
   else return 5; fi
 }
 
-handoff_post() { # number event role head body; replay MUST have just been read
-  local number=$1 event=$2 role=$3 head=$4 note=$5 seq from id comment file rc=0 author posted posted_dbid
-  seq=$(printf '%s' "$HANDOFF_REPLAY" | jq '.seq+1')
-  from=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .state)
-  id="$JOURNAL_PLAN/$JOURNAL_STEP/$seq/$event"
-  file="$HANDOFF_TMP/comment"
-  local return_suffix=''
+handoff_render() { # event role head subject result-file output [diagnostic-file warnings-file]
+  local event=$1 role=$2 head=$3 subject=$4 result=$5 output=$6
+  local seq from suffix='' markers facts next owner='' reason='' checks
+  seq=$(printf '%s' "$HANDOFF_REPLAY" | jq '.seq+1') || return 5
+  from=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .state) || return 5
   if [ "$event" = resume ]; then
-    return_suffix="; return=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)"
+    suffix="; return=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)"
   fi
-  printf 'agentic-flow-transition: v=1; id=%s; event=%s; from=%s; role=%s; head=%s%s\n' \
-    "$id" "$event" "$from" "$role" "$head" "$return_suffix" > "$file"
-  local compat_marker=''
+  markers=$(printf 'agentic-flow-transition: v=1; id=%s/%s/%s/%s; event=%s; from=%s; role=%s; head=%s%s' \
+    "$JOURNAL_PLAN" "$JOURNAL_STEP" "$seq" "$event" "$event" "$from" "$role" "$head" "$suffix")
+  facts="Role: $role · Transition: $seq"
+  [ "$head" = none ] || facts="$facts · Head: \`${head:0:12}\`"
+  checks="$output.checks"
+  printf '[]\n' > "$checks" || return 5
   case "$event" in
-    submit) printf 'Implemented in %s\n' "$head" >> "$file" ;;
+    submit)
+      markers="$markers"$'\n'"Implemented in $head"
+      # Read in isolation so loading handoff cannot replace a caller's verifier.
+      # shellcheck disable=SC1091
+      (. "${JOURNAL_COMMENT_HELPER%/*}/verify-record.sh" && verify_record_checks "$head") \
+        > "$checks" 2>/dev/null || printf '[]\n' > "$checks" ;;
     approve|bounce)
       local verdict=approved compatibility_head=$head
-      [ "$event" != bounce ] || { verdict=changes-requested; compatibility_head=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .submitted_head); }
-      compat_marker=$(printf 'agentic-flow-review: status=%s; step=%s; head=%s; role=reviewer' \
-        "$verdict" "$JOURNAL_STEP" "$compatibility_head")
-      printf '%s\n' "$compat_marker" >> "$file" ;;
+      if [ "$event" = bounce ]; then
+        verdict=changes-requested
+        compatibility_head=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .submitted_head)
+      fi
+      markers="$markers"$'\n'"agentic-flow-review: status=$verdict; step=$JOURNAL_STEP; head=$compatibility_head; role=reviewer" ;;
   esac
-  # The gate accepts one marker per comment. Drop a body line identical to the
-  # marker written above; a different marker in the body stays and is blocked.
-  if [ -n "$compat_marker" ]; then
-    printf '%s\n' "$note" | grep -Fvx -- "$compat_marker" >> "$file" || true
+  next=$(workflow_successor "$JOURNAL_TOPOLOGY" "$from" "$event" "$(printf '%s' "$HANDOFF_REPLAY" | jq .bounces)" "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)") || return 3
+  if [ "$next" = escalated ]; then
+    owner=${REVIEW_OWNER:-}
+    reason='bounce cap reached'
+    if [ "$event" = ask ]; then
+      reason=$(jq -r '.question//.summary//""' "$result" | awk 'NF {print substr($0,1,200); exit}')
+    fi
+  fi
+  journal_render "$event" "$subject" "$markers" "$facts" "$(journal_run_marker)" "$result" \
+    "$owner" "$reason" "$checks" "${7:-/dev/null}" "${8:-/dev/null}" > "$output"
+}
+
+handoff_post() { # number event role head body [rendered controller body]; replay MUST have just been read
+  local number=$1 event=$2 role=$3 head=$4 note=$5 seq id comment file rc=0 author posted posted_dbid
+  seq=$(printf '%s' "$HANDOFF_REPLAY" | jq '.seq+1')
+  id="$JOURNAL_PLAN/$JOURNAL_STEP/$seq/$event"
+  file="$HANDOFF_TMP/comment"
+  if [ -n "${6:-}" ]; then
+    # The controller already rendered and hash-checked this decision. The CAS
+    # above the post must still match its original sequence and transition.
+    local marker
+    IFS= read -r marker < "$6" || return 5
+    [ "$marker" = "<!-- agentic-flow-transition: v=1; id=$id; event=$event; from=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .state); role=$role; head=$head" ] || return 3
+    file=$6
   else
-    printf '%s\n' "$note" >> "$file"
-  fi
-  if [ -n "${HANDOFF_CONTROLLER_RUN:-}" ] && [ -n "${HANDOFF_CONTROLLER_HOST:-}" ]; then
-    local run_marker="agentic-flow-run: run=$HANDOFF_CONTROLLER_RUN; host=$HANDOFF_CONTROLLER_HOST"
-    grep -q '^agentic-flow-run: ' "$file" || printf '\n%s\n' "$run_marker" >> "$file"
-  fi
-  local next_state andon_reason='bounce cap reached'
-  if [ "$event" = ask ]; then andon_reason=$(printf '%s\n' "$note" | awk 'NF {print substr($0,1,200); exit}'); fi
-  next_state=$(workflow_successor "$JOURNAL_TOPOLOGY" "$from" "$event" "$(printf '%s' "$HANDOFF_REPLAY" | jq .bounces)" "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)") || return 3
-  if [ "$next_state" = escalated ]; then
-    andon_mention "$andon_reason" >> "$file"
-    ledger_comment "$file" > "$HANDOFF_TMP/redacted-comment" || return 5
-    mv "$HANDOFF_TMP/redacted-comment" "$file"
+    journal_summary "$note" > "$HANDOFF_TMP/comment-result" || return 5
+    handoff_render "$event" "$role" "$head" "$(journal_subject "$JOURNAL_STEP" "$(jq -r '.title//""' <<< "$HANDOFF_ISSUE")")" \
+      "$HANDOFF_TMP/comment-result" "$file" || return $?
   fi
   posted=$(handoff_gh issue comment "$number" --repo "$HANDOFF_REPO" --body-file "$file") || rc=$?
   posted_dbid=${posted##*#issuecomment-}
   [[ "$posted_dbid" =~ ^[0-9]+$ ]] || posted_dbid=''
   # A failed/timed-out post may have landed. Read once; never blindly repost.
   handoff_read "$number" || return $?
-  comment=$(jq -c --arg id "$id" --arg dbid "$posted_dbid" '[.comments.nodes[] | select(.body|startswith("agentic-flow-transition: v=1; id="+$id+";")) | select($dbid=="" or (.fullDatabaseId|tostring)==$dbid)] | first // empty' "$HANDOFF_TMP/$number.issue")
+  # shellcheck disable=SC2016 # jq variables
+  comment=$(journal_jq -c --arg id "$id" --arg dbid "$posted_dbid" '
+    include "journal-marker";
+    [.comments.nodes[] | select(.body|journal_marker_line|startswith("agentic-flow-transition: v=1; id="+$id+";")) |
+      select($dbid=="" or (.fullDatabaseId|tostring)==$dbid)] | first // empty' "$HANDOFF_TMP/$number.issue") || return 5
   [ -n "$comment" ] || { handoff_error "post not found for $id (status $rc)"; return 5; }
   author=$(printf '[%s]' "$comment" | journal_normalize | jq -r '.[0].author') || return 5
   [ "$author" = "$HANDOFF_LOGIN" ] || { handoff_error 'posted comment author differs from role identity'; return 5; }
@@ -133,7 +154,10 @@ handoff_post() { # number event role head body; replay MUST have just been read
     handoff_error "lost race to $(printf '%s' "$HANDOFF_REPLAY" | jq -r --argjson seq "$seq" '.accepted[] | select(.seq==$seq) | .id')"
     return 4
   fi
-  [ "$next_state" != escalated ] || andon_desktop "$andon_reason"
+  if [ "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .state)" = escalated ]; then
+    if [ "$event" = bounce ]; then andon_desktop 'bounce cap reached'
+    else andon_desktop 'decision requested'; fi
+  fi
   handoff_fault after-post
 }
 
@@ -262,9 +286,16 @@ handoff_write_cache() { # common-dir issue-numbers; shared by handoff and contro
   hold_cache "$common" || return 5
 }
 
-handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
+handoff_cmd() {
+  # shellcheck disable=SC2034 # Used by journal_run_marker.
+  local HANDOFF_CONTROLLER_RUN='' HANDOFF_CONTROLLER_HOST=''
+  handoff_transaction interactive "$@"
+}
+
+handoff_transaction() ( # transaction-local credentials, temporary files, lock and traps
   set +x
-  local requested_return='' HANDOFF_LABELS_ONLY=false
+  local format=$1; shift
+  local requested_return='' HANDOFF_LABELS_ONLY=false rendered=''
   local number=${1:-} event=${2:-} role='' head=none after='' body_file='' json=false check=false project_only=false reason='' run=none hold_id='' rebaseline=false
   [[ "$number" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$#" -ge 2 ] || { handoff_error 'usage: handoff <issue> <event> --as <role> [--head <sha>] [--after <seq>] [--body-file <path>]'; return 2; }
   shift 2
@@ -337,8 +368,13 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
   handoff_read "$number" || return $?
   local topology=$JOURNAL_TOPOLOGY
   if [ -n "$body_file" ]; then
-    [ -f "$body_file" ] && [ "$(wc -c < "$body_file")" -le 65536 ] || return 2
-    note=$(cat "$body_file")
+    [ -f "$body_file" ] && [ "$(wc -c < "$body_file")" -le 240000 ] || return 2
+    if [ "$format" = markdown-v1 ]; then
+      rendered=$body_file
+      note=rendered
+    else
+      note=$(cat "$body_file") || return 2
+    fi
   fi
   if [ "$check" = true ]; then
     handoff_drift "$number"
@@ -411,7 +447,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
           "$HANDOFF_ROOT/scripts/lifecycle-status.sh" --doc "$close_doc" --phase close-out --check --verify-evidence || return 3 ;;
       esac
       handoff_fault after-replay || return 5
-      handoff_post "$number" "$event" "$role" "$head" "$note" || { status=$?; [ "$status" -eq 4 ] || return "$status"; result=4; }
+      handoff_post "$number" "$event" "$role" "$head" "$note" "$rendered" || { status=$?; [ "$status" -eq 4 ] || return "$status"; result=4; }
     fi
   fi
   handoff_project "$number" || return $?
@@ -427,7 +463,7 @@ handoff_cmd() ( # transaction-local credentials, temporary files, lock and traps
         handoff_error "plan effect pending: notify on #$tracker; run agentic-flow handoff $tracker reconcile where the reviewer identity is configured"
         result=7
       elif [ "$status" -ne 0 ]; then return 5
-      else handoff_post "$tracker" notify reviewer none 'All steps approved.' || { status=$?; [ "$status" -eq 4 ] || return "$status"; result=4; }; fi
+      else HANDOFF_CONTROLLER_RUN='' HANDOFF_CONTROLLER_HOST='' handoff_post "$tracker" notify reviewer none 'All steps approved.' || { status=$?; [ "$status" -eq 4 ] || return "$status"; result=4; }; fi
     fi
   fi
   # An unavailable effect still permits the requested projection to converge.

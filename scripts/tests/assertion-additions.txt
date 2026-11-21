@@ -113,3 +113,231 @@ fail	'whole tagged group missed its group ceiling'
 fail	'whole-group ceiling failure lacked the group and measured and allowed seconds'
 fail	'handled termination was not recorded as a timeout'
 verify_run	"$VERIFY_TMP" "trap 'exit 2' TERM; sleep 30"
+fail	'bare hold replay failed'
+fail	'bare holds changed executor packet'
+fail	'bare tracker replay failed'
+fail	'clear lost hold history'
+fail	'hidden holds changed open holds'
+fail	'hidden holds changed replay'
+fail	'hidden post changed andon drift report'
+fail	'hidden post lookup duplicated a timed-out submit'
+fail	'hidden step events changed journal replay'
+fail	'hidden submit changed reviewer packet'
+fail	'hidden tracker events changed journal replay'
+fail	'hidden tracker replay failed'
+fail	'hidden transitions changed lifecycle verdict'
+fail	'packet exposed hidden run metadata'
+fail	'unauthorized hidden transition replay changed'
+review_case	'conflicting journal compatibility marker' BLOCKED 'has multiple review markers'
+review_case	'hidden approval with losing bounce' READY 'review by reviewer'
+station_expect	'.seq==0 and .skipped==1'
+station_expect	'.state=="approved" and .seq==6'
+station_expect	'.state=="closed" and .seq==2'
+station_run	0 1 reconcile --check --json
+station_run	0 1 submit --as executor --head "$STATION_A" --body-file "$TMP/station-run-marker"
+station_run	5 1 approve --as reviewer --head "$STATION_A" --body-file "$TMP/review-with-prefixed-markers"
+fail	'journal_jq lost its marker module after a directory change'
+fail	"Standard final approval lookup failed: $(cat "$TMP/standard-source.out")"
+fail	"ship continued after $mode: $(cat "$stored/out")"
+fail	"ship could not resume a manual commit: $(cat "$stored/out")"
+fail	"single-push shipping failed: $(cat "$stored/out")"
+fail	"wrong final approval source result: $(cat "$TMP/source.out")"
+fail	'PR creation failure lost the committed push'
+fail	'PR did not link to the approved brief'
+fail	'PR did not link to the tracker'
+fail	'PR did not show the approved title'
+fail	'PR step row omitted replay facts or escaping'
+fail	'Standard final approval lookup did not reach READY'
+fail	'Status parser rejected the final approval PR source'
+fail	'close-out updated the remote more than once'
+fail	'closer failure discarded staging'
+fail	'closer failure omitted recovery details'
+fail	'closer saw an unexpected staged path'
+fail	'failed CI advanced close-out'
+fail	'final approval bound a closed unmerged PR'
+fail	'final approval bound a superseded PR head'
+fail	'final approval bound an unrelated PR with the same head'
+fail	'final approval did not select the newest matching verdict'
+fail	'final approval for another repository was accepted'
+fail	'legacy ship omitted the existing pull URL'
+fail	'legacy ship prep failed'
+fail	'long PR body exceeded the limit or lost a step'
+fail	'long PR body rendering failed'
+fail	'malformed final approval was accepted'
+fail	'manual close-out pushed before the commit'
+fail	'manual prep omitted the PR source'
+fail	'missing final approval was accepted'
+fail	'non-reviewer final approval was accepted'
+fail	'prep staged the wrong paths'
+fail	'ship accepted an invalid CI timeout'
+fail	'ship could not retry PR creation'
+fail	'ship did not honor a custom CI wait bound'
+fail	'ship did not render an escaped goal'
+fail	'ship did not stage close-out before its first push'
+fail	'ship reran a staged close-out'
+fail	'single-push close-out regressions failed'
+fail	'single-push shipping phases ran out of order'
+fail	'stray staged file reached preparation'
+fail	'the closer did not create exactly one commit'
+fail	'valid final approval did not resolve the PR'
+fail	ci-fail
+fail	commit-noop
+source_case	BLOCKED
+source_case	NEEDS-REVIEW
+source_case	READY
+fail	"$active must use an all-negated App filter with the every predicate"
+fail	"$cli could not read findings from station scratch"
+fail	"$cli did not read the full findings"
+fail	"$mode findings accepted with $backed ledger"
+fail	"$profile CI render rewrote the path filter"
+fail	"$template must use an all-negated App filter with the every predicate"
+fail	"$workflow Docs job must run the docs and memory index checks"
+fail	"CI bookkeeping check accepted the $ci_mutation fixture"
+fail	"CI bookkeeping check missed the $ci_mutation diagnostic"
+fail	"CI bookkeeping does not cover $path"
+fail	"CI bookkeeping matches an App input: $matched"
+fail	"could not render $event"
+fail	"could not render $mode bounce"
+fail	'800-word packet was rejected'
+fail	'CI workflows have different bookkeeping lists'
+fail	'Standard work issue Markdown changed'
+fail	'Strict step issue Markdown changed'
+fail	'Strict tracker Markdown changed'
+fail	'Strict tracker lost its tracking body'
+fail	'Strict tracking prose can render as a setext heading'
+fail	'andon accepted supplied run metadata'
+fail	'approved creation unexpectedly succeeded'
+fail	'approved document apply did not resume'
+fail	'bad findings copy emitted a packet'
+fail	'brief changed risk content'
+fail	'cannot append reviewer intent'
+fail	'cannot enter comment fixture'
+fail	'cannot initialize findings ledger'
+fail	'cannot load comment fixture workflow'
+fail	'cannot persist full reviewer findings'
+fail	'code content was escaped'
+fail	'comment rendering differs from golden'
+fail	'complete findings were shortened'
+fail	'controller did not record the rendered verdict'
+fail	'controller wrote a bare transition'
+fail	'could not check CI bookkeeping against the payload manifest'
+fail	'failed write emitted a packet'
+fail	'final approval exposed a supplied marker'
+fail	'final approval heading omitted PR, head or attempt'
+fail	'final approval omitted the reviewer note'
+fail	'final approval rendering failed'
+fail	'findings are out of severity order'
+fail	'findings failure did not prevent launch'
+fail	'findings failure used the wrong hold reason'
+fail	'findings index exceeded 1200 words'
+fail	'findings packet scenario failed'
+fail	'findings reader assignment failed'
+fail	'findings sort did not preserve severity order'
+fail	'full findings file differs from source'
+fail	'handoff failed to preserve and neutralize supplied markers'
+fail	'hold clearance rendering failed'
+fail	'hold rendering failed'
+fail	'hostile rendering failed'
+fail	'interrupted apply did not retain its tracker'
+fail	'issue layout changed the approved spec hash'
+fail	'journal Markdown scenario failed'
+fail	'new tracker was not recognized'
+fail	'new-layout tracker discovery failed'
+fail	'outside-code text changed meaning'
+fail	'over-budget interactive body posted'
+fail	'over-limit evidence accepted'
+fail	'over-limit findings were inlined or index cap not reported'
+fail	'overlong evidence accepted'
+fail	'oversize bounce omitted a reduction or exceeded the cap'
+fail	'oversize bounce refused'
+fail	'owner mention was escaped'
+fail	'packet did not report its findings path, count and hash'
+fail	'plaintext packet exceeded 3000 words'
+fail	'reduced comment kept the final lower-priority row'
+fail	'rendered and old transition forms differ'
+fail	'rendered body or hidden holds changed executor packet'
+fail	'rendered holds did not replay'
+fail	'rendered journal refused'
+fail	'rendered transitions did not replay'
+fail	'rows were dropped instead of shortened'
+fail	'rows were not dropped'
+fail	'rust init rewrote the CI path filter'
+fail	'scratch findings differ from repository artifact'
+fail	'small findings were not inlined'
+fail	'station schema is incompatible with strict modes'
+fail	'strict-schema null evidence refused'
+fail	'submit did not render Markdown or neutralize supplied run metadata'
+fail	'submit did not render saved checks'
+fail	'supplied text retained active marker or mention syntax'
+fail	'warning decision workflow unavailable'
+fail	]
+fail	hash
+packet_run	13 --station executor --json
+station_run	2 1 submit --as executor --head "$STATION_A" --body-file "$TMP/oversize-comment"
+fail	"$change did not change the App key"
+fail	"$workflow App job ignores the cache verdict"
+fail	"$workflow accepted an App job that ended in $result"
+fail	"$workflow accepted an empty green marker"
+fail	"$workflow accepts a cache hit without source evidence"
+fail	"$workflow cache lookup errors fail the changes job"
+fail	"$workflow cache lookup errors or misses can be reused"
+fail	"$workflow changes job must use the default PR merge checkout"
+fail	"$workflow could save after an App failure"
+fail	"$workflow does not compute the App key"
+fail	"$workflow does not identify the reused run and attempt"
+fail	"$workflow emitted a cache hit for an empty marker"
+fail	"$workflow rejected a skipped App job"
+fail	"$workflow restores a cache entry with the wrong key"
+fail	"$workflow saves a cache entry with the wrong key"
+fail	"$workflow saves the green result before App checks finish"
+fail	"could not compute the App key after $change"
+fail	'App key did not hash the staged App inputs'
+fail	'bookkeeping changed the App key'
+fail	'could not compute the App key after the base moved'
+fail	'could not compute the App key on the merge checkout'
+fail	'new base content kept the same App key'
+fail	"agentic-flow $* returned $status, expected $expected: $(cat "$fixture/output")"
+fail	"dry-run omitted $item"
+fail	"start left branch ${2:-$1}"
+fail	"start left worktree $1"
+fail	"start omitted $field"
+fail	'clean deleted another plan salvage ref'
+fail	'clean deleted the moved branch or its salvage ref'
+fail	'clean kept plan salvage refs'
+fail	'clean refusal deleted plan refs'
+fail	'clean retry gave no completion message'
+fail	'dry-run removed plan artifacts'
+fail	'dry-run updated the local remote-tracking ref'
+fail	'fixture local main was not stale'
+fail	'interrupted clean did not preserve refs after removing the worktree'
+fail	'resumed clean kept plan refs'
+fail	'start changed the caller checkout'
+fail	'start created a branch for an existing path'
+fail	'start did not create the plan branch at the remote base'
+fail	'start did not stage only the index and doc'
+fail	'start generated a stale index'
+fail	'start omitted custom branch or base'
+fail	'start omitted the TRIAGE date'
+fail	'start omitted the brief base'
+fail	'start omitted the plan paths'
+fail	'start published a branch'
+fail	'start removed a preexisting directory'
+fail	'start removed a preexisting doc'
+fail	'start replaced an unrelated placeholder'
+fail	'start used the wrong template'
+fail	'template failure left worktree metadata'
+fail	'unmerged refusal omitted squash-merge behavior'
+fail	'ship omitted the post-merge cleanup command'
+fail	'clean deleted a branch still checked out elsewhere'
+fail	'close-out dry run changed or omitted the worktree paths'
+fail	'close-out prep failed in a linked worktree'
+fail	'plan-to-issues could not read the worktree brief'
+fail	'plan-to-issues omitted the worktree step'
+fail	'run --once did not execute in the existing plan worktree'
+fail	'run changed planner edits'
+fail	'run changed the caller checkout'
+fail	'run changed the worktree list or main checkout'
+fail	'run chose between branches containing the same plan doc'
+fail	'run did not name dirty plan worktree paths'
+fail	'run omitted the unique plan worktree path'
+fail	'shipping fixture could not create a linked worktree'

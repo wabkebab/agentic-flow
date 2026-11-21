@@ -5,9 +5,29 @@
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/packet.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/probe.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/start.sh"
 CONTROLLER_RECOVERY=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/recovery.pl
 
 controller_error() { printf 'controller: %s\n' "$*" >&2; }
+
+controller_worktree_hint() { # An absent HEAD doc is a routing hint, not authority to run.
+  local refs tip match='' size spec plan
+  refs=$(git for-each-ref --count=1001 --format='%(objectname)' refs/heads/) || return 0
+  [ "$(printf '%s\n' "$refs" | wc -l)" -le 1000 ] || return 0
+  while IFS= read -r tip; do
+    [ -n "$tip" ] && [ "$(git cat-file -t "$tip:$CT_DOC" 2>/dev/null)" = blob ] || continue
+    [ -z "$match" ] || return 0
+    match=$tip
+  done <<< "$refs"
+  [ -n "$match" ] || return 0
+  size=$(git cat-file -s "$match:$CT_DOC") && [ "$size" -le 1048576 ] || return 0
+  git show "$match:$CT_DOC" > "$CT_TMP/branch-doc" || return 0
+  spec=$(brief_parse "$CT_TMP/branch-doc" "$CT_DOC" "$match" 2>/dev/null) || return 0
+  plan=$(printf '%s' "$spec" | jq -er .id) || return 0
+  controller_error "run from the plan worktree for $CT_DOC"
+  printf '  cd %q\n' "$(plan_worktree_path "$CT_COMMON" "$plan")" >&2
+}
+
 controller_check() { # Rule a: same read-only report exposed by handoff reconcile --check.
   local json=true
   handoff_drift > "$CT_TMP/report" || return $?
@@ -125,8 +145,7 @@ controller_hold() { # issue reason paragraph [run]
   local number=$1 reason=$2 note=$3 run=${4:-none} rc=0
   printf '%s: %s\n' "$reason" "$note" > "$CT_TMP/hold-cause"
   controller_diagnostic "$number" "$run" "$CT_TMP/hold-cause" > "$CT_TMP/hold-note" || return 5
-  printf '\nagentic-flow-run: run=%s; host=%s\n' "$CT_RUN" "$CT_HOST" >> "$CT_TMP/hold-note"
-  handoff_cmd "$number" hold --as approver --reason "$reason" --run "$run" --body-file "$CT_TMP/hold-note" > "$CT_TMP/hold-output" || rc=$?
+  handoff_transaction interactive "$number" hold --as approver --reason "$reason" --run "$run" --body-file "$CT_TMP/hold-note" > "$CT_TMP/hold-output" || rc=$?
   case "$rc" in 0|10) ;; *) return "$rc" ;; esac
   if [ "$run" != none ] && [ "$HANDOFF_LEDGER_UNAVAILABLE" = false ]; then
     local held_chain
@@ -230,7 +249,6 @@ controller_preserve_divergence() { # Never overwrite the owning run's immutable 
 }
 controller_worktree() { # Salvage before any repair; reconciliation never restores it.
   local actual common branch owner run chain recorded snapshot saved count row result orphan=false hold_run=none rebaselines clear salvage_run
-  CT_WORKTREE="${AGENTIC_WORKTREE_ROOT:-$CT_COMMON/agentic-flow/worktrees}/$CT_PLAN"
   CT_CONTEXT='{}' CT_OWNERSHIP=null
   [ -e "$CT_WORKTREE" ] || return 0
   actual=$(git -C "$CT_WORKTREE" rev-parse --show-toplevel) || return 9
@@ -349,7 +367,8 @@ controller_worktree() { # Salvage before any repair; reconciliation never restor
 }
 
 controller_decide() { # Rule f: deterministic rendering from durable records only.
-  local item=$1 run intent station verify escalation outcome head body action number row reason=''
+  local item=$1 run intent station verify escalation outcome head body action number row reason='' step role subject
+  local HANDOFF_REPLAY JOURNAL_TOPOLOGY JOURNAL_STEP JOURNAL_PLAN=$CT_PLAN HANDOFF_CONTROLLER_RUN
   run=$(printf '%s' "$item" | jq -r .head)
   intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
   number=$(printf '%s' "$intent" | jq .issue)
@@ -358,7 +377,7 @@ controller_decide() { # Rule f: deterministic rendering from durable records onl
   verify=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '[.[]|select(.kind=="verify" and .run==$run)]|last//null')
   escalation=$(printf '%s' "$item" | jq -r '.escalation//""')
   [ "$run" != "$CT_REVIEWER_ESCALATE" ] || escalation='reviewer edited the worktree'
-  if [ -n "$escalation" ]; then action=ask; head=none; printf '%s\n' "$escalation" > "$CT_TMP/body"
+  if [ -n "$escalation" ]; then action=ask; head=none; reason=$escalation
   else
     outcome=$(printf '%s' "$station" | jq -r .result.outcome)
     head=$(printf '%s' "$station" | jq -r '.result.head//"none"')
@@ -377,33 +396,42 @@ controller_decide() { # Rule f: deterministic rendering from durable records onl
       ask) action=ask; head=none ;;
       *) return 3 ;;
     esac
-    if [ -n "$reason" ]; then printf '%s\n' "$reason" > "$CT_TMP/body"
-    elif [ "$action" = ask ]; then printf '%s' "$station" | jq -r .result.question > "$CT_TMP/body"
-    elif [ "$action" = bounce ]; then printf '%s' "$station" | jq -r '.result|.summary, (.findings[]|"\(.severity) \(.file):\(.line//"?") \(.text)")' > "$CT_TMP/body"
-    else printf '%s' "$station" | jq -r .result.summary > "$CT_TMP/body"; fi
+  fi
+  : > "$CT_TMP/diagnostic-body"
+  printf '%s' "$station" | jq '.warnings//[]' > "$CT_TMP/decision-warnings" || return 5
+  if [ -n "$reason" ]; then
+    jq -n --arg question "$reason" '{v:1,question:$question}' > "$CT_TMP/decision-result" || return 5
+  else
+    printf '%s' "$station" | jq '.result' > "$CT_TMP/decision-result" || return 5
   fi
   if [ "$action" = ask ] || { [ "$action" = bounce ] && [ "$(printf '%s' "$row" | jq .replay.bounces)" -ge 2 ]; }; then
-    [ "$action" != bounce ] || { printf 'bounce cap reached: ' > "$CT_TMP/bounce-cause"; cat "$CT_TMP/body" >> "$CT_TMP/bounce-cause"; mv "$CT_TMP/bounce-cause" "$CT_TMP/body"; }
-    controller_diagnostic "$number" "$run" "$CT_TMP/body" > "$CT_TMP/diagnostic-body" || return 5
-    mv "$CT_TMP/diagnostic-body" "$CT_TMP/body"
-  elif printf '%s' "$station" | jq -e '(.warnings//[]|length)>0' >/dev/null; then
-    printf '%s' "$station" | jq -r '"Warnings: " + (.warnings|join("; "))' >> "$CT_TMP/body"
+    if [ "$action" = bounce ]; then printf 'bounce cap reached\n' > "$CT_TMP/decision-cause"
+    else jq -r .question "$CT_TMP/decision-result" > "$CT_TMP/decision-cause" || return 5; fi
+    controller_diagnostic "$number" "$run" "$CT_TMP/decision-cause" > "$CT_TMP/diagnostic-body" || return 5
   fi
   if [ "$action" = ask ] && ! printf '%s' "$row" | jq -e '.state=="executing" or .state=="reviewing"' >/dev/null; then
-    controller_hold "$number" station-escalation "$(cat "$CT_TMP/body")" "$run" || return $?
+    controller_hold "$number" station-escalation "$(cat "$CT_TMP/diagnostic-body")" "$run" || return $?
     controller_end "$(printf '%s' "$intent" | jq -r .chain)" held || return 5
     return 0
   fi
-  printf '\nagentic-flow-run: run=%s; host=%s\n' "$run" "$CT_HOST" >> "$CT_TMP/body"
-  [ "$(wc -c < "$CT_TMP/body")" -le 65536 ] || { controller_hold "$number" decision-too-large 'The recorded result exceeds the handoff body cap.' "$run"; return $?; }
+  step=$(printf '%s' "$intent" | jq -r .step)
+  role=$(printf '%s' "$intent" | jq -r .station)
+  subject=$(printf '%s' "$CT_SPEC" | jq -r --arg step "$step" '.steps[]|select(.id==$step)|.title')
+  subject=$(journal_subject "$step" "$subject")
+  JOURNAL_STEP=$step
+  JOURNAL_TOPOLOGY=$(printf '%s' "$row" | jq -r .topology)
+  HANDOFF_REPLAY=$(printf '%s' "$row" | jq -c .replay)
+  HANDOFF_CONTROLLER_RUN=$run
+  handoff_render "$action" "$role" "$head" "$subject" "$CT_TMP/decision-result" "$CT_TMP/body" \
+    "$CT_TMP/diagnostic-body" "$CT_TMP/decision-warnings" || return $?
   body=$(shasum -a 256 "$CT_TMP/body"); body=${body%% *}
   jq -n --arg run "$run" --arg action "$action" --arg head "$head" --arg file "$CT_TMP/body" --arg hash "$body" \
-    '{v:1,kind:"decision",run:$run,action:$action,event:$action,head:$head,body_file:$file,body_sha256:$hash,at:(now|floor)}' > "$CT_TMP/record"
+    '{v:1,kind:"decision",run:$run,action:$action,event:$action,head:$head,body_file:$file,body_sha256:$hash,body_format:"markdown-v1",at:(now|floor)}' > "$CT_TMP/record"
   controller_record decision || return 5
   controller_fault after-decision
 }
 controller_replay_handoff() { # Rule f: immutable body plus the original CAS position.
-  local run=$1 intent decision number event role head after attempt rc=0 seq=null reason
+  local run=$1 intent decision number event role head after attempt rc=0 seq=null reason format
   intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
   decision=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="decision" and .run==$run)')
   number=$(printf '%s' "$intent" | jq .issue); role=$(printf '%s' "$intent" | jq -r .station)
@@ -414,7 +442,14 @@ controller_replay_handoff() { # Rule f: immutable body plus the original CAS pos
     return 0
   fi
   case "$event" in submit|approve|bounce|ask) ;; *) controller_hold "$number" illegal-transition "Recorded event $event is not a station handoff." "$run"; return $? ;; esac
-  handoff_cmd "$number" "$event" --as "$role" --head "$head" --after "$after" --body-file "$CT_TMP/replay-body" > "$CT_TMP/handoff-output" || rc=$?
+  format=$(printf '%s' "$decision" | jq -r '.body_format//"interactive"')
+  if [ "$format" = interactive ]; then
+    # Old decisions stored the run marker in the Markdown itself.
+    sed '/^agentic-flow-run: run=/d' "$CT_TMP/replay-body" > "$CT_TMP/legacy-body" || return 5
+    mv "$CT_TMP/legacy-body" "$CT_TMP/replay-body" || return 5
+  fi
+  HANDOFF_CONTROLLER_RUN=$run handoff_transaction "$format" "$number" "$event" --as "$role" --head "$head" \
+    --after "$after" --body-file "$CT_TMP/replay-body" > "$CT_TMP/handoff-output" || rc=$?
   controller_fault after-post || return $?
   if handoff_read "$number"; then seq=$(printf '%s' "$HANDOFF_REPLAY" | jq .seq); fi
   attempt=$(printf '%s' "$CT_RECORDS" | jq --arg run "$run" '[.[]|select(.kind=="handoff" and .run==$run)]|length+1')
@@ -429,7 +464,7 @@ controller_replay_handoff() { # Rule f: immutable body plus the original CAS pos
       controller_foreign || foreign_status=$?
       [ "$foreign_status" -eq 0 ] || [ "$foreign_status" -eq 10 ] || return "$foreign_status" ;;
     3|7)
-      reason=illegal-transition; [ "$rc" -ne 7 ] || reason=plan-effect-pending
+      reason=illegal-transition; [ "$rc" -ne 7 ] || reason='plan-effect-pending'
       controller_hold "$number" "$reason" "Handoff for $run exited $rc; $(cat "$CT_TMP/handoff-output")" "$run" || return $?
       controller_end "$(printf '%s' "$intent" | jq -r .chain)" held || return 5 ;;
     *) return 5 ;;
@@ -488,7 +523,7 @@ controller_completed_effects() { # A crash after a completing exit 3/7 must not 
   while IFS= read -r item; do
     run=$(printf '%s' "$item" | jq -r .latest)
     code=$(printf '%s' "$CT_RECORDS" | jq -r --arg run "$run" '[.[]|select(.kind=="handoff" and .run==$run)]|last|.exit//0')
-    case "$code" in 3) reason=illegal-transition ;; 7) reason=plan-effect-pending ;; *) continue ;; esac
+    case "$code" in 3) reason=illegal-transition ;; 7) reason='plan-effect-pending' ;; *) continue ;; esac
     if printf '%s' "$CT_RECORDS" | jq -e --arg chain "$(printf '%s' "$item" | jq -r .chain)" 'any(.[];.kind=="end" and .chain==$chain)' >/dev/null; then continue; fi
     if [ "$code" = 7 ] && printf '%s' "$CT_REPORT" | jq -e --argjson n "$CT_TRACKER" 'any(.issues[];.number==$n and .state!="open")' >/dev/null; then continue; fi
     intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
@@ -640,7 +675,7 @@ controller_prelaunch_failure() { # exit metadata captured-session (never a preas
 }
 
 controller_dispatch() {
-  local item row station number step pending=initial replaces='' chain run seq gen nth=1 old=null resume='' mode=new from='' base hash session='' rc=0 invalid='' result=null metadata snapshot intent fingerprint captured launch_started
+  local item row station number step pending=initial replaces='' chain run seq gen nth=1 old=null resume='' mode=new from='' base hash session='' rc=0 invalid='' result=null metadata snapshot intent fingerprint captured launch_started scratch packet_status=0
   item=$(printf '%s' "$CT_PENDING" | jq -c '.[0]//null')
   if [ "$item" != null ]; then
     replaces=$(printf '%s' "$item" | jq -r .head); pending=$(printf '%s' "$item" | jq -r .pending)
@@ -676,6 +711,20 @@ controller_dispatch() {
   if [ "$(printf '%s' "$CT_OWNERSHIP" | jq -r '.restore_required//false')" = true ]; then
     git -C "$CT_WORKTREE" reset --hard HEAD >&2 && git -C "$CT_WORKTREE" clean -fd >&2 || return 9
   fi
+  scratch=$(mktemp -d "$CT_TMP/station-scratch.XXXXXX") || return 5
+  scratch=$(cd "$scratch" && pwd -P) || return 5
+  {
+    [ -z "$replaces" ] || controller_retry_context "$pending" "$replaces"
+    printf '\nExisting HEAD: %s\nSalvaged edits: %s\n' "$(git -C "$CT_WORKTREE" rev-parse HEAD)" "$CT_OWNERSHIP"
+  } > "$CT_TMP/packet-suffix" || return 5
+  (cd "$CT_WORKTREE" && PACKET_FINDINGS_DIR="$scratch" PACKET_SUFFIX_FILE="$CT_TMP/packet-suffix" \
+    scripts/agentic-flow packet "$number" --station "$station") > "$CT_TMP/packet" || packet_status=$?
+  if [ "$packet_status" -eq 13 ]; then
+    controller_hold "$number" findings-incomplete 'Cannot recover or deliver the full review findings.' || return $?
+    return 10
+  fi
+  [ "$packet_status" -eq 0 ] || return "$packet_status"
+  cat "$CT_TMP/packet-suffix" >> "$CT_TMP/packet" || return 5
   # Profiles and effective project config belong to the plan checkout. They may
   # differ from the caller's checkout or have changed during an earlier station.
   controller_probe "$station" || return $?
@@ -685,7 +734,6 @@ controller_dispatch() {
     controller_hold "$number" station-infrastructure "Cannot fingerprint the $station launcher." || return $?
     return 10
   }
-  (cd "$CT_WORKTREE" && scripts/agentic-flow packet "$number" --station "$station") > "$CT_TMP/packet" || return $?
   if [ "$old" = null ]; then
     old=$(printf '%s' "$CT_RECORDS" | jq -c --argjson n "$number" --arg station "$station" '[.[]|select(.kind=="intent" and .issue==$n and .station==$station)]|last//null')
   fi
@@ -696,13 +744,11 @@ controller_dispatch() {
     chain=$(printf '%s' "$item" | jq -r .chain)
     nth=$(printf '%s' "$CT_RECORDS" | jq --arg chain "$chain" '[.[]|select(.kind=="intent" and .chain==$chain)]|length+1')
     base=$(printf '%s' "$old" | jq -r .base_head)
-    controller_retry_context "$pending" "$replaces" >> "$CT_TMP/packet"
   else
     gen=$(ledger_generation "$CT_PLAN" "$number" "$seq" "$station") || return 5
     chain="$CT_PLAN/$number/$seq/$station/$gen"
     base=$(git -C "$CT_WORKTREE" rev-parse HEAD) || return 9
   fi
-  printf '\nExisting HEAD: %s\nSalvaged edits: %s\n' "$(git -C "$CT_WORKTREE" rev-parse HEAD)" "$CT_OWNERSHIP" >> "$CT_TMP/packet"
   controller_fault before-launch || return $?
   controller_worktree || return $?
   [ "$CT_RAISED" = false ] || return 10
@@ -722,6 +768,7 @@ controller_dispatch() {
   LAUNCH_RESUME_CLI=$LAUNCH_CLI LAUNCH_RESUME_PROFILE="${LAUNCH_PROFILE#"$LAUNCH_ROOT"/}"
   LAUNCH_PGID_FILE="$CT_TMP/station-pgid"
   local LAUNCH_OUTPUT_DIR=$CT_TMP
+  local LAUNCH_SCRATCH=$scratch
   CT_CHILD_KIND=station
   rm -f "$LAUNCH_PGID_FILE"
   : > "$CT_TMP/result"
@@ -749,7 +796,7 @@ controller_dispatch() {
   if [ "${AGENTIC_CONTROLLER_TESTING:-}" = 1 ] && [ "${AGENTIC_CONTROLLER_FAULT:-}" = after-session ] && [ "$rc" -ne 0 ]; then return 5; fi
   controller_fault after-launch || return $?
   [ "$(git -C "$CT_WORKTREE" symbolic-ref --quiet --short HEAD)" = "$CT_BRANCH" ] || { controller_hold "$number" station-changed-branch 'Station changed the plan worktree branch.' "$run"; return 10; }
-  metadata=$(cat "$CT_TMP/launched")
+  metadata=$(jq 'del(.result)' "$CT_TMP/launched") || metadata=''
   if ! printf '%s' "$metadata" | jq -e 'type=="object" and (.seconds|type)=="number" and (.usage|type)=="object"' >/dev/null 2>&1; then
     metadata=$(jq -nc --argjson seconds "$(($(date +%s)-launch_started))" '{seconds:$seconds,usage:{input:null,output:null,cost_usd:null}}')
   fi
@@ -762,7 +809,10 @@ controller_dispatch() {
     if [ -n "$captured" ]; then launch_session_record "$captured" || return 5; fi
   fi
   if controller_result_valid "$station" "$CT_TMP/result"; then result=$(cat "$CT_TMP/result")
-  else invalid=$CONTROLLER_RESULT_REASON; fi
+  else
+    invalid=$CONTROLLER_RESULT_REASON
+    printf 'null\n' > "$CT_TMP/result"
+  fi
   [ "$rc" -eq 0 ] || invalid="station exit $rc"
   snapshot=$(perl "$CONTROLLER_RECOVERY" snapshot "$CT_WORKTREE") || return 9
   if [ "$result" != null ] && [ "$(printf '%s' "$result" | jq -r .outcome)" = submitted ] && [ "$(printf '%s' "$snapshot" | jq .dirty)" = true ]; then invalid='uncommitted changes after submit'; fi
@@ -772,8 +822,8 @@ controller_dispatch() {
   if controller_prelaunch_failure "$rc" "$metadata" "$captured"; then
     invalid="pre-launch failure: exit $rc; seconds $(printf '%s' "$metadata" | jq .seconds)"
   fi
-  jq -n --arg run "$run" --argjson exit "$rc" --argjson meta "$metadata" --argjson result "$result" --arg invalid "$invalid" --argjson warnings "$CONTROLLER_RESULT_WARNINGS" \
-    '{v:1,kind:"station",run:$run,exit:$exit,seconds:$meta.seconds,usage:$meta.usage,result:$result,warnings:$warnings,invalid_reason:(if $invalid=="" then null else $invalid end),ended:(now|floor)}' > "$CT_TMP/record"
+  jq -n --arg run "$run" --argjson exit "$rc" --argjson meta "$metadata" --slurpfile result "$CT_TMP/result" --arg invalid "$invalid" --argjson warnings "$CONTROLLER_RESULT_WARNINGS" \
+    '{v:1,kind:"station",run:$run,exit:$exit,seconds:$meta.seconds,usage:$meta.usage,result:$result[0],warnings:$warnings,invalid_reason:(if $invalid=="" then null else $invalid end),ended:(now|floor)}' > "$CT_TMP/record" || return 5
   controller_record station || return 5
   controller_store_output "$run" || return 5
   controller_fault after-station
@@ -792,17 +842,21 @@ controller_cmd() (
   local CT_ROOT CT_COMMON CT_TMP CT_PLAN CT_BRANCH CT_SPEC CT_REPORT CT_TRACKER CT_RECORDS CT_CHAINS CT_CONTEXT='{}' CT_PENDING='[]'
   local CT_LOCK='' CT_LOCK_OWNED=false CT_RECOVER_CLAIM=false CT_PREVIOUS_HOST='' CT_STARTED=false CT_FOREIGN_ALLOWED='[]' CT_FOREIGN_SEEN=false
   local CT_HOLDS='[]' CT_HOLD_REASONS='[]' CT_REPAIRS='[]' CT_RAISED=false CT_OWNERSHIP=null CT_REVIEWER_ESCALATE='' CT_REVIEWER_RELAUNCH='' CT_SNAPSHOT='{}' CT_SALVAGE_ONLY=false
-  local CT_HOST CT_PID CT_RUN CT_WORKTREE CT_LEASE=${AGENTIC_CONTROLLER_LEASE:-21600} approval rev status=0 result=0
+  local CT_HOST CT_PID CT_RUN CT_WORKTREE CT_LEASE=${AGENTIC_CONTROLLER_LEASE:-21600} approval rev dirty status=0 result=0
   [[ "$CT_LEASE" =~ ^[1-9][0-9]{0,6}$ ]] || return 2
   CT_ROOT=$(git rev-parse --show-toplevel) || return 3
   cd "$CT_ROOT" || return 3
   case "$doc" in docs/inprogress/*.md) ;; *) return 2 ;; esac
   case "$doc" in *'/../'*|*'/./'*|*[!A-Za-z0-9_./-]*) return 2 ;; esac
+  CT_COMMON=$(git rev-parse --git-common-dir) && CT_COMMON=$(cd "$CT_COMMON" && pwd -P) || return 3
   CT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentic-controller.XXXXXX") || return 5
   trap controller_unlock EXIT
   trap 'controller_interrupt 130' INT
   trap 'controller_interrupt 143' TERM
-  git show "HEAD:$doc" > "$CT_TMP/head-doc" || return 3
+  if ! git show "HEAD:$doc" > "$CT_TMP/head-doc"; then
+    controller_worktree_hint
+    return 3
+  fi
   [ "$(wc -c < "$CT_TMP/head-doc")" -le 1048576 ] || return 3
   approval=$(brief_approval "$CT_TMP/head-doc") || return 3; rev=${approval%%$'\t'*}
   brief_approved_at_head "$doc" "$rev" || return 3
@@ -810,10 +864,22 @@ controller_cmd() (
   CT_SPEC=$(brief_parse "$CT_TMP/doc" "$doc" "$rev") || return 3
   CT_PLAN=$(printf '%s' "$CT_SPEC" | jq -r .id); CT_BRANCH=$(printf '%s' "$CT_SPEC" | jq -r .branch)
   git check-ref-format "refs/heads/$CT_BRANCH" || return 3
+  CT_WORKTREE=$(plan_worktree_path "$CT_COMMON" "$CT_PLAN")
+  if [ "$CT_ROOT" -ef "$CT_WORKTREE" ]; then
+    [ "$(git symbolic-ref --quiet HEAD)" = "refs/heads/$CT_BRANCH" ] || {
+      controller_error 'plan worktree ownership differs'; return 9;
+    }
+    # A planner starting here must commit their edits before controller recovery runs.
+    dirty=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain --untracked-files=all --ignore-submodules=none) || return 9
+    if [ -n "$dirty" ]; then
+      controller_error "plan worktree is dirty: $CT_WORKTREE"
+      printf '%s\n' "$dirty" >&2
+      return 3
+    fi
+  fi
   workflow_load "$CT_ROOT" && read_review_policy "$CT_ROOT" || return 3
   [ -n "$REVIEW_OWNER" ] || { controller_error 'owner= is required for the controller'; return 3; }
   ledger_init "$CT_ROOT" || return 3
-  CT_COMMON=$(git rev-parse --git-common-dir); CT_COMMON=$(cd "$CT_COMMON" && pwd -P) || return 3
   CT_HOST=$(perl "$CONTROLLER_RECOVERY" host "$CT_COMMON") || return 9
   CT_PID=$(exec sh -c 'printf "%s\n" "$PPID"')
   CT_RUN="$CT_PLAN/controller/$CT_PID-$(date +%s)"

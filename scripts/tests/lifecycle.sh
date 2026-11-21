@@ -12,6 +12,7 @@ ship_gate_tests() (
   cd "$fixture" || exit 1
   HANDOFF_TMP=$fixture SHIP_ROOT=$fixture SHIP_BRANCH=feature SHIP_BASE=main
   SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  SHIP_CI_TIMEOUT=3600
   HANDOFF_REPO=owner/repo SHIP_TITLE=Fixture SHIP_PLAN=fixture
   SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3"}'
   export SHIP_GATE_ACTIONS="$fixture/actions"
@@ -24,7 +25,7 @@ ship_gate_tests() (
   }
   brief_approval() { printf '%s\towner\n' "$SHIP_HEAD"; }
   brief_approved_at_head() { return 0; }
-  close_out_load() { CLOSE_TARGET=1; }
+  ship_pr_body() { return 0; }
   close_out_cmd() { printf '%s\n' "$1" >> "$SHIP_GATE_ACTIONS"; }
   handoff_gh() { printf 'pr-create\n' >> "$SHIP_GATE_ACTIONS"; }
   ship_pr() { SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3"}'; }
@@ -34,7 +35,7 @@ ship_gate_tests() (
   # A gate failure must stop each push path, including the initial PR-creation push.
   for phase in initial final; do
     SHIP_DOC=docs/done/plan.md
-    [ "$phase" != initial ] || { SHIP_PR=null; SHIP_DOC=docs/inprogress/plan.md; }
+    [ "$phase" != initial ] || SHIP_PR=null
     cat > Makefile <<'MAKE'
 .PHONY: ship-gate
 ship-gate:
@@ -119,7 +120,10 @@ grep -q '^ACTIVE.*feature-active.md' "$TMP/lifecycle-active.out" \
 sed 's/status=not approved/status=approved/' "$V2FIX/docs/inprogress/feature-v2.md" \
   > "$TMP/valid-v2.md"
 cp "$TMP/valid-v2.md" "$V2FIX/docs/inprogress/feature-v2.md"
-AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
+mkdir -p "$TMP/lifecycle-offline"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$TMP/lifecycle-offline/gh"
+chmod +x "$TMP/lifecycle-offline/gh"
+PATH="$TMP/lifecycle-offline:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" "$ROOT/scripts/lifecycle-status.sh" --doc \
   "$V2FIX/docs/inprogress/feature-v2.md" --check > "$TMP/lifecycle-valid.out" \
   || fail "valid local v2 Status failed report validation"
 grep -q '^READY.*feature-v2.md' "$TMP/lifecycle-valid.out" \
@@ -259,7 +263,7 @@ case "$*" in
     else
       printf '{"state":"%s","labels":[{"name":"agent:claude"},{"name":"needs-closing"}],"body":"<!-- agentic-flow:plan:fixture tracker spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}\n' "${LIFE_ISSUE_STATE:-OPEN}"
     fi ;;
-  *'issue list'*) printf '[{"number":3,"state":"%s","body":"<!-- agentic-flow:plan:fixture step:f-1 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}]\n' "${LIFE_STEP_STATE:-CLOSED}" ;;
+  *'issue list'*) printf '[{"number":3,"state":"%s","body":"### Verify\\n\\nCheck step:example spec: syntax.\\n\\n<!-- agentic-flow:plan:fixture step:f-1 spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"}]\n' "${LIFE_STEP_STATE:-CLOSED}" ;;
   *'api repos/owner/repo/pulls/2'*) cat "$LIFE_PR_JSON" ;;
   *'api graphql '*'number=1'*) cat "$LIFE_COMMENTS_JSON" ;;
   *'api graphql '*'number=2'*) cat "$LIFE_PR_COMMENTS_JSON" ;;
@@ -312,6 +316,63 @@ grep -q "$LIFE_HEAD.*comment opaque-1" "$TMP/lifecycle-bound.out" \
   || fail 'bound CI output omitted the resolved head or selected comment'
 grep -q 'attempt 1 succeeded' "$TMP/lifecycle-bound.out" || fail 'run attempt not printed'
 
+(
+  source_doc="$V2FIX/docs/inprogress/feature-source.md"
+  cat > "$source_doc" <<'SOURCE_PLAN'
+# Feature — Close-out
+# Part B — Implementation brief
+```agentic-flow-plan
+id: close-out-fixture
+profile: standard
+branch: feature
+steps: alpha
+```
+## Alpha — Ship
+**DoD:** ship finishes
+**Verify:** make check
+**Risks:** stale head
+**Red-first:** none
+SOURCE_PLAN
+  sed 's|url=https://github.com/owner/repo/pull/2|source=final-approval|' "$TMP/valid-v2.md" >> "$source_doc"
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$source_doc" --validate-doc-status || fail 'Status parser rejected the final approval PR source'
+  cp "$LIFE_COMMENTS_JSON" "$TMP/source-base.json"
+  LIFE_COMMENTS_JSON="$TMP/source-comments.json"
+  LIFE_PR_JSON="$TMP/source-pr.json"
+  jq '. + {number:2,base:{ref:"main",repo:{full_name:"owner/repo"}},head:(.head+{ref:"feature",repo:{full_name:"owner/repo"}})}' \
+    "$TMP/lifecycle-pr.json" > "$LIFE_PR_JSON"
+  source_case() {
+    local expected=$1 rc=0
+    PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+      "$ROOT/scripts/lifecycle-status.sh" --doc "$source_doc" --check --verify-evidence \
+      > "$TMP/source.out" 2>&1 || rc=$?
+    grep -q "^$expected " "$TMP/source.out" || fail "wrong final approval source result: $(cat "$TMP/source.out")"
+    if [ "$expected" = READY ]; then [ "$rc" = 0 ]; else [ "$rc" = 1 ]; fi
+  }
+  jq '.data.repository.issue.comments.nodes[0].author.login="approver"' "$TMP/source-base.json" > "$LIFE_COMMENTS_JSON"
+  source_case NEEDS-REVIEW || fail 'non-reviewer final approval was accepted'
+  jq '.data.repository.issue.comments.nodes=[]' "$TMP/source-base.json" > "$LIFE_COMMENTS_JSON"
+  source_case NEEDS-REVIEW || fail 'missing final approval was accepted'
+  jq '.data.repository.issue.comments.nodes[0].body |= sub("pr=2"; "pr=invalid")' "$TMP/source-base.json" > "$LIFE_COMMENTS_JSON"
+  source_case BLOCKED || fail 'malformed final approval was accepted'
+  jq '.data.repository.issue.comments.nodes[0].body |= sub("owner/repo"; "elsewhere/repo")' "$TMP/source-base.json" > "$LIFE_COMMENTS_JSON"
+  source_case BLOCKED || fail 'final approval for another repository was accepted'
+  cp "$TMP/source-base.json" "$LIFE_COMMENTS_JSON"
+  cp "$LIFE_PR_JSON" "$TMP/source-pr-base.json"
+  jq '.base.ref="another-base"' "$TMP/source-pr-base.json" > "$LIFE_PR_JSON"
+  source_case BLOCKED || fail 'final approval bound an unrelated PR with the same head'
+  jq --arg stale "$STEP_HEAD" '.head.sha=$stale' "$TMP/source-pr-base.json" > "$LIFE_PR_JSON"
+  source_case NEEDS-REVIEW || fail 'final approval bound a superseded PR head'
+  jq '.state="closed" | .merged=false' "$TMP/source-pr-base.json" > "$LIFE_PR_JSON"
+  source_case NEEDS-REVIEW || fail 'final approval bound a closed unmerged PR'
+  cp "$TMP/source-pr-base.json" "$LIFE_PR_JSON"
+  jq --arg stale "$STEP_HEAD" '
+    .data.repository.issue.comments.nodes |=
+      (.[0] as $valid | [($valid | .id="newer-stale" | .fullDatabaseId="12" | .body |= sub("head=[a-f0-9]+";"head="+$stale)),
+        ($valid | .id="newest-current" | .fullDatabaseId="11"), $valid])' "$TMP/source-base.json" > "$LIFE_COMMENTS_JSON"
+  source_case READY || fail 'valid final approval did not resolve the PR'
+  grep -q 'via comment newest-current' "$TMP/source.out" || fail 'final approval did not select the newest matching verdict'
+)
+
 # Standard uses one open work issue for both the step and final review. The
 # same complete comment page must support close-out and the post-close recheck.
 STANDARD_LIFE_DOC="$V2FIX/docs/inprogress/feature-standard.md"
@@ -339,6 +400,14 @@ for phase_state in 'close-out OPEN' 'pre-merge CLOSED'; do
   [ "$(grep -c 'api graphql ' "$LIFE_CALLS" || true)" -eq 1 ] \
     || fail 'Standard queried more than its one review thread'
 done
+# The Standard tracking thread contains step verdicts alongside final approval.
+STANDARD_SOURCE_DOC="$V2FIX/docs/inprogress/feature-standard-source.md"
+sed '/^## Tracker$/,$d' "$V2FIX/docs/inprogress/feature-source.md" > "$STANDARD_SOURCE_DOC"
+sed 's|url=https://github.com/owner/repo/pull/2|source=final-approval|' "$STANDARD_LIFE_DOC" >> "$STANDARD_SOURCE_DOC"
+PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" LIFE_PR_JSON="$TMP/source-pr-base.json" \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$STANDARD_SOURCE_DOC" --check --verify-evidence \
+  > "$TMP/standard-source.out" 2>&1 || fail "Standard final approval lookup failed: $(cat "$TMP/standard-source.out")"
+grep -q '^READY' "$TMP/standard-source.out" || fail 'Standard final approval lookup did not reach READY'
 # Standard's reused tracking page must also reject an approved alternate commit.
 STANDARD_ALT=$(printf '%s\n' standard-alternate | git -C "$V2FIX" -c commit.gpgsign=false -c user.name=Fixture -c user.email=fixture@example.invalid commit-tree "${LIFE_HEAD}^{tree}" -p "$STEP_HEAD")
 jq --arg old "$STEP_HEAD" --arg new "$STANDARD_ALT" '.data.repository.issue.comments.nodes |= map(.body |= gsub($old; $new))' \
@@ -524,6 +593,20 @@ jq --arg head "$LIFE_HEAD" '
 LIFE_STEP_COMMENTS_JSON="$TMP/journal-approved.json"
 review_case 'accepted approval with losing bounce' READY 'review by reviewer'
 grep -q 'journal skipped 1' "$TMP/lifecycle-review.out" || fail 'lifecycle did not count racing loser'
+cp "$TMP/lifecycle-review.out" "$TMP/lifecycle-bare-journal.out"
+jq '.data.repository.issue.comments.nodes |= map(.body |= ("<!-- " + . + "\n-->\nVisible note"))' \
+  "$TMP/journal-approved.json" > "$TMP/journal-hidden.json"
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-hidden.json"
+review_case 'hidden approval with losing bounce' READY 'review by reviewer'
+cmp -s "$TMP/lifecycle-bare-journal.out" "$TMP/lifecycle-review.out" || fail 'hidden transitions changed lifecycle verdict'
+for LIFE_MARKER_PREFIX in '' '<!-- '; do
+  jq --arg prefix "$LIFE_MARKER_PREFIX" '.data.repository.issue.comments.nodes[1].body |= (
+    split("\n") as $lines | . + "\n" + $prefix + ($lines[1] | sub("status=approved"; "status=changes-requested")))' \
+    "$TMP/journal-hidden.json" > "$TMP/journal-conflict.json"
+  LIFE_STEP_COMMENTS_JSON="$TMP/journal-conflict.json"
+  review_case 'conflicting journal compatibility marker' BLOCKED 'has multiple review markers'
+done
+LIFE_STEP_COMMENTS_JSON="$TMP/journal-approved.json"
 # This installation-specific check does not apply to generic exported policies.
 if [ -f "$ROOT/scripts/export.sh" ]; then
   # Exercise the repository policy: the owner may approve plans, but cannot review.

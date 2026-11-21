@@ -81,55 +81,131 @@ ship_wait_visibility() {
 }
 
 ship_wait_ci() {
-  local start rc
+  local timeout=$1 start rc elapsed delay
   start=$(date +%s)
   while :; do
     rc=0; ship_ci || rc=$?
     [ "$rc" -ne 13 ] || return 1
     if [ "$rc" -ne 12 ]; then return "$rc"; fi
-    [ "$(( $(date +%s)-start ))" -lt 1800 ] || { ship_error "CI still running: $SHIP_RUN_URL"; return 1; }
-    sleep 10
+    elapsed=$(( $(date +%s)-start ))
+    delay=10
+    # Timeouts longer than 18 digits cannot expire within the wall-clock range.
+    if [ "${#timeout}" -le 18 ]; then
+      [ "$elapsed" -lt "$timeout" ] || { ship_error "CI still running: $SHIP_RUN_URL"; return 1; }
+      [ "$((timeout-elapsed))" -ge "$delay" ] || delay=$((timeout-elapsed))
+    fi
+    sleep "$delay"
   done
 }
 ship_lifecycle() {
   "$SHIP_ROOT/scripts/lifecycle-status.sh" --doc "$SHIP_DOC" --phase "$1" --check --verify-evidence
 }
 ship_final_approve() {
-  local file=$1 note='' tracker rc=0
+  local file=$1 note='' tracker rc=0 pr marker
   [ "$SHIP_PR" != null ] && [ "$(printf '%s' "$SHIP_PR" | jq -r .headRefOid)" = "$SHIP_HEAD" ] || return 3
   ship_ci || { rc=$?; [ "$rc" -eq 5 ] && return 5; return 3; }
-  [ -z "$file" ] || { [ -f "$file" ] && [ "$(wc -c < "$file")" -le 65536 ] || return 2; note=$(cat "$file"); }
-  case "$note" in *agentic-flow-review:*) return 2 ;; esac
+  [ -z "$file" ] || { [ -f "$file" ] && [ "$(wc -c < "$file")" -le 240000 ] || return 2; note=$(cat "$file") || return 2; }
   tracker=$(sed -n 's/^- \*\*Tracking issue:\*\* url=//p' "$SHIP_DOC")
   case "$tracker" in "https://github.com/$HANDOFF_REPO/issues/"*) tracker=${tracker##*/} ;; *) return 3 ;; esac
   [[ "$tracker" =~ ^[1-9][0-9]*$ ]] || return 3
   handoff_identity reviewer || return $?
-  printf 'agentic-flow-review: status=approved; pr=%s; head=%s; run=%s; attempt=%s; role=reviewer\n%s\n' \
-    "$(printf '%s' "$SHIP_PR" | jq -r .number)" "$SHIP_HEAD" "$SHIP_RUN_URL" "$SHIP_ATTEMPT" "$note" > "$HANDOFF_TMP/final-comment"
+  pr=$(printf '%s' "$SHIP_PR" | jq -r .number)
+  marker="agentic-flow-review: status=approved; pr=$pr; head=$SHIP_HEAD; run=$SHIP_RUN_URL; attempt=$SHIP_ATTEMPT; role=reviewer"
+  journal_summary "$note" > "$HANDOFF_TMP/final-result" || return 5
+  journal_render final-approve "PR #$pr — ${SHIP_HEAD:0:12} · attempt $SHIP_ATTEMPT" "$marker" \
+    "Role: reviewer · [CI run]($SHIP_RUN_URL)" '' "$HANDOFF_TMP/final-result" > "$HANDOFF_TMP/final-comment" || return $?
   handoff_comment "$tracker" "$HANDOFF_TMP/final-comment"
 }
-ship_run() {
-  local wait_review=$1 start rc ref count=0
-  ship_clean || return 1
-  if [ "$SHIP_PR" = null ]; then
-    case "$SHIP_DOC" in docs/inprogress/*) ;; *) return 1 ;; esac
-    brief_approved_at_head "$SHIP_DOC" "$(brief_approval "$SHIP_DOC" | cut -f1)" || return 3
-    close_out_load "$SHIP_ROOT" "$SHIP_DOC" "$HANDOFF_TMP" || return $?
-    ship_gate || return 1
-    git push -- origin "refs/heads/$SHIP_BRANCH:refs/heads/$SHIP_BRANCH" || return 1
-    handoff_gh pr create --repo "$HANDOFF_REPO" --head "$SHIP_BRANCH" --base "$SHIP_BASE" \
-      --title "$SHIP_TITLE" --body "Implementation of https://github.com/$HANDOFF_REPO/issues/$CLOSE_TARGET" || return 5
-    ship_pr || return $?
-    [ "$SHIP_PR" != null ] || return 5
+ship_commit_close_out() {
+  local closer=$1 dest="docs/done/${SHIP_DOC##*/}" staged head tracking untracked
+  local -a paths=(docs/README.md "$dest" "$SHIP_DOC")
+  # Include both ends of the move and compare NUL-delimited output so a
+  # staged pathname cannot masquerade as part of the expected list.
+  git diff --cached --name-only --no-renames -z > "$HANDOFF_TMP/staged-paths" || return 1
+  if ! printf '%s\0' "${paths[@]}" | cmp -s "$HANDOFF_TMP/staged-paths" -; then
+    ship_error 'staged paths differ from the prepared close-out'
+    git diff --cached --name-status --no-renames >&2
+    return 1
   fi
+  untracked=$(git ls-files --others --exclude-standard) || return 1
+  git diff --quiet && [ -z "$untracked" ] || {
+    ship_error 'worktree changed during close-out preparation'; return 1;
+  }
+  staged=$(git write-tree) || return 1
+  tracking=$(sed -n 's/^- \*\*Tracking issue:\*\* url=//p' "$dest")
+  [[ "$tracking" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$ ]] || return 1
+  # The nested commit does not pass through the agent's PreToolUse hook.
+  # Run the same staged scan here before invoking the configured wrapper.
+  printf '%s\n' '{"tool_input":{"command":"git commit"}}' |
+    "$SHIP_ROOT/scripts/hooks/scan-secrets.sh" || return 1
+  if ! "$closer" commit -m "Close out $SHIP_TITLE." \
+      -m "Record the approved steps and prepare the plan for final review on $tracking." -- "${paths[@]}"; then
+    ship_error "close-out commit failed with $closer; prepared paths:"
+    printf '  %s\n' "${paths[@]}" >&2
+    return 1
+  fi
+  head=$(git rev-parse HEAD) || return 1
+  if [ "$(git rev-list --parents -n 1 "$head")" != "$head $SHIP_HEAD" ] ||
+     [ "$(git rev-parse "$head^{tree}")" != "$staged" ]; then
+    ship_error 'closer did not create one commit matching the prepared index'
+    return 1
+  fi
+  SHIP_DOC=$dest SHIP_HEAD=$head
+  ship_clean
+}
+
+ship_pr_body() {
+  local source="docs/inprogress/${SHIP_DOC##*/}" title goal
+  close_out_load "$SHIP_ROOT" "$SHIP_DOC" "$HANDOFF_TMP" || return $?
+  git merge-base --is-ancestor "$CLOSE_REV" "$SHIP_HEAD" &&
+    git show "$CLOSE_REV:$source" > "$HANDOFF_TMP/approved-doc" || return 3
+  git show "$SHIP_HEAD:$SHIP_DOC" > "$HANDOFF_TMP/shipped-doc" || return 3
+  [ "$(brief_normalize < "$HANDOFF_TMP/approved-doc" | git hash-object --stdin)" = \
+    "$(brief_normalize < "$HANDOFF_TMP/shipped-doc" | git hash-object --stdin)" ] || {
+    ship_error 'closed document differs from the approved brief'; return 3;
+  }
+  title=$(awk '/^# / {print substr($0,3); exit}' "$HANDOFF_TMP/approved-doc")
+  goal=$(awk '/^# / {exit} /^> / && !/^> \*\*(Type|Assurance):\*\*/ {print substr($0,3); exit}' "$HANDOFF_TMP/approved-doc")
+  printf '%s\n' "$CLOSE_SPEC" > "$HANDOFF_TMP/pr-spec" || return 5
+  jq -Rn --arg title "${title:-$SHIP_TITLE}" --arg goal "$goal" --arg repo "https://github.com/$HANDOFF_REPO" \
+    --arg rev "$CLOSE_REV" --arg source "$source" --arg target "$CLOSE_TARGET" --slurpfile spec "$HANDOFF_TMP/pr-spec" '
+    {pull_request:{title:$title,goal:$goal,brief:($repo+"/blob/"+$rev+"/"+$source),
+      issue_root:($repo+"/issues"),tracker:($repo+"/issues/"+$target),
+      steps:[inputs | split("\t") as $row | {
+        title:($spec[0].steps[] | select(.id==$row[0]) | .title),
+        issue:$row[1],head:$row[2],bounces:($row[4]|tonumber)
+      }]}}' "$HANDOFF_TMP/steps" | journal_render_pr > "$HANDOFF_TMP/pr-body"
+}
+
+ship_run() {
+  local wait_review=$1 start rc ref closer count=0
+  ship_clean || return 1
   case "$SHIP_DOC" in docs/inprogress/*)
-    close_out_cmd prep "$SHIP_DOC" --pr "$(printf '%s' "$SHIP_PR" | jq -r .url)" || return $?
-    printf 'commit the staged close-out, then run ship again\n'; return 0 ;;
+    if [ "$SHIP_PR" != null ]; then
+      close_out_cmd prep "$SHIP_DOC" --pr "$(printf '%s' "$SHIP_PR" | jq -r .url)" || return $?
+      printf 'commit the staged close-out, then run ship again\n'
+      return 0
+    fi
+    close_out_cmd prep "$SHIP_DOC" || return $?
+    closer=${AGENTIC_CLOSER_COMMIT-$(command -v git-claude || true)}
+    if [ -z "$closer" ]; then
+      printf 'commit the staged close-out, then run ship again\n'
+      return 0
+    fi
+    ship_commit_close_out "$closer" || return $?
+    ;;
   esac
+  if [ "$SHIP_PR" = null ]; then ship_pr_body || return $?; fi
+  ship_clean || return 1
   ship_gate || return 1
-  git push -- origin "refs/heads/$SHIP_BRANCH:refs/heads/$SHIP_BRANCH" || return 1
+  ship_clean || return 1
+  git push -- origin "$SHIP_HEAD:refs/heads/$SHIP_BRANCH" || return 1
+  if [ "$SHIP_PR" = null ]; then
+    handoff_gh pr create --repo "$HANDOFF_REPO" --head "$SHIP_BRANCH" --base "$SHIP_BASE" \
+      --title "$SHIP_TITLE" --body-file "$HANDOFF_TMP/pr-body" || return 5
+  fi
   ship_wait_visibility || return $?
-  ship_wait_ci || return $?
+  ship_wait_ci "$SHIP_CI_TIMEOUT" || return $?
   start=$(date +%s)
   while :; do
     rc=0; ship_lifecycle close-out > "$HANDOFF_TMP/lifecycle" 2>&1 || rc=$?
@@ -151,15 +227,24 @@ ship_run() {
     count=$((count+1))
   done < <(git for-each-ref --format='%(refname)' "refs/agentic-flow/salvage/$SHIP_PLAN/")
   printf 'Deleted %s salvage refs.\nHuman merge: gh pr merge %s --repo %s\n' "$count" "$(printf '%s' "$SHIP_PR" | jq -r .number)" "$HANDOFF_REPO"
+  printf 'After merge: agentic-flow clean %s\n' "$SHIP_PLAN"
 }
 ship_dispatch() (
   set +x
-  local action=${1:-} doc=${2:-} wait_review=false file='' tmp approval spec moved
+  local action=${1:-} doc=${2:-} wait_review=false file='' tmp approval spec moved SHIP_CI_TIMEOUT
   [ "$#" -ge 2 ] || return 2; shift 2
   while [ "$#" -gt 0 ]; do
     case "$action:$1" in ship:--wait-review) wait_review=true; shift ;;
       final-approve:--body-file) [ "$#" -ge 2 ] || return 2; file=$2; shift 2 ;; *) return 2 ;; esac
   done
+  if [ "$action" = ship ]; then
+    SHIP_CI_TIMEOUT=${AGENTIC_SHIP_CI_TIMEOUT-3600}
+    if ! [[ "$SHIP_CI_TIMEOUT" =~ ^0*[1-9][0-9]*$ ]]; then
+      ship_error 'AGENTIC_SHIP_CI_TIMEOUT must be a positive integer'
+      return 2
+    fi
+    SHIP_CI_TIMEOUT=${SHIP_CI_TIMEOUT#"${SHIP_CI_TIMEOUT%%[!0]*}"}
+  fi
   local SHIP_ROOT SHIP_DOC SHIP_BRANCH SHIP_BASE SHIP_PLAN SHIP_TITLE SHIP_HEAD SHIP_PR SHIP_RUN SHIP_RUN_ID SHIP_RUN_URL SHIP_ATTEMPT
   SHIP_ROOT=$(git rev-parse --show-toplevel) || return 3
   cd "$SHIP_ROOT" || return 3
@@ -176,7 +261,8 @@ ship_dispatch() (
   SHIP_BASE=$(printf '%s' "$spec" | jq -r '.base//"main"')
   git check-ref-format "refs/heads/$SHIP_BRANCH" && git check-ref-format "refs/heads/$SHIP_BASE" || return 3
   SHIP_PLAN=$(printf '%s' "$spec" | jq -r .id)
-  SHIP_TITLE=$(printf '%s' "$spec" | jq -r '.tracking.title//.steps[0].title')
+  SHIP_TITLE=$(awk '/^# / {sub(/^# (Feature|Security Review) — /,""); sub(/^# /,""); print; exit}' "$doc")
+  [ -n "$SHIP_TITLE" ] || SHIP_TITLE=$(printf '%s' "$spec" | jq -r '.tracking.title//.steps[0].title')
   [ "$(git symbolic-ref --short HEAD)" = "$SHIP_BRANCH" ] || return 3
   SHIP_HEAD=$(git rev-parse HEAD) || return 3
   workflow_load "$SHIP_ROOT" && read_review_policy "$SHIP_ROOT" || return 3
@@ -196,7 +282,7 @@ ship_cmd() {
   local action=${1:-} rc=0
   ship_dispatch "$@" || rc=$?
   if [ "$action" = ship ]; then
-    case "$rc" in 0|2|11) ;; *) rc=1 ;; esac
+    case "$rc" in 0|2|5|11) ;; *) rc=1 ;; esac
   fi
   return "$rc"
 }

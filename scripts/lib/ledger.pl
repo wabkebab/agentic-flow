@@ -19,6 +19,9 @@ my $json=JSON::PP->new->utf8->canonical;
 my ($base,$command,@args)=@ARGV;
 my $MAX_BYTES=32*1024*1024;
 my $MAX_LINE=256*1024;
+# A station may return 100 findings with independently bounded Unicode
+# fields. Allow for JSON escaping while keeping other records and tails capped.
+my $MAX_STATION_LINE=5*1024*1024;
 sub fail { die "ledger: $_[0]\n"; }
 sub object { ref($_[0]) eq 'HASH' }
 sub text { defined($_[0]) && !ref($_[0]) && $json->encode($_[0]) =~ /^"/ }
@@ -112,7 +115,9 @@ sub result_text {
 sub result_value { return substr($json->encode($_[0]),0,80); }
 sub result_valid {
   my ($r,$station)=@_; my @warnings;
-  result_keys($r,'result',qw(v station outcome head summary findings question));
+  my @keys=qw(v station outcome head summary findings question);
+  push @keys,'evidence' if object($r) && exists($r->{evidence});
+  result_keys($r,'result',@keys);
   integer($r->{v},1) && $r->{v}==1 or fail('v is not 1: '.result_value($r->{v}));
   member($station,qw(executor reviewer)) && text($r->{station}) && $r->{station} eq $station
     or fail("station is not $station: ".result_value($r->{station}));
@@ -120,6 +125,14 @@ sub result_valid {
     or fail("outcome is invalid for $station: ".result_value($r->{outcome}));
   result_text($r->{summary},'summary',8000,2000,\@warnings);
   !defined($r->{question}) or result_text($r->{question},'question',4000,1200,\@warnings);
+  if (defined $r->{evidence}) {
+    ref($r->{evidence}) eq 'ARRAY' or fail('evidence is not an array or null');
+    my $count=@{$r->{evidence}};
+    $count<=20 or fail("evidence $count > 20");
+    for my $i (0..$count-1) {
+      result_text($r->{evidence}[$i],"evidence[$i]",300,300,\@warnings);
+    }
+  }
   !defined($r->{head}) || (text($r->{head}) && length($r->{head})==40 && sha($r->{head},40))
     or fail('head is not 40 hex characters ('.(text($r->{head}) ? 'length '.length($r->{head}) : 'type '.result_value($r->{head})).')');
   if ($r->{outcome} eq 'ask') { text($r->{question}) && length($r->{question}) or fail('ask requires nonempty question (length 0 or null)'); }
@@ -186,6 +199,7 @@ sub validate {
     !exists($r->{tail}) || string($r->{tail},16384) or fail('invalid verification tail');
   } elsif ($k eq 'decision') {
     required($r,qw(action event head body_file body_sha256));
+    !exists($r->{body_format}) || member($r->{body_format},'markdown-v1') or fail('invalid decision body format');
     member($r->{action},qw(submit approve bounce ask fix hold)) && (!defined($r->{event}) || member($r->{event},qw(submit approve bounce ask fix hold))) or fail('invalid decision');
     (!defined($r->{head}) || $r->{head} eq 'none' || sha($r->{head},40)) && string($r->{body_file}) && sha($r->{body_sha256},64) or fail('invalid decision body/head');
   } elsif ($k eq 'handoff') {
@@ -288,9 +302,12 @@ sub decode_ledger {
   my (@objects,@invalid,@offsets,%at_offset,%discarded);
   my $offset=0;
   for my $i (0..$#lines) {
-    length($lines[$i])<=$MAX_LINE or fail('oversized ledger record');
+    length($lines[$i])<=$MAX_STATION_LINE or fail('oversized ledger record');
     $offsets[$i]=$offset; $at_offset{$offset}=$i; $offset+=length($lines[$i])+1;
     $objects[$i]=eval { $json->decode($lines[$i]) }; $invalid[$i]=$@ ? 1 : 0;
+    if (!$invalid[$i] && length($lines[$i])>$MAX_LINE) {
+      object($objects[$i]) && ($objects[$i]{kind}//'') eq 'station' or fail('oversized ledger record');
+    }
   }
   # A repaired append describes the exact discarded byte suffix. Resolve these
   # frames backwards, so a second crash during repair cannot revive an older
@@ -472,7 +489,8 @@ sub append_record {
   # A terminal process-group signal must not interrupt publication or fsync.
   local $SIG{INT}='IGNORE'; local $SIG{TERM}='IGNORE';
   my ($kind,$plan,$file)=@_; plan_id($plan);
-  my $r=parse_json(read_path($file,$MAX_LINE)); object($r) && ($r->{kind}//'') eq $kind or fail('writer/record kind mismatch');
+  my $cap=$kind eq 'station' ? $MAX_STATION_LINE : $MAX_LINE;
+  my $r=parse_json(read_path($file,$cap)); object($r) && ($r->{kind}//'') eq $kind or fail('writer/record kind mismatch');
   !exists($r->{discarded_tail_sha256}) && !exists($r->{discarded_tail_bytes}) or fail('reserved recovery framing field');
   validate($r,$plan); prepare_directory($base,1); my $path=File::Spec->catfile($base,"$plan.jsonl");
   !-l $path or fail('symlink ledger refused');
@@ -482,7 +500,7 @@ sub append_record {
   my ($state,$tail)=decode_ledger($data,$plan);
   apply_record($state,$r,$plan,1); store_body($r,$plan) if $kind eq 'decision';
   if (length($tail)) { $r->{discarded_tail_sha256}=sha256_hex($tail); $r->{discarded_tail_bytes}=length($tail); }
-  my $line=$json->encode($r); length($line)<=$MAX_LINE or fail('oversized ledger record');
+  my $line=$json->encode($r); length($line)<=$cap or fail('oversized ledger record');
   my $separator=length($tail) || (length($data) && $data!~/\n\z/) ? "\n" : '';
   my $bytes=$separator.$line."\n";
   length($data)+length($bytes)<=$MAX_BYTES && scalar(()=$data=~/\n/g)+(length($separator)?1:0)+1<=50000 or fail('ledger too large');
@@ -680,12 +698,13 @@ my $ok=eval {
   }
   elsif ($command eq 'result-check' && @args==2) {
     my $warnings=[];
-    my $valid=eval { $warnings=result_valid(parse_json(read_path($args[1],$MAX_LINE)),$args[0]); 1; };
+    my $valid=eval { $warnings=result_valid(parse_json(read_path($args[1],$MAX_STATION_LINE)),$args[0]); 1; };
     my $reason=$valid ? undef : ($@ || 'cannot validate result');
     if (defined($reason)) { $reason =~ s/^ledger: //; $reason =~ s/\n\z//; $reason=substr($reason,0,1100); }
     print $json->encode({invalid_reason=>$reason,warnings=>$valid ? $warnings : []}),"\n";
   }
   elsif ($command eq 'comment' && @args==1) { print bounded_comment($args[0]); }
+  elsif ($command eq 'comment-redact' && @args==1) { print redact(read_path($args[0],$MAX_LINE)); }
   elsif ($command eq 'tails' && @args==4) { store_tails(@args); }
   elsif ($command eq 'diagnostic' && @args==5) { diagnostic_note(@args); }
   elsif ($command eq 'append' && @args==3) { print $json->encode(append_record(@args)),"\n"; }
