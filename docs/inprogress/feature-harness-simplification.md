@@ -128,7 +128,7 @@ The roadmap lists twelve Phase 4 items. Taking them in one brief would mix three
 
 **s-2, `ship` skips what it has done.**
 
-- **Gate record.** A green gate writes a record keyed by the head's tree hash, a hash of the gate's implementation (the Makefile target, `self-test.sh` and the groups) and the harness version. This works like the verify record (R-4/T-1). The next `ship` run skips the gate when a record matches. `--force-gate` re-runs it.
+- **Gate record.** A green gate writes a record keyed by the head's tree hash, a hash of the gate's implementation (the Makefile target, `self-test.sh` and the groups) and the harness version. This works like the verify record (R-4/T-1). The next `ship` run skips the gate when a record matches. `--force-gate` **deletes** any record for the current key before re-running. A forced run that fails therefore leaves no green record behind, and the next ordinary `ship` runs the gate again. Any failed gate run also deletes the record for its key.
 - **Push.** Before pushing, `ship` reads the remote branch head over the GitHub API, which uses HTTPS and needs no SSH key. It skips the push only when both hold:
   - `origin` has exactly one effective push URL. `git remote get-url --push --all origin` must print one line; without `--all`, git prints only the first of several `pushurl` entries;
   - that URL (which honours `pushurl` and `insteadOf`) names the same GitHub repository as `HANDOFF_REPO`, which comes from `remote.origin.url` (`scripts/lib/identity.sh:6`);
@@ -195,7 +195,12 @@ Replace in two steps so the guard never lapses:
        - it checks the result with `render-command-policy.sh --check` against those live files;
      - **only when that check passes** does it remove exactly the retired hook entries, matched by command path, and leave every other entry alone. The live file is never left with neither the hook nor the rule;
      - if any merge or check fails (an unparseable file, a conflicting key), it removes nothing. The hooks stay live and the upgrade reports `pending: command policy not active`. `doctor --check` fails until the policy is active;
-     - it sets `core.hooksPath` when it is unset. It then retires the old `scan-secrets.sh` PreToolUse entry only after a working pre-commit path is shown: a commit of a planted credential (built with `printf`) in a throwaway index is blocked through the active hook path. Without that, the old entry stays;
+     - it sets `core.hooksPath` when it is unset. It then retires the old `scan-secrets.sh` PreToolUse entry only after a working pre-commit path is shown by an **isolated probe**:
+       - the probe runs in a new temporary repository, never in the adopter's repository (a commit through a throwaway index still moves the adopter's `HEAD` if the hook lets it through);
+       - that repository is given the adopter's effective hook configuration: the resolved `core.hooksPath` and the scanner it reaches;
+       - it commits a planted credential, built with `printf`, with signing disabled for that one command;
+       - it passes only on the **scanner's own rejection**. `scan-secrets.sh` prints a fixed marker line when it blocks, and the probe requires that marker together with a failed commit. A commit that fails for another reason (signing, a missing identity, another hook) is not proof, so the old entry stays;
+       - the temporary repository is deleted afterwards. The adopter's repository, index and refs are never touched;
      - it reports a custom `core.hooksPath` (husky, lefthook and the like) and doesn't change it, printing the line to chain the secret scan from the existing hook. `doctor --check` fails until the scan is reachable from the active hook path.
    - No stubs. Every retired script keeps its current behaviour in this release, so the fallback really guards. The scripts are deleted in a later release whose upgrade pre-flight refuses to run until the policy is active (Out of scope).
 
@@ -232,8 +237,16 @@ An adopter on 0.19.0 runs its *installed* `scripts/agentic-flow upgrade`. That f
 
 So the new library carries a **bridge**:
 - When it is sourced by an `upgrade_cmd` that hasn't declared the new entry protocol (the new `upgrade_cmd` sets `PAYLOAD_ENTRY=2` before loading the library), it hands control to the fetched release's own entry point.
-- It runs `exec "$source/scripts/agentic-flow" upgrade --bridged-from "$source"` against the same project root, passing the caller's `--yes`, `--force` and `--ref`.
-- The new process takes over cleanup of the fetched directory, because `exec` skips the old process's EXIT trap.
+- It fires **only** from a legacy `upgrade_cmd` (checked through bash's `FUNCNAME` stack), never from the legacy `diff` or `status`, which also load the library. Under `diff` the library stays read-only, as today.
+- It runs `exec "$source/scripts/agentic-flow" upgrade --bridged-from "$FETCH_PARENT" --confirmed` against the same project root, passing the caller's `--force` and `--ref`.
+  - **Confirmation carries forward.** The legacy `confirm_upgrade` has already run before the fetch (`scripts/agentic-flow:285`): either `--yes` was given or the human answered yes. Either way, a successful answer leaves `yes=false`. So the bridge passes an internal `--confirmed`, and the new process asks nothing.
+  - `--confirmed` and `--bridged-from` are accepted only together and are not in the usage text. A direct call with them and without a verified fetch directory exits 2.
+- **Cleanup is restricted.** The new process takes over cleanup, because `exec` skips the old EXIT trap. It deletes only a directory that passes all of these checks:
+  - a single directory directly under `${TMPDIR:-/tmp}`, named `agentic-flow-fetch.XXXXXX` (the legacy `mktemp` pattern, `scripts/agentic-flow:145`);
+  - owned by the current user and not a symlink;
+  - contains the fetched clone the new process is running from.
+
+  Anything else is left in place with a warning, and the upgrade continues.
 - It happens before the old loop applies any file.
 
 An adopter therefore needs one upgrade run, and every s-5 migration and s-6 record write runs on it. The bridge is tested from the twin's actual 0.19.0 `scripts/agentic-flow` (the file at `3a8930a`), not from the new one.
@@ -351,6 +364,11 @@ scripts/publish-scan.sh --resolve <location-id>   # terminal only; never written
 
 # s-3  base mismatch: internal 3, public exit 1; body replaced only when empty or whitespace
 
+# s-5  legacy bridge (internal; not in usage)
+agentic-flow upgrade --bridged-from <fetch-dir> --confirmed [--force] [--ref <ref>]
+#   fires only from a legacy upgrade_cmd; never from diff or status
+#   cleanup only of ${TMPDIR:-/tmp}/agentic-flow-fetch.XXXXXX owned by the user
+# s-5  scan-secrets.sh prints a fixed marker line when it blocks; the isolated probe requires it
 # s-5  upgrade migration
 #   removes retired hook entries by command path; sets core.hooksPath if unset; reports a custom one
 
@@ -452,6 +470,7 @@ Base: `main`. One branch and one PR for the whole brief: `phase-4`. Each step is
    - a different harness version;
    - a corrupt record;
    - `--force-gate`.
+   - **Forced failure invalidates.** A green run, then a `--force-gate` run that fails on the same key, then an ordinary `ship`: the ordinary run gates again and does not reuse the earlier green record.
 3. **A pushed head is not pushed again.** When the fake API reports the remote branch at the head, and the push URL names the same repository, `ship` makes no `git push`. `ship` pushes as today when any of these holds:
    - the API reports another SHA, or 404, or fails;
    - a separate `pushurl` names another repository;
@@ -463,7 +482,7 @@ Base: `main`. One branch and one PR for the whole brief: `phase-4`. Each step is
 5. **One policy, three renderings.** `config/command-policy.tsv` renders to Claude `permissions.deny`, a Codex `.rules` file and OpenCode `permission.bash`. `render-command-policy.sh --check` fails when any rendered file differs from the TSV. The same holds in `templates/harness/` and in a fresh export.
 6. **Each CLI refuses on its own, in both modes.** With the hooks disabled, the station probe for each assigned CLI (fake CLIs in tests; the real CLIs in `doctor --stations`) is asked to run every command form in the coverage matrix marked *denied natively* for it. That includes `git -C <dir> push`, the signing wrappers with `push`, `env GIT_INDEX_FILE=… git add -A`, `rtk gh issue edit 1 --add-label x` and `gh api … -X PATCH`. Each is refused by the CLI's own rule, in the interactive configuration and in the station profile the launcher actually uses. A fake CLI that lets the command run and has it fail (sandbox, disabled `pushurl`) makes the probe fail, not pass. `scripts/agentic-flow handoff …` and `git-codex commit` / `git-claude commit` with named files are allowed.
 7. **The secret scan covers every commit.** A commit that stages a credential-shaped fixture (built with `printf`) is blocked by the `pre-commit` hook. That holds for a commit from a script, a commit from a station and a human `git commit`. `AGENTIC_ALLOW_SECRET=1` still overrides. After s-5, no shipped settings file references the retired hooks, their scripts and `hook-command.sh` still work when called, and `doctor --check` reports no missing hook.
-   - **Upgrade migration.** An adopter twin on the previous release (0.19.0), with a customized `.claude/settings.json` that has an extra hook of its own. The upgrade is started from the twin's own 0.19.0 `scripts/agentic-flow` (the file at `3a8930a`), which must reach the new logic through the bridge in a single run:
+   - **Upgrade migration.** An adopter twin on the previous release (0.19.0), with a customized `.claude/settings.json` that has an extra hook of its own. The upgrade is started from the twin's own 0.19.0 `scripts/agentic-flow` (the file at `3a8930a`), which must reach the new logic through the bridge in a single run. In the interactive variant (a pty answering `y` once), the prompt appears exactly once. After the run, the fetch directory is gone and nothing else under the temp directory was removed. The same twin's legacy `diff` writes nothing and does not bridge.
      - after `agentic-flow upgrade`, the live settings carry the policy, the retired entries are gone, the adopter's own hook remains and `core.hooksPath` is set;
      - **immediately after**, from the upgraded worktree, a fake CLI reading the live settings refuses `git push`, `git add -A` and a workflow-label edit;
      - a commit from the upgraded worktree with a planted credential is blocked.
@@ -472,6 +491,8 @@ Base: `main`. One branch and one PR for the whole brief: `phase-4`. Each step is
      - **still denies**: running the kept hook entries against `git push`, `git add -A` and a workflow-label edit blocks each one;
      - a commit of a planted credential is still blocked by the kept `scan-secrets.sh` entry.
    - **No pre-commit path, no retirement.** A twin with a custom `core.hooksPath` that doesn't chain the scan keeps its `scan-secrets.sh` PreToolUse entry.
+   - **The probe never touches the adopter's repository.** After every migration run, passing or failing, the twin's `HEAD`, branch refs, index and working tree are byte-identical to before. A probe commit that a broken hook lets through lands only in the temporary repository, and the old entry stays.
+   - **Only the scanner counts.** With commit signing forced to fail (a fake `gpg.program`) and no scanner marker, the probe fails and the old entry stays. The same holds for a commit refused by another hook.
    - **Custom hook path.** The same twin with a custom `core.hooksPath` keeps it unchanged and gets the chaining instruction, and `doctor --check` fails until the scan is reachable.
 
 **Upgrade**
@@ -527,7 +548,8 @@ Base: `main`. One branch and one PR for the whole brief: `phase-4`. Each step is
 
 ## Definition of done (whole brief)
 - Every step's DoD is met and all 11 acceptance scenarios pass as tests.
-- `make check`, `make test`, `make ship-gate`, `make build` and `scripts/doctor.sh --check` are green here and in a fresh export.
+- `make check`, `make test`, `make ship-gate`, `make build` and `scripts/doctor.sh --check` are green in the scaffold.
+- In a fresh export, `make check`, `make test`, `make build`, `scripts/doctor.sh --check` and the exported full suite (`scripts/self-test.sh --full --all-groups`) are green. `ship-gate` stays optional in the adopter template, so it is not required there.
 - This plan's own `ship` runs the gate once and pushes once. A re-run after the final review runs neither. The close-out records gate runs, pushes and CI runs.
 - #109 can be closed with a link to scenario 8's test.
 - `docs/reference/publish-scan.md` records a provisional verdict for this repo at the scanned commit, with every history, metadata and GitHub finding listed for the owner's decision. Publication still requires a final scan of the publication state (R-0f).
@@ -572,7 +594,7 @@ scripts/doctor.sh --check
 1. Write the gate record (Interface) after a green gate. Before gating, skip when the record matches the head tree, the gate hash and the harness version. Define the gate hash as the hash of the files the gate runs, listed in one place.
 2. Read the remote branch head over the API before pushing. Skip the push only when the push URL's repository equals `HANDOFF_REPO` and the remote head equals the local head (Interface). On any error or mismatch, push as today.
 3. Before a real push, call the existing desktop notifier (`andon_desktop` or a shared helper) and print one line asking for the key touch.
-4. Add `--force-gate` to `ship` and the CLI usage text.
+4. Add `--force-gate` to `ship` and the CLI usage text. It deletes the matching record before the run, and any failed gate deletes the record for its key.
 
 **Test:** scenarios 2 and 3. Failure path first: a corrupt record, an API 500, a record for another tree, a separate `pushurl` to another repository.
 
@@ -631,7 +653,7 @@ scripts/doctor.sh --check
 **Why fifth:** s-4 proved the replacement; this takes the lexer out of every path where the policy is active. Deleting the code waits a release (Out of scope).
 
 **Approach:**
-0. Add the legacy-entry bridge to `scripts/lib/payload-apply.sh` and the `--bridged-from` path to `upgrade` (Part A). s-6 relies on it too.
+0. Add the legacy-entry bridge to `scripts/lib/payload-apply.sh`, and the internal `--bridged-from` and `--confirmed` options to `upgrade`, with the trigger, confirmation and cleanup rules in Part A. s-6 relies on it too.
 1. Add `scripts/git-hooks/pre-commit`, which runs the existing secret scan on the staged diff, and set `core.hooksPath` in `init.sh`, in the adoption steps and in `doctor --check`. Keep `AGENTIC_ALLOW_SECRET=1`.
 2. Remove the PreToolUse entries for `block-push.sh`, `block-git-add-all.sh`, `require-step-comment.sh` and `scan-secrets.sh` from the shipped `.claude/settings.json` and `.codex/hooks.json` (root and template). Do not delete or stub `hook-command.sh` or the hook scripts, and keep their tests. Also copy each blocking case into the native-rule probe (scenario 6) or its thin hook. A case with no native equivalent needs an owner-accepted risk, named in the commit body.
 3. Add the upgrade migration (Part A), in this order:
@@ -639,11 +661,18 @@ scripts/doctor.sh --check
    - only after that passes, remove the retired hook entries by command path;
    - on any failure, remove nothing and report pending;
    - set `core.hooksPath` when unset, and report a custom hook path without changing it;
-   - retire the `scan-secrets.sh` entry only after the throwaway-index commit proves the pre-commit path blocks.
+   - retire the `scan-secrets.sh` entry only after the isolated probe (Part A) shows the scanner's own marker on a rejected commit; any other failure keeps the entry.
 4. Keep `check-gate.sh` and `session-context.sh`.
 5. Leave the `CLAUDE.md`/`AGENTS.md` wording to s-9. Here, only remove what references a deleted file.
 
-**Test:** scenario 7, including the upgrade migration from a 0.19.0 adopter twin (with a denial checked immediately after upgrade), failed activation, and the custom hook path. Failure path first: a credential-shaped fixture committed from a script, from a station, by a human and from the upgraded twin; and `--no-verify` refused by each CLI's policy.
+**Test:** scenario 7, including:
+- the upgrade migration from a 0.19.0 adopter twin, with a denial checked immediately after upgrade;
+- an interactive bridged upgrade that prompts once;
+- a legacy `diff` that stays read-only;
+- a forged `--bridged-from` path;
+- failed activation;
+- the custom hook path;
+- the isolated probe's no-touch and scanner-only checks. Failure path first: a credential-shaped fixture committed from a script, from a station, by a human and from the upgraded twin; and `--no-verify` refused by each CLI's policy.
 
 **DoD:** scenarios 5 to 7 pass; no shipped settings file registers a retired hook; the retired scripts still pass their own tests.
 **Verify:** `make test-one F=hooks`, `make test-one F=upgrade` and `make test-one F=export`
