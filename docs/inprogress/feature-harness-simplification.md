@@ -615,7 +615,7 @@ scripts/doctor.sh --check
 
 **DoD:** the docs describe what ships; `make check` and `make test` pass.
 **Verify:** `make test-one F=contracts`
-**Risks:** root and template contracts drifting; a word ceiling raised instead of text cut.
+**Risks:** root and template contracts drifting; a word ceiling raised instead of text cut. Headroom is thin: on 2026-11-21 `measure-harness.sh` reported planner 1,781 of 1,800 words, executor 2,744 of 2,800 and reviewer 2,757 of 2,800. `docs/MEMORY.md` counts toward all three, and close-outs keep adding to it. Removing the hook list and the lexer gotchas must free more words than the new policy text adds; report before and after counts in the commit body.
 **Red-first:** none
 **Commit:** `Document the command policy, pre-commit secret scan and ship re-runs; release 0.20.0`
 
