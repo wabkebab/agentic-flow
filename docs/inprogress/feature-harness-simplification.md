@@ -31,7 +31,7 @@ Phase 4 was planned in the 2026-11-11 roadmap as "remove what the above makes re
 
 Success:
 
-- After `ship-gate` passes locally, CI's Test suite and Exported-layout jobs cannot fail on a check the gate skipped (copy budget, shellcheck).
+- The scaffold's `ship-gate` runs the two checks that escaped PR #185: shellcheck, and a fixture copy budget. It does not run the source-layout suite, so a failure specific to that layout can still first appear in CI (Option B below).
 - A second `ship` run on an unchanged, already-pushed head runs no gate and no push. It goes straight to waiting for CI and review.
 - No agent session runs `git push`, `git add -A` or a raw workflow-label edit, enforced by each CLI's own permission rules. The lexer and the three hooks built on it are gone.
 - `agentic-flow upgrade` on an adopter whose `CLAUDE.md` is customized, after an upstream release that left `CLAUDE.md` unchanged, writes no `.agentic-new` candidate for it (#109).
@@ -121,20 +121,26 @@ The roadmap lists twelve Phase 4 items. Taking them in one brief would mix three
 
 **s-1, gate parity.** Two ways to close the gap:
 
-- **Option A (chosen 2026-11-21): the exported run gets its own copy budget, and the gate runs the lint.** The exported full run already logs `fixture_file_copy` events; only the assertion is skipped. Measure the exported count, approve it as the exported budget, and assert it in the exported layout as well. Add `shell-inventory.sh --lint` to `ship-gate`; it took about 75 s in CI. A new fixture copy raises both counts, so either budget catches it. This adds about 1.5 minutes to the gate.
+- **Option A (chosen 2026-11-21): the exported run gets its own copy budget, and the gate runs the lint.** The exported full run already logs `fixture_file_copy` events; only the assertion is skipped. Measure the exported count, approve it as the exported budget, and assert it in the `--ship-gate` wrapper, which already collects the exported run's events (`scripts/self-test.sh:577`). Add `shell-inventory.sh --lint` to `ship-gate`; it took 53 s locally and 86 s in CI. This adds about 1.5 minutes to the gate.
+  - **What it guarantees.** It catches fixture growth that reaches the exported run, and every shellcheck finding. It does not replace the source-layout budget, which CI keeps enforcing. A copy added only on a source-layout path, or any other failure specific to that layout, still first shows in CI.
+  - **Scaffold only.** In the adopter template, `ship-gate` stays an optional, project-defined target (`templates/harness/Makefile:41-47`), because exported projects have no `export.sh`. s-1 changes the scaffold's own gate, not the template.
 - **Option B (rejected): `ship` runs `make test` as well.** This is exact parity with CI's Test suite on macOS, but it adds about 20 minutes (1,173 s) to a 17-minute gate. It catches nothing Option A misses in the record so far: both #185 failures are caught by A, and #174's Linux-only timeout is caught by neither. If a source-layout-only failure ever escapes, switching to B is a one-line change.
 
 **s-2, `ship` skips what it has done.**
 
 - **Gate record.** A green gate writes a record keyed by the head's tree hash, a hash of the gate's implementation (the Makefile target, `self-test.sh` and the groups) and the harness version. This works like the verify record (R-4/T-1). The next `ship` run skips the gate when a record matches. `--force-gate` re-runs it.
-- **Push.** Before pushing, `ship` reads the remote branch head over the GitHub API, which uses HTTPS and needs no SSH key. If the remote branch already equals the head, it skips the push.
+- **Push.** Before pushing, `ship` reads the remote branch head over the GitHub API, which uses HTTPS and needs no SSH key. It skips the push only when both hold:
+  - the repository the push goes to, read from `git remote get-url --push origin` (which honours `pushurl` and `insteadOf`), is the same GitHub repository as `HANDOFF_REPO`, which comes from `remote.origin.url` (`scripts/lib/identity.sh:6`);
+  - that repository's branch already equals the head.
+
+  If the push destination isn't a GitHub URL, or names another repository, `ship` pushes as today.
 - **Push prompt.** Right before a real push, `ship` raises the same desktop notification as andon and prints "pushing — touch your key now". That way a gate that ran for 15 minutes doesn't leave a hardware-key prompt unattended.
 
 **s-3, PR adoption.**
 
-- When `SHIP_PR` resolves to an open PR for the branch whose body is empty or is GitHub's default, `ship` writes the generated body with `gh pr edit --body-file`.
-- A non-empty body is left alone, and `ship` prints that it kept it.
-- A PR whose base differs from the brief's base stops `ship` with exit 3. A different title only prints a warning.
+- When `SHIP_PR` resolves to an open PR for the branch whose body is empty or whitespace only, `ship` writes the generated body with `gh pr edit --body-file`. GitHub's push-link PR has an empty body, which is the #185 case.
+- Any other body is left alone, including one that looks like a default template, because an untouched template can't be told apart from a human's edit. `ship` prints that it kept it.
+- A PR whose base differs from the brief's base stops `ship` before any push or edit. `ship_cmd` folds internal codes other than 0, 2, 5 and 11 into 1 (`scripts/lib/ship.sh:281-285`), so the public exit is **1**, with the message `PR #<n> base <x> differs from brief base <y>`. The internal code is 3. A different title only prints a warning.
 
 ### Hooks (s-4, s-5)
 
@@ -145,24 +151,45 @@ Replace in two steps so the guard never lapses:
    - Codex: a `.rules` file. The station launcher installs it into the station `CODEX_HOME`, and `doctor` checks that the interactive `~/.codex/rules/` has it.
    - OpenCode: `permission.bash` in the agent files.
 
-   `doctor --stations` (P-1) proves each CLI refuses a denied command through the real launcher.
+   - **Station profiles too.** Controller stations don't read the project settings:
+     - Claude stations run with `--settings <station profile> --setting-sources ''` (`scripts/lib/launch.sh:300`);
+     - OpenCode stations take their permissions from the station profile through `OPENCODE_CONFIG_CONTENT` (`launch.sh:319`);
+     - Codex stations use the generated `agentic-station` profile (`launch_codex_config`).
+
+     The same policy is rendered into `config/stations/claude.settings.json`, `config/stations/opencode.json` and the Codex station rules, beside the interactive files. The launcher's existing profile checks (`launch.sh:154-198`) gain the policy entries.
+
+   `doctor --stations` (P-1) proves each CLI refuses a denied command through the real launcher, and it must tell three outcomes apart:
+   - a **CLI denial**: the command never ran, and the CLI reports a permission or rule refusal;
+   - a command that **ran and failed**, because the sandbox, the disabled `pushurl` or the remote stopped it;
+   - a command that **ran and succeeded**.
+
+   Only the first passes. The probe uses a sentinel the denied command would create (a file written by a wrapper on `PATH`), so "ran" is observed, not inferred from an exit code.
 2. **s-5 deletes the lexer and the three hooks it drives** (`block-push.sh`, `block-git-add-all.sh`, `require-step-comment.sh`), once s-4's probe shows each CLI refuses on its own.
    - The secret scan has to run on every commit, whichever agent or human makes it. It moves to a git `pre-commit` hook installed through `core.hooksPath`, which is vendor-neutral and needs no parsing.
    - `git commit --no-verify` and `-n` go on the deny list.
    - `check-gate.sh` (Stop) and `session-context.sh` (SessionStart) stay; they don't use the lexer.
+   - **Existing adopters get the change through `upgrade`, not `init`.** Today a customized `.claude/settings.json` or `.codex/hooks.json` gets an `.agentic-new` candidate, so the old hook entries would stay live and point at deleted scripts. s-5 therefore adds a targeted migration to `upgrade`:
+     - it removes exactly the retired hook entries, matched by command path with `jq`, from the adopter's settings files, and leaves every other entry alone;
+     - it sets `core.hooksPath` when it is unset;
+     - it reports a custom `core.hooksPath` (husky, lefthook and the like) and doesn't change it, printing the line to chain the secret scan from the existing hook. `doctor --check` fails until the scan is reachable from the active hook path.
+   - The three deleted hook scripts (`block-push.sh`, `block-git-add-all.sh`, `require-step-comment.sh`) stay for one release as stubs that exit 0 with a one-line "retired; run agentic-flow upgrade" message. A settings file the migration couldn't touch then degrades to a warning, not a broken session.
 
 ### Upgrade (s-6)
 
-Add `upstream=<sha256>  <path>` lines to `.agentic-flow-installation`. These are the hashes of the upstream files the installed files came from. Each payload file is then classified on upgrade:
+Record the hashes of the upstream files each release ships, next to the installation record. Each payload file is then classified on upgrade:
 
 | Adopter file vs new upstream | New upstream vs recorded upstream | Result |
 |---|---|---|
 | same | any | `same` |
 | different | same (upstream unchanged) | `kept`: no candidate; the record keeps the old upstream hash |
-| different, and adopter file equals recorded upstream (never customized) | different | `overwrite` |
+| different, and adopter file equals its `file=` hash from the last install (never customized) | different | `overwrite` |
 | different, customized | different | candidate, as today |
 
-A record without `upstream=` lines is an older installation, so it behaves as today, and the first upgrade after this pass writes the lines.
+Two corrections to how `upgrade` writes its records today:
+- **The upstream baseline is written on every run.** `upgrade` now writes `.agentic-flow-installation` only when no candidate remains (`scripts/agentic-flow:345-348`), so a customized file that keeps producing a candidate would mean the baseline is never written. s-6 records the upstream hashes in a separate file, `.agentic-flow-upstream`, on every upgrade run, candidates or not. It holds `upstream=<sha256>  <path>` for each payload file in the release just applied. The installation record keeps its current meaning and timing.
+- **A hand merge is acknowledged explicitly.** After merging a candidate and keeping their customization, the adopter runs `agentic-flow upgrade --merged <path>`. That deletes the candidate and marks the path as merged against the recorded upstream hash. A deleted candidate with no `--merged` counts the same, so today's workflow keeps working.
+
+On the next run, a file whose new upstream hash equals the recorded one is `kept`. With no candidates left, the installation record and the version stamp are written as today. A legacy installation with no `.agentic-flow-upstream` file behaves exactly as today on its first upgrade, and that run writes the baseline. So the sequence is: first upgrade, then hand merge, then retry, and the retry converges.
 
 ### Briefs and docs (s-7, s-8)
 
@@ -170,7 +197,7 @@ A record without `upstream=` lines is an older installation, so it behaves as to
   - Part B starts with Acceptance scenarios, then Invariants.
   - Steps lose the "which files, which functions" prompt. They keep Why, Approach (intent only), Test, DoD, Verify, Risks and Red-first.
   - `**Red-first:**` defaults to `none`. A step that adds a regression test names its selector.
-  - `brief.sh` enforces a Part B word cap of **1,500 + 500 × steps** (owner's choice, 2026-11-21). The 1,500 covers the shared sections (scenarios, invariants, verification); 500 per step matches the median step of the controller-run briefs (518–647 words). Against past briefs it passes distinct-identities, deterministic-stations, test-streamlining and flow-ergonomics, and rejects station-hardening (8,021 > 7,500) and line-controller (5,278 > 5,000). Part A stays uncapped; the 800-word step packet cap is unchanged.
+  - `brief.sh` enforces a Part B word cap of **1,500 + 500 × steps** (owner's choice, 2026-11-21) on plan blocks that declare `format: 2`. The new templates and `agentic-flow start` write that key, and older plan blocks have none, so they are exempt. The cutoff travels with the document. It doesn't depend on a scaffold commit an adopter's history never contains, or on the approval date. The 1,500 covers the shared sections (scenarios, invariants, verification); 500 per step matches the median step of the controller-run briefs (518–647 words). Against past briefs it passes distinct-identities, deterministic-stations, test-streamlining and flow-ergonomics, and rejects station-hardening (8,021 > 7,500) and line-controller (5,278 > 5,000). Part A stays uncapped; the 800-word step packet cap is unchanged.
   - The approval binding already makes the scenarios uneditable; the template says so.
 - **s-8 docs.**
   - Move `METHODOLOGY.md` §9–§11 to `docs/reference/` files and leave one-line pointers.
@@ -241,8 +268,9 @@ scripts/render-command-policy.sh --check   # rendered files match the TSV
 # s-5  git hook
 core.hooksPath=scripts/git-hooks ; scripts/git-hooks/pre-commit -> scripts/hooks/scan-secrets.sh --staged
 
-# s-6  .agentic-flow-installation (added lines)
+# s-6  .agentic-flow-upstream  (written on every upgrade run, candidates or not)
 upstream=<sha256>  <path>
+agentic-flow upgrade --merged <path>   # acknowledge a hand merge that keeps customization
 # payload_apply classification adds: kept
 
 # s-10  publish scan
@@ -252,8 +280,17 @@ config/publish-scan.tsv          rule-id<TAB>surface<TAB>pattern<TAB>reason
 config/publish-scan-allow.tsv    path<TAB>rule-id<TAB>sha256-12<TAB>reason
 report line: <surface>  <location>  <rule-id>  <sha256-12>   # never the value
 
+# s-2  push skip condition
+#   repo(git remote get-url --push origin) == HANDOFF_REPO  and  API head == local head
+
+# s-3  base mismatch: internal 3, public exit 1; body replaced only when empty or whitespace
+
+# s-5  upgrade migration
+#   removes retired hook entries by command path; sets core.hooksPath if unset; reports a custom one
+
 # s-7  brief.sh
 bad("Part B is N words; cap C")         # C = 1500 + 500 * steps; counts '# Part B' up to '## Status'
+# plan block key   format: 2            # cap applies only when present; templates and start write it
 ```
 
 ## Threat model
@@ -340,30 +377,42 @@ Base: `main`. One branch and one PR for the whole brief: `phase-4`. Each step is
 ## Acceptance scenarios (written at Spec; the executor does not edit these)
 
 **Ship**
-1. **The gate fails where CI would.** In a fixture, add one fixture copy beyond the exported budget: `make ship-gate` fails, naming the exported count and limit. Add a shellcheck warning to a shipped script: `make ship-gate` fails in the lint phase. With neither, the gate passes. The source-layout limit (194) and its tests are unchanged.
+1. **The gate runs the lint and an exported copy budget.** In a fixture, add one fixture copy beyond the exported budget: `make ship-gate` fails, naming the exported count and limit. Add a shellcheck warning to a shipped script: `make ship-gate` fails in the lint phase. With neither, the gate passes. The source-layout limit (194) and its tests are unchanged.
 2. **A gated head is not gated again.** A `ship --wait-review` run that passes the gate writes the record. A second run on the same head runs no `make ship-gate` (the fake `make` records calls) and reaches the CI wait. Any of these runs the gate again:
    - a commit that changes the tree;
    - a change to `self-test.sh`;
    - a different harness version;
    - a corrupt record;
    - `--force-gate`.
-3. **A pushed head is not pushed again.** When the fake API reports the remote branch at the head, `ship` makes no `git push`. When it reports another SHA, or 404, or the API fails, `ship` pushes as today. Before a real push, `ship` prints the key-touch line and calls the desktop notifier once.
-4. **A hand-made PR gets the generated body.** An open PR with an empty body gets `gh pr edit --body-file` with the scenario-14 body (flow-ergonomics). A PR with a non-empty body is untouched, and `ship` says it kept it. A PR whose base differs from the brief exits 3 before any push or edit. A failed `gh pr edit` warns and continues.
+3. **A pushed head is not pushed again.** When the fake API reports the remote branch at the head, and the push URL names the same repository, `ship` makes no `git push`. `ship` pushes as today when any of these holds:
+   - the API reports another SHA, or 404, or fails;
+   - a separate `pushurl` names another repository;
+   - the push URL is not a GitHub URL. Before a real push, `ship` prints the key-touch line and calls the desktop notifier once.
+4. **A hand-made PR gets the generated body.** An open PR with an empty body gets `gh pr edit --body-file` with the scenario-14 body (flow-ergonomics). A PR with any non-whitespace body is untouched, including a template-like one, and `ship` says it kept it. A PR whose base differs from the brief exits 1 with the base message before any push or edit. A failed `gh pr edit` warns and continues.
 
 **Guards**
 5. **One policy, three renderings.** `config/command-policy.tsv` renders to Claude `permissions.deny`, a Codex `.rules` file and OpenCode `permission.bash`. `render-command-policy.sh --check` fails when any rendered file differs from the TSV. The same holds in `templates/harness/` and in a fresh export.
-6. **Each CLI refuses on its own.** With the hooks disabled, the station probe for each assigned CLI (fake CLIs in tests; the real CLIs in `doctor --stations`) is asked to run `git push`, `git add -A` and `gh issue edit 1 --add-label x`. Each is refused by the CLI's own rule. `scripts/agentic-flow handoff …` and `git-codex commit` / `git-claude commit` with named files are allowed.
-7. **The secret scan covers every commit.** A commit that stages a credential-shaped fixture (built with `printf`) is blocked by the `pre-commit` hook. That holds for a commit from a script, a commit from a station and a human `git commit`. `AGENTIC_ALLOW_SECRET=1` still overrides. After s-5, `hook-command.sh`, `block-push.sh`, `block-git-add-all.sh` and `require-step-comment.sh` no longer exist, no settings file references them, and `doctor --check` reports no missing hook.
+6. **Each CLI refuses on its own, in both modes.** With the hooks disabled, the station probe for each assigned CLI (fake CLIs in tests; the real CLIs in `doctor --stations`) is asked to run `git push`, `git add -A` and `gh issue edit 1 --add-label x`. Each is refused by the CLI's own rule, in the interactive configuration and in the station profile the launcher actually uses. A fake CLI that lets the command run and has it fail (sandbox, disabled `pushurl`) makes the probe fail, not pass. `scripts/agentic-flow handoff …` and `git-codex commit` / `git-claude commit` with named files are allowed.
+7. **The secret scan covers every commit.** A commit that stages a credential-shaped fixture (built with `printf`) is blocked by the `pre-commit` hook. That holds for a commit from a script, a commit from a station and a human `git commit`. `AGENTIC_ALLOW_SECRET=1` still overrides. After s-5, `hook-command.sh` no longer exists, the three hook scripts are stubs, no shipped settings file references them, and `doctor --check` reports no missing hook.
+   - **Upgrade migration.** An adopter twin on the previous release (0.19.0), with a customized `.claude/settings.json` that has an extra hook of its own:
+     - after `agentic-flow upgrade`, the retired entries are gone, the adopter's own hook remains and `core.hooksPath` is set;
+     - a commit from the upgraded worktree with a planted credential is blocked.
+   - **Custom hook path.** The same twin with a custom `core.hooksPath` keeps it unchanged and gets the chaining instruction, and `doctor --check` fails until the scan is reachable.
 
 **Upgrade**
 8. **Untouched upstream, customized file: no candidate.** In an adopter twin with a customized `CLAUDE.md`:
    - An upgrade to a release whose upstream `CLAUDE.md` is byte-identical to the recorded `upstream=` hash writes no `.agentic-new` file and reports `kept`, and the version stamp advances.
    - An upgrade where upstream changed writes a candidate, as today.
    - A file the adopter never changed is overwritten.
-   - An installation record without `upstream=` lines behaves exactly as today, and that first upgrade writes the lines.
+   - **Legacy to converged, in sequence:**
+     1. A legacy installation with no `.agentic-flow-upstream` file upgrades. It writes a candidate as today, and writes the baseline.
+     2. The adopter merges by hand, keeps the customization, and runs `upgrade --merged CLAUDE.md` (and in a variant, just deletes the candidate).
+     3. A retry against the same release writes no candidate, reports `kept`, writes the installation record and advances the version stamp.
 
 **Briefs and docs**
-9. **Template and cap.** A brief from the new template parses and has Acceptance scenarios before the first step. Red-first lines are `none` except in steps that name a selector. A Part B over 1,500 + 500 × steps words fails `brief_parse`, naming the count and the cap; exactly the cap passes. Every approved brief in `docs/done/` still normalizes to its recorded hash; the cap applies only to briefs approved after this pass (a brief with an `Approval:` rev before the s-7 commit is exempt).
+9. **Template and cap.** A brief from the new template parses and has Acceptance scenarios before the first step. Red-first lines are `none` except in steps that name a selector. A Part B over 1,500 + 500 × steps words fails `brief_parse`, naming the count and the cap; exactly the cap passes. Every approved brief in `docs/done/` still normalizes to its recorded hash.
+   - In a fresh adopter repository whose history has no scaffold commits, a legacy plan block (no `format:`) with an approval and a Part B over the cap parses.
+   - A new `format: 2` brief over the cap fails at `plan-to-issues` dry run and at apply, before any GitHub write.
 10. **Reference split.** `METHODOLOGY.md` §9–§11 live in `docs/reference/` with pointers left behind. The roadmap holds only open items and a history link. The explainer describes the current flow, and a contracts test fails when a subcommand in `scripts/agentic-flow`'s usage text is missing from it. `scripts/docs-index.sh`, `check-harness-sync.sh` and the payload manifest agree with the new paths, in this repo and in a fresh export.
 
 **Publication**
@@ -414,14 +463,14 @@ scripts/doctor.sh --check
 
 **Approach:**
 1. Make the copy-budget assertion run in the exported layout against its own limit. Measure the exported count on this commit and state it in the commit body. Keep the source-layout limit and its boundary tests unchanged.
-2. Add `scripts/shell-inventory.sh --lint` to `make ship-gate` in the repo `Makefile` and the harness template, and have the exported project's `ship-gate` run it the same way.
+2. Add `scripts/shell-inventory.sh --lint` to the scaffold's `make ship-gate`. Leave the adopter template's optional `ship-gate` alone, and state in the template comment that adopters can add their own lint there.
 3. Add a boundary test for the exported limit (limit passes, limit+1 fails), shaped like the source-layout test in `contracts.sh`.
 
 **Test:** scenario 1. Failure path first: one copy over the exported limit; a shellcheck warning in a shipped script.
 
 **DoD:** scenario 1 passes; the source-layout copy tests are unchanged.
 **Verify:** `make test-one F=contracts`
-**Risks:** an exported count that varies between runs (measure twice); the lint running before the suite and hiding suite failures; template and root `Makefile` drifting.
+**Risks:** an exported count that varies between runs (measure twice); the lint running before the suite and hiding suite failures; claiming parity in docs that the gate does not have.
 **Red-first:** `scripts/self-test.sh --only contracts` — scripts/tests/contracts.sh
 **Commit:** `Run the copy budget and shellcheck inside the ship gate`
 
@@ -430,15 +479,15 @@ scripts/doctor.sh --check
 
 **Approach:**
 1. Write the gate record (Interface) after a green gate. Before gating, skip when the record matches the head tree, the gate hash and the harness version. Define the gate hash as the hash of the files the gate runs, listed in one place.
-2. Read the remote branch head over the API before pushing. Skip the push when it equals the head. On any error, push as today.
+2. Read the remote branch head over the API before pushing. Skip the push only when the push URL's repository equals `HANDOFF_REPO` and the remote head equals the local head (Interface). On any error or mismatch, push as today.
 3. Before a real push, call the existing desktop notifier (`andon_desktop` or a shared helper) and print one line asking for the key touch.
 4. Add `--force-gate` to `ship` and the CLI usage text.
 
-**Test:** scenarios 2 and 3. Failure path first: a corrupt record, an API 500, a record for another tree.
+**Test:** scenarios 2 and 3. Failure path first: a corrupt record, an API 500, a record for another tree, a separate `pushurl` to another repository.
 
 **DoD:** scenarios 2 and 3 pass; the single-push scenario 7 from flow-ergonomics still passes.
 **Verify:** `make test-one F=controller S=ship`
-**Risks:** a record that outlives a gate change (missing a file from the gate hash); skipping a push when the remote is a different repo; the notifier failing the run.
+**Risks:** a record that outlives a gate change (missing a file from the gate hash); skipping a push when the push destination is a different repo from the one the API read; the notifier failing the run.
 **Red-first:** `scripts/self-test.sh --only controller --scenario ship` — scripts/tests/controller.sh
 **Commit:** `Skip the ship gate and push when the head was already gated and pushed`
 
@@ -446,15 +495,15 @@ scripts/doctor.sh --check
 **Why third:** same file and fixtures as s-2; small.
 
 **Approach:**
-1. When `ship` resolves an existing open PR for the branch, decide from its body. An empty body, or GitHub's default template body, gets the generated body. Anything else is kept.
-2. Check the PR's base against the brief's base before any push or edit; a mismatch exits 3.
+1. When `ship` resolves an existing open PR for the branch, decide from its body. An empty or whitespace-only body gets the generated body; anything else is kept.
+2. Check the PR's base against the brief's base before any push or edit. A mismatch returns internal 3, which `ship_cmd` reports as public exit 1 with the base message. Keep `ship_cmd`'s mapping unchanged.
 3. Reuse the e-4 PR body renderer; do not add a second one.
 
 **Test:** scenario 4. Failure path first: a base mismatch, and a failed `gh pr edit`.
 
 **DoD:** scenario 4 passes.
 **Verify:** `make test-one F=controller S=ship`
-**Risks:** overwriting a body the human wrote; editing a PR from a fork or another repo.
+**Risks:** overwriting a body the human wrote; editing a PR from a fork or another repo; changing `ship_cmd`'s exit mapping for other callers.
 **Red-first:** `scripts/self-test.sh --only controller --scenario ship` — scripts/tests/controller.sh
 **Commit:** `Write the generated body into a PR opened by hand`
 
@@ -465,14 +514,20 @@ scripts/doctor.sh --check
 1. Add `config/command-policy.tsv` (Interface) and a renderer, `scripts/render-command-policy.sh`, with `--check`. It writes:
    - Claude `permissions.deny` into `.claude/settings.json`, merged by key;
    - a Codex rules file shipped in the payload and installed by the launcher into the station `CODEX_HOME`;
-   - `permission.bash` entries in the OpenCode agent files.
+   - `permission.bash` entries in the OpenCode agent files;
+   - the same policy in the station profiles, `config/stations/claude.settings.json` and `config/stations/opencode.json`, and the Codex station rules. Extend the launcher's profile checks (`launch.sh:154-198`) to require the policy entries.
 2. Before writing, confirm each CLI's rule syntax and matching against the installed versions with a fake-free local probe, and record the versions in the commit body. If a CLI cannot express a rule, stop and report; do not write a partial policy.
 3. Extend `doctor --stations` and `doctor --check`:
-   - the station probe asks each CLI to run a denied command and expects a refusal;
+   - the station probe asks each CLI to run a denied command. It passes only on a CLI denial: the sentinel wrapper on `PATH` must show the command never ran. A command that ran and failed is a probe failure;
    - `--check` fails when the rendered files differ from the TSV, or when the interactive `~/.codex/rules/` lacks the policy. That check reports a warning with the install command; it is not a failure.
 4. Add the renderer and the TSV to the payload and the harness sync check.
 
-**Test:** scenarios 5 and 6 (fake CLIs that honour or ignore rules). Failure path first: a CLI that ignores the rule (the probe must fail), a TSV row with a tab inside the prefix, and a rendered file edited by hand.
+**Test:** scenarios 5 and 6 (fake CLIs that honour or ignore rules). Failure path first:
+- a CLI that ignores the rule (the probe must fail);
+- a CLI whose command runs and fails on the disabled `pushurl` (the probe must fail);
+- a station profile missing the policy while the project settings have it;
+- a TSV row with a tab inside the prefix;
+- a rendered file edited by hand.
 
 **DoD:** scenarios 5 and 6 pass with the hooks still active.
 **Verify:** `make test-one F=stations S=launch` and `make test-one F=hooks`
@@ -485,14 +540,15 @@ scripts/doctor.sh --check
 
 **Approach:**
 1. Add `scripts/git-hooks/pre-commit`, which runs the existing secret scan on the staged diff, and set `core.hooksPath` in `init.sh`, in the adoption steps and in `doctor --check`. Keep `AGENTIC_ALLOW_SECRET=1`.
-2. Remove the PreToolUse entries for `block-push.sh`, `block-git-add-all.sh`, `require-step-comment.sh` and `scan-secrets.sh` from `.claude/settings.json` and `.codex/hooks.json` (root and template). Delete `block-push.sh`, `block-git-add-all.sh`, `require-step-comment.sh` and `hook-command.sh`, and their tests.
-3. Keep `check-gate.sh` and `session-context.sh`.
-4. Leave the `CLAUDE.md`/`AGENTS.md` wording to s-9. Here, only remove what references a deleted file.
+2. Remove the PreToolUse entries for `block-push.sh`, `block-git-add-all.sh`, `require-step-comment.sh` and `scan-secrets.sh` from `.claude/settings.json` and `.codex/hooks.json` (root and template). Delete `hook-command.sh` and the tests of the removed behaviour. Turn `block-push.sh`, `block-git-add-all.sh` and `require-step-comment.sh` into stubs for one release (Part A).
+3. Add the upgrade migration (Part A): remove retired hook entries by command path with `jq`, set `core.hooksPath` when unset, and report a custom hook path without changing it.
+4. Keep `check-gate.sh` and `session-context.sh`.
+5. Leave the `CLAUDE.md`/`AGENTS.md` wording to s-9. Here, only remove what references a deleted file.
 
-**Test:** scenario 7. Failure path first: a credential-shaped fixture committed from a script, from a station and by a human; and `--no-verify` refused by each CLI's policy.
+**Test:** scenario 7, including the upgrade migration from a 0.19.0 adopter twin and the custom hook path. Failure path first: a credential-shaped fixture committed from a script, from a station, by a human and from the upgraded twin; and `--no-verify` refused by each CLI's policy.
 
 **DoD:** scenarios 5 to 7 pass; no file references a deleted hook; `make test` group counts and wall-time ceilings shrink and are updated in the same commit.
-**Verify:** `make test-one F=hooks` and `make test-one F=export`
+**Verify:** `make test-one F=hooks`, `make test-one F=upgrade` and `make test-one F=export`
 **Risks:** a worktree that does not inherit `core.hooksPath` (set it in the common config); an adopter's existing `core.hooksPath` (husky and similar) overwritten — detect and refuse, telling the human to chain it; losing a hook check that has no rule equivalent (list each deleted check and its replacement in the commit body).
 **Red-first:** `scripts/self-test.sh --only hooks` — scripts/tests/hooks.sh
 **Commit:** `Replace the command-lexer hooks with native deny rules and a pre-commit secret scan`
@@ -501,11 +557,12 @@ scripts/doctor.sh --check
 **Why sixth:** independent of the guards; fixes #109's recurring candidates.
 
 **Approach:**
-1. Record `upstream=<sha256>  <path>` for each installed payload file, at install and at upgrade. Keep the existing `file=` lines.
-2. Add the `kept` classification (table in Part A) to `payload_apply` and report it in the upgrade summary. A file kept this way keeps its old `upstream=` hash, so the next upstream change is still detected.
-3. The version stamp advances when no candidate was written, so an adopter no longer promotes `.agentic-flow-candidate-version` by hand after a merge in which upstream changed nothing.
+1. Write `.agentic-flow-upstream` on every install and upgrade run, candidates or not (Part A). Keep `.agentic-flow-installation` and its timing unchanged.
+2. Add the `kept` classification (table in Part A) to `payload_apply` and report it in the upgrade summary. A file kept this way keeps its old upstream hash, so the next upstream change is still detected.
+3. Add `upgrade --merged <path>`, and treat a deleted candidate the same way.
+4. The version stamp advances when no candidate was written, so an adopter no longer promotes `.agentic-flow-candidate-version` by hand after a merge in which upstream changed nothing.
 
-**Test:** scenario 8 on the adopter twin fixture (R-15). Failure path first: a record without `upstream=` lines; an `upstream=` hash for a file no longer in the payload; a path traversal in a record line.
+**Test:** scenario 8 on the adopter twin fixture (R-15), run as one sequence: legacy first upgrade, hand merge, retry. Failure path first: a legacy installation; an upstream hash for a file no longer in the payload; a path traversal in a record line; `--merged` on a path with no candidate.
 
 **DoD:** scenario 8 passes; existing upgrade tests pass unchanged.
 **Verify:** `make test-one F=upgrade`
@@ -518,14 +575,14 @@ scripts/doctor.sh --check
 
 **Approach:**
 1. Reorder `docs/templates/feature-analysis.md` and `security-review.md` Part B as in Part A. `**Red-first:**` defaults to `none` with a one-line note on when to name a selector.
-2. Add the Part B cap to `brief.sh` with the exemption in scenario 9. Do not change normalization, so approved briefs keep their hashes.
+2. Add the `format: 2` plan-block key, written by both templates and by `agentic-flow start`, and the Part B cap for plan blocks that declare it. Do not change normalization, so approved briefs keep their hashes.
 3. Update the planner contract text that tells the planner what a step must contain (s-9 edits the contracts; here, only the template's own comments).
 
-**Test:** scenario 9. Failure path first: a Part B one word over the cap for its step count; an approved legacy brief over the cap.
+**Test:** scenario 9. Failure path first: a `format: 2` Part B one word over the cap for its step count; an approved legacy brief over the cap in a fresh adopter repository; an oversized new brief at `plan-to-issues` dry run and apply.
 
 **DoD:** scenario 9 passes; every brief in `docs/done/` still parses.
 **Verify:** `make test-one F=plan-to-issues`
-**Risks:** the cap counting the plan block or the Status section; the exemption keyed on something an executor can edit.
+**Risks:** the cap counting the plan block or the Status section; a template or `start` path that forgets to write `format: 2`.
 **Red-first:** `scripts/self-test.sh --only plan-to-issues` — scripts/tests/plan-to-issues.sh
 **Commit:** `Lead briefs with acceptance scenarios, cap Part B, and make red-first opt-in`
 
