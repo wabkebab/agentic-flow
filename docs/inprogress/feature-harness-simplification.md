@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-21) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict
-> Phase 4 of `product-harness-factory-optimization.md`: remove what Phases 0–3 and flow-ergonomics made redundant. This brief takes the non-breaking items (R-12, R-14a, R-16 in part, R-17, R-24, R-25, R-26, R-27). It proposes moving the breaking 1.0 items (R-14b, R-22), the native-review item (R-13, blocked while the repo is private) and the state-store item (R-23, which needs re-measuring) to later briefs. Drafted 2026-11-21 on branch `phase-4`; awaiting review.
+> Phase 4 of `product-harness-factory-optimization.md`: remove what Phases 0–3 and flow-ergonomics made redundant. This brief takes the non-breaking items (R-12, R-14a, R-16 in part, R-17, R-24, R-25, R-26, R-27). It proposes moving the breaking 1.0 items (R-14b, R-22), the native-review item (R-13, blocked while the repo is private) and the state-store item (R-23, which needs re-measuring) to later briefs. Drafted 2026-11-21 on branch `phase-4`; owner decisions recorded the same day; awaiting review.
 
 # Feature — Harness simplification (Phase 4)
 
@@ -13,7 +13,7 @@
 - [ ] s-5 Lexer hooks removed; the secret scan moves to a git pre-commit hook — open
 - [ ] s-6 Upgrade proposes a file only when upstream changed it — open
 - [ ] s-7 Scenario-first brief template with a word cap; red-first opt-in — open
-- [ ] s-8 Methodology reference split, roadmap cut to the open queue, explainer dropped — open
+- [ ] s-8 Methodology reference split, roadmap cut to the open queue, explainer rewritten — open
 - [ ] s-9 Contracts, adoption notes and release notes — open
 
 ---
@@ -68,7 +68,7 @@ The causes in code:
 
 ### Hooks (R-12)
 
-The four PreToolUse hooks parse every Bash command with a hand-written lexer to decide whether it is a `git push`, a `git add -A`, a workflow-label write or a commit. Its false blocks (#109, #110) led to the working rule "write the command to a file and run that" (memory `hook-parser-blocks-git-text`). That rule walks around the same guards. All three agent CLIs now have native command rules:
+The four PreToolUse hooks parse every Bash command with a hand-written lexer to decide whether it is a `git push`, a `git add -A`, a workflow-label write or a commit. Its false blocks (#109, #110) led to the working rule "write the command to a file and run that". That rule walks around the same guards. All three agent CLIs now have native command rules:
 
 - **Claude Code:** `permissions.deny` patterns in `.claude/settings.json` (for example `Bash(git push:*)`), plus an `if` filter on a hook so it runs only for matching commands.
 - **Codex:** `prefix_rule(pattern=[…], decision="forbidden")` in a rules file. The operator's `~/.codex/rules/default.rules` already uses `prefix_rule`. The controller gives stations their own `CODEX_HOME` (`.git/agentic-flow/codex-home`), and an untrusted project ignores project-local config, so the rules have to be written where each mode reads them.
@@ -78,11 +78,11 @@ None of these follows a command into a script it calls. That is intended: `scrip
 
 ### Upgrade (R-14a, #109)
 
-Every adopter customizes `CLAUDE.md`, `AGENTS.md`, `Makefile` and `.claude/settings.json`. Upgrade compares the adopter's file with the new upstream file, finds them different (because of the customization), and writes an `.agentic-new` candidate on every upgrade, even when upstream did not change that file. The adopter merges by hand, the version stamp waits on that merge (memory `agentic-flow-candidate-version-promotion`), and #109 stays open. The installation record already holds a hash of each installed file. It lacks the upstream hash the file was installed from.
+Every adopter customizes `CLAUDE.md`, `AGENTS.md`, `Makefile` and `.claude/settings.json`. Upgrade compares the adopter's file with the new upstream file, finds them different (because of the customization), and writes an `.agentic-new` candidate on every upgrade, even when upstream did not change that file. The adopter merges by hand, the version stamp waits on that merge, and #109 stays open. The installation record already holds a hash of each installed file. It lacks the upstream hash the file was installed from.
 
 ### Briefs and docs (R-16 in part, R-17, R-24)
 
-The last four Strict briefs had Part A of 3,000–8,900 words and Part B of 4,200–8,100 words. `METHODOLOGY.md` is 7,396 words, and §9–§11 (stack assessment, CI shape, engineering standards) are reference material that no routine planning, execution or review step loads. The roadmap is 45 KB, and most of it is decided history. `docs/agentic-flow-explained.html` is hand-maintained and has drifted (B-4).
+The last four Strict briefs had Part A of 3,000–8,900 words and Part B of 4,200–8,100 words. `METHODOLOGY.md` is 7,396 words, and §9–§11 (stack assessment, CI shape, engineering standards) are reference material that no routine planning, execution or review step loads. The roadmap is 45 KB, and most of it is decided history. `docs/agentic-flow-explained.html` is hand-maintained, outside the payload, and describes the 0.14 flow (B-4).
 
 ## Proposed approach
 
@@ -105,8 +105,8 @@ The roadmap lists twelve Phase 4 items. Taking them in one brief would mix three
 
 **s-1, gate parity.** Two ways to close the gap:
 
-- **Option A (recommended): the exported run gets its own copy budget, and the gate runs the lint.** The exported full run already logs `fixture_file_copy` events; only the assertion is skipped. Measure the exported count, approve it as the exported budget, and assert it in the exported layout as well. Add `shell-inventory.sh --lint` to `ship-gate`; it took about 75 s in CI. A new fixture copy raises both counts, so either budget catches it. This adds about 1.5 minutes to the gate.
-- **Option B: `ship` runs `make test` as well.** This is exact parity, but it adds about 20 minutes to a 15-minute gate.
+- **Option A (chosen 2026-11-21): the exported run gets its own copy budget, and the gate runs the lint.** The exported full run already logs `fixture_file_copy` events; only the assertion is skipped. Measure the exported count, approve it as the exported budget, and assert it in the exported layout as well. Add `shell-inventory.sh --lint` to `ship-gate`; it took about 75 s in CI. A new fixture copy raises both counts, so either budget catches it. This adds about 1.5 minutes to the gate.
+- **Option B (rejected): `ship` runs `make test` as well.** This is exact parity with CI's Test suite on macOS, but it adds about 20 minutes (1,173 s) to a 17-minute gate. It catches nothing Option A misses in the record so far: both #185 failures are caught by A, and #174's Linux-only timeout is caught by neither. If a source-layout-only failure ever escapes, switching to B is a one-line change.
 
 **s-2, `ship` skips what it has done.**
 
@@ -154,12 +154,12 @@ A record without `upstream=` lines is an older installation, so it behaves as to
   - Part B starts with Acceptance scenarios, then Invariants.
   - Steps lose the "which files, which functions" prompt. They keep Why, Approach (intent only), Test, DoD, Verify, Risks and Red-first.
   - `**Red-first:**` defaults to `none`. A step that adds a regression test names its selector.
-  - `brief.sh` enforces a Part B word cap: 5,000 words (the last three briefs were 4,200–8,100), with Part A uncapped.
+  - `brief.sh` enforces a Part B word cap of **1,500 + 500 × steps** (owner's choice, 2026-11-21). The 1,500 covers the shared sections (scenarios, invariants, verification); 500 per step matches the median step of the controller-run briefs (518–647 words). Against past briefs it passes distinct-identities, deterministic-stations, test-streamlining and flow-ergonomics, and rejects station-hardening (8,021 > 7,500) and line-controller (5,278 > 5,000). Part A stays uncapped; the 800-word step packet cap is unchanged.
   - The approval binding already makes the scenarios uneditable; the template says so.
 - **s-8 docs.**
   - Move `METHODOLOGY.md` §9–§11 to `docs/reference/` files and leave one-line pointers.
   - Cut the roadmap to the open queue plus a link to a `docs/done/` history file.
-  - Delete `docs/agentic-flow-explained.html` and point at `README.md`. The owner can choose "generate" instead (Open questions).
+  - Rewrite `docs/agentic-flow-explained.html` by hand for the current flow (owner's choice, 2026-11-21). It is 59 KB in 11 sections, last changed in substance at 0.14.0, and never mentions `agentic-flow run`, the controller, `ship`, `start`, `verify-step`, andon or the journal. To stop it drifting again, a contracts test checks that it names every subcommand in `scripts/agentic-flow`'s usage text.
 
 ## Interface (before the implementation)
 
@@ -203,7 +203,7 @@ upstream=<sha256>  <path>
 # payload_apply classification adds: kept
 
 # s-7  brief.sh
-bad("Part B is N words; cap 5000")      # cap applies to the text after '# Part B'
+bad("Part B is N words; cap C")         # C = 1500 + 500 * steps; counts '# Part B' up to '## Status'
 ```
 
 ## Threat model
@@ -244,13 +244,17 @@ Bounds: the gate record is one file per plan. The policy TSV is capped at 100 ro
 - Any change to the controller's journal, ledger or recovery.
 - A `ship` that pushes over HTTPS by default. The operator's git protocol stays theirs. s-2 only makes the push short and announced.
 
+## Decisions (owner, 2026-11-21)
+
+- **Scope split:** accepted. R-13, R-14b, R-22 and R-23 are out of this brief.
+- **s-1:** Option A (exported copy budget plus lint).
+- **Explainer:** rewrite by hand for the current flow, with a contracts test against drift.
+- **Role-signing:** `feature-role-signing.md` ships after the 1.0 brief that reworks roles.
+- **Brief word cap:** Part B at 1,500 + 500 × steps.
+
 ## Open questions
 
-- **[BLOCKING] Scope split.** Do you accept the split above (R-13, R-14b, R-22 and R-23 out)? Or should R-14b and R-22 come into this brief and make it the 1.0 pass?
-- **[BLOCKING] s-1 option.** Option A (exported copy budget plus lint, about +1.5 min) or Option B (`make test` in `ship`, about +20 min)?
-- **Explainer.** Delete `docs/agentic-flow-explained.html` (recommended), or generate it from `README.md` and `METHODOLOGY.md`?
-- **Role-signing.** `feature-role-signing.md` has waited for review since 2026-11-15. Does it ship before this pass, or after the 1.0 brief that reworks roles?
-- **Brief word cap.** Is 5,000 words right for Part B? It would have failed Phase 2b's brief (8,100) and passed the last two.
+- None blocking.
 
 ---
 
@@ -304,8 +308,8 @@ Base: `main`. One branch and one PR for the whole brief: `phase-4`. Each step is
    - An installation record without `upstream=` lines behaves exactly as today, and that first upgrade writes the lines.
 
 **Briefs and docs**
-9. **Template and cap.** A brief from the new template parses and has Acceptance scenarios before the first step. Red-first lines are `none` except in steps that name a selector. A Part B over 5,000 words fails `brief_parse` with the count. Every approved brief in `docs/done/` still normalizes to its recorded hash; the cap applies only to briefs approved after this pass (a brief with an `Approval:` rev before the s-7 commit is exempt).
-10. **Reference split.** `METHODOLOGY.md` §9–§11 live in `docs/reference/` with pointers left behind. The roadmap holds only open items and a history link. The explainer is gone, and nothing links to it. `scripts/docs-index.sh`, `check-harness-sync.sh` and the payload manifest agree with the new paths, in this repo and in a fresh export.
+9. **Template and cap.** A brief from the new template parses and has Acceptance scenarios before the first step. Red-first lines are `none` except in steps that name a selector. A Part B over 1,500 + 500 × steps words fails `brief_parse`, naming the count and the cap; exactly the cap passes. Every approved brief in `docs/done/` still normalizes to its recorded hash; the cap applies only to briefs approved after this pass (a brief with an `Approval:` rev before the s-7 commit is exempt).
+10. **Reference split.** `METHODOLOGY.md` §9–§11 live in `docs/reference/` with pointers left behind. The roadmap holds only open items and a history link. The explainer describes the current flow, and a contracts test fails when a subcommand in `scripts/agentic-flow`'s usage text is missing from it. `scripts/docs-index.sh`, `check-harness-sync.sh` and the payload manifest agree with the new paths, in this repo and in a fresh export.
 
 ## Invariants (every step)
 - Bash 3.2: no `mapfile`, no associative arrays; guard empty arrays under `set -u`.
@@ -417,7 +421,7 @@ scripts/doctor.sh --check
 1. Add `scripts/git-hooks/pre-commit`, which runs the existing secret scan on the staged diff, and set `core.hooksPath` in `init.sh`, in the adoption steps and in `doctor --check`. Keep `AGENTIC_ALLOW_SECRET=1`.
 2. Remove the PreToolUse entries for `block-push.sh`, `block-git-add-all.sh`, `require-step-comment.sh` and `scan-secrets.sh` from `.claude/settings.json` and `.codex/hooks.json` (root and template). Delete `block-push.sh`, `block-git-add-all.sh`, `require-step-comment.sh` and `hook-command.sh`, and their tests.
 3. Keep `check-gate.sh` and `session-context.sh`.
-4. Delete the memory entry `hook-parser-blocks-git-text` and the `hook-command` gotchas in `CLAUDE.md`/`AGENTS.md`, since their cause is gone; s-9 does the contract wording.
+4. Leave the `CLAUDE.md`/`AGENTS.md` wording to s-9. Here, only remove what references a deleted file.
 
 **Test:** scenario 7. Failure path first: a credential-shaped fixture committed from a script, from a station and by a human; and `--no-verify` refused by each CLI's policy.
 
@@ -433,7 +437,7 @@ scripts/doctor.sh --check
 **Approach:**
 1. Record `upstream=<sha256>  <path>` for each installed payload file, at install and at upgrade. Keep the existing `file=` lines.
 2. Add the `kept` classification (table in Part A) to `payload_apply` and report it in the upgrade summary. A file kept this way keeps its old `upstream=` hash, so the next upstream change is still detected.
-3. The version stamp advances when no candidate was written (memory `agentic-flow-candidate-version-promotion` is then obsolete; delete it).
+3. The version stamp advances when no candidate was written, so an adopter no longer promotes `.agentic-flow-candidate-version` by hand after a merge in which upstream changed nothing.
 
 **Test:** scenario 8 on the adopter twin fixture (R-15). Failure path first: a record without `upstream=` lines; an `upstream=` hash for a file no longer in the payload; a path traversal in a record line.
 
@@ -451,7 +455,7 @@ scripts/doctor.sh --check
 2. Add the Part B cap to `brief.sh` with the exemption in scenario 9. Do not change normalization, so approved briefs keep their hashes.
 3. Update the planner contract text that tells the planner what a step must contain (s-9 edits the contracts; here, only the template's own comments).
 
-**Test:** scenario 9. Failure path first: a 5,001-word Part B; an approved legacy brief over the cap.
+**Test:** scenario 9. Failure path first: a Part B one word over the cap for its step count; an approved legacy brief over the cap.
 
 **DoD:** scenario 9 passes; every brief in `docs/done/` still parses.
 **Verify:** `make test-one F=plan-to-issues`
@@ -459,22 +463,22 @@ scripts/doctor.sh --check
 **Red-first:** `scripts/self-test.sh --only plan-to-issues` — scripts/tests/plan-to-issues.sh
 **Commit:** `Lead briefs with acceptance scenarios, cap Part B, and make red-first opt-in`
 
-## s-8 — Methodology reference split, roadmap cut to the open queue, explainer dropped
+## s-8 — Methodology reference split, roadmap cut to the open queue, explainer rewritten
 **Why eighth:** docs only, after every behaviour change so the moved text is final.
 
 **Approach:**
 1. Move `METHODOLOGY.md` §9–§11 into `docs/reference/`, one file per section, and leave a one-line pointer for each. Fix every inbound link.
 2. Move the roadmap's decided history into `docs/done/` (the docs-index rules decide the file name and stage) and keep only open items, decisions still pending and links.
-3. Delete `docs/agentic-flow-explained.html` and every link to it, unless the owner chose "generate".
+3. Rewrite `docs/agentic-flow-explained.html` for the current flow: start, plan and approval, plan-to-issues, the controller's stations, journal and holds, andon, `verify-step`, close-out and `ship`, `clean`. Keep its existing style. Add the contracts test from scenario 10.
 4. Update `config/payload.tsv`, the docs index and `check-harness-sync.sh` for the new paths.
 
 **Test:** scenario 10. Failure path first: a dangling link (add a link check over `docs/` and the root Markdown if none exists).
 
 **DoD:** scenario 10 passes; `METHODOLOGY.md` shrinks by the three sections.
 **Verify:** `make test-one F=export` and `make check`
-**Risks:** an exported adopter losing a file it links to; the docs index rejecting a new root-level file (memory `docs-index-stage-rigidity`).
+**Risks:** an exported adopter losing a file it links to; the docs index rejecting a new root-level file (memory `docs-index-stage-allowlist`); the explainer test matching a subcommand name inside unrelated text.
 **Red-first:** none
-**Commit:** `Move methodology reference sections out, cut the roadmap to the open queue, drop the explainer`
+**Commit:** `Move methodology reference sections out, cut the roadmap to the open queue, rewrite the explainer`
 
 ## s-9 — Contracts, adoption notes and release notes
 **Why last:** describes the shipped behaviour once.
