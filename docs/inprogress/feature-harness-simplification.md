@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-11-21) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** 🚧 In progress
 > **Assurance:** Strict
 > Phase 4 of `product-harness-factory-optimization.md`: remove what Phases 0–3 and flow-ergonomics made redundant. This brief takes the non-breaking items (R-12, R-14a, R-16 in part, R-17, R-24, R-25, R-26, R-27). It proposes moving the breaking 1.0 items (R-14b, R-22), the native-review item (R-13, blocked while the repo is private) and the state-store item (R-23, which needs re-measuring) to later briefs. The ship gate gains shellcheck and an exported copy budget (Option A, chosen). A last step scans tree, history, metadata and GitHub content before publishing. Drafted 2026-11-21 on branch `phase-4`; owner decisions recorded the same day; second review round applied; awaiting review.
 
@@ -792,7 +792,7 @@ scripts/doctor.sh --check
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-21; rev=6e81d87232518b09f1e1a40e10113b3612868254
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
