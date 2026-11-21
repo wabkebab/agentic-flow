@@ -392,7 +392,7 @@ Bounds: the gate record is one file per plan. The policy TSV is capped at 100 ro
 
 ## Out of scope / What NOT to build in this pass
 
-- Deleting `hook-command.sh` and the three retired hook scripts. That happens in a later release whose upgrade pre-flight refuses to run until the command policy and the pre-commit path are active, so no adopter is left unguarded.
+- Deleting `hook-command.sh` and the three retired hook scripts. That happens in a later release whose upgrade pre-flight refuses to run until the command policy and the pre-commit path are active, so no adopter is left unguarded. Tracked as #187 (roadmap R-12c).
 
 - R-13 native PR review, until the repo is public and branch protection exists.
 - R-14b file split and R-22 role-neutral roles. Both are breaking, and they go into one 1.0 brief.
