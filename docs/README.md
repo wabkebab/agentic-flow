@@ -116,6 +116,7 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-station-hardening | Feature | ✅ Done | done |
 | feature-test-streamlining | Feature | ✅ Done | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
+| feature-ask-answer-packet | Feature | 🟦 Proposal | inprogress |
 | feature-role-signing | Feature | 🟦 Proposal | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |
 <!-- END: generated index -->
