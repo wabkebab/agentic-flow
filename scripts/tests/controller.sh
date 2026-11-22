@@ -326,7 +326,7 @@ c6_tests() (
   SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   SHIP_CI_TIMEOUT=3600
   SHIP_RUN_URL=https://github.com/owner/repo/actions/runs/7 SHIP_ATTEMPT=2
-  local pr='{"number":3,"url":"https://github.com/owner/repo/pull/3","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"release","isCrossRepository":false}'
+  local pr='{"number":3,"url":"https://github.com/owner/repo/pull/3","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"release","isCrossRepository":false,"body":"Existing body","title":"Shipping"}'
   SHIP_PR=null
   local AGENTIC_CLOSER_COMMIT=''
   git() {
@@ -576,6 +576,9 @@ CLOSER
     HANDOFF_ISSUES=1
     jq -n --arg rev "$rev" '{body:("<!-- agentic-flow:plan:shipping-fixture step:alpha spec:"+$rev+" approved="+$rev+" journal=v1 -->\n<!-- agentic-flow:topology:standard -->")}' > "$HANDOFF_TMP/1.issue"
     jq -n --arg head "$tip" '{state:"closing",accepted:[{event:"submit",head:$head},{event:"bounce"},{event:"approve",head:$head}]}' > "$HANDOFF_TMP/1.replay"
+    if [ "$SHIP_TEST_MODE" = body-changed ]; then
+      jq '.[0].body="Body added during rendering"' "$stored/pr" > "$stored/edited-pr" && mv "$stored/edited-pr" "$stored/pr"
+    fi
   }
   git() {
     if [ "$1" = push ]; then
@@ -601,7 +604,12 @@ CLOSER
         [ "${*:3:6}" = '--repo owner/repo --head feature --base release' ] &&
           [ "${10}" = 'Single push' ] && [ "${11}" = --body-file ] || fail 'ship did not admit, push and open against plan base'
         cp "${12}" "$stored/pr-body"
-        jq -n --arg head "$(cat "$stored/remote-head")" '[{number:3,url:"https://github.com/owner/repo/pull/3",headRefOid:$head,baseRefName:"release",isCrossRepository:false}]' > "$stored/pr" ;;
+        jq -n --arg head "$(cat "$stored/remote-head")" --rawfile body "$stored/pr-body" '[{number:3,url:"https://github.com/owner/repo/pull/3",headRefOid:$head,baseRefName:"release",isCrossRepository:false,title:"Single push",body:$body}]' > "$stored/pr" ;;
+      'pr edit')
+        printf 'edit\n' >> "$stored/actions"
+        [ "$#" = 7 ] && [ "${*:3:4}" = '3 --repo owner/repo --body-file' ] || fail 'ship edited the wrong PR or fields'
+        [ "$SHIP_TEST_MODE" != edit-fail ] || return 1
+        jq --rawfile body "$7" '.[0].body=$body' "$stored/pr" > "$stored/edited-pr" && mv "$stored/edited-pr" "$stored/pr" ;;
       'api --hostname')
         [ "$3 $4" = 'github.com repos/owner/repo/git/ref/heads/feature' ] || return 99
         printf '%s\n' "$remote_response" >> "$stored/api"
@@ -787,6 +795,54 @@ CLOSER
   gate_result=pass
   retry_ship || fail 'ordinary ship did not retry a failed forced gate'
   check_ship_retry 1 0
+
+  # Reuse the approved close-out and compare adoption with the body from creation.
+  local body invalid_pr
+  jq --arg head "$(git rev-parse HEAD)" '.[0] |= (.headRefOid=$head | .body="")' "$stored/pr" > "$stored/manual-pr"
+  jq '.[0].baseRefName="main"' "$stored/manual-pr" > "$stored/pr"
+  remote_response=behind
+  : > "$stored/actions"
+  rc=0; ship_dispatch ship "$source" > "$stored/out" 2>&1 || rc=$?
+  [ "$rc" = 3 ] && [ ! -s "$stored/actions" ] || fail 'wrong PR base did not stop ship internally before push or edit'
+  rc=0; retry_ship || rc=$?
+  [ "$rc" = 1 ] && [ ! -s "$stored/actions" ] || fail 'wrong PR base did not stop public ship before push or edit'
+  grep -Fq 'PR #3 base main differs from brief base release' "$stored/out" || fail 'ship omitted the PR base mismatch details'
+  for invalid_pr in '.[0].isCrossRepository=true' '.[0].url="https://github.com/other/repo/pull/3"'; do
+    jq "$invalid_pr" "$stored/manual-pr" > "$stored/pr"
+    rc=0; retry_ship || rc=$?
+    [ "$rc" = 1 ] && [ ! -s "$stored/actions" ] || fail 'ship accepted a fork or foreign PR'
+  done
+
+  remote_response=branch
+  cp "$stored/manual-pr" "$stored/pr"
+  SHIP_TEST_MODE=edit-fail
+  retry_ship || fail 'ship stopped after a failed PR edit'
+  [ "$(grep -c '^edit$' "$stored/actions")" = 1 ] && grep -qx ci "$stored/ci" && cmp -s "$stored/manual-pr" "$stored/pr" ||
+    fail 'ship did not attempt one PR edit, preserve the body and continue to CI'
+  grep -q 'warning:.*PR #3' "$stored/out" || fail 'ship omitted the PR edit warning'
+  SHIP_TEST_MODE=''
+
+  for body in '' $' \t\r\n'; do
+    jq --arg body "$body" '.[0] |= (.body=$body | .title="Manual title")' "$stored/manual-pr" > "$stored/pr"
+    retry_ship || fail 'ship could not fill an empty or whitespace-only PR body'
+    grep -qx edit "$stored/actions" && grep -Fxq 'PR #3: wrote generated body' "$stored/out" ||
+      fail 'ship omitted the successful PR edit or its message'
+    jq -e --rawfile body "$stored/pr-body" '.[0].body==$body and .[0].title=="Manual title"' "$stored/pr" >/dev/null ||
+      fail 'ship did not adopt the PR with the original renderer and preserve its title'
+    grep -q 'warning:.*PR #3.*title' "$stored/out" || fail 'ship omitted the PR title warning'
+  done
+  jq --arg body $'## Summary\n\n<!-- Fill this in -->\n' '.[0].body=$body' "$stored/manual-pr" > "$stored/pr"
+  cp "$stored/pr" "$stored/template-pr"
+  retry_ship || fail 'ship could not continue with a template-like PR body'
+  ! grep -q '^edit$' "$stored/actions" && cmp -s "$stored/template-pr" "$stored/pr" &&
+    grep -Fxq 'PR #3: kept existing body' "$stored/out" || fail 'ship did not keep the template-like PR body'
+
+  cp "$stored/manual-pr" "$stored/pr"
+  SHIP_TEST_MODE='body-changed'
+  retry_ship || fail 'ship could not continue after the PR body changed during rendering'
+  ! grep -q '^edit$' "$stored/actions" && grep -Fxq 'PR #3: kept existing body' "$stored/out" &&
+    jq -e '.[0].body=="Body added during rendering"' "$stored/pr" >/dev/null || fail 'ship overwrote a body added during rendering'
+
   jq -n --arg head "$tip" '
     {pull_request:{title:"Large plan",goal:"Long goal",brief:"brief",tracker:"tracker",issue_root:"issues",
       steps:[range(1;21) | {title:("Step \(.) — "+("<!-- @user <placeholder> --> | " * 200)),issue:.,head:$head,bounces:0}]}}' |

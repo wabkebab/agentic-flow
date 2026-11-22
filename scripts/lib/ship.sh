@@ -116,16 +116,25 @@ ship_push() {
   git push -- origin "$SHIP_HEAD:refs/heads/$SHIP_BRANCH"
 }
 ship_pr() {
-  local prs
-  prs=$(handoff_gh pr list --repo "$HANDOFF_REPO" --head "$SHIP_BRANCH" --state open --limit 100 --json number,url,headRefOid,baseRefName,isCrossRepository) || return 5
-  SHIP_PR=$(printf '%s' "$prs" | jq -c --arg base "$SHIP_BASE" --arg repo "$HANDOFF_REPO" '
+  local prs base
+  prs=$(handoff_gh pr list --repo "$HANDOFF_REPO" --head "$SHIP_BRANCH" --state open --limit 100 \
+    --json number,url,headRefOid,baseRefName,isCrossRepository,title,body) || return 5
+  SHIP_PR=$(printf '%s' "$prs" | jq -c --arg repo "$HANDOFF_REPO" '
     if type!="array" or length>=100 then error("invalid PR listing")
     elif length==0 then null
-    elif length==1 and .[0].baseRefName==$base and .[0].isCrossRepository==false and
-      (.[0].headRefOid|test("^[a-f0-9]{40}$")) and (.[0].number|type)=="number" and .[0].number>0 and
-      .[0].url==("https://github.com/"+$repo+"/pull/"+(.[0].number|tostring)) then .[0]
-    else error("ambiguous PR or wrong base") end') || { ship_error "invalid PR listing or PR base differs from $SHIP_BASE"; return 3; }
+    elif length==1 and .[0].isCrossRepository==false and (.[0].headRefOid|test("^[a-f0-9]{40}$")) and
+      (.[0].number|type)=="number" and .[0].number>0 and (.[0].number|floor)==.[0].number and
+      (.[0].baseRefName|type)=="string" and (.[0].title|type)=="string" and (.[0].body|type)=="string" and
+      .[0].url==("https://github.com/"+$repo+"/pull/"+(.[0].number|tostring)) then
+      .[0] | .bodyIsBlank=(.body|test("^\\s*$")) | del(.body)
+    else error("invalid or ambiguous PR") end') || { ship_error 'invalid PR listing'; return 3; }
   [ -n "$SHIP_PR" ] || return 3
+  [ "$SHIP_PR" != null ] || return 0
+  base=$(printf '%s' "$SHIP_PR" | jq -r .baseRefName) || return 3
+  if [ "$base" != "$SHIP_BASE" ]; then
+    ship_error "PR #$(printf '%s' "$SHIP_PR" | jq -r .number) base $base differs from brief base $SHIP_BASE"
+    return 3
+  fi
 }
 ship_ci() {
   local listing latest
@@ -266,9 +275,39 @@ ship_pr_body() {
       }]}}' "$HANDOFF_TMP/steps" | journal_render_pr > "$HANDOFF_TMP/pr-body"
 }
 
+ship_adopt_pr() {
+  local number same_title blank
+  IFS=$'\t' read -r number same_title blank < <(
+    printf '%s' "$SHIP_PR" | jq -r --arg title "$SHIP_TITLE" '[.number, .title==$title, .bodyIsBlank] | @tsv') || return 3
+  if [ "$same_title" != true ]; then
+    ship_error "warning: PR #$number title differs from the brief title"
+  fi
+  if [ "$blank" = true ]; then
+    if ! ship_pr_body; then
+      ship_error "warning: could not generate a body for PR #$number; continuing"
+      return 0
+    fi
+    # Rendering reads the journal. Check the target and body again before editing.
+    ship_pr || return $?
+    if [ "$(printf '%s' "$SHIP_PR" | jq -r .number)" != "$number" ]; then
+      ship_error "PR #$number is no longer the open PR for $SHIP_BRANCH"
+      return 3
+    fi
+    blank=$(printf '%s' "$SHIP_PR" | jq -r .bodyIsBlank)
+  fi
+  if [ "$blank" != true ]; then
+    printf 'PR #%s: kept existing body\n' "$number"
+  elif handoff_gh pr edit "$number" --repo "$HANDOFF_REPO" --body-file "$HANDOFF_TMP/pr-body" >/dev/null; then
+    printf 'PR #%s: wrote generated body\n' "$number"
+  else
+    ship_error "warning: could not write generated body for PR #$number; continuing"
+  fi
+}
+
 ship_run() {
   local wait_review=$1 start rc ref closer count=0
   ship_clean || return 1
+  if [ "$SHIP_PR" != null ]; then ship_adopt_pr || return $?; fi
   case "$SHIP_DOC" in docs/inprogress/*)
     if [ "$SHIP_PR" != null ]; then
       close_out_cmd prep "$SHIP_DOC" --pr "$(printf '%s' "$SHIP_PR" | jq -r .url)" || return $?
