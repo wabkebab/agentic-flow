@@ -347,7 +347,7 @@ scenario covers the cases above.
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-22; rev=b424cb26476b2c3a0348cf8cc4b091ca09f0dbda
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
