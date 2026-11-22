@@ -1397,7 +1397,243 @@ FAKE_CP
     [ ! -s "$TMP/packet.json" ] && grep -q findings-incomplete "$TMP/packet.err" || fail 'bad findings copy emitted a packet'
   done
   rm "$STATION_FIX/bin/cp"
-) || fail 'findings packet scenario failed'
+
+  # The selected decision comes from accepted transitions, not raw review notes.
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/lib/packet.sh"
+  decision_event() {
+    local seq=$1 event=$2 role=$3 from=$4 login=$5 body=$6 suffix=''
+    [ "$event" != resume ] || suffix="; return=$7"
+    journal_summary "$body" > "$TMP/decision-result"
+    local owner=''
+    [ "$event" != ask ] || owner=plan
+    journal_render "$event" 'alpha — Fixture title' \
+      "agentic-flow-transition: v=1; id=fixture/alpha/$seq/$event; event=$event; from=$from; role=$role; head=none$suffix" \
+      "Role: $role · Transition: $seq" "agentic-flow-run: run=fixture/1/$seq; host=123456789abc" \
+      "$TMP/decision-result" "$owner" 'Owner-mention sentinel' > "$TMP/decision-comment" ||
+      fail "could not render $event"
+    packet_comment "$login" "$(cat "$TMP/decision-comment")"
+  }
+  decision_submit() {
+    packet_comment exec "agentic-flow-transition: v=1; id=fixture/alpha/$1/submit; event=submit; from=executing; role=executor; head=$PACKET_REV
+Submitted."
+  }
+  decision_bounce() {
+    packet_comment review "agentic-flow-transition: v=1; id=fixture/alpha/$1/bounce; event=bounce; from=reviewing; role=reviewer; head=none
+Please fix the fixture."
+  }
+  decision_pair() {
+    decision_event "$1" ask executor executing exec "$2"
+    decision_event "$(($1+1))" resume approver escalated plan "$3" executing
+  }
+  decision_repeat() { awk -v n="$1" -v word="$2" 'BEGIN {for(i=0;i<n;i++) printf "%s%s", (i?" ":""), word}'; }
+  decision_set_limit() {
+    limit=$1
+    decision_repeat "$((3000-limit))" suffix > "$PACKET_SUFFIX_FILE"
+  }
+  decision_exact() {
+    packet_run 0 --station executor --json
+    packet_format "$TMP/packet.json" > "$TMP/decision-rendered"
+    [ "$(packet_measure "$TMP/packet.json" "$TMP/decision-rendered")" -eq "$limit" ] ||
+      fail 'decision packet did not exactly fit the suffix budget'
+    grep -q '^Question (seq ' "$TMP/decision-rendered" || fail 'exactly fitted packet lost the question'
+  }
+  decision_layout() {
+    # Reconstruct the approved shell independently of the clipping implementation.
+    jq '.findings=[] | del(.findings_index)' "$TMP/packet.json" > "$TMP/decision-layout"
+    jq '.decision=null' "$TMP/decision-layout" > "$TMP/decision-base"
+    jq --arg path "$scratch/decision.md" '
+      .decision |= (.ask.body="[clipped]" | .answer.body="[clipped]" |
+        .clipped=true | .file={path:$path,sha256:("0"*64)})' "$TMP/decision-layout" > "$TMP/decision-shell"
+    packet_format "$TMP/decision-base" > "$TMP/decision-base-rendered"
+    packet_format "$TMP/decision-shell" > "$TMP/decision-shell-rendered"
+    base_words=$(packet_measure "$TMP/decision-base" "$TMP/decision-base-rendered")
+    shell_words=$(packet_measure "$TMP/decision-shell" "$TMP/decision-shell-rendered")
+  }
+
+  # f3: look at the entire packet, including the raw findings and the journal.
+  packet_issue
+  decision_submit 1
+  decision_event 2 ask reviewer reviewing review REVIEW_QUESTION_SENTINEL
+  decision_event 3 resume approver escalated plan REVIEW_ANSWER_SENTINEL reviewing
+  decision_bounce 4
+  for presentation in json rendered; do
+    if [ "$presentation" = json ]; then
+      packet_run 0 --station executor --json
+      jq -e '.decision==null' "$TMP/packet.json" >/dev/null || fail 'executor received a reviewer decision'
+    else packet_run 0 --station executor; fi
+    if grep -Eq 'Owner decision|REVIEW_QUESTION_SENTINEL|REVIEW_ANSWER_SENTINEL|event=ask' "$TMP/packet.json"; then
+      fail "reviewer decision leaked into the executor $presentation packet"
+    fi
+  done
+
+  # f1: an accepted resume without its source comment fails without partial output.
+  decision_journal='{"accepted":[{"event":"ask","role":"executor","seq":1,"comment_id":"ASK"},{"event":"resume","seq":2,"comment_id":"MISSING"}]}'
+  if packet_decision executor "$decision_journal" '[{"id":"ASK","body":"Question"}]' > "$TMP/decision-out" 2> "$TMP/decision-error"; then
+    fail 'packet_decision accepted a missing answer comment'
+  fi
+  [ ! -s "$TMP/decision-out" ] && grep -Fq 'decision comment MISSING not found' "$TMP/decision-error" ||
+    fail 'missing answer comment did not fail atomically with a diagnostic'
+
+  export PACKET_SUFFIX_FILE="$TMP/decision-suffix"
+  full_dir="$VERIFY_FIX/.git/agentic-flow/decisions/fixture/1"
+  decision_set_limit 3000
+  long_question=$(decision_repeat 300 QUESTION_WORD)
+  long_answer=$(decision_repeat 700 ANSWER_WORD)
+  packet_issue
+  decision_pair 1 "$long_question" "$long_answer"
+
+  # f2: a directory at the durable destination cannot be replaced by the file.
+  mkdir -p "$full_dir/1.md"
+  packet_refused
+  grep -Fq 'packet: cannot deliver decision for #1 ask 1' "$TMP/packet.err" || fail 'decision publish refusal lacked a diagnostic'
+  rmdir "$full_dir/1.md"
+
+  # f4: exact fit, one fewer word, then the clipping floor.
+  packet_run 0 --station executor --json
+  decision_layout
+  pair_base_words=$base_words
+  decision_set_limit "$((shell_words+120))"
+  decision_exact
+  jq -e '.decision | .clipped and (.ask.body|startswith("QUESTION_WORD")) and
+    ([.ask.body,.answer.body]|map([scan("(QUESTION|ANSWER)_WORD")]|length)|add)==120' \
+    "$TMP/packet.json" >/dev/null || fail 'exact fit lost reserved prose'
+  decision_set_limit "$((limit-1))"
+  decision_exact
+  jq -e '[.decision.ask.body,.decision.answer.body]|map([scan("(QUESTION|ANSWER)_WORD")]|length)|add==119' \
+    "$TMP/packet.json" >/dev/null || fail 'one suffix word did not remove one decision word'
+  decision_set_limit "$((shell_words+79))"
+  packet_refused
+  grep -Eq 'packet exceeds 3000 words .*largest part: [a-z]+' "$TMP/packet.err" || fail 'clipping floor did not name the largest part'
+
+  # The old reserve must also leave room for a 300-word decision on a large base.
+  packet_issue
+  packet_comment review "$(decision_repeat "$((2680-pair_base_words))" BASE_WORD)"
+  decision_pair 1 'QUESTION_WORD' "$(decision_repeat 299 ANSWER_WORD)"
+  decision_set_limit 3000
+  packet_run 0 --station executor --json
+  jq -e '.decision.ask.body=="QUESTION_WORD"' "$TMP/packet.json" >/dev/null || fail 'large base lost the decision'
+
+  # f5: the generic publisher accepts Markdown and the wrapper retains its old key order.
+  printf '%s\n' '# Markdown' 'Full decision.' > "$TMP/publish-markdown"
+  published=$(packet_publish_file "$TMP/publish-markdown" "$TMP/publish/durable/decision.md" "$scratch" decision.md) ||
+    fail 'generic Markdown publish failed'
+  cmp -s "$TMP/publish-markdown" "$TMP/publish/durable/decision.md" &&
+    cmp -s "$TMP/publish-markdown" "$scratch/decision.md" || fail 'Markdown copies differ from the source'
+  hash=$(shasum -a 256 < "$TMP/publish-markdown")
+  jq -e --arg path "$scratch/decision.md" --arg hash "${hash%% *}" '.=={path:$path,sha256:$hash}' <<< "$published" >/dev/null ||
+    fail 'Markdown publisher reported a different hash'
+  printf '%s\n' '[{"body":"Captured finding."}]' > "$TMP/publish-findings"
+  published=$(packet_findings_publish "$TMP/publish-findings" "$TMP/publish/durable/findings.json" "$scratch") ||
+    fail 'findings wrapper failed'
+  [ "$(jq -c '.path="SCRATCH/findings.json"' <<< "$published")" = \
+    '{"path":"SCRATCH/findings.json","count":1,"sha256":"c54be58ded40a7185a3ceec3728f2ac8efe1143e1614ce3183846ffad00e2031"}' ] ||
+    fail 'findings publisher output changed from the captured fixture'
+
+  # f6/f7: the index yields to the decision and disappears under its footer budget.
+  packet_issue
+  decision_submit 1
+  jq -nc '{summary:"Large findings",findings:[range(80)|{severity:"P2",file:"src/test.sh",line:1,text:("word "*45)}]}' > "$TMP/decision-findings"
+  journal_render bounce 'alpha — Fixture title' \
+    "agentic-flow-transition: v=1; id=fixture/alpha/2/bounce; event=bounce; from=reviewing; role=reviewer; head=$PACKET_REV" \
+    '' '' "$TMP/decision-findings" > "$TMP/decision-bounce" || fail 'could not render decision findings'
+  packet_comment review "$(cat "$TMP/decision-bounce")"
+  decision_pair 3 "$long_question" "$long_answer"
+  packet_run 0 --station executor --json
+  index_count=$(jq '.findings_index|length' "$TMP/packet.json")
+  decision_layout
+  decision_set_limit "$((shell_words+600+50))"
+  packet_run 0 --station executor --json
+  jq -e --argjson count "$index_count" '
+    .findings_file.path and .decision.file.path and .decision.clipped and
+    ((.findings_index|length)>0 and (.findings_index|length)<$count) and
+    ([.decision.ask.body,.decision.answer.body]|map([scan("(QUESTION|ANSWER)_WORD")]|length)|add)==600' \
+    "$TMP/packet.json" >/dev/null || fail 'findings index took reserved decision prose'
+  # (e) Hash and compare the complete payload that f6 caused to be published.
+  hash=$(jq -r '.decision.file.sha256' "$TMP/packet.json")
+  for decision_file in "$full_dir/3.md" "$scratch/decision.md"; do
+    actual_hash=$(shasum -a 256 < "$decision_file")
+    [ "${actual_hash%% *}" = "$hash" ] && grep -Fxq "$long_question" "$decision_file" &&
+      grep -Fxq "$long_answer" "$decision_file" || fail 'published decision is incomplete or has the wrong hash'
+  done
+  decision_set_limit "$((shell_words+120))"
+  decision_exact
+  jq -e 'has("findings_index")|not' "$TMP/packet.json" >/dev/null || fail 'sub-footer budget emitted an index'
+  grep -q '^Findings file:' "$TMP/decision-rendered" && grep -q '^Full text:' "$TMP/decision-rendered" ||
+    fail 'exact fit did not retain both file references'
+  if grep -q 'index shows' "$TMP/decision-rendered"; then fail 'sub-footer budget emitted the index footer'; fi
+
+  # f8: the floor applies only when clipping would be necessary.
+  rm "$scratch/decision.md" "$full_dir/1.md"
+  packet_issue
+  decision_pair 1 'Short question?' 'Short answer.'
+  decision_set_limit "$((pair_base_words+60))"
+  packet_run 0 --station executor --json
+  jq -e '.decision|.ask.body=="Short question?" and .answer.body=="Short answer." and
+    .clipped==false and .file==null' "$TMP/packet.json" >/dev/null || fail 'short decision was subject to the clipping floor'
+  [ ! -e "$scratch/decision.md" ] && [ ! -e "$full_dir/1.md" ] || fail 'intact decision wrote an artifact'
+  packet_issue
+  decision_pair 1 'Short question?' "$long_answer"
+  packet_refused
+  grep -q 'largest part:' "$TMP/packet.err" || fail 'long decision below the floor was not diagnosed'
+
+  # f9: the index footer can measure 13 words even when its budget is 12.
+  packet_issue
+  decision_submit 1
+  packet_comment review "$(cat "$TMP/decision-bounce")"
+  decision_pair 3 'Short question?' 'Short answer.'
+  decision_set_limit 3000
+  packet_run 0 --station executor --json
+  jq 'del(.findings_index)' "$TMP/packet.json" > "$TMP/decision-no-index"
+  packet_format "$TMP/decision-no-index" > "$TMP/decision-no-index-rendered"
+  no_index_words=$(packet_measure "$TMP/decision-no-index" "$TMP/decision-no-index-rendered")
+  rm "$full_dir/3.md"
+  decision_set_limit "$((no_index_words+12))"
+  packet_run 0 --station executor --json
+  jq -e '.decision|.clipped==false and .file==null and .ask.body=="Short question?"' "$TMP/packet.json" >/dev/null ||
+    fail 'index consumed space reserved for the intact decision'
+  packet_format "$TMP/packet.json" > "$TMP/decision-rendered"
+  [ "$(packet_measure "$TMP/packet.json" "$TMP/decision-rendered")" -le "$limit" ] &&
+    [ ! -e "$scratch/decision.md" ] && [ ! -e "$full_dir/3.md" ] || fail 'index overshoot displaced the intact decision'
+
+  # (a, b, d) An open ask and its answer retain prose while removing renderer metadata.
+  decision_set_limit 3000
+  packet_issue
+  decision_submit 1
+  decision_bounce 2
+  question=$'Executor question?\n\n### Decision requested in the brief\nRole: ordinary prose'
+  decision_event 3 ask executor executing exec "$question"
+  packet_comment stranger 'STRANGER_DECISION_SENTINEL'
+  packet_run 0 --station executor
+  grep -Fxq 'Answer: none yet' "$TMP/packet.json" || fail 'unanswered ask did not report its status'
+  decision_event 4 resume approver escalated plan 'Use the existing behavior.' executing
+  packet_run 0 --station executor --json
+  jq -e --arg question "$question" '.decision=={
+    ask:{seq:3,role:"executor",comment_id:"P2",body:$question},
+    answer:{seq:4,comment_id:"P4",body:"Use the existing behavior."},clipped:false,file:null}' "$TMP/packet.json" >/dev/null ||
+    fail 'accepted executor ask and resume did not preserve just the prose'
+  packet_run 0 --station executor
+  grep -Fxq 'Owner decision:' "$TMP/packet.json" && grep -Fxq 'Question (seq 3):' "$TMP/packet.json" &&
+    grep -Fxq 'Answer (seq 4):' "$TMP/packet.json" || fail 'executor decision labels are missing'
+  if grep -Eq 'agentic-flow-run:|event=ask|Owner-mention sentinel|STRANGER_DECISION_SENTINEL' "$TMP/packet.json"; then
+    fail 'decision displayed metadata or a plain non-policy comment'
+  fi
+
+  # (c, g) The next submit closes the cycle, and reviewers receive their own pair.
+  packet_issue
+  decision_pair 1 'Previous question?' 'Previous answer.'
+  decision_submit 3
+  decision_bounce 4
+  packet_run 0 --station executor --json
+  jq -e 'has("decision") and .decision==null' "$TMP/packet.json" >/dev/null || fail 'ask survived the next submit'
+  packet_issue
+  decision_submit 1
+  decision_event 2 ask reviewer reviewing review 'Reviewer question?'
+  decision_event 3 resume approver escalated plan 'Reviewer answer.' reviewing
+  packet_run 0 --station reviewer --json
+  jq -e '.decision|.ask.role=="reviewer" and .ask.body=="Reviewer question?" and .answer.body=="Reviewer answer."' \
+    "$TMP/packet.json" >/dev/null || fail 'reviewer packet lost its decision'
+) || fail 'findings and decision packet scenario failed'
 
 fi # scenario
 

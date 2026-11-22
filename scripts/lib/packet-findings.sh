@@ -43,8 +43,8 @@ packet_findings_source() { # plan issue admitted bounce comment JSON-file output
     (.line==null or (.line|type)=="number")))' "$output" >/dev/null
 }
 
-packet_findings_publish() ( # source-file destination-file [station-scratch]
-  local source=$1 dest=$2 scratch=${3:-} staged='' published hash copied count
+packet_publish_file() ( # source-file destination-file [station-scratch scratch-name]
+  local source=$1 dest=$2 scratch=${3:-} scratch_name=${4:-} staged='' published hash copied
   umask 077
   trap 'if [ -n "$staged" ]; then rm -f "$staged"; fi' EXIT
   mkdir -p "${dest%/*}" || return 1
@@ -56,16 +56,21 @@ packet_findings_publish() ( # source-file destination-file [station-scratch]
   hash=$(shasum -a 256 < "$source") || return 1
   published=$(shasum -a 256 < "$dest") || return 1
   [ "${hash%% *}" = "${published%% *}" ] || return 1
-  count=$(jq length "$source") || return 1
   if [ -n "$scratch" ]; then
-    cp "$dest" "$scratch/findings.json" || return 1
-    dest="$scratch/findings.json"
+    [ -n "$scratch_name" ] && cp "$dest" "$scratch/$scratch_name" || return 1
+    dest="$scratch/$scratch_name"
     copied=$(shasum -a 256 < "$dest") || return 1
     [ "${hash%% *}" = "${copied%% *}" ] || return 1
   fi
-  jq -nc --arg file "$dest" --arg sha "${hash%% *}" --argjson count "$count" \
-    '{path:$file,count:$count,sha256:$sha}'
+  jq -nc --arg file "$dest" --arg sha "${hash%% *}" '{path:$file,sha256:$sha}'
 )
+
+packet_findings_publish() { # source-file destination-file [station-scratch]
+  local published count
+  published=$(packet_publish_file "$1" "$2" "${3:-}" findings.json) || return 1
+  count=$(jq length "$1") || return 1
+  jq -c --argjson count "$count" '{path,count:$count,sha256}' <<< "$published"
+}
 
 packet_findings_index() { # full source, words remaining in packet -> bounded lines
   jq -c --argjson available "$2" '
