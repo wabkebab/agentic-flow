@@ -482,8 +482,11 @@ single_push_tests() (
   command git config commit.gpgsign false
   command git remote add origin https://github.com/owner/repo.git
   command git commit --allow-empty -qm base
-  local plan_worktree="$fixture/.git/agentic-flow/worktrees/shipping-fixture"
-  command git worktree add -qb feature "$plan_worktree" || fail 'shipping fixture could not create a linked worktree'
+  local plan_worktree="$TMP/single-push-worktree"
+  local linked_worktree="$fixture/.git/agentic-flow/worktrees/shipping-fixture"
+  command git worktree add -qb feature "$linked_worktree" || fail 'shipping fixture could not create a linked worktree'
+  # Keep an alias even on hosts whose TMPDIR is already a physical path.
+  ln -s "$linked_worktree" "$plan_worktree" || return 1
   cd "$plan_worktree" || return 1
   mkdir -p config docs/inprogress scripts
   ln "$ROOT/config/workflow.tsv" config/workflow.tsv
@@ -612,9 +615,15 @@ CLOSER
     esac
   }
   make() {
-    case "$*" in
-      "-C $plan_worktree -q ship-gate") printf 'probe\n' >> "$stored/probe"; return 1 ;;
-      "-C $plan_worktree ship-gate")
+    # Git resolves the worktree path before ship passes it to make.
+    [[ $# -ge 2 && $1 == -C && $2 -ef $plan_worktree ]] || {
+      printf 'unexpected ship-gate worktree arguments: %s\n' "$*" >&2
+      return 99
+    }
+    shift 2
+    case "$#:$*" in
+      '2:-q ship-gate') printf 'probe\n' >> "$stored/probe"; return 1 ;;
+      '1:ship-gate')
         printf 'gate\n' >> "$stored/actions"
         if [ "${SHIP_FORCE_GATE:-false}" = true ] && [ -e "$record" ]; then
           printf 'record was present at force gate start\n' >> "$stored/actions"
