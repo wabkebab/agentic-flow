@@ -597,7 +597,6 @@ BLOCKS
   grep -qx 'self-test passed.' "$TMP/split-full.out" \
     || fail 'split changed the full-suite completion message'
 )
-split_regression_tests
 
 # Dispatcher scope, ship-gate and ceiling regressions need the source layout.
 if [ -f "$ROOT/scripts/export.sh" ]; then
@@ -758,13 +757,27 @@ GIT_ERROR
     /^  docs:/ { exit } END { exit !(depth && base) }' "$ROOT/templates/ci/ci.yml" \
     || fail 'CI app job does not fetch history and export the PR base'
 
-  # The exported-layout gate must propagate a failing group, then pass all full-mode
-  # arguments into the exported runner. Stub only export and the exported runner.
+  # Exercise the exported suite and lint in order without recursively running the
+  # full suite. The exported runner reports a group and a controlled copy count.
   GATE_FIX="$TMP/ship-gate"
-  mkdir -p "$GATE_FIX/scripts/tests"
+  mkdir -p "$GATE_FIX/scripts/tests" "$GATE_FIX/bin"
   link_test_wall_ceilings "$GATE_FIX"
   ln "$ROOT/scripts/tests/helpers.sh" "$GATE_FIX/scripts/tests/helpers.sh"
   ln "$ROOT/scripts/self-test.sh" "$GATE_FIX/scripts/self-test.sh"
+  ln "$ROOT/scripts/shell-inventory.sh" "$GATE_FIX/scripts/shell-inventory.sh"
+  printf 'scripts/probe.sh\tscripts/probe.sh\tcore\tpreserve\texport\n' > "$GATE_FIX/config/payload.tsv"
+  printf '#!/usr/bin/env bash\nunused=1\n' > "$GATE_FIX/scripts/probe.sh"
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    # The contracts and fast gates also run on machines without ShellCheck.
+    cat > "$GATE_FIX/bin/shellcheck" <<'LINT'
+#!/usr/bin/env bash
+if grep -Fxq 'unused=1' "$2"; then
+  echo "fixture ShellCheck: $2: SC2034"
+  exit 1
+fi
+LINT
+    chmod +x "$GATE_FIX/bin/shellcheck"
+  fi
   cat > "$GATE_FIX/scripts/export.sh" <<'SH'
 #!/usr/bin/env bash
 set -eu
@@ -774,19 +787,36 @@ cat > "$1/scripts/self-test.sh" <<'RUNNER'
 set -eu
 printf '%s\n' "$*" >> "$GATE_CALLS"
 printf 'group:hooks\n' >> "$AGENTIC_MEASURE_EVENTS"
+for ((i=0; i<GATE_COPIES; i++)); do
+  printf 'fixture_file_copy\n' >> "$AGENTIC_MEASURE_EVENTS"
+done
 [ "${GATE_FAIL:-0}" = 0 ]
 RUNNER
 chmod +x "$1/scripts/self-test.sh"
 SH
   chmod +x "$GATE_FIX/scripts/export.sh"
+  gate_make() {
+    : > "$TMP/gate.calls"
+    PATH="$GATE_FIX/bin:$PATH" GATE_CALLS="$TMP/gate.calls" GATE_COPIES="$1" \
+      make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate > "$TMP/gate.out" 2>&1
+  }
   gate_rc=0
-  GATE_CALLS="$TMP/gate.calls" GATE_FAIL=1 make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate \
-    > "$TMP/gate.out" 2>&1 || gate_rc=$?
+  GATE_FAIL=1 gate_make 0 || gate_rc=$?
   [ "$gate_rc" -ne 0 ] || fail 'ship-gate accepted a failing exported suite'
   grep -q 'group: hooks' "$TMP/gate.out" || fail 'ship-gate did not name the failing exported group'
-  : > "$TMP/gate.calls"
-  GATE_CALLS="$TMP/gate.calls" make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate \
-    > "$TMP/gate.out" 2>&1 || { cat "$TMP/gate.out" >&2; fail 'ship-gate rejected a passing exported suite'; }
+
+  gate_copy_limit=117
+  gate_copy_over=$((gate_copy_limit+1))
+  gate_make "$gate_copy_over" && fail 'ship-gate accepted one fixture copy over the exported limit'
+  grep -Fq "exported full mode made $gate_copy_over fixture file copies; limit $gate_copy_limit" "$TMP/gate.out" \
+    || fail 'ship-gate did not name the exported copy count and limit'
+  gate_make "$gate_copy_limit" && fail 'ship-gate accepted a ShellCheck warning in a shipped script'
+  grep -q '^ship-gate passed (exported full suite)\.$' "$TMP/gate.out" \
+    || fail 'ship-gate did not complete the exported suite before lint'
+  grep -q 'SC2034' "$TMP/gate.out" || fail 'ship-gate did not report the ShellCheck warning'
+
+  printf '#!/usr/bin/env bash\n:\n' > "$GATE_FIX/scripts/probe.sh"
+  gate_make "$gate_copy_limit" || { cat "$TMP/gate.out" >&2; fail 'ship-gate rejected a passing exported suite'; }
   grep -qx -- '--full --all-groups' "$TMP/gate.calls" || fail 'ship-gate did not run the exported full suite'
   # CI keeps the costly exported suite as a separate step after everyday tests.
   awk '/run: make test$/ { test=NR } /run: make ship-gate$/ { gate=NR } END { exit !(test && gate>test) }' \
@@ -844,6 +874,9 @@ SH
   rm -rf "$CEILING_FIXTURE"
 fi
 
+# The red-first overlay carries this test file without the updated inventory.
+# Exercise the ship-gate regression before checking the inventory itself.
+split_regression_tests
 workflow_contract_check
 # T-1: keep the gate cadence identical in the live and exported role contracts.
 # shellcheck disable=SC2016 # Literal Markdown command references.

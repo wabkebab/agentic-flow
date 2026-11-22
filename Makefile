@@ -32,8 +32,9 @@ test-one:       ## one harness group: F=controller|stations supports S=tag[,tag]
 
 .PHONY: ship-gate
 # The fresh exported runner receives --full --all-groups, regardless of Git scope.
-ship-gate:      ## full regression suite in a fresh exported layout (close-out / CI)
+ship-gate:      ## full exported regression suite and scaffold shell lint (close-out / CI)
 	@scripts/self-test.sh --ship-gate
+	@scripts/shell-inventory.sh --lint
 
 build:          ## production build
 	@set -e; tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/agentic-flow-build.XXXXXX"); \
