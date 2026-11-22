@@ -32,6 +32,7 @@ ship_gate_tests() (
   ship_wait_visibility() { return 0; }
   ship_wait_ci() { return 0; }
   ship_lifecycle() { printf 'READY fixture\n'; }
+  andon_desktop() { :; }
   # A gate failure must stop each push path, including the initial PR-creation push.
   for phase in initial final; do
     SHIP_DOC=docs/done/plan.md

@@ -6,6 +6,11 @@
 identity_repository() { # project root; only github.com repository origins
   local origin
   origin=$(git -C "$1" config --get remote.origin.url) || return 1
+  identity_repository_url "$origin"
+}
+
+identity_repository_url() { # GitHub repository URL
+  local origin=$1
   case "$origin" in
     git@github.com:*) origin=${origin#git@github.com:} ;;
     https://github.com/*) origin=${origin#https://github.com/} ;;

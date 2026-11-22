@@ -11,7 +11,7 @@ usage:
   agentic-flow handoff <issue> reconcile [--json] [--check]
   agentic-flow close-out prep <doc> [--pr <url>] [--dry-run]
   agentic-flow close-out finish <doc>
-  agentic-flow ship <doc> [--wait-review]
+  agentic-flow ship <doc> [--wait-review] [--force-gate]
   agentic-flow final-approve <doc> [--body-file <path>]
   agentic-flow packet <issue> --station executor|reviewer [--json]
   agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--force] [--json]

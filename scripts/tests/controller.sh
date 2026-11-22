@@ -343,6 +343,7 @@ c6_tests() (
       'pr list') printf '[%s]\n' "$pr" ;;
       *) return 99 ;; esac
   }
+  andon_desktop() { :; }
   ship_wait_visibility() { ship_pr; }
   ship_wait_ci() { [ "$mode" != failed ] || return 1; printf 'ci\n' >> "$fixture/actions"; }
   ship_ci() { ship_wait_ci; }
@@ -544,6 +545,10 @@ LIFECYCLE
   AGENTIC_PROJECT_ROOT=$plan_worktree scripts/docs-index.sh >/dev/null
   command git add -- .agentic-flow-review-policy config/workflow.tsv docs/README.md "$source" fixture.txt \
     scripts/docs-index.sh scripts/lifecycle-status.sh scripts/hooks scripts/lib
+  printf 'ship-gate:\n\t@:\n' > Makefile
+  printf '#!/usr/bin/env bash\n' > scripts/self-test.sh
+  printf '0.1.0\n' > VERSION
+  command git add -- Makefile scripts/self-test.sh VERSION
   command git commit -qm brief
   rev=$(command git rev-parse HEAD)
   sed "/^- \*\*Approval:\*\*/s/pending$/status=approved; by=owner; at=2026-01-01; rev=$rev/" "$source" > "$stored/approved"
@@ -581,6 +586,8 @@ CLOSER
       command git "$@"
     fi
   }
+  local remote_response=branch gate_result=pass
+  local record="$fixture/.git/agentic-flow/gate/shipping-fixture.json"
   handoff_gh() {
     case "$1 $2" in
       'pr list')
@@ -592,11 +599,33 @@ CLOSER
           [ "${10}" = 'Single push' ] && [ "${11}" = --body-file ] || fail 'ship did not admit, push and open against plan base'
         cp "${12}" "$stored/pr-body"
         jq -n --arg head "$(cat "$stored/remote-head")" '[{number:3,url:"https://github.com/owner/repo/pull/3",headRefOid:$head,baseRefName:"release",isCrossRepository:false}]' > "$stored/pr" ;;
+      'api --hostname')
+        [ "$3 $4" = 'github.com repos/owner/repo/git/ref/heads/feature' ] || return 99
+        printf '%s\n' "$remote_response" >> "$stored/api"
+        case "$remote_response" in
+          branch) [ -f "$stored/remote-head" ] && jq -n --arg head "$(cat "$stored/remote-head")" '{object:{sha:$head}}' ;;
+          behind) jq -n --arg head "$tip" '{object:{sha:$head}}' ;;
+          malformed) printf 'not json\n' ;;
+          404|500) printf 'HTTP %s\n' "$remote_response" >&2; return 1 ;;
+        esac ;;
       *) return 99 ;;
     esac
   }
-  ship_gate() { printf 'gate\n' >> "$stored/actions"; }
+  make() {
+    case "$*" in
+      "-C $plan_worktree -q ship-gate") printf 'probe\n' >> "$stored/probe"; return 1 ;;
+      "-C $plan_worktree ship-gate")
+        printf 'gate\n' >> "$stored/actions"
+        if [ "${SHIP_FORCE_GATE:-false}" = true ] && [ -e "$record" ]; then
+          printf 'record was present at force gate start\n' >> "$stored/actions"
+        fi
+        [ "$gate_result" = pass ] ;;
+      *) return 99 ;;
+    esac
+  }
+  andon_desktop() { printf '%s\n' "$1" >> "$stored/notify"; return 1; }
   ship_ci() {
+    printf 'ci\n' >> "$stored/ci"
     [ "$SHIP_TEST_MODE" != ci-fail ] || { ship_error 'CI failed'; return 1; }
     SHIP_RUN_URL=https://github.com/owner/repo/actions/runs/7 SHIP_ATTEMPT=1
   }
@@ -615,7 +644,7 @@ CLOSER
     fail 'close-out dry run changed or omitted the worktree paths'
   for mode in dirty prep-stray commit-fail commit-noop manual create-fail ci-fail happy; do
     command git reset --hard "$tip" >/dev/null
-    rm -f "$stored/pr" "$stored/remote-head" "$stored/pr-body"
+    rm -f "$stored/pr" "$stored/remote-head" "$stored/pr-body" "$record"
     : > "$stored/actions"
     SHIP_TEST_MODE=$mode ready=true rc=0
     case "$mode" in
@@ -662,9 +691,93 @@ CLOSER
         grep -qFx -- '## Feature — Single push' "$stored/pr-body" || fail 'PR did not show the approved title' ;;
     esac
     case "$mode" in manual|create-fail|ci-fail|happy)
-      [ "$(grep -c '^update$' "$stored/actions")" = 1 ] || fail 'close-out updated the remote more than once' ;;
+      [ "$(grep -c '^update$' "$stored/actions")" = 1 ] || fail 'close-out updated the remote more than once'
+      [ "$(grep -c '^push$' "$stored/actions")" = 1 ] || fail 'close-out attempted more than one push' ;;
     esac
   done
+  ready=true
+  retry_ship() {
+    : > "$stored/actions"; : > "$stored/notify"; : > "$stored/api"; : > "$stored/ci"
+    : > "$stored/probe"
+    ship_cmd ship "$source" --wait-review "$@" > "$stored/out" 2>&1
+  }
+  check_ship_retry() {
+    local gated=$1 pushed=$2
+    [ "$(awk '/^gate$/ {n++} END {print n+0}' "$stored/actions")" = "$gated" ] \
+      || fail "ship retry gate count differs: $(cat "$stored/out")"
+    [ "$(grep -c '^probe$' "$stored/probe")" = "$gated" ] || fail 'ship retry gate probe count differs'
+    [ "$(awk '/^push$/ {n++} END {print n+0}' "$stored/actions")" = "$pushed" ] \
+      || fail "ship retry push count differs: $(cat "$stored/out")"
+    [ "$(grep -c '^pushing — touch your key now$' "$stored/out")" = "$pushed" ] &&
+      [ "$(grep -c '^pushing — touch your key now$' "$stored/notify")" = "$pushed" ] \
+      || fail 'ship retry key-touch prompt or notification count differs'
+    grep -qx ci "$stored/ci" || fail 'ship retry did not reach CI'
+  }
+  mkdir -p "${record%/*}"
+  printf '{broken\n' > "$record"
+  remote_response=500
+  retry_ship || fail 'ship did not recover from a corrupt gate record and API 500'
+  check_ship_retry 1 1
+  [ "$(cat "$stored/api")" = 500 ] || fail 'ship did not check the remote head before pushing'
+  local tree
+  tree=$(git rev-parse 'HEAD^{tree}')
+  jq -e --arg tree "$tree" '.v==1 and .tree==$tree and (.gate_hash|test("^[0-9a-f]{64}$")) and
+    .harness=="0.1.0" and (.passed_at|type)=="number"' "$record" >/dev/null || fail 'ship did not write the passing gate record'
+
+  remote_response=branch
+  command git config remote.origin.pushurl git@github.com:other/repo.git
+  retry_ship || fail 'ship failed with a separate push repository'
+  check_ship_retry 0 1
+  [ ! -s "$stored/api" ] || fail 'ship compared the head of a different repository'
+  command git config --unset-all remote.origin.pushurl
+  command git config --add remote.origin.pushurl git@github.com:owner/repo.git
+  command git config --add remote.origin.pushurl git@github.com:other/repo.git
+  retry_ship || fail 'ship failed with multiple push URLs'
+  check_ship_retry 0 1
+  command git config --unset-all remote.origin.pushurl
+  command git config remote.origin.pushurl ssh://git@example.invalid/owner/repo.git
+  retry_ship || fail 'ship failed with a non-GitHub push URL'
+  check_ship_retry 0 1
+  command git config remote.origin.pushurl ssh://git@github.com/owner/repo.git
+  for remote_response in behind 404 malformed branch; do
+    retry_ship || fail "ship failed on remote lookup: $remote_response"
+    if [ "$remote_response" = branch ]; then check_ship_retry 0 0; else check_ship_retry 0 1; fi
+  done
+  command git config remote.origin.pushurl https://example.invalid/owner/repo.git
+  command git config url.https://github.com/.insteadOf https://example.invalid/
+  retry_ship || fail 'ship failed with a rewritten push URL'
+  check_ship_retry 0 0
+
+  # CI/PR visibility is doubled for the new heads used in cache-key checks.
+  ship_wait_visibility() { return 0; }
+  command git commit --allow-empty -qm 'same tree'
+  retry_ship || { cat "$stored/out" >&2; fail 'ship failed when only the commit changed'; }
+  check_ship_retry 0 1
+  printf 'different tree\n' >> fixture.txt
+  command git commit -qam 'new tree'
+  retry_ship || fail 'ship failed after the head tree changed'
+  check_ship_retry 1 1
+  printf '# changed gate\n' >> scripts/self-test.sh
+  command git commit -qam 'new gate'
+  # Give the old gate hash the new tree to exercise hash comparison independently.
+  jq --arg tree "$(git rev-parse 'HEAD^{tree}')" '.tree=$tree' "$record" > "$stored/record"
+  mv "$stored/record" "$record"
+  retry_ship || fail 'ship failed after the gate script changed'
+  check_ship_retry 1 1
+  printf '0.2.0\n' > .agentic-flow-version
+  printf '.agentic-flow-version\n' >> "$fixture/.git/info/exclude"
+  retry_ship || fail 'ship failed after the installed harness version changed'
+  check_ship_retry 1 0
+
+  retry_ship --force-gate || fail 'ship rejected --force-gate'
+  check_ship_retry 1 0
+  gate_result=fail; rc=0
+  retry_ship --force-gate || rc=$?
+  [ "$rc" = 1 ] && [ "$(cat "$stored/actions")" = gate ] &&
+    [ ! -e "$record" ] && [ ! -s "$stored/ci" ] || fail 'failed forced gate left evidence or proceeded'
+  gate_result=pass
+  retry_ship || fail 'ordinary ship did not retry a failed forced gate'
+  check_ship_retry 1 0
   jq -n --arg head "$tip" '
     {pull_request:{title:"Large plan",goal:"Long goal",brief:"brief",tracker:"tracker",issue_root:"issues",
       steps:[range(1;21) | {title:("Step \(.) — "+("<!-- @user <placeholder> --> | " * 200)),issue:.,head:$head,bounces:0}]}}' |

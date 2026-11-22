@@ -2,6 +2,8 @@
 # Human shipping surface; phases are derived from Git, PR and lifecycle.
 # shellcheck disable=SC1091,SC2034
 . "$(dirname "${BASH_SOURCE[0]}")/close-out.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/andon.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/identity.sh"
 
 ship_error() { printf 'ship: %s\n' "$*" >&2; }
 ship_clean() {
@@ -9,10 +11,63 @@ ship_clean() {
   dirty=$(git status --porcelain) || return 1
   [ -z "$dirty" ] || { ship_error 'commit the staged/uncommitted close-out before shipping:'; printf '%s\n' "$dirty" >&2; return 1; }
 }
-# Query without executing recipes; status 1 means an existing target is out of date.
+ship_gate_key() (
+  set -o pipefail
+  local tree digest stamp harness=unknown
+  # Make recipes, the exported suite and its payload, and the scaffold lint inputs.
+  local inputs=(GNUmakefile makefile Makefile .shellcheckrc scripts config templates profiles
+    .agents .claude .codex .github .opencode docs/templates)
+  [ "$(git rev-parse HEAD)" = "$SHIP_HEAD" ] || return 1
+  tree=$(git rev-parse "$SHIP_HEAD^{tree}") || return 1
+  digest=$(git ls-tree -r -z "$SHIP_HEAD" -- "${inputs[@]}" | shasum -a 256) || return 1
+  for stamp in .agentic-flow-version VERSION; do
+    [ -e "$stamp" ] || continue
+    [ -f "$stamp" ] || return 1
+    harness=$(head -c 257 "$stamp") || return 1
+    harness=${harness%%$'\n'*}
+    [ -n "$harness" ] && [ "${#harness}" -le 256 ] || return 1
+    break
+  done
+  jq -nc --arg tree "$tree" --arg hash "${digest%% *}" --arg harness "$harness" \
+    '{v:1,tree:$tree,gate_hash:$hash,harness:$harness}'
+)
+
+ship_gate_matches() (
+  set -o pipefail
+  local record=$1 key=$2
+  [ -f "$record" ] || return 1
+  head -c 4097 "$record" | jq -Rse --argjson key "$key" 'utf8bytelength<=4096 and (fromjson |
+    {v,tree,gate_hash,harness}==$key and (.passed_at|type=="number" and .>=0 and floor==.))' \
+    >/dev/null 2>&1
+)
+
+ship_gate_forget() {
+  if [ -n "$2" ] && ship_gate_matches "$1" "$2"; then rm -f -- "$1"; fi
+}
+
+ship_gate_save() {
+  local record=$1 key=$2 tmp
+  mkdir -p -- "${record%/*}" && [ ! -d "$record" ] || return 1
+  tmp=$(mktemp "${record}.XXXXXX") || return 1
+  if jq -n --argjson key "$key" '$key+{passed_at:(now|floor)}' > "$tmp" &&
+    mv -f -- "$tmp" "$record"; then return 0; fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+# Query without executing recipes. Status 1 means an existing target is out of date.
 # Only an explicitly missing target is optional. Parse/build errors fail closed.
 ship_gate() {
-  local rc=0
+  local rc=0 common='' record='' key=''
+  if common=$(git rev-parse --path-format=absolute --git-common-dir) && key=$(ship_gate_key); then
+    record="$common/agentic-flow/gate/$SHIP_PLAN.json"
+    if [ "${SHIP_FORCE_GATE:-false}" = true ]; then
+      ship_gate_forget "$record" "$key" || { ship_error 'could not invalidate ship-gate record'; return 1; }
+    elif ship_gate_matches "$record" "$key"; then
+      printf 'ship: ship-gate already passed for this tree.\n'
+      return 0
+    fi
+  fi
   LC_ALL=C make -C "$SHIP_ROOT" -q ship-gate > "$HANDOFF_TMP/ship-gate-probe" 2>&1 || rc=$?
   case "$rc" in
     0|1) ;;
@@ -22,9 +77,43 @@ ship_gate() {
         return 0
       fi
       cat "$HANDOFF_TMP/ship-gate-probe" >&2
+      ship_gate_forget "$record" "$key" || ship_error 'could not invalidate ship-gate record'
       ship_error 'could not inspect ship-gate target'; return 1 ;;
   esac
-  make -C "$SHIP_ROOT" ship-gate || { ship_error 'ship-gate failed; stopping before push'; return 1; }
+  if ! make -C "$SHIP_ROOT" ship-gate; then
+    ship_gate_forget "$record" "$key" || ship_error 'could not invalidate ship-gate record'
+    ship_error 'ship-gate failed; stopping before push'
+    return 1
+  fi
+  if [ -n "$key" ] && [ "$(ship_gate_key)" = "$key" ]; then
+    ship_clean || return 1
+    ship_gate_save "$record" "$key" || ship_error 'could not save ship-gate record'
+  fi
+}
+
+ship_remote_at_head() (
+  set -o pipefail
+  local urls repo branch
+  # Keep the final newline so extra URLs (including an empty entry) cannot be lost.
+  urls=$(git remote get-url --push --all origin && printf '.') || return 1
+  repo=$(identity_repository_url "${urls%$'\n.'}") || return 1
+  shopt -s nocasematch
+  [[ "$repo" == "$HANDOFF_REPO" ]] || return 1
+  branch=$(jq -nr --arg branch "$SHIP_BRANCH" '$branch|split("/")|map(@uri)|join("/")') || return 1
+  handoff_gh api --hostname github.com "repos/$HANDOFF_REPO/git/ref/heads/$branch" 2>/dev/null |
+    head -c 65537 | jq -Rse --arg head "$SHIP_HEAD" \
+      'utf8bytelength<=65536 and (fromjson|.object.sha==$head)' >/dev/null 2>&1
+)
+
+ship_push() {
+  if ship_remote_at_head; then
+    printf 'ship: origin already has this head.\n'
+    return 0
+  fi
+  local prompt='pushing — touch your key now'
+  andon_desktop "$prompt" || true
+  printf '%s\n' "$prompt"
+  git push -- origin "$SHIP_HEAD:refs/heads/$SHIP_BRANCH"
 }
 ship_pr() {
   local prs
@@ -199,7 +288,7 @@ ship_run() {
   ship_clean || return 1
   ship_gate || return 1
   ship_clean || return 1
-  git push -- origin "$SHIP_HEAD:refs/heads/$SHIP_BRANCH" || return 1
+  ship_push || return 1
   if [ "$SHIP_PR" = null ]; then
     handoff_gh pr create --repo "$HANDOFF_REPO" --head "$SHIP_BRANCH" --base "$SHIP_BASE" \
       --title "$SHIP_TITLE" --body-file "$HANDOFF_TMP/pr-body" || return 5
@@ -231,10 +320,11 @@ ship_run() {
 }
 ship_dispatch() (
   set +x
-  local action=${1:-} doc=${2:-} wait_review=false file='' tmp approval spec moved SHIP_CI_TIMEOUT
+  local action=${1:-} doc=${2:-} wait_review=false file='' tmp approval spec moved SHIP_CI_TIMEOUT SHIP_FORCE_GATE=false
   [ "$#" -ge 2 ] || return 2; shift 2
   while [ "$#" -gt 0 ]; do
     case "$action:$1" in ship:--wait-review) wait_review=true; shift ;;
+      ship:--force-gate) SHIP_FORCE_GATE=true; shift ;;
       final-approve:--body-file) [ "$#" -ge 2 ] || return 2; file=$2; shift 2 ;; *) return 2 ;; esac
   done
   if [ "$action" = ship ]; then
