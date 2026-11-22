@@ -1214,12 +1214,12 @@ packet_comment plan 'APPROVER_PROSE_NOT_NEEDED'
 packet_run 0 --station executor --json
 jq -e '.dropped==2 and .journal.state=="executing" and (.findings[0].body|contains("CURRENT_FINDING"))' "$TMP/packet.json" >/dev/null || fail 'trusted findings absent'
 if grep -Eq 'HOSTILE_SENTINEL|SUBMIT_SENTINEL|UNTRUSTED_BODY_SENTINEL|APPROVER_PROSE_NOT_NEEDED|id=fixture/alpha/1/approve' "$TMP/packet.json"; then fail 'packet included excluded thread text'; fi
-cp "$TMP/packet.json" "$TMP/packet-bare-executor.json"
+mv "$TMP/packet.json" "$TMP/packet-bare-executor.json"
 packet_run 0 --station reviewer --json
 jq -e '.submit.body|contains("SUBMIT_SENTINEL")' "$TMP/packet.json" >/dev/null || fail 'reviewer omitted accepted submit'
 if grep -Eq 'HOSTILE_SENTINEL|CURRENT_FINDING|APPROVER_PROSE_NOT_NEEDED' "$TMP/packet.json"; then fail 'reviewer packet included unrelated comments'; fi
 grep -q 'run verify-step' "$TMP/packet.json" || fail 'missing verification record not identified'
-cp "$TMP/packet.json" "$TMP/packet-bare-reviewer.json"
+mv "$TMP/packet.json" "$TMP/packet-bare-reviewer.json"
 packet_comment review 'agentic-flow-hold: v=1; id=fixture/hold/1; issue=#1; reason=reopened; run=none'
 packet_comment review 'agentic-flow-hold-clear: id=fixture/hold/1'
 packet_run 0 --station executor --json
