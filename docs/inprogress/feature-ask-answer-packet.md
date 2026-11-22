@@ -101,24 +101,49 @@ packet_format adds, after the brief and before "Journal:":
   <answer body>, or "Answer: none yet" when there is no resume, then
   "Full text: <path> (sha256 <hash>)" when clipped.
 
-Budget — fitted into what remains (review P2):
-  The decision is added last, after the existing fit logic (findings index included)
-  has settled every other part. `word_limit` is already reduced by the controller's
-  suffix (`PACKET_SUFFIX_FILE`, packet.sh:49-52).
-  allowance = min(600, word_limit − words(packet without decision))
-  The question is guaranteed min(words(question), max(60, 40% of allowance)) words;
-  the answer gets the rest; any share one body doesn't use goes to the other. Each
-  body that is clipped keeps its first words and ends with "[clipped]".
-  If allowance < 80 the decision can't be shown usefully: exit 3 with
-  "packet exceeds 3000 words …; largest part: <part>" as now (no launch without it).
-  The 2,700-word packet from review P2 gets a 300-word allowance and launches.
+Budget — measured, never assumed (reviews P2, then P1 and P3 on be83586):
+  All sizes are packet_measure values (the larger of the JSON word count and the
+  rendered word count, packet.sh:28-33) against `word_limit`, which is already reduced
+  by the controller's suffix (PACKET_SUFFIX_FILE, packet.sh:49-52).
+  base     = the packet without findings source, findings index and decision
+  overhead = measure(base + a decision shell) − measure(base), where the shell has
+             both labels, empty bodies each ending "[clipped]", `clipped:true` and
+             `file` set to the real destination path with a 64-character hash
+             placeholder. Every label, marker, JSON field and file reference is
+             therefore counted, and only the prose is left to fit.
+  want     = min(600, words(question) + words(answer))
+  reserve  = overhead + min(want, max(80, space left after base))
+             (if no ask is selected, reserve = 0 and nothing below changes)
+  Fit order (the decision is reserved before findings are sized):
+    1. If base + full findings + reserve fits, keep the full findings inline.
+    2. Otherwise drop the findings source and size the index with
+       packet_findings_index(source, word_limit − measure(base) − reserve). The full
+       findings are still in their file, as today.
+    3. Fit the decision prose into body = word_limit − measure(packet so far) −
+       overhead, capped at 600. The question is guaranteed
+       min(words(question), max(60, 40% of body)) words; the answer gets the rest; any
+       share one body doesn't use goes to the other. A clipped body keeps its first
+       words and ends with "[clipped]".
+    4. Measure the result. If it is over by n words, shrink body by n and re-clip, at
+       most 3 times. The existing over-limit check stays as the final guard.
+  If body < 80 even with no index, the decision can't be shown usefully: exit 3 through
+  the existing "packet exceeds 3000 words …; largest part: <part>" message. It never
+  launches without the decision.
 
-Full text when clipped — no gh needed (review P2):
-  Write the unclipped question and answer to
-  <git-common-dir>/agentic-flow/decisions/<plan>/<issue>/<ask seq>.md through the
-  same publish helper as findings (packet_findings_publish, packet-findings.sh:46),
-  which also copies it into the station scratch dir (PACKET_FINDINGS_DIR) as
-  decision.md and checks its sha256. The packet names that path.
+Full text when clipped — no gh needed:
+  Write the unclipped question and answer as Markdown to
+  <git-common-dir>/agentic-flow/decisions/<plan>/<issue>/<ask seq>.md. Copy it to the
+  station scratch dir (PACKET_FINDINGS_DIR) as decision.md, and name the path in the
+  packet.
+  Publisher split (review P2 on be83586), because packet_findings_publish runs
+  `jq length` on its source (packet-findings.sh:59) and refuses Markdown:
+    packet_publish_file source dest [scratch-dir scratch-name] → {path, sha256}
+      the existing staging, symlink refusal, atomic move, sha256 checks and optional
+      scratch copy (packet-findings.sh:47-65), with no knowledge of the content
+    packet_findings_publish source dest [scratch-dir] → {path, count, sha256}
+      a thin wrapper: packet_publish_file(…, scratch-dir, findings.json), then adds
+      count = jq length source. Same arguments, output shape and key order as now.
+  The decision calls packet_publish_file directly with scratch-name decision.md.
 ```
 
 ## Threat model (one paragraph)
@@ -137,9 +162,12 @@ beyond "this is the owner's answer to the question".
 | none new (uses the comment list `handoff_read` already loaded) | n/a | an accepted ask or resume whose `comment_id` is missing from the comment list → packet refuses with exit 3 and `packet: decision comment <id> not found; retry` | n/a |
 | decision file publish (local disk) | n/a | n/a | hash mismatch or write failure → exit 3, `packet: cannot deliver decision for #<n> ask <seq>`; never launch with a clipped decision and no file |
 
-Bounds: the decision part has at most 2 bodies. Inline it takes at most 600 words, and
-never more than what remains under the packet limit after the controller's suffix. The
-full text goes in one file per ask. The overall 3000-word limit is unchanged.
+Bounds: the decision part has at most 2 bodies. Its inline prose is at most 600 words,
+and the whole rendered part (labels and file reference included) never exceeds what
+remains under the packet limit after the controller's suffix. The decision is reserved
+before the findings index is sized. The fit is verified by measurement, with at most 3
+shrink passes. The full text goes in one file per ask. The overall 3000-word limit is
+unchanged.
 
 ## Out of scope / What NOT to build in this pass
 - Answering by a plain comment on the ticket, structured options in asks, and
@@ -209,16 +237,20 @@ smallest fix and it's the one blocking #192.
    delivered separately through `bounce_id` and the findings file). Today a reviewer
    ask after the submit lands in the executor's raw findings, marker and all
    (review P3).
-3. Fit last. Once the existing packet assembly and fit logic (`packet.sh:160-185`,
-   findings index included) has produced a packet that fits, measure it, compute the
-   allowance, clip each body per the Interface, and add `decision` to the packet.
-   Re-measure and keep the existing limit check as the final guard. Below the 80-word
-   floor, exit 3 through the existing over-limit message. Add `decision` to the part
-   list at `packet.sh:179` so that message can name it.
-4. When anything is clipped, publish the full text with `packet_findings_publish`
-   (generalized only as far as needed to take a file name, `decision.md`, rather
-   than the fixed `findings.json`) to the path in the Interface. Set `decision.file`
-   and print the "Full text:" line.
+3. Rework the fit block (`packet.sh:166-185`) into the Interface's fit order: measure
+   the base, compute the decision's overhead from a shell decision rendered through
+   `packet_format` and measured with `packet_measure`, and reserve room for it. Only
+   then decide between inline findings and the findings index, passing the index its
+   budget minus the reserve. Fit the decision prose last, then verify by measuring
+   and shrinking at most 3 times. Below the 80-word floor, exit 3 through the existing
+   over-limit message. Add `decision` to the part list at `packet.sh:179` so that
+   message can name it. With no selected ask, the reserve is 0 and the fit block
+   must behave exactly as it does now.
+4. Split the publisher as the Interface describes: `packet_publish_file` holds the
+   content-agnostic copy and hash logic, and `packet_findings_publish` becomes a
+   wrapper that adds `count`. When anything is clipped, publish the decision with
+   `packet_publish_file` (scratch name `decision.md`), set `decision.file`, and print
+   the "Full text:" line.
 5. Bash 3.2 and `set -u`: no associative arrays. Keep all selection inside `jq`.
 6. Preamble (`config/stations/preamble.md`): extend the findings-file sentence to
    cover the decision file. Add one sentence: when the packet has an Owner decision,
@@ -235,9 +267,21 @@ Failure paths first:
 (f3) role scoping: submit → reviewer ask → resume → bounce. The executor packet,
   checked as the whole formatted output and the JSON, contains no "Owner decision",
   no part of the reviewer ask's body and no `event=ask` marker (P1 and P3 together);
-(f4) near the limit: a fixture where the other parts plus a `PACKET_SUFFIX_FILE` leave
-  about 300 words → exit 0 and a clipped decision with the question present; then
-  shrink the margin below 80 words → exit 3 naming the largest part (P2).
+(f4) exact fit, with a `PACKET_SUFFIX_FILE` present: a fixture whose final packet,
+  clipped decision included, measures exactly `word_limit` (by `packet_measure`, both
+  JSON and rendered) → exit 0, and the question is present. Add one word to the
+  suffix → exit 0 with the decision one word shorter. Shrink the margin until the
+  prose budget is under 80 → exit 3 naming the largest part. Also the review's case: a
+  ~2,700-word base with a 300-word decision → exit 0 (P1 on be83586);
+(f5) a Markdown decision publishes through `packet_publish_file` with matching sha256
+  in the durable and scratch copies. A findings publish through the wrapper returns
+  the same `{path,count,sha256}` shape as before, compared against a fixture captured
+  from the current helper (P2 on be83586);
+(f6) oversized findings plus a resumed executor ask (bounce → executor ask → resume,
+  with findings large enough to need the index): exit 0, the decision gets at least
+  its reserve (prose ≥ 80 words, or its full length if shorter), the index shrinks
+  instead, and the packet names both the findings file and the decision file
+  (P3 on be83586);
 Then: (a) bounce → executor ask → resume → the executor packet shows both bodies,
 with no marker or run lines; (b) an ask with no resume yet → "Answer: none yet";
 (c) executor ask → resume → submit → bounce → the executor packet has no decision;
@@ -256,8 +300,12 @@ scenario covers the cases above.
   the exact marker and heading forms `handoff_render` emits, not prefixes.
 - Interactive executors read `brief`, not `packet`. If `brief` is their only input,
   note the gap in the commit body. Don't extend `brief` in this step.
-- Generalizing `packet_findings_publish` must leave the findings path byte-for-byte
-  unchanged. The existing findings cases in the packet scenario must still pass.
+- Splitting the publisher must leave the findings path byte-for-byte unchanged:
+  same arguments, output keys and exit statuses. The existing findings cases in the
+  packet scenario must still pass, and (f5) pins the shape.
+- Reordering the fit block changes when findings are inlined versus indexed. With no
+  selected ask, the reserve is 0 and the old behaviour must hold. The existing
+  near-limit findings cases are the regression for that.
 **Red-first:** `scripts/self-test.sh --only stations --scenario packet` — scripts/self-test.sh scripts/tests/stations.sh
 **Commit:** `Carry the open ask and its answer into the station packet`
 
