@@ -137,9 +137,16 @@ Budget — measured, never assumed (reviews P2, then P1 and P3 on be83586):
        question is guaranteed min(words(question), max(60, 40% of body)) words; the
        answer gets the rest; any share one body doesn't use goes to the other. A
        clipped body keeps its first words and ends with "[clipped]".
-    4. Measure the result. If it is over by n words, shrink body by n and re-clip, at
-       most 3 times. In case a, an overshoot switches to case b first. The existing
-       over-limit check stays as the final guard.
+    4. Measure the result. The helper's own word count and the measured, serialized
+       size can differ (at index_budget = 12 the footer measured 13), so only the
+       measurement counts. If the packet is over by n words, give up space in this
+       order, re-measuring after each change, with at most 3 passes in total:
+       i.  The optional index first (review P2 on e874ef8): regenerate it with
+           index_budget − n, or omit it when that is under 12. The decision is
+           untouched, so an intact decision that fit without the index stays intact.
+       ii. Only when no index is left: in case a, switch to case b; in case b,
+           shrink body by n and re-clip. The floor is checked only at this point.
+       The existing over-limit check stays as the final guard.
 
 Full text when clipped — no gh needed:
   Write the unclipped question and answer as Markdown to
@@ -254,8 +261,9 @@ smallest fix and it's the one blocking #192.
    decision rendered through `packet_format` and measured with `packet_measure`,
    then reserve the clipped prose. Only then decide between inline findings and the
    findings index. Omit the index when its budget is under 12; otherwise pass it its
-   budget. Fit the decision last, then verify by measuring and shrinking at most 3
-   times. The 80-word floor applies only when clipping is required. Below it, exit 3
+   budget. Fit the decision last, then verify by measuring. On an overshoot, trim or
+   omit the index before touching the decision. Clip only when no index is left, at
+   most 3 passes in all. The 80-word floor applies only when clipping is required. Below it, exit 3
    through the existing over-limit message. Add `decision` to the part list at `packet.sh:179` so that
    message can name it. With no selected ask, the reserve is 0 and the fit block
    must behave exactly as it does now.
@@ -303,6 +311,10 @@ Failure paths first:
   → exit 0, nothing clipped, `clipped:false`, `file:null`, and no decision file written.
   The same space with a longer answer that needs clipping → exit 3 naming the
   largest part (P2 on 23b88bb);
+(f9) index_budget exactly 12, with an intact decision that fits without the index
+  (the review's probe: a 74-word packet under an 86-word limit) → exit 0, the decision
+  intact (`clipped:false`), the index shrunk or omitted, no decision file, and the
+  measured packet ≤ `word_limit` (P2 on e874ef8);
 Then: (a) bounce → executor ask → resume → the executor packet shows both bodies,
 with no marker or run lines; (b) an ask with no resume yet → "Answer: none yet";
 (c) executor ask → resume → submit → bounce → the executor packet has no decision;
