@@ -8,7 +8,7 @@
 # Feature — Carry the ask and its answer into the station packet
 
 ## Tracker
-- [ ] A-1 Put the open ask and its resume answer into the station packet — open
+- [ ] A-1 Put the open ask and its resume answer into the station packet — open (#199)
 
 ---
 
@@ -346,7 +346,7 @@ scenario covers the cases above.
 
 ## Status / Implementation status
 - **Evidence schema:** v2
-- **Tracking issue:** pending
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/199
 - **Approval:** status=approved; by=wabkebab; at=2026-11-22; rev=b424cb26476b2c3a0348cf8cc4b091ca09f0dbda
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
