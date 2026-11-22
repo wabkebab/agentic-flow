@@ -111,24 +111,35 @@ Budget — measured, never assumed (reviews P2, then P1 and P3 on be83586):
              `file` set to the real destination path with a 64-character hash
              placeholder. Every label, marker, JSON field and file reference is
              therefore counted, and only the prose is left to fit.
-  want     = min(600, words(question) + words(answer))
-  reserve  = overhead + min(want, max(80, space left after base))
-             (if no ask is selected, reserve = 0 and nothing below changes)
+  space    = word_limit − measure(base)
+  intact   = measure(base + the unclipped decision, no file) − measure(base)
+  Reserve (if no ask is selected, reserve = 0 and nothing below changes):
+    a. If the prose is ≤ 600 words and intact ≤ space, then reserve = intact. Nothing is
+       clipped, no file is written, and no floor applies. A short pair fits even with
+       fewer than 80 words of space (review P2 on 23b88bb).
+    b. Otherwise clipping is required: prose_room = space − overhead (overhead is taken
+       off first, before any prose is allocated), and
+       reserve = overhead + min(600, prose_room). Only here does the floor apply: if
+       prose_room < 80, exit 3 through the existing "packet exceeds 3000 words …;
+       largest part: <part>" message. It never launches without the decision.
+    So reserve ≤ space always holds.
   Fit order (the decision is reserved before findings are sized):
     1. If base + full findings + reserve fits, keep the full findings inline.
-    2. Otherwise drop the findings source and size the index with
-       packet_findings_index(source, word_limit − measure(base) − reserve). The full
-       findings are still in their file, as today.
-    3. Fit the decision prose into body = word_limit − measure(packet so far) −
-       overhead, capped at 600. The question is guaranteed
-       min(words(question), max(60, 40% of body)) words; the answer gets the rest; any
-       share one body doesn't use goes to the other. A clipped body keeps its first
-       words and ends with "[clipped]".
+    2. Otherwise drop the findings source. index_budget = space − reserve. If
+       index_budget < 12 (the footer reserve packet_findings_index already uses,
+       packet-findings.sh:78), omit `findings_index` entirely, so the packet carries
+       only the findings file reference. packet_findings_index emits its footer even at
+       zero or negative budgets, so it must not be called then (review P1 on
+       23b88bb). Otherwise call it with index_budget. The full findings are still in
+       their file, as today.
+    3. Fit the decision into what remains: in case a, the intact pair; in case b,
+       body = word_limit − measure(packet so far) − overhead, capped at 600. The
+       question is guaranteed min(words(question), max(60, 40% of body)) words; the
+       answer gets the rest; any share one body doesn't use goes to the other. A
+       clipped body keeps its first words and ends with "[clipped]".
     4. Measure the result. If it is over by n words, shrink body by n and re-clip, at
-       most 3 times. The existing over-limit check stays as the final guard.
-  If body < 80 even with no index, the decision can't be shown usefully: exit 3 through
-  the existing "packet exceeds 3000 words …; largest part: <part>" message. It never
-  launches without the decision.
+       most 3 times. In case a, an overshoot switches to case b first. The existing
+       over-limit check stays as the final guard.
 
 Full text when clipped — no gh needed:
   Write the unclipped question and answer as Markdown to
@@ -238,12 +249,14 @@ smallest fix and it's the one blocking #192.
    ask after the submit lands in the executor's raw findings, marker and all
    (review P3).
 3. Rework the fit block (`packet.sh:166-185`) into the Interface's fit order: measure
-   the base, compute the decision's overhead from a shell decision rendered through
-   `packet_format` and measured with `packet_measure`, and reserve room for it. Only
-   then decide between inline findings and the findings index, passing the index its
-   budget minus the reserve. Fit the decision prose last, then verify by measuring
-   and shrinking at most 3 times. Below the 80-word floor, exit 3 through the existing
-   over-limit message. Add `decision` to the part list at `packet.sh:179` so that
+   the base. Measure the intact decision first. If it fits (and is ≤ 600 words of
+   prose), reserve exactly that. Otherwise subtract the measured overhead of a shell
+   decision rendered through `packet_format` and measured with `packet_measure`,
+   then reserve the clipped prose. Only then decide between inline findings and the
+   findings index. Omit the index when its budget is under 12; otherwise pass it its
+   budget. Fit the decision last, then verify by measuring and shrinking at most 3
+   times. The 80-word floor applies only when clipping is required. Below it, exit 3
+   through the existing over-limit message. Add `decision` to the part list at `packet.sh:179` so that
    message can name it. With no selected ask, the reserve is 0 and the fit block
    must behave exactly as it does now.
 4. Split the publisher as the Interface describes: `packet_publish_file` holds the
@@ -282,6 +295,14 @@ Failure paths first:
   its reserve (prose ≥ 80 words, or its full length if shorter), the index shrinks
   instead, and the packet names both the findings file and the decision file
   (P3 on be83586);
+(f7) exact fit beside the findings file reference: findings that need the index, and a
+  margin where index_budget < 12 → exit 0, no `findings_index` key, no "index shows"
+  footer, the findings file line present, the decision fitted, and the packet
+  measuring exactly `word_limit` (P1 on 23b88bb);
+(f8) a complete short pair that fits in full with fewer than 80 words of space
+  → exit 0, nothing clipped, `clipped:false`, `file:null`, and no decision file written.
+  The same space with a longer answer that needs clipping → exit 3 naming the
+  largest part (P2 on 23b88bb);
 Then: (a) bounce → executor ask → resume → the executor packet shows both bodies,
 with no marker or run lines; (b) an ask with no resume yet → "Answer: none yet";
 (c) executor ask → resume → submit → bounce → the executor packet has no decision;
