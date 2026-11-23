@@ -82,20 +82,25 @@ Bounds: <every query's limit, every loop's cap, every request's timeout — §11
 
 # Part B — Implementation Brief
 
-> **Audience:** an implementing agent (**Codex** by default). Each step is independently
-> shippable and ordered so the **riskiest / most foundational work lands first.** Do the
-> steps in order; **one logical commit per step; do not bundle.** Stage files by name
-> (never `git add -A`). Use verbose, *why*-first commit bodies. This brief carries the
-> **approach and insights — not the code.**
+## Acceptance scenarios
+<!-- Write these during Spec. State the setup, action, and observable result for each
+     scenario, starting with failure paths. Approval binds these scenarios. -->
+- <Given …, when …, then …>
+
+## Invariants
+<!-- State what must hold across all scenarios, including limits and compatibility. -->
+- <…>
 
 ```agentic-flow-plan
+format: 2
 id: <stable-plan-id>
 profile: strict
 tracking: Plan: <topic>
 branch: <branch>
 steps: f-1 f-2
 ```
-<!-- Standard: profile: standard, one step, and omit tracking. -->
+<!-- Standard: profile: standard, one step, and omit tracking.
+     Part B has a limit of 1,500 words plus 500 per step, excluding the plan block and Status. -->
 
 ## Branch
 Base: `<base branch>`. One branch and one PR for the whole brief:
@@ -109,13 +114,6 @@ that branch, closing its issue via `Fixes #N`.
 Every step's per-step DoD met; `make check` and `make test` green; the user-visible goal in
 Part A is demonstrably met (note how to verify it manually if relevant — `make run` / `/verify`).
 
-Prefer raw runner selectors for Red-first: make masks recipe failures as exit 2;
-Cargo assertion failures exit 101. Declare the project's assertion signature.
-Exit 0 is green; nonzero plus a signature match is red except timeout 124 and
-interrupts 130/143, which are invalid. Missing or mismatched signatures are invalid.
-Evidence reuse requires matching reviewed SHA/tree and verifier implementation hash;
-inspect signature-source provenance (shared review contract, METHODOLOGY.md §5).
-
 ## Verification commands
 <!-- These call the project's Makefile targets (see CLAUDE.md "Stack profile"). -->
 ```bash
@@ -126,21 +124,21 @@ make test                 # end of brief: full suite
 
 ---
 
+<!-- Order independently shippable steps with the riskiest or foundational work first.
+     Name a selector only for steps adding a regression test: **Red-first:** `<raw selector>` — <test-path> <runner-path> -->
+
 ## F-1 — <imperative summary>
 **Why first:** <foundational / unblocks the rest / riskiest — why this leads.>
 
-**Approach (do NOT write code yet):**
-1. <Which files, which functions, what order. Data-model / migration changes first.>
-2. <Edge cases, gotchas, conventions to follow from CLAUDE.md.>
+**Approach:** <Describe the intended behavior and decisions the executor must honor.>
 
-**Test:** <What to add or extend; what it should assert. **Failure path first** (§11.4) —
-name the timeout / malformed / unauthorized case, not just the happy one.>
+**Test:** <Name the acceptance scenarios this step covers and the assertions, starting with failure paths.>
 
 **DoD:** <Observable end state for this step.>
 **Verify:** `make test-one F=<selector>`
 **Risks:**
 - <Failure path or edge case.>
-**Red-first:** `<selector>` — <test-path> <runner-path>
+**Red-first:** none
 **Commit:** `<imperative commit subject>`
 
 ---
@@ -148,8 +146,7 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 ## F-2 — <imperative summary>
 **Why second:** <…>
 
-**Approach:**
-1. <…>
+**Approach:** <…>
 
 **Test:** <…>
 
@@ -157,7 +154,7 @@ name the timeout / malformed / unauthorized case, not just the happy one.>
 **Verify:** `make test-one F=<selector>`
 **Risks:**
 - <Failure path or edge case.>
-**Red-first:** `<selector>` — <test-path> <runner-path>
+**Red-first:** none
 **Commit:** `<…>`
 
 ---

@@ -412,3 +412,19 @@ fail	'upgrade did not reject the unsafe path before changing the adopter'
 fail	'upgrade retained an obsolete upstream entry'
 fail	'upstream tracking upgrade failed'
 fail	'whitespace-only upstream change did not preserve and offer a merge for the customized file'
+fail	"$type template did not lead Part B with scenarios and invariants"
+fail	"$type template did not parse"
+fail	"$type template omitted format 2"
+fail	"$type template opted into red-first by default"
+fail	"archived brief no longer parses: $archived_brief"
+fail	"plan-to-issues ${mode:-dry run} accepted an oversized format 2 brief"
+fail	"plan-to-issues ${mode:-dry run} called GitHub for an oversized brief"
+fail	"plan-to-issues ${mode:-dry run} did not report the Part B cap"
+fail	"start did not write one format 2 field for $type"
+fail	"start failed for $type template"
+fail	'format 2 accepted a Part B one word over the cap'
+fail	'format 2 did not report the Part B word count and cap'
+fail	'format 2 rejected Part B at the cap'
+fail	'legacy approved brief failed dry run in a fresh adopter repository'
+fail	'legacy approved brief was capped'
+fail	'red-first opt-out did not parse'

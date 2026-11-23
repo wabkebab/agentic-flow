@@ -129,6 +129,133 @@ exit 2
 FAKE_GH
 chmod +x "$GHFIX/gh"
 
+# Scenario 9: the Part B cap travels with the brief, including in a fresh repository.
+# shellcheck source=scripts/lib/brief.sh
+source "$ROOT/scripts/lib/brief.sh"
+(
+  git init -qb main "$TMP/brief-cap"
+  cd "$TMP/brief-cap"
+  git config user.name Tester
+  git config user.email tester@example.invalid
+  git config commit.gpgsign false
+  mkdir -p docs/inprogress
+  doc=docs/inprogress/feature-cap.md
+  cat > "$TMP/cap-part-b" <<'MD'
+## Acceptance scenarios
+Reject an oversized brief.
+```text
+# A heading-shaped line inside an example.
+```
+## Invariants
+Approval binds the brief.
+## Alpha — Fixture step
+**DoD:** The fixture passes.
+**Verify:** `make test-one F=plan-to-issues`
+**Risks:** Counting bookkeeping.
+**Red-first:** none
+MD
+  part_b_words=$(wc -w < "$TMP/cap-part-b")
+  write_cap_brief() {
+    {
+      printf '%s\n' '# Feature — Cap fixture' '# Part A — Analysis'
+      awk 'BEGIN {for (i=0; i<2001; i++) print "analysis"}'
+      printf '%s\n' '# Part B — Implementation Brief' '```agentic-flow-plan'
+      if [ "$1" = versioned ]; then printf '%s\n' 'format: 2'; fi
+      printf '%s\n' 'id: cap' 'profile: strict' 'tracking: Plan: Cap fixture' 'branch: main' 'steps: alpha' '```'
+      awk -v words="$(($2 - part_b_words))" 'BEGIN {for (i=0; i<words; i++) print "brief"}'
+      cat "$TMP/cap-part-b"
+      cat <<'MD'
+## Status / Implementation status
+- **Evidence schema:** v2
+- **Tracking issue:** pending
+- **Approval:** pending
+- **Implementation head:** source=pr-head
+- **Implementation PR:** pending
+- **Verification evidence:** source=final-approval-run
+- **Review verdict:** source=close-out-attestation
+- **Memory:** pending
+MD
+      awk 'BEGIN {for (i=0; i<2001; i++) print "status"}'
+    } > "$doc"
+  }
+  approve_cap_brief() {
+    git add -- "$doc"
+    git commit -qm 'Record brief revision'
+    cap_rev=$(git rev-parse HEAD)
+    sed "s/^- \*\*Approval:\*\* pending$/- **Approval:** status=approved; by=Tester; at=2026-11-21; rev=$cap_rev/" \
+      "$doc" > "$TMP/cap-approved"
+    cat "$TMP/cap-approved" > "$doc"
+    git add -- "$doc"
+    git commit -qm 'Record brief approval'
+  }
+  cap_driver() {
+    PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/cap-gh" FAKE_GH_CALLS="$TMP/cap-calls" \
+      "$PLAN_DRIVER" --doc "$doc" "$@"
+  }
+
+  write_cap_brief versioned 2001
+  brief_parse "$doc" "$doc" local > "$TMP/cap-spec" 2> "$TMP/cap-error" \
+    && fail 'format 2 accepted a Part B one word over the cap'
+  grep -Fq 'Part B has 2001 words; cap is 2000' "$TMP/cap-error" \
+    || fail 'format 2 did not report the Part B word count and cap'
+  approve_cap_brief
+  : > "$TMP/cap-calls"
+  for mode in '' --apply; do
+    cap_driver ${mode:+"$mode"} > "$TMP/cap-out" 2> "$TMP/cap-error" \
+      && fail "plan-to-issues ${mode:-dry run} accepted an oversized format 2 brief"
+    grep -Fq 'Part B has 2001 words; cap is 2000' "$TMP/cap-error" \
+      || fail "plan-to-issues ${mode:-dry run} did not report the Part B cap"
+    [ ! -s "$TMP/cap-calls" ] || fail "plan-to-issues ${mode:-dry run} called GitHub for an oversized brief"
+  done
+
+  write_cap_brief versioned 2000
+  brief_parse "$doc" "$doc" local > "$TMP/cap-spec" || fail 'format 2 rejected Part B at the cap'
+  jq -e '.steps[0].red_first == "none"' "$TMP/cap-spec" >/dev/null \
+    || fail 'red-first opt-out did not parse'
+
+  write_cap_brief legacy 2001
+  approve_cap_brief
+  brief_parse "$doc" "$doc" "$cap_rev" > "$TMP/cap-spec" || fail 'legacy approved brief was capped'
+  cap_driver > "$TMP/cap-out" || fail 'legacy approved brief failed dry run in a fresh adopter repository'
+
+  if active_scope docs; then
+    mkdir -p docs/templates
+    cp "$ROOT/docs/README.md" docs/README.md
+    cp "$ROOT/docs/templates/feature-analysis.md" docs/templates/feature-analysis.md
+    # Adopters may still have an older preserved template without the format key.
+    sed '/^format: 2$/d' "$ROOT/docs/templates/security-review.md" > docs/templates/security-review.md
+    git add -- docs/README.md docs/templates/feature-analysis.md docs/templates/security-review.md
+    git commit -qm 'Seed current and legacy plan templates'
+    for type in feature security; do
+      case "$type" in feature) template=feature-analysis ;; security) template=security-review ;; esac
+      grep -Fxq 'format: 2' "$ROOT/docs/templates/$template.md" || fail "$type template omitted format 2"
+      AGENTIC_WORKTREE_ROOT="$TMP/cap-worktrees" "$ROOT/scripts/agentic-flow" \
+        start "cap-$type" --type "$type" --no-fetch > "$TMP/cap-out" || fail "start failed for $type template"
+      generated="$TMP/cap-worktrees/cap-$type/docs/inprogress/$type-cap-$type.md"
+      [ "$(grep -Fxc 'format: 2' "$generated")" = 1 ] || fail "start did not write one format 2 field for $type"
+      awk '
+        /^# Part B / { part=1; next }
+        part && /^## / {
+          if (++heading==1 && $0!="## Acceptance scenarios") exit 1
+          if (heading==2 && $0!="## Invariants") exit 1
+        }
+        END {if (heading<2) exit 1}
+      ' "$generated" || fail "$type template did not lead Part B with scenarios and invariants"
+      brief_parse "$generated" "$generated" local > "$TMP/cap-spec" || fail "$type template did not parse"
+      jq -e '[.steps[].red_first] == ["none", "none"]' "$TMP/cap-spec" >/dev/null \
+        || fail "$type template opted into red-first by default"
+    done
+  fi
+)
+
+# Pre-plan-block archives predate brief_parse. Exercise every archived plan block.
+for archived_brief in "$ROOT"/docs/done/*.md "$ROOT"/docs/done/security/*.md; do
+  [ -f "$archived_brief" ] || continue
+  grep -Fxq '```agentic-flow-plan' "$archived_brief" || continue
+  brief_parse "$archived_brief" "${archived_brief#"$ROOT"/}" local > "$TMP/archive-spec" \
+    || fail "archived brief no longer parses: $archived_brief"
+done
+
 PLAN_SPEC="$TMP/plan-spec.json"
 cat > "$PLAN_SPEC" <<'JSON'
 {
@@ -550,8 +677,6 @@ brief_run() { (cd "$BRIEF_FIX" && PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/brief-
   FAKE_GH_CALLS="$TMP/brief-calls" "$PLAN_DRIVER" --doc docs/plan.md "$@"); }
 brief_run > "$TMP/brief-dry.out" || fail 'approved brief did not dry-run'
 grep -q 'Steps (9)' "$TMP/brief-dry.out" || fail 'brief generated the wrong issue set'
-# shellcheck source=scripts/lib/brief.sh
-source "$ROOT/scripts/lib/brief.sh"
 brief_parse "$BRIEF_FIX/docs/plan.md" docs/plan.md "$BRIEF_REV" > "$TMP/brief-spec.json" \
   || fail 'valid brief parser failed'
 [ "$(jq -r '.steps[3].id' "$TMP/brief-spec.json")" = s-4 ] || fail 'brief order changed'
