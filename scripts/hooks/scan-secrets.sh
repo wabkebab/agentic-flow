@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PreToolUse hook (matcher: Bash). Scans STAGED content for credentials before a commit
-# is allowed, implementing METHODOLOGY.md §11 "secret scanning at the commit boundary".
+# is allowed, implementing docs/reference/engineering-standards.md §11.1 "secret scanning at the commit boundary".
 #
 # Why here and not only in CI: a secret that reaches a commit is already burned. Rewriting
 # history does not un-leak it — the credential must be rotated. CI catches it one step too

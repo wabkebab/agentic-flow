@@ -15,6 +15,7 @@ It encodes one loop:
 > `docs/accepted_risks.md`.
 
 The full standard is in **[`METHODOLOGY.md`](METHODOLOGY.md)**.
+The [workflow explainer](docs/agentic-flow-explained.html) follows a plan from start through cleanup.
 
 ## What's in here
 
@@ -42,7 +43,7 @@ scripts/agentic-flow              adopted-project status / diff / upgrade comman
 scripts/self-test.sh              offline regression checks for this scaffold
 scripts/hooks/                    the six hook scripts settings.json calls
 templates/harness/                pristine CLAUDE/AGENTS/Makefile forms shipped by export.sh
-ROADMAP.md                        planned evolution of the standard (Tier 2 / Tier 3)
+ROADMAP.md                        open scaffold work and pending decisions
 docs/
 ├── README.md                     docs index + naming conventions
 ├── accepted_risks.md             living register of accepted risks / declined features

@@ -55,10 +55,10 @@ Work in the plan worktree throughout execution.
    underspecified, stop and flag it rather than guessing.
 
 **Adding a dependency?** Check its current stable version from the registry / release notes
-before you add it — don't type the version you remember, it will be stale (`METHODOLOGY.md`
-§9). Match the project's existing major versions and let the lockfile record the result.
+before you add it. Match the project's existing major versions and let the lockfile record
+the result. See the [stack assessment](docs/reference/stack-assessment.md).
 
-## Engineering standards (METHODOLOGY.md §11)
+## Engineering standards ([reference](docs/reference/engineering-standards.md))
 
 <!-- BEGIN SHARED ENGINEERING STANDARDS -->
 Non-negotiable while implementing a step. These are the rules a reviewer would otherwise

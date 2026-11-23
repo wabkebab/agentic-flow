@@ -704,6 +704,8 @@ SH
     || fail "doctor did not warn about a stamped project with no source"
 
   # Reuse the final pristine export rather than copy another project tree.
+  perl "$NO_REMOTE_TARGET/scripts/lib/check-doc-links.pl" "$NO_REMOTE_TARGET" \
+    || fail 'fresh export has broken documentation links'
   adopter_twin_build "$NO_REMOTE_TARGET"
   adopter_twin_check
   [ "$snapshot_digest" = "$(tree_digest "$SOURCE_SNAPSHOT")" ] \

@@ -1,9 +1,9 @@
-# CI — pull-request gate. See METHODOLOGY.md §10 for the reasoning behind this shape.
+# CI — pull-request gate. See docs/reference/ci-cd.md for the reasoning behind this shape.
 #
 # Shipped INERT: `init.sh --stack <profile>` fills the runtime setup block.
 #
 # Action SHAs below were current when this template shipped. Re-verify them against the
-# latest releases when you adopt it (METHODOLOGY.md §9) — pinning is only useful if the
+# latest releases when you adopt it (docs/reference/stack-assessment.md) — pinning is only useful if the
 # pin is a version you actually chose.
 #
 # Action pins verified: 2026-11-20

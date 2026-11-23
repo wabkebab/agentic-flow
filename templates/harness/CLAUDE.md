@@ -58,10 +58,10 @@ A closed Strict step means reviewed clean. The Status block and CI record shippi
 > into the Makefile. Treat it as a proposal: verify the commands against this project's
 > manifests and scripts before considering adoption complete.
 >
-> **Assess the stack before you wire it up** (`METHODOLOGY.md` §9). Read the manifests,
-> lockfiles, and installed toolchain versions to see what this project actually runs; check
-> current stable/LTS releases from release notes, changelogs, and official docs — *not*
-> training-data recall, which skews stale. Install a modern version by default; record any
+> **Assess the stack before you wire it up** ([stack assessment](docs/reference/stack-assessment.md)).
+> Read the manifests, lockfiles, and installed toolchain versions to see what this project
+> actually runs. Check current stable/LTS releases from release notes, changelogs, and
+> official docs. Install a modern version by default and record any
 > deliberate deviation (peer-dependency ceiling, platform constraint, known-bad release)
 > under Gotchas. Pin the versions actually chosen in the manifests, lockfiles, and Makefile
 > — not just in prose here.

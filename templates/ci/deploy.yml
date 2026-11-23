@@ -1,4 +1,4 @@
-# Deploy — build, push, ship, verify. See METHODOLOGY.md §10.
+# Deploy — build, push, ship, verify. See docs/reference/ci-cd.md.
 #
 # Shipped INERT: copy to .github/workflows/deploy.yml to activate. This one deploys —
 # read it fully and fill every <ANGLE-BRACKET> before you turn it on. It assumes a

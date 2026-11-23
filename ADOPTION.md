@@ -224,7 +224,7 @@ and rerun with `--force`.
 own. Copy it to `.github/workflows/ci.yml`, fill the `<ANGLE-BRACKET>` spots, and make
 **`CI gate`** the only required status check in branch protection. `templates/ci/deploy.yml`
 is the optional deploy counterpart; read its runbook comment before enabling it. See
-`templates/ci/README.md` and `METHODOLOGY.md` §10.
+`templates/ci/README.md` and the [CI/CD reference](docs/reference/ci-cd.md).
 
 The CI template includes carry-forward for green App checks. It reuses a result only
 when the PR merge checkout has the same tracked App inputs and links the source run.

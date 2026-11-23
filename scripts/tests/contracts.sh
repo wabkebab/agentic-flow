@@ -1388,6 +1388,49 @@ YAML
     || fail "shipped templates/ci workflows fail the pin guard"
 fi
 
+# Scenario 10 (Phase 4): catch dangling documentation links and require an actual
+# command example for every command listed in the CLI's public usage.
+reference_docs_tests() (
+  # The explainer and the repository-wide documentation scan are scaffold checks.
+  # The export group scans its fresh adopter with the host's tools.
+  [ -f "$ROOT/scripts/export.sh" ] || return 0
+  local fixture="$TMP/reference-docs" checker="$ROOT/scripts/lib/check-doc-links.pl"
+  local usage explainer command
+  mkdir -p "$fixture/docs"
+  printf '[Missing reference](docs/missing.md)\n' > "$fixture/README.md"
+  if perl "$checker" "$fixture" > "$fixture/out" 2>&1; then
+    fail 'documentation link check accepted a missing target'
+  fi
+  grep -Fq 'README.md:1: broken local link: docs/missing.md' "$fixture/out" \
+    || { cat "$fixture/out" >&2; fail 'documentation link check did not report the dangling link'; }
+  cat > "$fixture/docs/missing.md" <<'MARKDOWN'
+# Reference
+
+`[Example](example-only.md)`
+MARKDOWN
+  perl "$checker" "$fixture" || fail 'documentation link check rejected a restored target'
+  printf '<a href="docs/missing.md#wrong">Reference</a>\n' > "$fixture/README.md"
+  if perl "$checker" "$fixture" > "$fixture/out" 2>&1; then
+    fail 'documentation link check accepted a missing fragment'
+  fi
+  grep -Fq 'README.md:1: broken local link: docs/missing.md#wrong' "$fixture/out" \
+    || fail 'documentation link check did not name the missing fragment'
+  printf '<a href="docs/missing.md#reference">Reference</a>\n' > "$fixture/README.md"
+  perl "$checker" "$fixture" || fail 'documentation link check rejected a valid fragment'
+
+  perl "$checker" "$ROOT" || fail 'scaffold documentation has broken local links'
+  explainer="$ROOT/docs/agentic-flow-explained.html"
+  [ -f "$explainer" ] || fail 'missing scaffold workflow explainer'
+  usage=$("$ROOT/scripts/agentic-flow" --help 2>&1) || fail 'could not read agentic-flow usage'
+  usage=$(awk '$1 == "agentic-flow" && $2 ~ /^[a-z][a-z0-9_-]*$/ {print $2}' <<< "$usage" | sort -u)
+  [ -n "$usage" ] || fail 'no subcommands found in agentic-flow usage'
+  while IFS= read -r command; do
+    grep -Eq "<code>(scripts/)?agentic-flow ${command}(</code>|[[:space:]])" "$explainer" \
+      || fail "workflow explainer is missing an agentic-flow $command command example"
+  done <<< "$usage"
+)
+reference_docs_tests
+
 # --- harness/template section sync -------------------------------------------------------
 # CLAUDE.md and AGENTS.md exist twice on purpose and their prose legitimately differs, so
 # nothing compared them and a section added to one side shipped unnoticed. The guard asserts
@@ -1395,7 +1438,9 @@ fi
 SYNC="$ROOT/scripts/check-harness-sync.sh"
 if [ -x "$SYNC" ]; then
   SYNCFIX="$TMP/harness-sync-fixture"
-  mkdir -p "$SYNCFIX/templates/harness"
+  mkdir -p "$SYNCFIX/templates/harness" "$SYNCFIX/scripts"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SYNCFIX/scripts/render-command-policy.sh"
+  chmod +x "$SYNCFIX/scripts/render-command-policy.sh"
   sync_fixture() { # <root-body> <template-body>
     printf '# Contract\n\n%s\n' "$1" > "$SYNCFIX/CLAUDE.md"
     printf '# Contract\n\n%s\n' "$2" > "$SYNCFIX/templates/harness/CLAUDE.md"
@@ -1427,10 +1472,12 @@ Hand the issue to OpenCode review.' '## Roles
 Hand the step to the reviewer.'
   sync_run || fail "harness sync compared prose instead of section structure"
 
-  # An adopted project has no templates/harness/ and must not fail on its absence.
+  # An adopted project can retain a pre-split methodology after upgrading.
   ADOPTEDFIX="$TMP/harness-sync-adopted"
-  mkdir -p "$ADOPTEDFIX"
+  mkdir -p "$ADOPTEDFIX/scripts"
+  ln "$SYNCFIX/scripts/render-command-policy.sh" "$ADOPTEDFIX/scripts/render-command-policy.sh"
   printf '# Contract\n\n## Roles\n' > "$ADOPTEDFIX/CLAUDE.md"
+  printf '# Methodology\n\n## 9. Starting a project\n\nAdopter guidance.\n' > "$ADOPTEDFIX/METHODOLOGY.md"
   AGENTIC_PROJECT_ROOT="$ADOPTEDFIX" "$SYNC" >/dev/null 2>&1 \
     || fail "harness sync failed in an adopted project with no templates/harness"
 
@@ -1653,7 +1700,7 @@ if active_scope codex; then
 fi
 # END ROLE-BUNDLE CEILINGS
 
-# One set of engineering standards across every surface that states them. METHODOLOGY.md §11
+# One set of engineering standards across every surface that states them. The reference
 # is canonical; AGENTS.md (both instances) compresses them into the executor's always-loaded
 # checklist, and the /review agent contract restates them for the reviewer. Those copies are
 # deliberate — routing an executor to a 5,000-word document for six rules would cost more per
@@ -1666,10 +1713,10 @@ fi
 # templates/harness/AGENTS.md only exists in the source repo — an adopted project receives it
 # as its own AGENTS.md — so it joins the list only when present, the same source-vs-adopted
 # distinction the export ceilings already make.
-standards_surfaces="$ROOT/METHODOLOGY.md $ROOT/AGENTS.md"
+standards_surfaces=("$ROOT/docs/reference/engineering-standards.md" "$ROOT/AGENTS.md")
 [ -f "$ROOT/templates/harness/AGENTS.md" ] \
-  && standards_surfaces="$standards_surfaces $ROOT/templates/harness/AGENTS.md"
-for standards_surface in $standards_surfaces; do
+  && standards_surfaces+=("$ROOT/templates/harness/AGENTS.md")
+for standards_surface in "${standards_surfaces[@]}"; do
   [ -f "$standards_surface" ] || fail "missing engineering-standards surface: $standards_surface"
   while IFS= read -r standards_rule; do
     [ -n "$standards_rule" ] || continue
