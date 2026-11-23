@@ -7,6 +7,8 @@ hook-free probes exercise the actual interactive configuration and station profi
 
 - **M** means Codex's native rule checker matched the corresponding fixed prefix.
   Both modes load the rendered rules. A CLI launch is a separate verification.
+- **H** means the form has no matching Codex native rule and relies solely on
+  the existing hook guard when hooks are active and trusted.
 - **N** means the exact hook predicate is outside the native matcher. The table
   keeps these cases visible while the approved wider denial is validated.
 - **P** means not probed on this host. Claude and OpenCode entries are based on
@@ -33,8 +35,9 @@ hook-free probes exercise the actual interactive configuration and station profi
 
 ## Owner disposition
 
-The approver chose wider denies for every open row in the November 23 resume
-for issue #192. The wider rules are in [the policy TSV](../../config/command-policy.tsv).
+The approver chose wider denies for the open rows in the November 23 resumes
+for issue #192, with two Codex exceptions assigned to existing hooks below.
+The wider rules are in [the policy TSV](../../config/command-policy.tsv).
 The owner deferred live Claude and OpenCode matching to host review.
 
 | Open group | Wider deny |
@@ -45,14 +48,19 @@ The owner deferred live Claude and OpenCode matching to host review.
 | Malformed tool JSON and fail-closed commit-message case | Deny the protected command prefix where the CLI extracts one. A malformed tool request has no command prefix to match. |
 | Unmodeled Git environment and later commit bypass flags | Deny direct `git commit` and shell patterns for later signing-wrapper bypass flags. The s-5 pre-commit migration covers staged content. Normal signing-wrapper commits remain allowed. |
 
-Codex 0.171.0 cannot express arbitrary attached arguments such as
-`git --git-dir=<path>` or a bypass flag after an arbitrary signing-wrapper
-commit argument. Its rules deny the separated Git-directory option and
-adjacent bypass flags. Denying the
-entire `git` or signing-wrapper `commit` prefix would also deny commands that
-the owner requires agents to retain. The existing hooks cover the applicable
-cases while s-4 adds native protection. The matrix marks these limitations
-for review before hook retirement.
+The owner assigned these two forms to the existing hook guards in the
+transition-6 resume. Codex 0.171.0 has no matching native rule for either form.
+
+| Codex form | Existing guard |
+| --- | --- |
+| `git --git-dir=<path> push` | `block-push.sh` rejects the push after parsing the attached option. |
+| Signing-wrapper `commit` with `--no-verify` or `-n` after arbitrary arguments | The PreToolUse `scan-secrets.sh` hook scans staged content before Git can honor the bypass flag. |
+
+Codex does match the separated Git-directory option and immediately adjacent
+bypass flags. Named-file staging and ordinary signing-wrapper commits stay
+available. Before retiring the existing hook guards, s-5 must keep a guard for
+each of these two forms or return them to the owner for an explicit accepted-risk
+decision.
 
 Run `scripts/agentic-flow doctor --stations` for station rules or add
 `--interactive` for the interactive rule sources. The report lists each
@@ -108,7 +116,7 @@ and interactive launches remain unprobed on this host.
 | `git -C "a path" push` | [696, 712](../../scripts/tests/hooks.sh#L696) | P | P | M | M | P | P |
 | `git -C a\ path push` | [697](../../scripts/tests/hooks.sh#L697) | P | P | M | M | P | P |
 | `git -C "$(pwd)" push` | [700](../../scripts/tests/hooks.sh#L700) | P | P | N | N | P | P |
-| `git --git-dir=/tmp/x push` | [691](../../scripts/tests/hooks.sh#L691) | P | P | N | N | P | P |
+| `git --git-dir=/tmp/x push` | [691](../../scripts/tests/hooks.sh#L691) | P | P | H | H | P | P |
 | `env GIT_INDEX_FILE=/tmp/other git push` | [701](../../scripts/tests/hooks.sh#L701) | P | P | M | M | P | P |
 | `gh -R owner/repo pr merge 12` | [667](../../scripts/tests/hooks.sh#L667) | P | P | M | M | P | P |
 
@@ -201,6 +209,8 @@ and interactive launches remain unprobed on this host.
 | `git commit -n` | Brief interface | P | P | M | M | P | P |
 | `git commit -m x --no-verify (flag after a variable argument)` | Brief interface | P | P | M | M | P | P |
 | `git commit -m x -n (flag after a variable argument)` | Brief interface | P | P | M | M | P | P |
+| `git-codex commit -m x --no-verify` (representative signing wrapper and variable argument) | Issue #192, transition 6 | P | P | H | H | P | P |
+| `git-codex commit -m x -n` (representative signing wrapper and variable argument) | Issue #192, transition 6 | P | P | H | H | P | P |
 
 ## Tool input and parser failures
 
