@@ -9,8 +9,9 @@ git_guard_scrub_environment() {
 }
 
 git_guard_enable() ( # <project root>
-  local project="$1" current top status=0
+  local project current top status=0
   git_guard_scrub_environment
+  project=$(CDPATH='' cd -P -- "$1" && pwd -P) || return 1
   top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) || return 1
   [ "$top" = "$project" ] || return 1
   current=$(git -C "$project" config --get core.hooksPath) || status=$?
@@ -26,9 +27,10 @@ git_guard_enable() ( # <project root>
 )
 
 git_guard_probe() ( # <project root>; no writes to the adopter
-  local project="$1" hook_path scratch actual
+  local project hook_path scratch actual
   git_guard_scrub_environment
   unset AGENTIC_ALLOW_SECRET
+  project=$(CDPATH='' cd -P -- "$1" && pwd -P) || return 1
   actual=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) &&
     [ "$actual" = "$project" ] || return 1
   hook_path=$(git -C "$project" config --get --path core.hooksPath 2>/dev/null) || return 1

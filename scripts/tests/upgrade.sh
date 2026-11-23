@@ -599,6 +599,8 @@ PYTHON
 
     # shellcheck source=scripts/lib/git-guards.sh
     . "$PWD/scripts/lib/git-guards.sh"
+    probe_project="$TMP/legacy-probe-alias"
+    ln -s "$(pwd -P)" "$probe_project"
     for probe_case in scanner inherited-env missing other-rejection custom-chain; do
       mkdir -p custom-hooks
       case "$probe_case" in
@@ -615,9 +617,9 @@ PYTHON
       if [ "$probe_case" = inherited-env ]; then
         GIT_DIR="$PWD/.git" GIT_WORK_TREE="$PWD" GIT_INDEX_FILE="$PWD/.git/index" \
           GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=missing \
-          git_guard_probe "$PWD" || status=$?
+          git_guard_probe "$probe_project" || status=$?
       else
-        git_guard_probe "$PWD" || status=$?
+        git_guard_probe "$probe_project" || status=$?
       fi
       case "$probe_case" in
         scanner|inherited-env|custom-chain) [ "$status" -eq 0 ] || fail "Git probe failed ($probe_case)" ;;
@@ -625,6 +627,10 @@ PYTHON
       esac
       [ "$before" = "$(legacy_snapshot)" ] || fail "Git probe touched the adopter ($probe_case)"
     done
+    git config --local --unset core.hooksPath
+    git_guard_enable "$probe_project" &&
+      [ "$(git config --local --get core.hooksPath)" = scripts/git-hooks ] \
+      || fail 'could not enable the Git hook through a directory alias'
     # Reuse the upgraded files with the twin's original registrations to
     # exercise failed activation and an unproven custom hooks path.
     # shellcheck source=scripts/lib/guard-migration.sh
