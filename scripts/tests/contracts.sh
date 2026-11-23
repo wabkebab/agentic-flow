@@ -78,12 +78,15 @@ publish_scan_tests() (
 if [ "${1:-}" = version ]; then printf '8.30.1\n'; exit; fi
 [ "${SCAN_LEAKS_FAIL:-0}" = 0 ] || { printf '%s\n' "$SCAN_CREDENTIAL" >&2; exit 2; }
 for dir; do :; done
-files=$(rg -l -F -- "$SCAN_CREDENTIAL" "$dir")
-if [ -n "$files" ]; then
-  printf '%s\n' "$files" | jq -nR --arg s "$SCAN_CREDENTIAL" '[inputs|{File:.,RuleID:"github-pat",Secret:$s}]'
-  exit 3
-fi
-printf '[]\n'
+status=0
+files=$(grep -r -l -F -- "$SCAN_CREDENTIAL" "$dir") || status=$?
+case "$status" in
+  0)
+    printf '%s\n' "$files" | jq -nR --arg s "$SCAN_CREDENTIAL" '[inputs|{File:.,RuleID:"github-pat",Secret:$s}]' || exit 2
+    exit 3 ;;
+  1) printf '[]\n' ;;
+  *) exit 2 ;;
+esac
 STUB
   cat > "$fixture/bin/git" <<'STUB'
 #!/usr/bin/env bash
