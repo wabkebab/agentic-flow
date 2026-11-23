@@ -58,9 +58,9 @@ launch_codex_home() { # worktree
   launch_profile_check || return 6
   LAUNCH_CODEX_HOME=${LAUNCH_INTERACTIVE_CODEX_HOME:-"$common/agentic-flow/codex-home"}
   if [ -n "${LAUNCH_INTERACTIVE_CODEX_HOME:-}" ]; then
-    cmp -s "$rules_source" "$HOME/.codex/rules/agentic-flow.rules" \
+    cmp -s "$rules_source" "${CODEX_HOME:-$HOME/.codex}/rules/agentic-flow.rules" \
       || { launch_error 'interactive Codex command policy is missing or stale'; return 6; }
-    rules_source="$HOME/.codex/rules/agentic-flow.rules"
+    rules_source="${CODEX_HOME:-$HOME/.codex}/rules/agentic-flow.rules"
   fi
   [ ! -L "$LAUNCH_CODEX_HOME" ] || { launch_error 'Codex station home is a symlink'; return 6; }
   mkdir -p "$LAUNCH_CODEX_HOME" || return 6

@@ -1659,6 +1659,19 @@ jq -e '.permissions.deny | index("Bash(git push:*)")==null' "$POLICY_FIX/.claude
   rm "$POLICY_FIX/sentinel"
   probe_policy_result codex "$POLICY_FIX/cases" "$POLICY_FIX/denial" "$POLICY_FIX/sentinel" \
     | jq -e '.status=="denied"' >/dev/null || fail 'observed native denial did not pass'
+
+  mkdir -p "$POLICY_FIX/disposable/worktree/scripts"
+  printf '#!/bin/sh\ntouch real-command-ran\n' > "$POLICY_FIX/disposable/worktree/scripts/agentic-flow"
+  chmod +x "$POLICY_FIX/disposable/worktree/scripts/agentic-flow"
+  probe_policy_prepare "$POLICY_FIX/disposable" || fail 'policy probe could not wire sentinels'
+  cd "$POLICY_FIX/disposable/worktree" || fail 'cannot enter policy probe worktree'
+  sentinel_status=0
+  scripts/agentic-flow token reviewer > "$POLICY_FIX/sentinel.out" 2>&1 || sentinel_status=$?
+  [ "$sentinel_status" -eq 128 ] \
+    || { cat "$POLICY_FIX/sentinel.out" >&2; fail 'control command did not execute the sentinel'; }
+  assert_no_file real-command-ran
+  grep -Fxq 'agentic-flow token reviewer' .agentic-flow-policy-ran \
+    || fail 'policy probe missed a command that reached the control script'
 )
 
 # The shipped station settings are launch inputs; test the direct-read deny list.

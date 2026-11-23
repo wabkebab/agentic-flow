@@ -161,7 +161,9 @@ jobs:
       - name: Fast gate (type-check + lint)
         run: make check
       - name: Repo-scope scaffold doctor
-        run: scripts/doctor.sh --check --scope repo --skip-make-check
+        run: |
+          git config --get core.hooksPath >/dev/null || git config --local core.hooksPath scripts/git-hooks
+          scripts/doctor.sh --check --scope repo --skip-make-check
       - name: Test suite
         run: make test
       - name: Exported-layout suite

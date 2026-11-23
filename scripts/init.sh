@@ -232,6 +232,12 @@ preexisting_ci_template=false
 
 "$SRC/scripts/export.sh" "${EXCLUDE_SCOPE_ARGS[@]+"${EXCLUDE_SCOPE_ARGS[@]}"}" "$TARGET_ABS"
 
+# shellcheck source=scripts/lib/git-guards.sh
+. "$SRC/scripts/lib/git-guards.sh"
+if target_in_git_repo "$TARGET_ABS"; then
+  git_guard_enable "$TARGET_ABS" || echo 'warning: could not configure the Git pre-commit hook' >&2
+fi
+
 owner_token=$(printf '{%sOWNER_LOGIN}%s' '{' '}')
 for policy in "$TARGET_ABS/.agentic-flow-review-policy" "$TARGET_ABS/.agentic-flow-review-policy.agentic-new"; do
   [ -f "$policy" ] || continue

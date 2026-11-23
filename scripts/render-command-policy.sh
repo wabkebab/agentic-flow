@@ -50,6 +50,9 @@ save() { # relative path; scratch/rendered contains the new bytes
 
 render_claude() {
   jq --argjson rules "$claude" --argjson retired "$retired_claude" '
+    if type != "object" or (.permissions != null and (.permissions | type) != "object") or
+       (.permissions.deny != null and (.permissions.deny | type) != "array")
+    then error("invalid Claude permissions shape") else . end |
     .permissions.deny |= reduce $rules[] as $rule ((. // []) - $retired;
       if index($rule)==null then .+[$rule] else . end)' "$ROOT/$1" > "$scratch/rendered"
   save "$1"

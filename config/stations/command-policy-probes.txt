@@ -20,3 +20,50 @@ bash -lc 'git push origin HEAD'
 timeout 10 git push origin HEAD
 git commit -m probe --no-verify
 git-codex commit --no-verify
+git push origin main --force
+git --no-pager push
+git -p push
+git -C "a path" push
+git -C a\ path push
+git add .
+git add --all
+git --no-pager add -A
+git -p add .
+git -C . add --all
+git -c user.name=probe add .
+git -C . -c core.pager=cat add --all
+git --no-pager -C . add -A
+env GIT_INDEX_FILE=.probe-index git push
+gh issue edit 1 --add-label needs-review
+gh issue edit 1 --add-label "bug,needs-human"
+gh -R example/project pr merge 1
+gh api repos/example/project/issues/1 -X PATCH -f labels[]=needs-review
+gh api repos/example/project/issues/1/labels -X DELETE
+gh api repos/example/project/issues/1 --method PATCH --input file.json
+gh api repos/example/project/issues/1 -X PATCH -f state=closed
+gh api graphql -f query=mutation
+gh issue close 1
+gh issue reopen 1
+git commit -n
+git commit -m probe -n
+git-claude commit --no-verify
+git-opencode commit --no-verify
+git-codex commit -n
+git-claude commit -n
+git-opencode commit -n
+sudo git push
+sudo gh pr merge 1
+nohup git push
+nice git push
+sudo git add -A
+nohup git add .
+git -c commit.gpgsign=false commit -F .adopter-commit-message
+git -C ../secret-other-repo commit -m probe
+scripts/agentic-flow ship docs/inprogress/plan.md
+rtk proxy scripts/agentic-flow ship docs/inprogress/plan.md --wait-review
+bash -lc "scripts/agentic-flow ship docs/inprogress/plan.md"
+scripts/agentic-flow approve docs/inprogress/plan.md --by owner
+scripts/agentic-flow hold clear docs/inprogress/plan.md fixture/hold/1
+scripts/agentic-flow token reviewer
+rtk proxy scripts/agentic-flow token executor
+bash -lc "scripts/agentic-flow token reviewer"

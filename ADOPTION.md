@@ -51,6 +51,28 @@ you treat the adoption as complete.
 
 ## Verify
 
+In a Git checkout, `init.sh` sets `core.hooksPath` in the shared repository
+configuration so the staged-secret scan runs in every worktree. If you used
+the low-level exporter or ran `git init` after adoption, configure it before
+committing:
+
+```bash
+git config --local core.hooksPath scripts/git-hooks
+```
+
+If you already use a custom hooks path, keep that setting and call
+`scripts/git-hooks/pre-commit` from your existing pre-commit hook. Propagate
+its exit status. For an intentional false-positive override, prefix the
+commit with `AGENTIC_ALLOW_SECRET=1`.
+
+For interactive Codex, install the native command policy and review the project
+hooks with `/hooks` so Codex can run the attached Git-directory guard:
+
+```bash
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/rules"
+cp config/stations/command-policy.rules "${CODEX_HOME:-$HOME/.codex}/rules/agentic-flow.rules"
+```
+
 New adoptions receive a tracked `.agentic-flow-assurance` baseline of `standard`.
 `scripts/assurance.sh status` reports the baseline and whether it came from the file or
 the legacy default; `scripts/assurance.sh --check` validates it. Raise with

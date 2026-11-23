@@ -9,6 +9,27 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="late-signing-wrapper-bypass"></a>
+## Late signing-wrapper bypass flags
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-23
+**Decided by:** Human owner, in the s-5 resume
+**Tracking:** [#193, transition 2](https://github.com/wabkebab/agentic-flow/issues/193#issuecomment-7098696902)
+
+### Finding
+
+Codex's native prefix matcher cannot identify `--no-verify` or `-n` after
+arbitrary signing-wrapper commit arguments. Git skips its pre-commit hook
+when it receives either flag, so a cooperative agent could accidentally
+commit staged content without the local secret scan.
+
+### Mitigation
+
+Gitleaks continues to scan in CI. The decision covers cooperative-agent
+mistakes. Revisit it if the threat model changes or Codex can match these
+flags in arbitrary argument positions.
+
 <a id="flow-parallel-app-jobs"></a>
 ## fe-1 — Parallel App jobs deferred until CI is stable
 

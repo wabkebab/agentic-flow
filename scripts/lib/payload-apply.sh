@@ -6,6 +6,15 @@
 
 # shellcheck disable=SC2034 # Result globals are consumed by scripts that source this file.
 
+# The 0.19 upgrader sources this library after fetching and confirming. Its
+# diff/status callers keep using the library without handing off execution.
+if [ "${FUNCNAME[2]:-}" = upgrade_cmd ] && [ "${PAYLOAD_ENTRY:-}" != 2 ]; then
+  payload_bridge_args=(upgrade --bridged-from "$FETCH_PARENT" --confirmed)
+  [ "${force:-false}" = false ] || payload_bridge_args+=(--force)
+  [ -z "${override_ref:-}" ] || payload_bridge_args+=(--ref "$override_ref")
+  exec "$source/scripts/agentic-flow" "${payload_bridge_args[@]}"
+fi
+
 payload_die() {
   echo "error: $*" >&2
   exit 1
