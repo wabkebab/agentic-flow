@@ -1,34 +1,166 @@
 # Pre-publication scan
 
-**Verdict withheld.** The local audit has unresolved findings. Origin DNS resolution failed in the executor station, so remote branch, tag and pull-request ref completeness is unverified. The station packet prohibits running the GitHub CLI against the live repository, so issues, pull requests, comments, reviews and releases are unscanned.
+**Provisional NO-GO for changing repository visibility.** The owner accepted the reviewed history, metadata, controller run markers, and temporary directory findings. The nine GitHub comment bodies with absolute checkout paths were corrected. GitHub retains the earlier revisions, which the owner will remove before publication. R-0f also requires the owner to run and pass `scripts/publish-scan.sh --surface all` on the publication state immediately before the visibility change.
 
-- Scanned commit: `f295456799832e80729c2c5fa66cb45acd258346`
-- Date: 2026-11-23 (UTC)
-- Tools: Git 2.55.0, gitleaks 8.30.1. No live GitHub CLI version was collected.
-- Coverage: the tracked tree at the scanned commit and history and metadata from locally reachable refs. The owner must configure the hashes of any other private project names before a complete scan.
+- The complete scan covered commit `bafdebe9576864a86217e16fc1e11ff425b0cf8e` on 2026-11-23 (UTC).
+- The owner ran the scan with Git 2.55.0, Gitleaks 8.30.1, and GitHub CLI 2.103.3.
+- The owner ran the origin checks over authenticated HTTPS, with 59 pull-request heads fetched locally. The scan read GitHub content without changing it.
+- The scan found no credentials and zero unreviewed tree findings. Rotate any credential confirmed by a subsequent scan before deciding how to handle its exposure.
 
-The tree findings listed below concern one machine-specific signing address. This step removes the address from the tracked proposal. Exact allow-list entries record reviewed examples, a transport username and synthetic run markers. The address and related metadata remain in history.
+[Owner decision on #198](https://github.com/wabkebab/agentic-flow/issues/198#issuecomment-7114578482) · [Accepted risks](../accepted_risks.md#publication-scan-findings)
 
-A final `scripts/publish-scan.sh --surface all` must pass on the publication state immediately before the visibility change, as required by R-0f.
+## Counts and dispositions
 
-## Counts
+These counts describe the complete scan before the comment edits. The owner reported that a follow-up scan found zero home-path findings in the current comment bodies. The rows preserve the original scan's scope and counts.
 
-- tree: 2 (local-hostname: 1, personal-email: 1)
-- history: 56 (local-hostname: 2, personal-email: 54)
-- metadata: 1461 (local-hostname: 410, personal-email: 555, signer-key: 496)
-- github: unscanned
+| Surface | Rule | Count | Owner disposition |
+| --- | --- | ---: | --- |
+| Tree | All rules | 0 | No unreviewed findings |
+| History | Personal email | 54 | Accepted |
+| History | Local hostname | 2 | Accepted |
+| Metadata | Personal email | 558 | Accepted |
+| Metadata | Signing key fingerprint | 499 | Accepted |
+| Metadata | Local hostname | 412 | Accepted |
+| GitHub | Controller run hostname | 114 | Accepted |
+| GitHub | Temporary directory | 6 | Accepted |
+| GitHub | Absolute checkout path | 9 | Current comment bodies corrected. Earlier revisions still require deletion. |
 
-## Owner decisions
-
-Rotate any confirmed credential first. Gitleaks reported no credential findings in the local audit. For each history or metadata finding, the owner can rewrite the affected history or explicitly accept the exposure. For any GitHub finding, the owner can edit or delete the affected content or explicitly accept the exposure.
+The owner accepted all 56 history findings and all 1,469 metadata findings in place. Of the 129 GitHub findings, the owner accepted 120 in place and corrected the nine current comment bodies with checkout paths. The acceptance applies to the findings listed here. The scanner evaluates the final state against its configured rules and exceptions.
 
 ## Findings
 
-Each row gives the surface, object or commit prefix, opaque location ID, rule and value hash.
+Each row gives the surface, object or commit prefix where available, opaque location ID, rule, and value hash. The available choices were history rewrite or acceptance for Git findings, and editing, deletion, or acceptance for GitHub findings. The table above gives the owner's decision for every row.
 
 ```text
-tree 4035715ab5dd 5be100102b9d local-hostname f701b6655b51
-tree 4035715ab5dd 5be100102b9d personal-email fa0fe29d887a
+github - 00179aa9f507 run-host 410d376d528c
+github - 00eb7245f218 run-host 410d376d528c
+github - 038cf5c0ed87 run-host 410d376d528c
+github - 0391e025628d run-host 410d376d528c
+github - 03b13de5c344 run-host 410d376d528c
+github - 0941e29853b9 run-host 410d376d528c
+github - 096d5666f666 run-host 410d376d528c
+github - 0b09af495fdc run-host 410d376d528c
+github - 0b9cc06af515 run-host 410d376d528c
+github - 0d93bf87d03d run-host 410d376d528c
+github - 0f679090ede7 run-host 410d376d528c
+github - 10fae77431a5 run-host 410d376d528c
+github - 121e1670208d run-host 410d376d528c
+github - 1395edd20c15 run-host 410d376d528c
+github - 15cbf33c9606 run-host 410d376d528c
+github - 1782430bcf9a run-host 410d376d528c
+github - 1a2c613dd05a run-host 410d376d528c
+github - 21d7c61c7fae run-host 410d376d528c
+github - 232353ebac2f run-host 410d376d528c
+github - 23d8ded4e29b run-host 410d376d528c
+github - 2b63426a9d27 run-host 410d376d528c
+github - 2cd60a907919 run-host 410d376d528c
+github - 31c199a1cac0 run-host 410d376d528c
+github - 32ded818ba5c run-host 410d376d528c
+github - 33c96055886f run-host 410d376d528c
+github - 37e017c33c81 run-host 410d376d528c
+github - 3a5b7391fcd3 run-host 410d376d528c
+github - 3a98698b8827 run-host 410d376d528c
+github - 3e7d6153d662 run-host 410d376d528c
+github - 418de4ae5d17 run-host 410d376d528c
+github - 420e4a260eeb run-host 410d376d528c
+github - 42b3dc091e58 run-host 410d376d528c
+github - 436dc30a0fdb run-host 410d376d528c
+github - 445449b58cd8 run-host 410d376d528c
+github - 45a69203c7aa run-host 410d376d528c
+github - 45f9f136fc20 home-path aaea4ebd91d9
+github - 45f9f136fc20 run-host 410d376d528c
+github - 465385c7c219 run-host 410d376d528c
+github - 47a2409a1591 run-host 410d376d528c
+github - 4975d30c17c0 run-host 410d376d528c
+github - 4ba599a8faad run-host 410d376d528c
+github - 4efe75221199 run-host 410d376d528c
+github - 515e782e08fa run-host 410d376d528c
+github - 52113831d099 run-host 410d376d528c
+github - 542f1b5812ee run-host 410d376d528c
+github - 5c62938c2d21 run-host 410d376d528c
+github - 5e99f4bd06f3 run-host 410d376d528c
+github - 5eeeb5a64252 run-host 410d376d528c
+github - 628aecc0d86b run-host 410d376d528c
+github - 63a76f784bc6 run-host 410d376d528c
+github - 6804721d76f7 run-host 410d376d528c
+github - 68117009ecd1 run-host 410d376d528c
+github - 698dcf178b6c run-host 410d376d528c
+github - 6ad638e608a6 run-host 410d376d528c
+github - 6af700c4ad65 run-host 410d376d528c
+github - 6dce8c0a4f26 run-host 410d376d528c
+github - 6f3da54836b2 run-host 410d376d528c
+github - 70bc2b043ddb run-host 410d376d528c
+github - 712fa70721d8 run-host 410d376d528c
+github - 745d80246e22 run-host 410d376d528c
+github - 79fc9a97f08a run-host 410d376d528c
+github - 7f328e7c8dd7 home-path aaea4ebd91d9
+github - 8070ae501044 run-host 410d376d528c
+github - 85c4ed376800 run-host 410d376d528c
+github - 86b115bcfc26 home-path aaea4ebd91d9
+github - 86b115bcfc26 run-host 410d376d528c
+github - 8a411d5d06a1 run-host 410d376d528c
+github - 8a8786523efe run-host 410d376d528c
+github - 8d5303b6d98b run-host 410d376d528c
+github - 9115a70ab64a run-host 410d376d528c
+github - 965c8d214855 temp-path 11fe14a563f7
+github - 989875184bf0 run-host 410d376d528c
+github - 9afa27760b8c run-host 410d376d528c
+github - 9f58e22de9d9 run-host 410d376d528c
+github - a2642c7386cf run-host 410d376d528c
+github - a287bdd6ac7b run-host 410d376d528c
+github - a297ee55f799 run-host 410d376d528c
+github - a3b5119d2639 run-host 410d376d528c
+github - a4765f5edb44 run-host 410d376d528c
+github - a55d3cec2257 run-host 410d376d528c
+github - ab3e9249d305 home-path aaea4ebd91d9
+github - ab3e9249d305 run-host 410d376d528c
+github - abf5ae689ec7 temp-path 11fe14a563f7
+github - afc65d9ef946 home-path aaea4ebd91d9
+github - afc65d9ef946 run-host 410d376d528c
+github - b752e17dcfbf run-host 410d376d528c
+github - b8b96de96e51 run-host 410d376d528c
+github - b9e27fa49083 run-host 410d376d528c
+github - be82fe4e73a8 run-host 410d376d528c
+github - bf88cb7ad231 run-host 410d376d528c
+github - bf9e9c1b1f70 run-host 410d376d528c
+github - c2ad5ab7c72e run-host 410d376d528c
+github - c4b290f3568c run-host 410d376d528c
+github - c54af6c89ec1 run-host 410d376d528c
+github - c63c27cb642e run-host 410d376d528c
+github - c794c715381f home-path aaea4ebd91d9
+github - c794c715381f run-host 410d376d528c
+github - c82d4155c026 temp-path 11fe14a563f7
+github - c9e78fb9aa17 run-host 410d376d528c
+github - ca12a0a44460 run-host 410d376d528c
+github - cae661a5c471 run-host 410d376d528c
+github - cd2387bf4a76 run-host 410d376d528c
+github - d707d4954002 run-host 410d376d528c
+github - d73b4ba0eeeb run-host 410d376d528c
+github - da9de12ce402 run-host 410d376d528c
+github - dcb2e09d3d3d run-host 410d376d528c
+github - dcda02180a0e run-host 410d376d528c
+github - e00c1eb26a78 run-host 410d376d528c
+github - e367b2a5165b run-host 410d376d528c
+github - e3dfbc93cc21 run-host 410d376d528c
+github - e5228909c5f4 temp-path 11fe14a563f7
+github - e5877e968dcb temp-path 11fe14a563f7
+github - e6986e73ac7f run-host 410d376d528c
+github - e6b1dee322a5 home-path aaea4ebd91d9
+github - e6b1dee322a5 run-host 410d376d528c
+github - e965bd14d225 run-host 410d376d528c
+github - ebe6bf712eb4 run-host 410d376d528c
+github - eef5df043c9c run-host 410d376d528c
+github - ef72139b9abe run-host 410d376d528c
+github - f13f97900179 home-path aaea4ebd91d9
+github - f13f97900179 run-host 410d376d528c
+github - f1955adaa89e run-host 410d376d528c
+github - f1c486b6a197 run-host 410d376d528c
+github - f45a890d1101 temp-path 11fe14a563f7
+github - fb558b7d3cc9 run-host 410d376d528c
+github - fe89d49a3d90 home-path aaea4ebd91d9
+github - fe89d49a3d90 run-host 410d376d528c
+github - ff2cc1046e3e run-host 410d376d528c
+github - ff91386c3b04 run-host 410d376d528c
 history 057593fe106b f1a9d867ff07 personal-email 3de132cd98be
 history 0f7dd2444729 f1a9d867ff07 personal-email 3de132cd98be
 history 14195777c8fc f1a9d867ff07 personal-email 3de132cd98be
@@ -117,6 +249,8 @@ metadata 05c029eed6c4 eac842d9a5d6 signer-key da9253e2cfa6
 metadata 064169142093 8a1d94edd4e8 local-hostname f701b6655b51
 metadata 064169142093 8a1d94edd4e8 personal-email fa0fe29d887a
 metadata 064169142093 8a1d94edd4e8 signer-key da9253e2cfa6
+metadata 064af05d8416 0c8e7985b0a4 personal-email 2c74cf2fe514
+metadata 064af05d8416 0c8e7985b0a4 signer-key 5cc96aa69023
 metadata 0720f4ec2c84 f7f5ef2d220c local-hostname f701b6655b51
 metadata 0720f4ec2c84 f7f5ef2d220c personal-email fa0fe29d887a
 metadata 0720f4ec2c84 f7f5ef2d220c signer-key da9253e2cfa6
@@ -935,6 +1069,9 @@ metadata 9108b748bf38 944f90048740 signer-key 5291e0c8ca4e
 metadata 9134c4118d86 30730ede91f5 local-hostname f701b6655b51
 metadata 9134c4118d86 30730ede91f5 personal-email fa0fe29d887a
 metadata 9134c4118d86 30730ede91f5 signer-key da9253e2cfa6
+metadata 917def6fa8de 66b9b9d44f38 local-hostname f701b6655b51
+metadata 917def6fa8de 66b9b9d44f38 personal-email 7defff7bee89
+metadata 917def6fa8de 66b9b9d44f38 signer-key 5291e0c8ca4e
 metadata 91935eba601c cb70b071764f local-hostname f701b6655b51
 metadata 91935eba601c cb70b071764f personal-email 7defff7bee89
 metadata 91935eba601c cb70b071764f signer-key 5291e0c8ca4e
@@ -1177,6 +1314,9 @@ metadata ba77626080c0 61194947e40e signer-key da9253e2cfa6
 metadata bae40b8ff0c0 10feb281a75f local-hostname f701b6655b51
 metadata bae40b8ff0c0 10feb281a75f personal-email 7defff7bee89
 metadata bae40b8ff0c0 10feb281a75f signer-key 5291e0c8ca4e
+metadata bafdebe95768 99dd70dfd967 local-hostname f701b6655b51
+metadata bafdebe95768 99dd70dfd967 personal-email 7defff7bee89
+metadata bafdebe95768 99dd70dfd967 signer-key 5291e0c8ca4e
 metadata bcd177cc9311 1cce20d41510 local-hostname f701b6655b51
 metadata bcd177cc9311 1cce20d41510 personal-email fa0fe29d887a
 metadata bcd177cc9311 1cce20d41510 signer-key da9253e2cfa6

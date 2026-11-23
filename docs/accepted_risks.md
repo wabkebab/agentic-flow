@@ -9,6 +9,37 @@ direction changes. Use `docs/templates/accepted-risk-entry.md` to add a new bloc
 
 <!-- Append accepted-risk / declined-feature blocks below, newest first. -->
 
+<a id="publication-scan-findings"></a>
+## s-10 — Reviewed publication scan findings
+
+**Status:** Accepted risk
+**Decision date:** 2026-11-23
+**Decided by:** Human owner, in the s-10 resume
+**Tracking:** [#198, transition 2](https://github.com/wabkebab/agentic-flow/issues/198#issuecomment-7114578482)
+
+### Finding
+
+The complete scan of `bafdebe9576864a86217e16fc1e11ff425b0cf8e` found
+zero unreviewed tree findings and no credentials. The owner accepted these
+specific findings in place.
+
+- 56 history findings covering 54 personal email matches and 2 local hostname matches.
+- 1,469 metadata findings covering 558 personal email matches, 499 signing key
+  fingerprints, and 412 local hostname matches.
+- 114 GitHub hostname markers written by the controller in run comments.
+- 6 GitHub temporary directory matches for scratch worktrees with no usernames.
+
+The owner chose to preserve Git history. The audit lists each accepted
+location, rule, and value hash. [Publication scan](reference/publish-scan.md)
+
+### Mitigation
+
+The owner corrected nine GitHub comment bodies by replacing absolute checkout
+paths with relative paths. A follow-up scan found no home paths in the current
+bodies. The owner will delete the earlier comment revisions before publication
+and run a final passing `scripts/publish-scan.sh --surface all` immediately
+before changing visibility, as required by R-0f.
+
 <a id="late-signing-wrapper-bypass"></a>
 ## Late signing-wrapper bypass flags
 
