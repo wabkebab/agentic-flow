@@ -5,14 +5,18 @@
 . "$(dirname "${BASH_SOURCE[0]}")/git-guards.sh"
 
 install_interactive_rules() { # <project root>
-  local root="$1" rules_dir="${CODEX_HOME:-$HOME/.codex}/rules" temporary
+  local root="$1" rules_dir="${CODEX_HOME:-$HOME/.codex}/rules" rules_file temporary
+  rules_file="$rules_dir/agentic-flow.rules"
   mkdir -p "$rules_dir" || return 1
+  # mv accepts a directory destination without installing the rules file.
+  [ ! -d "$rules_file" ] || return 1
   temporary=$(mktemp "$rules_dir/.agentic-flow.XXXXXX") || return 1
   if ! { cat "$root/config/stations/command-policy.rules" > "$temporary" &&
-    mv -f "$temporary" "$rules_dir/agentic-flow.rules"; }; then
+    mv -f "$temporary" "$rules_file"; }; then
     rm -f "$temporary"
     return 1
   fi
+  cmp -s "$root/config/stations/command-policy.rules" "$rules_file"
 }
 
 render_retired_hooks() { # <adapter> <remove scanner?> <live configuration>

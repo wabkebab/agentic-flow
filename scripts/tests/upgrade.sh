@@ -648,6 +648,17 @@ PYTHON
         [ "$codex_before" = "$(cksum .codex/hooks.json)" ] || fail 'failed activation retired guards'
       git checkout HEAD -- .claude/settings.json
     done
+    conflict_home="$TMP/codex-rules-conflict"
+    conflict_path="$conflict_home/rules/agentic-flow.rules"
+    mkdir -p "$conflict_path"
+    claude_hooks_before=$(jq -c .hooks .claude/settings.json)
+    CODEX_HOME="$conflict_home" migrate_guards "$ADOPTER_TWIN_SOURCE" "$PWD" "$scopes" \
+      > "$TMP/rules-conflict.out" 2>&1 && fail 'migration completed without installing Codex rules'
+    grep -q 'pending: command policy not active' "$TMP/rules-conflict.out" \
+      || fail 'migration did not report the conflicting Codex rules path'
+    [ "$claude_hooks_before" = "$(jq -c .hooks .claude/settings.json)" ] &&
+      [ "$codex_before" = "$(cksum .codex/hooks.json)" ] &&
+      [ -z "$(ls -A "$conflict_path")" ] || fail 'conflicting Codex rules path changed the guards or destination'
     must_block "$PWD/scripts/hooks/block-push.sh" 'git push'
     must_block "$PWD/scripts/hooks/block-git-add-all.sh" 'git add -A'
     must_block "$PWD/scripts/hooks/require-step-comment.sh" 'gh issue edit 1 --add-label needs-review'

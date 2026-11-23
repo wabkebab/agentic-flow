@@ -110,4 +110,3 @@ fi
 [ "$gl_failed" -eq 0 ] || block '  gitleaks did not clear the staged index.'
 return 0
 }
-
