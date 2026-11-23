@@ -511,3 +511,22 @@ must_block	"$PWD/scripts/hooks/block-push.sh" 'git push'
 must_block	"$PWD/scripts/hooks/require-step-comment.sh" 'gh issue edit 1 --add-label needs-review'
 must_block	"$PWD/scripts/hooks/scan-secrets.sh" 'git commit -m probe'
 probe_case	in scanner inherited-env missing other-rejection custom-chain
+fail	"publication scan did not name $1"
+fail	"publication scan exited $status, expected $expected"
+fail	"publication scan omitted a required finding: $pattern"
+fail	'API failure leaked its response'
+fail	'allow-list did not match the exact finding'
+fail	'allow-list hid the value at another location'
+fail	'complete clean scan had no provisional GO'
+fail	'deleted history was omitted'
+fail	'gitleaks failure leaked its response'
+fail	'incomplete publication scan emitted a verdict'
+fail	'publication location could not be resolved'
+fail	'publication report differs from stdout'
+fail	'publication scan is missing'
+fail	'publication scan leaked a planted value or path'
+publication_expect	0 --surface all
+publication_expect	0 --surface tree --resolve "$id"
+publication_expect	1 --surface all --report "$fixture/report"
+publication_expect	1 --surface tree
+publication_expect	5 --surface all --report "$fixture/incomplete"

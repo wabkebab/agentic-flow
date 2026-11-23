@@ -231,7 +231,7 @@ The human approves at Spec, releases at Release, and answers andon calls. Every 
 | R-0c | Close-out requires `--is-ancestor` for every approved step SHA | D-4 |
 | R-0d | Set `onFailure: block` on the push and secret hooks | D-7 |
 | R-0e | Hygiene: resolve the three stale docs, add a source-only root `.gitignore`, clear workflow labels on close, fix `METHODOLOGY.md:330` | B-7, D-6 |
-| R-0f | Publish the repo and make `CI gate` the single required check on `main` (decided 2026-11-11) | E-1 |
+| R-0f | Publish the repo and make `CI gate` the single required check on `main` (decided 2026-11-11). A final `scripts/publish-scan.sh --surface all` must pass on the publication state immediately before the visibility change. | E-1 |
 | R-0g | Before publishing: every marker and handoff comment is accepted only from a login listed for that role in `.agentic-flow-review-policy`, in both the hook and the lifecycle script. Until R-18 lands the list holds the owner's login. | D-9 |
 
 ### Phase 1 — Deterministic stations

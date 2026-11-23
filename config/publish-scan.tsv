@@ -1,0 +1,14 @@
+# rule-id	surface	pattern	reason
+# Add a private-project row before publication with scope all and pattern
+# sha256:<digest>[,<digest>...] using full hashes of exact repository names.
+home-path	all	/(?:Users|home)/[A-Za-z0-9_][A-Za-z0-9_.-]*	Absolute home directory
+temp-path	all	/(?:private/(?:tmp|var/folders)|var/folders)(?=/|\b)	Machine-specific temporary directory
+local-hostname	all	(?i)(?<![\w.-])[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.local(?![\w.-])	Local hostname
+run-host	all	(?i)(?<![\w.-])host=(?<value>[a-z0-9][a-z0-9.-]*)(?![\w.-])	Hostname in a run marker
+personal-email	all	(?i)(?<![\w.+-])(?!(?:noreply@(?:openai|anthropic)\.com|[\w.+-]+@(?:users\.noreply\.github\.com|example\.(?:com|org|net|invalid)|[\w.-]+\.invalid))(?![\w.-]))[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![\w.-])	Personal or internal email address
+private-key-file	path	(?i)(?:\A|/)(?:id_(?:rsa|dsa|ecdsa|ed25519)|[^/]+\.(?:key|p12|pfx)|[^/]*private[^/]*\.pem)\z	Private-key filename
+environment-file	path	(?i)(?:\A|/)\.env(?:\.[^/.]+)?\z	Environment configuration filename
+environment-assignment	all	(?im)^\s*(?:export[ \t]+)?[A-Z_]*(?:TOKEN|PASSWORD|SECRET|API_KEY)[A-Z_]*=[\x22\x27]?(?<value>[a-z0-9_][a-z0-9_+./=-]{7,})(?=[\x22\x27 \t\r]*$)	Literal value in an environment assignment
+internal-url	all	(?i)\bhttps?://(?:localhost|[a-z0-9.-]+\.(?:internal|lan|corp|local|home))(?=[:/\s]|\z)	Internal URL
+private-ip	all	(?<![0-9.])(?:10\.[0-9]{1,3}|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168|169\.254)(?:\.[0-9]{1,3}){2}(?![0-9.])	Private or link-local IP address
+signer-key	metadata	(?m)^(?:SHA256:[a-zA-Z0-9+/]{43}|[A-Fa-f0-9]{16}|[A-Fa-f0-9]{40,64})$	Commit signing key fingerprint

@@ -2,6 +2,201 @@
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2030,SC2034,SC2153,SC2164,SC2329 # Intentional fixture subshells and dispatcher context.
 
+# Harness simplification scenario 11. Fake the two scanners' external responses
+# and use real Git objects and refs, with no network or GitHub writes.
+publish_scan_tests() (
+  local fixture="$TMP/publish-scan" scanner="$ROOT/scripts/publish-scan.sh"
+  local deleted merged home host email key_path token project oid base tip merge clean id hash status pattern
+  export SCAN_REAL_GIT
+  SCAN_REAL_GIT=$(command -v git)
+  mkdir -p "$fixture/bin"
+  cd "$fixture"
+  git init -q -b main --template= repo
+  git init -q --bare --template= remote
+  cd repo
+  git config user.name Fixture
+  git config user.email 'fixture@users.noreply.github.com'
+  git config commit.gpgsign false
+  git remote add origin "$fixture/remote"
+  mkdir config
+  export SCAN_CREDENTIAL
+  SCAN_CREDENTIAL=$(printf '%s%s' 'ghp_' 'abcdefghijklmnopqrstuvwxyz0123456789')
+  token=$SCAN_CREDENTIAL
+  home=$(printf '/%s/%s' Users scanvisible)
+  deleted=$(printf '/%s/%s' Users scandeleted)
+  merged=$(printf '/%s/%s' Users scanmerged)
+  host=$(printf '%s.%s' scanhost local)
+  email=$(printf '%s@%s' scan-author example.test)
+  key_path=$(printf '%s_%s' id ed25519)
+  project=$(printf '%s-%s' scan privateproject)
+
+  printf 'ordinary content\n' > ordinary.txt
+  git add -- ordinary.txt
+  git commit -qm 'Clean base'
+  base=$(git rev-parse HEAD)
+  git branch side
+  printf '%s\n' "$deleted" > deleted.txt
+  printf 'ordinary content\n' > "$key_path"
+  git add -- deleted.txt "$key_path"
+  GIT_AUTHOR_EMAIL="$email" git commit -qm 'Deleted content'
+  git rm -q -- deleted.txt "$key_path"
+  printf 'main\n' > main.txt
+  git add -- main.txt
+  git commit -qm 'Main change'
+
+  git checkout -q side
+  printf 'side\n' > side.txt
+  git add -- side.txt
+  git commit -qm 'Side change'
+  git checkout -q main
+  git merge -q --no-ff --no-commit side >/dev/null 2>&1
+  printf '%s\n' "$merged" > merged.txt
+  git add -- merged.txt
+  git commit -qm 'Merge introduces scan fixture'
+  merge=$(git rev-parse HEAD:merged.txt)
+  git rm -q -- merged.txt
+  printf '%s\n' "$home" "$token" "https://github.com/fixture/$project.git" > visible.txt
+  printf '%s\n' "$home" > duplicate.txt
+  git add -- visible.txt duplicate.txt
+  git commit -qm 'Current content'
+  tip=$(git rev-parse HEAD)
+  oid=$(git rev-parse "$tip:visible.txt")
+  git --git-dir="$fixture/remote" config core.alternateRefsCommand 'true'
+  printf '%s\n' "$fixture/repo/.git/objects" > "$fixture/remote/objects/info/alternates"
+  git --git-dir="$fixture/remote" update-ref refs/heads/main "$tip"
+  git --git-dir="$fixture/remote" update-ref refs/tags/fixture "$base"
+
+  [ -x "$scanner" ] || fail 'publication scan is missing'
+  cp "$ROOT/config/publish-scan.tsv" "$ROOT/config/publish-scan-allow.tsv" config/
+  hash=$(printf '%s' "$project" | shasum -a 256)
+  printf 'private-project\tall\tsha256:%s\tFixture private repository\n' "${hash%% *}" >> config/publish-scan.tsv
+  cat > "$fixture/bin/gitleaks" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then printf '8.30.1\n'; exit; fi
+[ "${SCAN_LEAKS_FAIL:-0}" = 0 ] || { printf '%s\n' "$SCAN_CREDENTIAL" >&2; exit 2; }
+for dir; do :; done
+files=$(rg -l -F -- "$SCAN_CREDENTIAL" "$dir")
+if [ -n "$files" ]; then
+  printf '%s\n' "$files" | jq -nR --arg s "$SCAN_CREDENTIAL" '[inputs|{File:.,RuleID:"github-pat",Secret:$s}]'
+  exit 3
+fi
+printf '[]\n'
+STUB
+  cat > "$fixture/bin/git" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  'remote get-url origin') printf 'git@github.com:fixture/fixture.git\n' ;;
+  *) exec "$SCAN_REAL_GIT" "$@" ;;
+esac
+STUB
+  cat > "$fixture/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then printf 'gh version 2.80.0\n'; exit; fi
+for endpoint; do :; done
+suffix=${endpoint#repos/fixture/fixture}
+case "$suffix" in
+  '/issues?'*)
+    printf 'HTTP/2.0 200 OK\r\n\r\n'
+    printf '[{"id":1,"number":1,"title":"Fixture","body":null,"comments":101}]\n' ;;
+  '/issues/1/comments?'*'page=1')
+    printf 'HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repos/fixture/fixture/issues/1/comments?per_page=100&page=2>; rel="next"\r\n\r\n'
+    jq -nc --arg body "$SCAN_HOST" '[range(2;102)|{id:.,body:(if .==2 then $body else null end)}]' ;;
+  '/issues/1/comments?'*'page=2')
+    [ "${SCAN_GH_FAIL:-0}" = 0 ] || { printf '%s\n' "$SCAN_HOST" >&2; exit 1; }
+    if [ "${SCAN_GH_TRUNCATE:-0}" = 1 ]; then
+      printf 'HTTP/2.0 200 OK\r\n\r\n[]\n'
+      exit 0
+    fi
+    printf 'HTTP/2.0 200 OK\r\n\r\n[{"id":102,"body":null}]\n' ;;
+  '/pulls?'*|'/releases?'*)
+    printf 'HTTP/2.0 200 OK\r\n\r\n[]\n' ;;
+  *) exit 2 ;;
+esac
+STUB
+  chmod +x "$fixture/bin/git" "$fixture/bin/gitleaks" "$fixture/bin/gh"
+  export SCAN_HOST="$host"
+
+  publication_expect() {
+    local expected=$1
+    shift
+    status=0
+    PATH="$fixture/bin:$PATH" "$scanner" "$@" > "$fixture/out" 2> "$fixture/err" || status=$?
+    [ "$status" = "$expected" ] || fail "publication scan exited $status, expected $expected"
+  }
+  publication_incomplete() {
+    publication_expect 5 --surface all --report "$fixture/incomplete"
+    grep -qi "$1" "$fixture/err" || fail "publication scan did not name $1"
+    [ ! -e "$fixture/incomplete" ] && [ ! -s "$fixture/out" ] \
+      || fail 'incomplete publication scan emitted a verdict'
+  }
+
+  publication_incomplete 'remote tag'
+  git update-ref refs/tags/fixture "$base"
+  git --git-dir="$fixture/remote" update-ref refs/pull/1/head "$tip"
+  publication_incomplete 'pull.request'
+  git update-ref refs/pull/1/head "$tip"
+  git --git-dir="$fixture/remote" update-ref refs/heads/main "$base"
+  publication_incomplete 'remote branch'
+  git --git-dir="$fixture/remote" update-ref refs/heads/main "$tip"
+  git config remote.origin.promisor true
+  publication_incomplete 'partial'
+  git config --unset remote.origin.promisor
+  git config extensions.partialClone origin
+  publication_incomplete 'partial'
+  git config --unset extensions.partialClone
+  git clone -q --branch main --depth=1 "file://$fixture/remote" "$fixture/shallow"
+  (cd "$fixture/shallow"; publication_incomplete 'shallow')
+
+  export SCAN_GH_FAIL=1
+  publication_incomplete 'GitHub'
+  ! grep -Fq "$host" "$fixture/err" || fail 'API failure leaked its response'
+  unset SCAN_GH_FAIL
+  export SCAN_GH_TRUNCATE=1
+  publication_incomplete 'truncated collection'
+  unset SCAN_GH_TRUNCATE
+  export SCAN_LEAKS_FAIL=1
+  publication_incomplete 'gitleaks'
+  ! grep -Fq "$token" "$fixture/err" || fail 'gitleaks failure leaked its response'
+  unset SCAN_LEAKS_FAIL
+
+  publication_expect 1 --surface all --report "$fixture/report"
+  cmp -s "$fixture/out" "$fixture/report" || fail 'publication report differs from stdout'
+  for pattern in "$token" "$home" "$deleted" "$merged" "$email" "$host" "$key_path" "$project" \
+      deleted.txt merged.txt duplicate.txt visible.txt; do
+    ! grep -Fq -- "$pattern" "$fixture/out" "$fixture/err" "$fixture/report" config/publish-scan-allow.tsv \
+      || fail 'publication scan leaked a planted value or path'
+  done
+  for pattern in 'tree .* github-pat ' 'tree .* home-path ' 'tree .* private-project ' "history ${merge:0:12} .* home-path " \
+      'metadata .* personal-email ' 'github .* local-hostname ' 'history .* private-key-file '; do
+    grep -Eq "$pattern" "$fixture/report" || fail "publication scan omitted a required finding: $pattern"
+  done
+  hash=$(printf '%s' "$deleted" | shasum -a 256)
+  grep -Eq "history .* home-path ${hash:0:12}$" "$fixture/report" || fail 'deleted history was omitted'
+  id=$(printf '%s' visible.txt | shasum -a 256)
+  id=${id:0:12}
+  publication_expect 0 --surface tree --resolve "$id"
+  grep -Fxq visible.txt "$fixture/out" || fail 'publication location could not be resolved'
+  hash=$(printf '%s' "$home" | shasum -a 256)
+  printf '%s\thome-path\t%s\tFixture false positive\n' "$id" "${hash:0:12}" >> config/publish-scan-allow.tsv
+  publication_expect 1 --surface tree
+  ! grep -Eq "tree ${oid:0:12} $id home-path " "$fixture/out" || fail 'allow-list did not match the exact finding'
+  grep -Eq 'tree .* home-path ' "$fixture/out" || fail 'allow-list hid the value at another location'
+
+  clean="$fixture/clean"
+  git init -q -b main --template= "$clean"
+  cd "$clean"
+  git config user.name Fixture
+  git config user.email 'fixture@users.noreply.github.com'
+  git config commit.gpgsign false
+  printf 'clean\n' > clean.txt
+  git add -- clean.txt
+  git commit -qm 'Clean fixture'
+  git remote add origin "$fixture/clean"
+  SCAN_HOST=benign publication_expect 0 --surface all
+  grep -Eiq 'provisional.*GO' "$fixture/out" || fail 'complete clean scan had no provisional GO'
+)
+publish_scan_tests
+
 # Flow ergonomics scenario 8. Parse the pinned action's single-quoted filter lists.
 ci_bookkeeping_check() (
   # shellcheck source=scripts/lib/ci-bookkeeping.sh

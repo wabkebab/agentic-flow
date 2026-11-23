@@ -41,6 +41,8 @@ docs/done/.gitkeep	docs/done/.gitkeep	docs	preserve	export
 docs/done/security/.gitkeep	docs/done/security/.gitkeep	docs	preserve	export
 config/payload.tsv	config/payload.tsv	core	preserve	export
 config/command-policy.tsv	config/command-policy.tsv	core	preserve	export
+config/publish-scan.tsv	config/publish-scan.tsv	core	preserve	export
+config/publish-scan-allow.tsv	config/publish-scan-allow.tsv	core	preserve	export
 config/workflow.tsv	config/workflow.tsv	core	preserve	export
 config/stations	config/stations	core	preserve	export
 config/roles.tsv	config/roles.tsv	core	preserve	export
