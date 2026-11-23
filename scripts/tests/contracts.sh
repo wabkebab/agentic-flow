@@ -67,9 +67,12 @@ publish_scan_tests() (
   git --git-dir="$fixture/remote" update-ref refs/tags/fixture "$base"
 
   [ -x "$scanner" ] || fail 'publication scan is missing'
-  cp "$ROOT/config/publish-scan.tsv" "$ROOT/config/publish-scan-allow.tsv" config/
   hash=$(printf '%s' "$project" | shasum -a 256)
-  printf 'private-project\tall\tsha256:%s\tFixture private repository\n' "${hash%% *}" >> config/publish-scan.tsv
+  awk -v hash="${hash%% *}" '
+    { print }
+    END { printf "private-project\tall\tsha256:%s\tFixture private repository\n", hash }
+  ' "$ROOT/config/publish-scan.tsv" > config/publish-scan.tsv
+  : > config/publish-scan-allow.tsv
   cat > "$fixture/bin/gitleaks" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = version ]; then printf '8.30.1\n'; exit; fi
