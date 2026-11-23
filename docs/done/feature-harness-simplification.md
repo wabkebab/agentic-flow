@@ -1,22 +1,21 @@
 <!-- TRIAGE (first pass · 2026-11-21) -->
-> **Type:** Feature · **Status:** 🚧 In progress
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict
 > Phase 4 of `product-harness-factory-optimization.md`: remove what Phases 0–3 and flow-ergonomics made redundant. This brief takes the non-breaking items (R-12, R-14a, R-16 in part, R-17, R-24, R-25, R-26, R-27). It proposes moving the breaking 1.0 items (R-14b, R-22), the native-review item (R-13, blocked while the repo is private) and the state-store item (R-23, which needs re-measuring) to later briefs. The ship gate gains shellcheck and an exported copy budget (Option A, chosen). A last step scans tree, history, metadata and GitHub content before publishing. Drafted 2026-11-21 on branch `phase-4`; owner decisions recorded the same day; second review round applied; awaiting review.
 
 # Feature — Harness simplification (Phase 4)
 
 ## Tracker
-- [ ] s-1 Ship gate runs what CI runs — open
-- [ ] s-2 `ship` skips a gate and a push it has already done — open
-- [ ] s-3 `ship` adopts a PR opened by hand — open
-- [ ] s-4 Native deny rules for every agent CLI, alongside the hooks — open
-- [ ] s-5 Lexer hooks retired behind the active policy; the secret scan moves to a git pre-commit hook — open
-- [ ] s-6 Upgrade proposes a file only when upstream changed it — open
-- [ ] s-7 Scenario-first brief template with a word cap; red-first opt-in — open
-- [ ] s-8 Methodology reference split, roadmap cut to the open queue, explainer rewritten — open
-- [ ] s-9 Contracts, adoption notes and release notes — open
-- [ ] s-10 Pre-publication scan: secrets, local information and other sensitive content — open
-
+- [x] s-1 — #189; approved=118b0135370bf2509e6dd7e16e1366803395665c; submissions=118b0135370bf2509e6dd7e16e1366803395665c
+- [x] s-2 — #190; approved=03a853824d63a942de87c6e7473cf68eefd55b0d; submissions=03a853824d63a942de87c6e7473cf68eefd55b0d
+- [x] s-3 — #191; approved=cb27efebdf821c8dcb24b382f25151f946f18efc; submissions=cb27efebdf821c8dcb24b382f25151f946f18efc
+- [x] s-4 — #192; approved=86831036c7407fb9d053ab7c56e63b8d60f9c9c6; submissions=86831036c7407fb9d053ab7c56e63b8d60f9c9c6
+- [x] s-5 — #193; approved=329055d263453363efaa9ab85129ec8b21a5deee; submissions=329055d263453363efaa9ab85129ec8b21a5deee
+- [x] s-6 — #194; approved=956710ea9ed70a823eebdc753ee46b2d5eb9951b; submissions=956710ea9ed70a823eebdc753ee46b2d5eb9951b
+- [x] s-7 — #195; approved=7e78e42954ab8356d67dbd3b17f634e875876bf6; submissions=7e78e42954ab8356d67dbd3b17f634e875876bf6
+- [x] s-8 — #196; approved=09c32f692fad0d5d1d3161f83db832825163cd89; submissions=09c32f692fad0d5d1d3161f83db832825163cd89
+- [x] s-9 — #197; approved=f295456799832e80729c2c5fa66cb45acd258346; submissions=f295456799832e80729c2c5fa66cb45acd258346
+- [x] s-10 — #198; approved=b4db3182326b49afb95caf12279bec608130a632; submissions=b4db3182326b49afb95caf12279bec608130a632
 ---
 
 # Part A — Analysis
@@ -794,10 +793,10 @@ scripts/doctor.sh --check
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/188
 - **Approval:** status=approved; by=wabkebab; at=2026-11-21; rev=6e81d87232518b09f1e1a40e10113b3612868254
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** source=final-approval
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: `ship` finalizes Status and Tracker, sets TRIAGE to Done, and commits this
   document's move and the updated index before the first push. It opens the PR and
   waits for CI. The reviewer runs `final-approve` to record the PR, head, and run attempt

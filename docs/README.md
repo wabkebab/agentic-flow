@@ -117,6 +117,7 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-gate-and-handoff-fixes | Feature | ✅ Done | done |
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-harness-optimization | Feature | ✅ Done | done |
+| feature-harness-simplification | Feature | ✅ Done | done |
 | feature-init-and-template-split | Feature | ✅ Done | done |
 | feature-line-controller | Feature | ✅ Done | done |
 | feature-opencode-reviewer-role | Feature | ✅ Done | done |
@@ -125,7 +126,6 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-test-streamlining | Feature | ✅ Done | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
 | product-roadmap-history | Product Analysis | ✅ Decided | done |
-| feature-harness-simplification | Feature | 🚧 In progress | inprogress |
 | feature-role-signing | Feature | 🟦 Proposal | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |
 <!-- END: generated index -->
