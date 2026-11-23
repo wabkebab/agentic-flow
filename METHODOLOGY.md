@@ -167,8 +167,8 @@ baseline, never lower it.
 Strict is mandatory for authentication, secrets, destructive or data-loss behavior,
 migrations, public compatibility contracts, money or entitlements, release infrastructure,
 sensitive data, or an explicit human request. Quick is local and never authorizes a push or
-merge. Every profile keeps the same engineering standards, secret and push hooks, CI
-authority, and human ownership of pushing and merging. Review identity guarantees still
+merge. Every profile keeps the same engineering standards, command policy, pre-commit scan,
+CI authority, and human ownership of pushing and merging. Review identity guarantees still
 depend on the configured review identity mode, not the profile.
 
 Profiled specs activate the matching issue topology. A profile-less existing spec retains
@@ -398,7 +398,10 @@ Rules:
    the close-out and stops before pushing so the closer can commit it.
 2. The human runs `agentic-flow ship <doc> --wait-review`. It runs `make ship-gate` when
    available, pushes the prepared head once, opens the PR, and waits for CI and final review.
-   A review bounce that changes the head requires another push and fresh evidence.
+   On a re-run, it reuses a green gate record for the same tree, gate inputs, and harness
+   version. `--force-gate` clears the matching record and reruns the gate. It skips the push
+   when it can confirm that the branch at the configured push destination already has the
+   exact head. A review bounce that changes the head requires another push and fresh evidence.
 3. After CI succeeds, the reviewer records final approval for that PR, head, run, and attempt
    with `agentic-flow final-approve <moved-doc>`. `ship` finishes close-out, closes the tracker
    or Standard work issue, and checks pre-merge readiness. The human merges and runs
@@ -452,8 +455,20 @@ Fixes #73
 
 ## 8. Enforcement & harness capabilities
 
-### Shipped guardrails (in the scaffold, enforced — not convention)
-`.claude/settings.json` wires hooks that mechanize the contract so it can't be quietly missed:
+### Shipped guardrails
+
+- **Native command policy.** `config/command-policy.tsv` generates deny rules for Claude
+  Code, Codex, and OpenCode. These reserve push and merge for the human, enforce named
+  staging, and route workflow writes through the lifecycle commands. The controller loads
+  the station rules. Codex also uses `scripts/hooks/guard-attached-git-dir.sh` for the
+  attached Git-directory option. Install the Codex rules for interactive sessions.
+  [Adoption and verification](ADOPTION.md#verify)
+- **Git pre-commit secret scan.** Set `core.hooksPath` to `scripts/git-hooks`, or chain
+  `scripts/git-hooks/pre-commit` from your existing pre-commit hook and propagate its exit
+  status. This scans staged content in human, agent, and scripted commits. The scan requires
+  both `gitleaks` and the local high-signal pattern set. Use `AGENTIC_ALLOW_SECRET=1` on the
+  commit to override a false positive. See the
+  [scanner layering rule](docs/reference/engineering-standards.md#111-automate-what-a-human-should-never-review).
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`): blocks a turn from
   ending while the fast gate is red, feeding the failure back to the agent; if the retry is
   still red it warns and allows rather than looping forever. Only an exact green state
@@ -462,21 +477,9 @@ Fixes #73
   takes over half the hook timeout must raise that timeout to accommodate both runs.
   Scoped to the *fast* gate, not the full suite. `check` ships prefilled with harness sanity
   checks; extend it with the stack's type-check + lint.
-- **PreToolUse(Bash) → block `git add -A` / `git add .` / `--all`**
-  (`scripts/hooks/block-git-add-all.sh`): enforces §7's "stage files by name" mechanically.
-- **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`):
-  enforces §7's "never push — the human controls all pushes and merges" mechanically.
-- **PreToolUse(Bash) → scan staged content for credentials** (`scripts/hooks/scan-secrets.sh`):
-  enforces [secret scanning at the commit boundary](docs/reference/engineering-standards.md#111-automate-what-a-human-should-never-review).
-  Blocks a commit whose staged
-  diff carries a credential shape, because CI catches that one step too late — a committed
-  secret has to be rotated. Runs `gitleaks` (required) **and** a local high-signal pattern
-  set, always both — see the [scanner layering rule](docs/reference/engineering-standards.md#111-automate-what-a-human-should-never-review).
-  `AGENTIC_ALLOW_SECRET=1` overrides a false positive, visibly.
-- **PreToolUse(Bash) → route workflow writes through `handoff`**
-  (`scripts/hooks/require-step-comment.sh`): blocks raw workflow label mutations,
-  closing/reopening plan-stamped issues, and direct role-token calls. Claude and Codex
-  use the shared lexer; OpenCode follows its reviewer contract without a hook engine.
+- **SessionStart** (`scripts/hooks/session-context.sh`) gives Claude and Codex cached step
+  context when available. Review and trust Codex's project hooks with `/hooks` after adoption
+  or a hook change.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
 - **`scripts/check-payload-manifest.sh`** fails when an agent adapter, harness template, or
@@ -532,8 +535,7 @@ These make the handoff explicit and parallel instead of sequential:
 - **`/security-review`** — a security pass on the pending branch diff; complements a
   Security doc.
 - **`/verify` and `/run`** — drive the app to confirm a fix behaves, not just that tests pass.
-- **More hooks** — beyond the six shipped hooks: a PostToolUse reminder on shared-type edits,
-  a commit-message-format check, etc.
+- **Project hooks** can remind agents about shared-type edits or enforce commit message format.
 - **Memory** — persist durable decisions (this methodology, the commit contract, recurring
   review themes) so each session doesn't re-derive them.
 

@@ -912,10 +912,13 @@ fi
 [ -f "$ROOT/scripts/lib/identity.sh" ] || fail 'identity library is missing'
 IDENTITY_FIX="$TMP/identity"
 mkdir -p "$IDENTITY_FIX/project/scripts/lib" "$IDENTITY_FIX/bin" "$IDENTITY_FIX/config/agentic-flow/identities/owner"
-cp "$ROOT/scripts/agentic-flow" "$IDENTITY_FIX/project/scripts/agentic-flow"
-cp "$ROOT/scripts/lib/identity.sh" "$ROOT/scripts/lib/review-policy.sh" "$IDENTITY_FIX/project/scripts/lib/"
-cp "$ROOT/scripts/lib/payload-apply.sh" "$IDENTITY_FIX/project/scripts/lib/"
-cp "$ROOT/scripts/doctor.sh" "$IDENTITY_FIX/project/scripts/doctor.sh"
+mkdir -p "$IDENTITY_FIX/project/config/stations" "$IDENTITY_FIX/codex/rules"
+# This fixture exercises token and doctor, which read these inputs.
+ln "$ROOT/scripts/agentic-flow" "$ROOT/scripts/doctor.sh" "$IDENTITY_FIX/project/scripts/"
+ln "$ROOT/scripts/lib/identity.sh" "$ROOT/scripts/lib/review-policy.sh" \
+   "$ROOT/scripts/lib/payload-apply.sh" "$ROOT/scripts/lib/git-guards.sh" "$IDENTITY_FIX/project/scripts/lib/"
+ln "$ROOT/config/stations/command-policy.rules" "$IDENTITY_FIX/project/config/stations/"
+ln "$ROOT/config/stations/command-policy.rules" "$IDENTITY_FIX/codex/rules/agentic-flow.rules"
 (
   cd "$IDENTITY_FIX/project"
   git init -q
@@ -1044,6 +1047,7 @@ printf 'reviewer\treview-app[bot]\t123\t456\ttest key\napprover\tplan-app[bot]\t
 identity_doctor() {
   # shellcheck disable=SC2097,SC2098 # Pass fixture state to the child.
   PATH="$IDENTITY_FIX/bin:$PATH" XDG_CONFIG_HOME="$IDENTITY_FIX/config" IDENTITY_FIX="$IDENTITY_FIX" \
+    CODEX_HOME="$IDENTITY_FIX/codex" \
     "$IDENTITY_FIX/project/scripts/doctor.sh" --check --scope env > "$TMP/identity-doctor.out" 2>&1
 }
 identity_doctor || fail "doctor rejected valid role identities: $(cat "$TMP/identity-doctor.out")"
@@ -1785,46 +1789,15 @@ printf '%s' "$ensemble_block" | grep -qi 'blind spot' \
 printf '%s' "$ensemble_block" | grep -q 'sev:' \
   && fail "the ensemble entry restates the severity labels instead of routing to METHODOLOGY.md §5"
 
-# The shipped-hook count is stated in prose in two exported documents and was wrong in both:
-# METHODOLOGY.md §8 offered ideas "beyond the shipped two" and README.md's source-tree
-# inventory called scripts/hooks/ "the two hook scripts", while four ship and settings.json
-# calls all four. Nothing counted. Derive the count and assert the prose agrees, so adding or
-# retiring a hook fails here instead of leaving a stale number in two adopter-facing files.
-# Anchored on the distinctive phrase for the same reason as the standards surfaces above.
-hook_count=$(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | wc -l | tr -d ' ')
-case "$hook_count" in
-  1) hook_word=one ;;
-  2) hook_word=two ;;
-  3) hook_word=three ;;
-  4) hook_word=four ;;
-  5) hook_word=five ;;
-  6) hook_word=six ;;
-  *) hook_word="" ;;
-esac
-if [ -z "$hook_word" ]; then
-  fail "no english number word for the shipped hook count ($hook_count) — extend the case above"
-fi
-grep -q "the $hook_word shipped hooks" "$ROOT/METHODOLOGY.md" \
-  || fail "METHODOLOGY.md does not say \"the $hook_word shipped hooks\" ($hook_count ship)"
-# METHODOLOGY.md is payload and carries this claim into every adoption, so that assertion is
-# unconditional. The root README.md is NOT in config/payload.tsv — it describes this repo's own
-# source tree, and an adopted project's README is its own document about its own project. Assert
-# it only in the scaffold, the same source-vs-adopted split the role-bundle ceilings make.
-if [ -f "$ROOT/scripts/export.sh" ]; then
-  grep -q "the $hook_word hook scripts" "$ROOT/README.md" \
-    || fail "README.md does not say \"the $hook_word hook scripts\" ($hook_count ship)"
-fi
-
-# Counting alone would still let a new hook ship undocumented as long as someone bumped the
-# number. CLAUDE.md is the surface that names each hook and what it enforces, so require every
-# shipped script to appear there by filename.
-while IFS= read -r hook_script; do
-  hook_base=$(basename "$hook_script")
-  if active_scope claude; then
-    grep -q "$hook_base" "$ROOT/CLAUDE.md" \
+# Legacy hook scripts remain in the payload for adopters pending migration.
+# The contracts describe the active command policy and hooks.
+if active_scope claude; then
+  for hook_base in command-policy.tsv scripts/git-hooks/pre-commit check-gate.sh \
+                   session-context.sh guard-attached-git-dir.sh; do
+    grep -Fq "$hook_base" "$ROOT/CLAUDE.md" \
       || fail "CLAUDE.md does not document the shipped hook $hook_base"
-  fi
-done < <(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | sort)
+  done
+fi
 
 # §5 is the shared severity source every review surface cites, including the /review agent
 # contract for ordinary diffs — but it was titled "(Security reviews)" and defined its levels

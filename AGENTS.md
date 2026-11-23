@@ -19,14 +19,12 @@ order, edge cases — not finished code. Read the brief for the step before writ
 
 - Required for this harness: `bash`, `make`, `git`, `jq`, `gh`.
 - Required for Codex execution unless the project opts out: `git-codex`.
-- `scripts/lib/hook-command.sh` is the canonical Git wrapper list used by the hooks.
-- Run `scripts/doctor.sh --check` if the scaffold was just adopted or hook/build wiring looks
-  suspicious.
-- **Codex hooks need explicit trust.** `.codex/hooks.json` is discovered but not executed until
-  the hooks are reviewed and trusted: run `/hooks` once per checkout. Trust is recorded against
-  each hook's hash, so any change — including an `agentic-flow upgrade` — un-trusts them again
-  and they silently stop running. `scripts/doctor.sh` checks that hooks are *wired*, which is
-  not the same as trusted.
+- `config/command-policy.tsv` supplies native deny rules. Git scans staged secrets
+  via `core.hooksPath` and `scripts/git-hooks/pre-commit`.
+- Review and trust Codex's Stop gate, SessionStart and attached Git-directory hooks
+  with `/hooks` per checkout and after hook changes.
+- Run `scripts/doctor.sh --check` after adoption or upgrade. See `ADOPTION.md` to install
+  interactive Codex rules.
 
 ## How to work a step
 
@@ -48,7 +46,7 @@ Work in the plan worktree throughout execution.
 5. **Commit** (see contract below), one logical commit for the step, with `Fixes #N`.
    Under the controller, return the station result JSON with the full commit SHA;
    never call `handoff`. The controller verifies and submits it. For interactive use,
-   write evidence including `Red first:` to a body file and run `verify-step <sha40>
+   write evidence to a body file, including `Red first:` when the brief selects it, and run `verify-step <sha40>
    --doc <doc> --step <id>`, then `handoff <N> submit --as executor --head <sha40>
    --body-file <evidence-file>`; retry partial failures. Never move labels by hand.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or

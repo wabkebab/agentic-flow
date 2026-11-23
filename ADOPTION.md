@@ -51,10 +51,10 @@ you treat the adoption as complete.
 
 ## Verify
 
-In a Git checkout, `init.sh` sets `core.hooksPath` in the shared repository
-configuration so the staged-secret scan runs in every worktree. If you used
-the low-level exporter or ran `git init` after adoption, configure it before
-committing:
+In a Git checkout, `init.sh` sets an unset `core.hooksPath` in the shared repository
+configuration so Git runs the staged-secret scan in every worktree. If you used
+the low-level exporter or ran `git init` after adoption, configure the default hook
+path before committing.
 
 ```bash
 git config --local core.hooksPath scripts/git-hooks
@@ -65,13 +65,18 @@ If you already use a custom hooks path, keep that setting and call
 its exit status. For an intentional false-positive override, prefix the
 commit with `AGENTIC_ALLOW_SECRET=1`.
 
-For interactive Codex, install the native command policy and review the project
-hooks with `/hooks` so Codex can run the attached Git-directory guard:
+`config/command-policy.tsv` generates native deny rules for Claude Code, Codex, and
+OpenCode. These block pushes, merges, broad staging, and direct workflow writes in
+agent sessions. Controller stations load their own rules. For interactive Codex,
+install or refresh the rules in the Codex home used by that session.
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/rules"
 cp config/stations/command-policy.rules "${CODEX_HOME:-$HOME/.codex}/rules/agentic-flow.rules"
 ```
+
+Review and trust Codex's project hooks with `/hooks` after adoption and after hook changes
+so the attached Git-directory guard, Stop gate, and SessionStart hook can run.
 
 New adoptions receive a tracked `.agentic-flow-assurance` baseline of `standard`.
 `scripts/assurance.sh status` reports the baseline and whether it came from the file or
@@ -86,7 +91,7 @@ legacy tracker-and-steps shape. CI checks do not vary with assurance state.
 
 `scripts/doctor.sh` is the verifier. It reports required tools, agent adapters, stack
 profile, unresolved merge candidates, active/pending scaffold versions, Make targets,
-hook wiring, CI posture, and docs-index freshness.
+command policy, the active pre-commit scan, hook wiring, CI posture, and docs-index freshness.
 
 Run this in the target before committing the harness:
 
@@ -143,7 +148,11 @@ in the adopting project's risk register, or assign another CLI. Use supervised
 `run <doc> --once` when the gate is not satisfied; it skips the entry gate and runs
 one station. Answer andon, then run `ship <doc>` from the plan worktree when ready. For
 a new PR, `ship` prepares and commits the close-out before its first push. If it stops
-with a staged close-out, commit it before resuming `ship`. Merge after its gates pass.
+with a staged close-out, commit it before resuming `ship`. When resuming after CI or
+final review, `ship` reuses a green `make ship-gate` result for the same tree, gate inputs,
+and harness version. It skips pushing when it confirms the destination branch has the
+exact head. Use `ship <doc> --force-gate` to rerun the optional gate. Merge after the
+shipping checks pass.
 
 For an identical effective CLI and model on both stations, add and approve this entry
 in the project's `docs/accepted_risks.md` before unattended use:
@@ -203,16 +212,20 @@ scripts/agentic-flow upgrade --yes
   create, overwrite, or land as a merge candidate. It writes nothing. Use
   `scripts/agentic-flow diff --ref <tag-or-branch>` for a one-off comparison without
   changing `.agentic-flow-source`.
-- `upgrade` fetches the recorded source/ref and applies only files declared by
-  `config/payload.tsv`. It follows the same `.agentic-new` policy as export: customized
-  files are not silently overwritten, and `.agentic-flow-version` advances only when no
-  merge candidates remain. Otherwise `.agentic-flow-candidate-version` records the pending
-  standard version.
+- `upgrade` fetches the recorded source/ref and applies the payload declared by
+  `config/payload.tsv`. It keeps local customizations when the upstream file is unchanged
+  from the recorded upstream baseline. If both sides changed, it leaves a `.agentic-new`
+  candidate. Pending merges or guard activation leave the incoming version in
+  `.agentic-flow-candidate-version`.
 
-The pull-side upgrade path executes nothing from the fetched standard. If docs changed,
-review the result and then run `scripts/docs-index.sh` yourself. After resolving any
-`.agentic-new` files, rerun `scripts/agentic-flow upgrade --yes`; matching pending
-candidates are reused rather than duplicated.
+The 0.20.0 upgrade uses the fetched release's migration to activate the native rules and
+verify the Git pre-commit path before retiring the corresponding legacy hook entries.
+If it reports pending activation, check the hook and Codex rules, then run
+`scripts/doctor.sh --check`. [Verification steps](#verify)
+
+If docs changed, review the result and run `scripts/docs-index.sh`. After resolving
+any `.agentic-new` files, rerun `scripts/agentic-flow upgrade --yes`. Matching pending
+candidates are reused.
 
 `upgrade` also records the source it last applied in `.agentic-flow-source-applied`. If the
 origin in `.agentic-flow-source` later changes, upgrade stops until you inspect the change
