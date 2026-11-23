@@ -1,0 +1,22 @@
+git push origin HEAD
+git -C . push origin HEAD
+git-claude push origin HEAD
+git-codex push origin HEAD
+git-opencode push origin HEAD
+git add -A
+git-claude add --all
+git-codex add .
+git-opencode add -A
+git -C . add -A
+git --git-dir .git push origin HEAD
+env GIT_INDEX_FILE=.probe-index git add -A
+gh pr merge 1
+rtk gh issue edit 1 --add-label x
+gh -R example/project issue edit 1 --remove-label x
+gh api repos/example/project/issues/1 -X PATCH
+gh api repos/example/project/issues/1/labels --method DELETE
+gh api graphql --input request.json
+bash -lc 'git push origin HEAD'
+timeout 10 git push origin HEAD
+git commit -m probe --no-verify
+git-codex commit --no-verify

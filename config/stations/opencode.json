@@ -1,10 +1,820 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "permissions": [
-    {"action": "shell", "resource": "gh", "effect": "deny"},
-    {"action": "shell", "resource": "gh *", "effect": "deny"},
-    {"action": "webfetch", "resource": "https://github.com/*", "effect": "deny"},
-    {"action": "webfetch", "resource": "https://api.github.com/*", "effect": "deny"},
-    {"action": "webfetch", "resource": "https://raw.githubusercontent.com/*", "effect": "deny"}
+    {
+      "action": "shell",
+      "resource": "gh",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh *",
+      "effect": "deny"
+    },
+    {
+      "action": "webfetch",
+      "resource": "https://github.com/*",
+      "effect": "deny"
+    },
+    {
+      "action": "webfetch",
+      "resource": "https://api.github.com/*",
+      "effect": "deny"
+    },
+    {
+      "action": "webfetch",
+      "resource": "https://raw.githubusercontent.com/*",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git push",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git push *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh pr merge",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh pr merge *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add -A",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add -A *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add --all",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add --all *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add :/",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add :/ *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add -- .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add -- . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add -- :/",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git add -- :/ *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git commit",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git commit *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git commit -n",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git commit -n *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git commit --no-verify",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git commit --no-verify *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh issue edit",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh issue edit *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh issue close",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh issue close *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh issue reopen",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh issue reopen *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh label",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh label *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh api",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh api *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh -R",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh -R *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh --repo",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh --repo *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "gh --repo=*",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk gh",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk gh *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -C",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -C *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -c",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -c *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --git-dir",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --git-dir *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --git-dir=*",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --work-tree",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --work-tree *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --work-tree=*",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager -C",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager -C *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p -C",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p -C *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager push",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager push *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p push",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p push *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager add -A",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager add -A *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager add .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager add . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager add --all",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git --no-pager add --all *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p add -A",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p add -A *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p add .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p add . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p add --all",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git -p add --all *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "env",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "env *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "GIT_COMMON_DIR=*",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "sudo",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "sudo *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "nohup",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "nohup *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "nice",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "nice *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "time",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "time *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "timeout",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "timeout *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "bash -lc",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "bash -lc *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "bash -c",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "bash -c *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow ship",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow ship *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow approve",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow approve *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow hold clear",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow hold clear *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow token",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow token *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow ship",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow ship *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow token",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow token *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude push",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude push *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add -A",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add -A *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add --all",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add --all *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add :/",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add :/ *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add -- .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add -- . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add -- :/",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude add -- :/ *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude commit -n",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude commit -n *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude commit --no-verify",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude commit --no-verify *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude commit * -n",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-claude commit * --no-verify",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex push",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex push *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add -A",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add -A *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add --all",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add --all *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add :/",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add :/ *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add -- .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add -- . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add -- :/",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex add -- :/ *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex commit -n",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex commit -n *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex commit --no-verify",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex commit --no-verify *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex commit * -n",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-codex commit * --no-verify",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode push",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode push *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add -A",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add -A *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add --all",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add --all *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add :/",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add :/ *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add -- .",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add -- . *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add -- :/",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode add -- :/ *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode commit -n",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode commit -n *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode commit --no-verify",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode commit --no-verify *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode commit * -n",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git-opencode commit * --no-verify",
+      "effect": "deny"
+    }
   ]
 }

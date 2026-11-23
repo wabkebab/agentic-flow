@@ -168,6 +168,9 @@ if [ "$SCOPE" = env ] || [ "$SCOPE" = all ]; then
     ok "execution mode: Claude + Codex"
     payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES" && require_tool git-claude
     require_tool git-codex
+    if ! cmp -s "$ROOT/config/stations/command-policy.rules" "$HOME/.codex/rules/agentic-flow.rules"; then
+      warn 'interactive Codex command policy missing or stale. From the project root run mkdir -p ~/.codex/rules && cp config/stations/command-policy.rules ~/.codex/rules/agentic-flow.rules'
+    fi
   fi
 fi
 
@@ -179,6 +182,12 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_file AGENTS.md
   require_file Makefile
   require_file config/payload.tsv
+  if "$ROOT/scripts/render-command-policy.sh" --check; then
+    ok "rendered command policy matches config/command-policy.tsv"
+  else
+    fail "rendered command policy matches config/command-policy.tsv"
+  fi
+  warn 'Claude and OpenCode native command-policy matching was not probed on the executor host. Use scripts/agentic-flow doctor --stations on an authenticated host.'
   require_file .agentic-flow-review-policy
   if payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES"; then require_file .claude/settings.json; fi
   if payload_has_word codex "$PAYLOAD_ACTIVE_SCOPES"; then

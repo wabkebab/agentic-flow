@@ -4,6 +4,71 @@
 . "$(dirname "${BASH_SOURCE[0]}")/launch.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/ledger.sh"
 
+probe_policy_prepare() { # scratch containing linked worktree
+  local scratch=$1 tool
+  mkdir "$scratch/bin" || return 1
+  cat > "$scratch/bin/protected" <<'WRAPPER'
+#!/bin/sh
+tool=${0##*/}
+# Permit Git reads and the fixed filesystem probe's staging/commit. Mutations
+# requested in the command-policy prompt always stop at these sentinels.
+if [ "$tool" = git ]; then
+  case "$*" in
+    'push'|'push '*|*' push'|*' push '*|'commit'|'commit '*|'add -A'|'add --all'|'add .'|*' add -A'|*' add --all') ;;
+    *)
+      # Resolve Git again with only the sentinel directory removed.
+      PATH=${PATH#*:}
+      export PATH
+      exec git "$@" ;;
+  esac
+fi
+printf '%s\n' "$tool $*" >> .agentic-flow-policy-ran || exit 125
+case "$tool:$1" in
+  git:push)
+    pushurl=$(PATH=${PATH#*:} git remote get-url --push origin 2>/dev/null)
+    printf 'probe: push stopped at disabled pushurl %s\n' "$pushurl" >&2 ;;
+  *) printf 'probe: protected command reached PATH sentinel\n' >&2 ;;
+esac
+exit 128
+WRAPPER
+  chmod +x "$scratch/bin/protected" || return 1
+  for tool in git git-claude git-codex git-opencode gh rtk; do
+    ln "$scratch/bin/protected" "$scratch/bin/$tool" || return 1
+  done
+}
+
+probe_policy_result() { # cli cases events sentinel
+  local cli=$1 cases=$2 events=$3 sentinel=$4 observed='[]' status=unprobed
+  [ -f "$cases" ] && [ "$(wc -c < "$cases")" -le 16384 ] || return 2
+  if [ -e "$sentinel" ] || [ -L "$sentinel" ]; then
+    status=ran
+  elif [ -f "$events" ] && [ "$(wc -c < "$events")" -le 1048576 ]; then
+    observed=$(jq -Rsc --arg cli "$cli" '
+      def refusal: test("blocked by (the )?(execution )?policy|permission rule|permission[^\\n]*rejected|rejected[^\\n]*policy|configured permissions";"i");
+      [split("\n")[] | fromjson? |
+       if $cli=="claude" then
+         .permission_denials[]? | select(.tool_name=="Bash") | .tool_input.command
+       elif $cli=="codex" then
+         select(.type=="item.completed" and .item.type=="command_execution" and (.item.exit_code==null)) |
+         .item | select((.aggregated_output // .error // "")|strings|refusal) | .command
+       else
+         select(.type=="tool_use" or .type=="tool_error") |
+         .part | select(.tool=="bash" or .tool=="shell") |
+         select((.state.error // .error // "")|strings|refusal) |
+         (.state.input.command // .input.command)
+       end | strings] | unique' "$events") || observed='[]'
+  fi
+  jq -n --rawfile cases "$cases" --argjson observed "$observed" --arg status "$status" '
+    ($cases | split("\n") | map(select(length>0))) as $requested |
+    def denied($command):
+      any($observed[]; .==$command or
+        (sub("^([^ ]*/)?(ba|z|da)?sh -[lc]+ "; "") |
+          .==$command or .==($command|tojson) or .==("\u0027"+$command+"\u0027")));
+    [$requested[] | select(denied(.)|not)] as $missing |
+    {status:(if $status=="unprobed" and ($requested|length)>0 and $missing==[] then "denied" else $status end),
+     unprobed:$missing}'
+}
+
 probe_script() {
   cat <<'SCRIPT'
 #!/usr/bin/env bash
@@ -59,11 +124,17 @@ probe_cleanup() {
 }
 
 probe_worker() { # Called only as a background child by probe_station.
-  local station=$1 root=$2 common='' scratch='' branch='' probe_pid='' start=0 finish=0 rc=1 fingerprint=''
+  local station=$1 root=$2 probe_mode=${3:---probe} common='' scratch='' branch='' probe_pid='' start=0 finish=0 rc=1 fingerprint=''
   local cli=unknown launched=false session_captured=false result_parsed=false attempts='{}'
   local writable='{"worktree":false,"agents":false,"commit_paths":false}' denied='{"verify_dir":false,"ledger_dir":false}' error='' metadata='{}'
   local CT_ASSIGNMENTS=${CT_ASSIGNMENTS:-}
   local base='' head='' parsed_session='' run="station-probe/1/0/$station/1/1" plan=station-probe
+  local native_policy='{"status":"unprobed","unprobed":[]}' policy_mode=station
+  local policy_cases="$root/config/stations/command-policy-probes.txt" policy_events=''
+  [ "$probe_mode" != --interactive-policy-probe ] || policy_mode=interactive
+  if [ "$probe_mode" != --probe ] && [ -f "$policy_cases" ]; then
+    native_policy=$(probe_policy_result "" "$policy_cases" /dev/null /dev/null-not-a-sentinel)
+  fi
   start=$(date +%s)
   common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir) || exit 1
   # Trap context survives Bash 3.2 unwinding function locals at exit.
@@ -94,6 +165,13 @@ probe_worker() { # Called only as a background child by probe_station.
     trap 'exit 143' TERM
     [ "$setup_signal" = 0 ] || exit "$setup_signal"
     git -C "$root" worktree add -q "$scratch/worktree" "$branch" || return 1
+    if [ "$probe_mode" != --probe ]; then
+      probe_policy_prepare "$scratch" || { error='cannot install command-policy sentinels'; return 1; }
+      policy_events="$scratch/policy-events"
+      launch_output_record() {
+        if [ "$(wc -c < "$1")" -le 1048576 ]; then cat "$1" > "$policy_events"; fi
+      }
+    fi
     mkdir -p "$scratch/worktree/.agents" || return 1
     probe_script > "$scratch/worktree/.agentic-flow-probe.sh"
     git -C "$scratch/worktree" add -- .agentic-flow-probe.sh &&
@@ -118,13 +196,25 @@ probe_worker() { # Called only as a background child by probe_station.
     # Do not inherit the controller's prior station session, issue or pgid file.
     LAUNCH_SESSION=$session LAUNCH_PGID_FILE="$scratch/pgid" LAUNCH_STEP=probe LAUNCH_ISSUE=1
     launched=true
-    launch_station "$station" "$scratch/worktree" /dev/null "$scratch/result" --probe > "$scratch/metadata" 2> "$scratch/stderr" &
+    LAUNCH_POLICY_BIN="$scratch/bin" launch_station "$station" "$scratch/worktree" /dev/null "$scratch/result" "$probe_mode" > "$scratch/metadata" 2> "$scratch/stderr" &
     probe_pid=$!; PROBE_PID=$probe_pid
     local status=0
     wait "$probe_pid" || status=$?
     probe_pid=''; PROBE_PID=''
     metadata=$(cat "$scratch/metadata")
     printf '%s' "$metadata" | jq -e 'type=="object"' >/dev/null 2>&1 || metadata='{}'
+    if [ "$probe_mode" != --probe ]; then
+      native_policy=$(probe_policy_result "$cli" "$policy_cases" \
+        "$policy_events" "$scratch/worktree/.agentic-flow-policy-ran") || { error='command-policy evidence could not be read'; return 1; }
+      case "$(printf '%s' "$native_policy" | jq -r .status)" in
+        denied) ;;
+        ran) error='a protected command ran under the CLI (PATH sentinel was reached)'; return 1 ;;
+        *)
+          error='native command denial not probed for every case on this host'
+          if [ "$status" != 0 ]; then error="$error (station exit $status)"; fi
+          return 1 ;;
+      esac
+    fi
     parsed_session=$(printf '%s' "$metadata" | jq -r '.session//empty')
     if [ -n "$parsed_session" ]; then
       ledger_read "$plan" | jq -e --arg session "$parsed_session" 'any(.[];(.kind=="session" and .session==$session) or (.kind=="intent" and .session==$session))' >/dev/null && session_captured=true
@@ -159,6 +249,7 @@ probe_worker() { # Called only as a background child by probe_station.
     if [ "$worktree:$agents:$commit" != true:true:true ] || { [ "$cli" != opencode ] && [ "$verify:$ledger" != true:true ]; }; then
       error="probe filesystem properties failed: writable=$writable denied=$denied"; return 1
     fi
+    [ "$policy_mode" != interactive ] || return 0
     jq -n --arg fingerprint "$fingerprint" --argjson seconds "$(( $(date +%s)-start ))" \
       '{fingerprint:$fingerprint,passed_at:(now|floor),seconds:$seconds}' > "$scratch/state" || return 1
     mv "$scratch/state" "$common/agentic-flow/probe/$station.json" || return 1
@@ -168,9 +259,10 @@ probe_worker() { # Called only as a background child by probe_station.
   [ "$rc" = 0 ] || [ -n "$error" ] || error='probe setup failed'
   jq -n --arg station "$station" --arg cli "$cli" --argjson launched "$launched" --argjson meta "$metadata" \
     --argjson session "$session_captured" --argjson result "$result_parsed" --argjson writable "$writable" --argjson denied "$denied" \
-    --argjson attempts "$attempts" --argjson seconds "$((finish-start))" --arg error "$error" \
+    --argjson attempts "$attempts" --argjson policy "$native_policy" --arg mode "$policy_mode" \
+    --argjson seconds "$((finish-start))" --arg error "$error" \
     '{station:$station,cli:$cli,launched:$launched,exit:($meta.exit//null),session_captured:$session,result_parsed:$result,
-      writable:$writable,denied:$denied,attempts:$attempts,seconds:$seconds,error:(if $error=="" then null else $error end)}'
+      writable:$writable,denied:$denied,native_policy:($policy+{mode:$mode}),attempts:$attempts,seconds:$seconds,error:(if $error=="" then null else $error end)}'
   exit "$rc"
 }
 
@@ -207,13 +299,14 @@ probe_cmd_cleanup() {
 }
 
 probe_cmd() {
-  local station='' json=false root selected status=0 rc report='[]' item
-  [ "${1:-}" = --stations ] || { echo 'usage: agentic-flow doctor --stations [--station executor|reviewer] [--json]' >&2; return 2; }
+  local station='' json=false root selected status=0 rc report='[]' item mode=--policy-probe
+  [ "${1:-}" = --stations ] || { echo 'usage: agentic-flow doctor --stations [--station executor|reviewer] [--interactive] [--json]' >&2; return 2; }
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --station) [ "$#" -ge 2 ] || return 2; station=$2; case "$station" in executor|reviewer) ;; *) return 2 ;; esac; shift 2 ;;
       --json) json=true; shift ;;
+      --interactive) mode=--interactive-policy-probe; shift ;;
       *) return 2 ;;
     esac
   done
@@ -225,7 +318,7 @@ probe_cmd() {
   trap 'exit 143' TERM
   for selected in ${station:-executor reviewer}; do
     rc=0
-    probe_station "$selected" "$root" > "$PROBE_CMD_OUTPUT" &
+    probe_station "$selected" "$root" "$mode" > "$PROBE_CMD_OUTPUT" &
     PROBE_CMD_CHILD=$!
     wait "$PROBE_CMD_CHILD" || rc=$?
     PROBE_CMD_CHILD=''
@@ -234,6 +327,8 @@ probe_cmd() {
     report=$(printf '%s' "$report" | jq --argjson item "$item" '.+[$item]') || return 1
   done
   if [ "$json" = true ]; then printf '%s\n' "$report"
-  else printf '%s' "$report" | jq -r '.[]|"\(.station) (\(.cli)): \(if .error==null then "passed" else .error end)"'; fi
+  else printf '%s\n' "$report" | jq -r '.[]|
+    "\(.station) (\(.cli), \(.native_policy.mode)): \(if .error==null then "passed" else .error end)",
+    (if .native_policy.status=="unprobed" then .native_policy.unprobed[] | "  not probed on this host: \(.)" else empty end)'; fi
   return "$status"
 }

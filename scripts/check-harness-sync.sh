@@ -24,6 +24,8 @@ set -euo pipefail
 
 ROOT=${AGENTIC_PROJECT_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}
 
+"$ROOT/scripts/render-command-policy.sh" --check || exit 1
+
 # Adopted projects receive scripts/ but not templates/harness/, so there is nothing to
 # compare there. Same source-vs-adopted distinction self-test.sh makes.
 if [ ! -d "$ROOT/templates/harness" ]; then

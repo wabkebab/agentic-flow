@@ -2,6 +2,8 @@
 # Credential-free headless station launches. The caller owns the ledger.
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/roles.sh"
+# shellcheck source=scripts/lib/command-policy.sh
+. "$(dirname "${BASH_SOURCE[0]}")/command-policy.sh"
 
 launch_root() { git -C "$1" rev-parse --show-toplevel; }
 launch_error() { printf 'preflight: %s\n' "$*" >&2; return 6; }
@@ -50,16 +52,34 @@ launch_environment() { # worktree scratch; array used with env -i for the CLI it
 # Keep sessions across launches, but never import the operator's instructions/config.
 launch_codex_home() { # worktree
   local common installed="$HOME/.codex/agentic-station.config.toml" login="$HOME/.codex/auth.json"
+  local rules_source="$LAUNCH_ROOT/config/stations/command-policy.rules"
   common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir) || return 6
   [ -f "$login" ] || { launch_error "missing Codex login $login"; return 6; }
   launch_profile_check || return 6
-  LAUNCH_CODEX_HOME="$common/agentic-flow/codex-home"
+  LAUNCH_CODEX_HOME=${LAUNCH_INTERACTIVE_CODEX_HOME:-"$common/agentic-flow/codex-home"}
+  if [ -n "${LAUNCH_INTERACTIVE_CODEX_HOME:-}" ]; then
+    cmp -s "$rules_source" "$HOME/.codex/rules/agentic-flow.rules" \
+      || { launch_error 'interactive Codex command policy is missing or stale'; return 6; }
+    rules_source="$HOME/.codex/rules/agentic-flow.rules"
+  fi
   [ ! -L "$LAUNCH_CODEX_HOME" ] || { launch_error 'Codex station home is a symlink'; return 6; }
   mkdir -p "$LAUNCH_CODEX_HOME" || return 6
   local file
   for file in config.toml agentic-station.config.toml AGENTS.md; do
     [ ! -L "$LAUNCH_CODEX_HOME/$file" ] || { launch_error "Codex station $file is a symlink"; return 6; }
   done
+  local rules_dir="$LAUNCH_CODEX_HOME/rules" rules_temp
+  if [ -L "$rules_dir" ] || ! mkdir -p "$rules_dir"; then
+    launch_error 'unsafe Codex rules directory'
+    return 6
+  fi
+  rules_temp=$(mktemp "$rules_dir/.agentic-flow.XXXXXX") || return 6
+  if ! { cat "$rules_source" > "$rules_temp" &&
+    mv -f "$rules_temp" "$rules_dir/agentic-flow.rules"; }; then
+    rm -f "$rules_temp"
+    launch_error 'cannot install Codex station command policy'
+    return 6
+  fi
   # Codex 0.169 reads --profile agentic-station from agentic-station.config.toml beside an
   # otherwise empty config.toml, and refuses a legacy [profiles.*] table in config.toml.
   # cat, not cp: the self-test wraps cp for copy counting, and that wrapper resets the probe traps.
@@ -80,7 +100,9 @@ launch_fingerprint() { # station worktree; excludes changing sessions and token 
   [ "$LAUNCH_CLI" != codex ] || launch_codex_home "$worktree" || return 6
   digest=$({
     printf '%s\n%s\n' "$LAUNCH_ROW" "$version"
-    for file in scripts/lib/launch.sh scripts/lib/station-output.jq scripts/lib/station-config.pl; do
+    for file in scripts/lib/launch.sh scripts/lib/probe.sh scripts/lib/station-output.jq scripts/lib/station-config.pl \
+                scripts/lib/command-policy.sh config/command-policy.tsv config/stations/command-policy.rules \
+                config/stations/command-policy-probes.txt; do
       shasum -a 256 < "$LAUNCH_ROOT/$file" || return 6
     done
     shasum -a 256 < "$LAUNCH_PROFILE" || return 6
@@ -88,6 +110,7 @@ launch_fingerprint() { # station worktree; excludes changing sessions and token 
       shasum -a 256 < "$LAUNCH_CODEX_HOME/config.toml" || return 6
       shasum -a 256 < "$LAUNCH_CODEX_HOME/agentic-station.config.toml" || return 6
       shasum -a 256 < "$LAUNCH_CODEX_HOME/AGENTS.md" || return 6
+      shasum -a 256 < "$LAUNCH_CODEX_HOME/rules/agentic-flow.rules" || return 6
       readlink "$LAUNCH_CODEX_HOME/auth.json" || return 6
     fi
   } | shasum -a 256) || return 6
@@ -133,6 +156,7 @@ launch_abort() { # background wrapper pid, child-created pgid file
 }
 
 launch_profile_check() { # called after assignment; reject gaps by name
+  launch_policy_check || return 6
   case "$LAUNCH_CLI" in
     codex)
       local installed="$HOME/.codex/agentic-station.config.toml"
@@ -158,6 +182,14 @@ launch_profile_check() { # called after assignment; reject gaps by name
         [["shell","gh"],["shell","gh *"],["webfetch","https://github.com/*"],["webfetch","https://api.github.com/*"],["webfetch","https://raw.githubusercontent.com/*"]] | all(. as $x | any($d[]; . == $x))' "$LAUNCH_PROFILE" >/dev/null \
         || { launch_error 'OpenCode profile missing GitHub deny settings'; return 6; } ;;
   esac
+}
+
+launch_policy_check() {
+  local profile=$LAUNCH_PROFILE
+  [ "$LAUNCH_CLI" != codex ] || profile="$LAUNCH_ROOT/config/stations/command-policy.rules"
+  if command_policy_load "$LAUNCH_ROOT/config/command-policy.tsv" &&
+    command_policy_profile "$LAUNCH_CLI" "$profile"; then return 0; fi
+  launch_error "station command policy missing or drifted in $profile"
 }
 
 launch_codex_config() { # worktree scratch; exact overrides shared by inspect and exec
@@ -193,8 +225,11 @@ launch_opencode_config() { # worktree scratch; deny additions must survive confi
     || { launch_error 'OpenCode effective config could not be read'; return 6; }
   # v2 exposes ordered sources, not a flat config. Reject shell/webfetch allows
   # conservatively; project settings must not weaken the selected deny profile.
-  jq -e --arg profile "$LAUNCH_PROFILE" '
-    any(.[]; .path==$profile and (.info.permissions|type)=="array") and
+  local required
+  required=$(command_policy_opencode) || return 6
+  jq -e --arg profile "$LAUNCH_PROFILE" --argjson required "$required" '
+    any(.[]; .path==$profile and (.info.permissions as $entries |
+      ($entries|type)=="array" and all($required[]; . as $rule | $entries | index($rule)!=null))) and
     ([.[].info.permissions[]? | select(.action=="shell" or .action=="webfetch" or .action=="*")] |
       length>0 and all(.effect=="deny"))' "$scratch/effective.json" >/dev/null \
     || { launch_error 'OpenCode effective deny settings are missing or weakened'; return 6; }
@@ -259,8 +294,9 @@ launch_bundle() { # station step packet scratch
   fi
 }
 
-launch_station() { # station worktree packet result [--resume session | --probe]
+launch_station() { # station worktree packet result [--resume session | --probe | --policy-probe | --interactive-policy-probe]
   local station=$1 worktree=$2 packet=$3 result=$4 resume='' probe=false scratch started ended status=0 step
+  local policy_probe=false interactive=false LAUNCH_INTERACTIVE_CODEX_HOME=''
   shift 4
   worktree=$(cd "$worktree" && pwd -P) || return 2
   case "$packet" in /*) ;; *) packet="$PWD/$packet" ;; esac
@@ -269,6 +305,8 @@ launch_station() { # station worktree packet result [--resume session | --probe]
   [ "$LAUNCH_CLI" != manual ] || { echo "$station is manual: run it interactively" >&2; return 12; }
   if [ "$#" -ne 0 ]; then
     if [ "$#" -eq 1 ] && [ "$1" = --probe ]; then probe=true
+    elif [ "$#" -eq 1 ] && [ "$1" = --policy-probe ]; then probe=true; policy_probe=true
+    elif [ "$#" -eq 1 ] && [ "$1" = --interactive-policy-probe ]; then probe=true; policy_probe=true; interactive=true
     elif [ "$#" -eq 2 ] && [ "$1" = --resume ]; then resume=$2
     else return 2; fi
   fi
@@ -280,6 +318,7 @@ launch_station() { # station worktree packet result [--resume session | --probe]
     fi
   fi
   command -v perl >/dev/null 2>&1 || { launch_error 'missing timeout runtime perl'; return 6; }
+  launch_policy_check || return 6
   if [ "$probe" = false ] && [ -n "${LAUNCH_SCRATCH:-}" ]; then
     scratch=$LAUNCH_SCRATCH
   else
@@ -290,14 +329,34 @@ launch_station() { # station worktree packet result [--resume session | --probe]
     # Probe differs only in its fixed prompt and bounded watchdog. All argv,
     # environment, config inspection, sandbox roots and limits below are shared.
     printf 'Run bash .agentic-flow-probe.sh %s. Return only the JSON it prints.\n' "$station" > "$scratch/bundle.md"
+    if [ "$policy_probe" = true ]; then
+      {
+        printf '\nBefore the filesystem probe, attempt each of the following commands in a separate shell tool call.\n'
+        printf 'These are canaries in a disposable worktree. Use the exact command text with no workarounds.\n'
+        printf 'Continue after refusals and finish with the filesystem probe result.\n\n'
+        cat "$LAUNCH_ROOT/config/stations/command-policy-probes.txt"
+      } >> "$scratch/bundle.md" || { rm -rf "$scratch"; return 2; }
+    fi
     cat "$scratch/bundle.md" > "$scratch/prompt.md"
     LAUNCH_TIMEOUT=120
   else launch_bundle "$station" "$step" "$packet" "$scratch" || { rm -rf "$scratch"; return 2; }; fi
+  [ "$interactive" != true ] || LAUNCH_INTERACTIVE_CODEX_HOME="$scratch/codex-home"
   launch_environment "$worktree" "$scratch" || { rm -rf "$scratch"; return 6; }
+  if [ "$policy_probe" = true ]; then
+    LAUNCH_ENV+=("PATH=${LAUNCH_POLICY_BIN:?}:$PATH")
+  fi
   local -a argv
   case "$LAUNCH_CLI" in
     claude)
-      argv=(claude -p --output-format json --json-schema "$(cat "$LAUNCH_ROOT/config/stations/result.schema.json")" --settings "$LAUNCH_PROFILE" --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --append-system-prompt-file "$scratch/bundle.md" --system-prompt-snapshot off)
+      local settings=$LAUNCH_PROFILE
+      if [ "$policy_probe" = true ]; then
+        settings="$scratch/hook-free.settings.json"
+        local source_settings=$LAUNCH_PROFILE
+        [ "$interactive" != true ] || source_settings="$worktree/.claude/settings.json"
+        jq --slurpfile profile "$LAUNCH_PROFILE" '.disableAllHooks=true | .sandbox=$profile[0].sandbox' \
+          "$source_settings" > "$settings" || { rm -rf "$scratch"; return 6; }
+      fi
+      argv=(claude -p --output-format json --json-schema "$(cat "$LAUNCH_ROOT/config/stations/result.schema.json")" --settings "$settings" --setting-sources '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' --append-system-prompt-file "$scratch/bundle.md" --system-prompt-snapshot off)
       [ "$LAUNCH_CONTRACT_MODE" != excluded ] || argv+=(--bare)
       [ "$LAUNCH_MODEL" = - ] || argv+=(--model "$LAUNCH_MODEL")
       [ "$LAUNCH_EFFORT" = - ] || argv+=(--effort "$LAUNCH_EFFORT")
@@ -306,6 +365,7 @@ launch_station() { # station worktree packet result [--resume session | --probe]
       if [ -n "$resume" ]; then argv+=(--resume "$resume"); elif [ -n "${LAUNCH_SESSION:-}" ]; then argv+=(--session-id "$LAUNCH_SESSION"); fi ;;
     codex)
       launch_codex_config "$worktree" "$scratch" || { rm -rf "$scratch"; return 6; }
+      [ "$policy_probe" != true ] || LAUNCH_CODEX_ARGS+=(-c features.hooks=false)
       argv=(codex exec --profile agentic-station "${LAUNCH_CODEX_ARGS[@]}")
       [ "$station" != reviewer ] || argv+=(-c project_doc_max_bytes=0)
       [ "$LAUNCH_EFFORT" = - ] || argv+=(-c "model_reasoning_effort=$(printf '%s' "$LAUNCH_EFFORT" | jq -Rs .)")
@@ -316,8 +376,15 @@ launch_station() { # station worktree packet result [--resume session | --probe]
     opencode)
       # Standalone prevents a pre-existing server from retaining ambient credentials.
       # OPENCODE_CONFIG_CONTENT supplies the selected role and its deny rules.
-      LAUNCH_ENV+=("OPENCODE_CONFIG=$LAUNCH_PROFILE" "OPENCODE_CONFIG_CONTENT=$(jq -cn --arg s "$station" --rawfile p "$scratch/bundle.md" --slurpfile profile "$LAUNCH_PROFILE" '{mcp:{},agent:{($s):{mode:"primary",prompt:$p,permissions:$profile[0].permissions}}}')")
-      argv=(opencode --standalone run --format json --agent "$station")
+      local agent=$station
+      if [ "$interactive" = true ]; then
+        agent=code-reviewer
+        printf '{}\n' > "$scratch/interactive.json"
+        LAUNCH_ENV+=("OPENCODE_CONFIG=$scratch/interactive.json")
+      else
+        LAUNCH_ENV+=("OPENCODE_CONFIG=$LAUNCH_PROFILE" "OPENCODE_CONFIG_CONTENT=$(jq -cn --arg s "$station" --rawfile p "$scratch/bundle.md" --slurpfile profile "$LAUNCH_PROFILE" '{mcp:{},agent:{($s):{mode:"primary",prompt:$p,permissions:$profile[0].permissions}}}')")
+      fi
+      argv=(opencode --standalone run --format json --agent "$agent")
       [ "$LAUNCH_MODEL" = - ] || argv+=(--model "$LAUNCH_MODEL")
       # OpenCode only resumes ids it issued (ses_…); a ledger id from an earlier controller is skipped.
       case "$resume" in ses*) argv+=(--session "$resume") ;; esac

@@ -86,9 +86,33 @@ strict_probe() {
   }
   export -f probe_boundary git
   sed 's/write_file() { /write_file() { probe_boundary "$1" || return; /' .agentic-flow-probe.sh > .probe-instrumented
-  local result
+  local result denials='[]'
   result=$(bash .probe-instrumented "$station") || return
   unset -f git
+  if [ -x "${PATH%%:*}/protected" ]; then
+    case "$behavior" in
+      ignore-policy)
+        # This invokes only the probe's temporary PATH wrapper.
+        "${PATH%%:*}/git" push origin HEAD 2>/dev/null || true ;;
+      disabled-pushurl)
+        local failure
+        if failure=$("${PATH%%:*}/git" push origin HEAD 2>&1); then return 2; fi
+        case "$failure" in *'push stopped at disabled pushurl no-push://disabled') ;; *) return 2 ;; esac ;;
+      *)
+        while IFS= read -r command; do
+          case "$cli" in
+            codex)
+              jq -cn --arg cmd "$command" '{type:"item.completed",item:{type:"command_execution",command:$cmd,
+                status:"failed",aggregated_output:"Rejected: blocked by policy"}}' ;;
+            opencode)
+              jq -cn --arg cmd "$command" '{type:"tool_use",sessionID:"ses_probe",part:{tool:"bash",
+                state:{input:{command:$cmd},status:"error",error:"Rejected by a permission rule"}}}' ;;
+            claude)
+              denials=$(jq -cn --argjson d "$denials" --arg cmd "$command" '$d+[{tool_name:"Bash",tool_input:{command:$cmd}}]') ;;
+          esac
+        done < config/stations/command-policy-probes.txt ;;
+    esac
+  fi
   # Faulty evidence must fail even if the CLI emits a perfectly valid result.
   case "$behavior" in
     skip-denied) sed '/"operation":"verify_dir"/d' .agentic-flow-probe.log > .probe-log; mv .probe-log .agentic-flow-probe.log ;;
@@ -110,7 +134,8 @@ strict_probe() {
     claude)
       local session='' previous=''
       for argument in "$@"; do [ "$previous" != --session-id ] || session=$argument; previous=$argument; done
-      jq -nc --arg session "$session" --argjson result "$result" '{type:"result",session_id:$session,structured_output:$result}' ;;
+      jq -nc --arg session "$session" --argjson result "$result" --argjson denials "$denials" \
+        '{type:"result",session_id:$session,structured_output:$result,permission_denials:$denials}' ;;
   esac
 }
 STRICT
@@ -1353,6 +1378,7 @@ printf '{}\n' > "$C1/home/.codex/auth.json"
 printf 'operator instructions must never reach a station\n' > "$C1/home/.codex/AGENTS.md"
 ln "$ROOT/config/stations/"* "$C1/project/config/stations/"
 ln "$ROOT/config/roles.tsv" "$C1/project/config/roles.tsv"
+ln "$ROOT/config/command-policy.tsv" "$C1/project/config/command-policy.tsv"
 ln "$ROOT/config/stations/codex.config.toml" "$C1/home/.codex/agentic-station.config.toml"
 mkdir -p "$C1/project/.agents/skills/review-execution" "$C1/project/scripts/lib" "$C1/project/docs"
 ln "$ROOT/AGENTS.md" "$C1/project/AGENTS.md"
@@ -1361,6 +1387,7 @@ ln "$ROOT/AGENTS.md" "$C1/project/AGENTS.md"
 ln "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md" 2>/dev/null \
   || ln -s "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md"
 ln "$ROOT/scripts/lib/station-output.jq" "$ROOT/scripts/lib/station-config.pl" "$ROOT/scripts/lib/roles.sh" "$ROOT/scripts/lib/launch.sh" "$ROOT/scripts/lib/probe.sh" "$ROOT/scripts/lib/ledger.sh" "$ROOT/scripts/lib/ledger.pl" "$C1/project/scripts/lib/"
+ln "$ROOT/scripts/lib/command-policy.sh" "$C1/project/scripts/lib/"
 printf 'PLANNER_MUST_NOT_BE_THE_STATION_CONTRACT\n' > "$C1/project/CLAUDE.md"
 printf '0.15.0\n' > "$C1/project/.agentic-flow-version"
 printf 'fixture packet\n' > "$C1/packet with spaces.md"
@@ -1802,7 +1829,22 @@ launch_tests() (
   # Force-doctor bypasses a passing cache and emits all per-station properties.
   (cd "$C1/project" && "$ROOT/scripts/agentic-flow" doctor --stations --json) > "$C1/doctor.json" 2> "$C1/doctor.err" \
     || fail "station doctor failed: $(cat "$C1/doctor.err") $(cat "$C1/doctor.json")"
-  jq -e 'length==2 and all(.launched and .error==null and (.attempts|length)==5)' "$C1/doctor.json" >/dev/null || fail 'station doctor report incomplete'
+  jq -e 'length==2 and all(.launched and .error==null and .native_policy.status=="denied" and (.attempts|length)==5)' \
+    "$C1/doctor.json" >/dev/null || fail 'station doctor report incomplete'
+  mkdir -p "$HOME/.codex/rules"
+  ln "$ROOT/config/stations/command-policy.rules" "$HOME/.codex/rules/agentic-flow.rules"
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" doctor --stations --station executor --interactive --json) \
+    > "$C1/doctor.json" 2> "$C1/doctor.err" || fail "interactive command-policy doctor failed: $(cat "$C1/doctor.json")"
+  jq -e '.[0].native_policy == {status:"denied", mode:"interactive", unprobed:[]}' \
+    "$C1/doctor.json" >/dev/null || fail 'interactive native denial was not reported'
+  for fault in ignore-policy disabled-pushurl; do
+    printf '%s\n' "$fault" > "$C1/behavior"
+    (cd "$C1/project" && "$ROOT/scripts/agentic-flow" doctor --stations --station executor --json) \
+      > "$C1/doctor.json" 2> "$C1/doctor.err" && fail "station doctor accepted $fault"
+    jq -e '.[0].native_policy.status=="ran"' "$C1/doctor.json" >/dev/null \
+      || fail "station doctor lost the sentinel for $fault: $(cat "$C1/doctor.err") $(cat "$C1/doctor.json")"
+  done
+  rm "$C1/behavior"
   # Strict flags reject defects independently of the launcher's own assumptions.
   "$C1/bin/codex" app-server -c 'mcp_servers."fixture".enabled=false' </dev/null > "$C1/strict" 2>&1 && fail 'stub accepted quoted -c key'
   grep -q 'quoted -c key' "$C1/strict" || fail 'quoted key failed for wrong reason'
@@ -2749,6 +2791,7 @@ NOTIFY
   mkdir -p "$project/config/stations"
   for file in "$ROOT/config/stations/"*; do ln "$file" "$project/config/stations/${file##*/}"; done
   ln "$ROOT/config/roles.tsv" "$project/config/roles.tsv"
+  ln "$ROOT/config/command-policy.tsv" "$project/config/command-policy.tsv"
   printf 'executor\tmanual\t-\t-\t-\t-\t10\tconfig/stations/codex.config.toml\nreviewer\tmanual\t-\t-\t-\t-\t10\tconfig/stations/opencode.json\n' > "$project/.agentic-flow-roles"
   git -C "$project" add config .agentic-flow-roles
   git -C "$project" commit -qm 'Configure manual stations'
