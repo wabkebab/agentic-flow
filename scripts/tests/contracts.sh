@@ -258,7 +258,7 @@ BODY
     esac
   done
   {
-    for key in $SELF_TEST_GROUPS; do printf '%s\t5\n' "$key"; done
+    for key in $SELF_TEST_GROUPS upgrade:upstream; do printf '%s\t5\n' "$key"; done
     for tag in $CONTROLLER_SCENARIOS; do printf 'controller:%s\t5\n' "$tag"; done
     for tag in $STATIONS_SCENARIOS; do printf 'stations:%s\t5\n' "$tag"; done
   } > "$fixture/ceilings"

@@ -2,6 +2,7 @@
 export	560
 contracts	175
 upgrade	120
+upgrade:upstream	60
 hooks	125
 plan-to-issues	65
 lifecycle	135

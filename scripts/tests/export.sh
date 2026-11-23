@@ -387,6 +387,9 @@ DOCTOR_SESSION
   assert_file "$TARGET/.agentic-flow-version"
   grep -qx "$expected_version" "$TARGET/.agentic-flow-version" \
     || fail "export version stamp did not match source HEAD"
+  exported_claude=$(shasum -a 256 "$SOURCE_FIXTURE/templates/harness/CLAUDE.md" | cut -d ' ' -f 1)
+  grep -Fxq "accepted=$exported_claude  CLAUDE.md" "$TARGET/.agentic-flow-upstream" \
+    || fail 'export did not record the installed upstream hash'
   if [ -n "$expected_origin" ]; then
     assert_file "$TARGET/.agentic-flow-source"
     grep -qx "origin $expected_origin" "$TARGET/.agentic-flow-source" \
@@ -462,6 +465,8 @@ SH
   printf '%s\n' older-source > "$TARGET/.agentic-flow-version"
   "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
   assert_file "$TARGET/CLAUDE.md.agentic-new"
+  grep -Fxq "offered=$exported_claude  CLAUDE.md" "$TARGET/.agentic-flow-upstream" \
+    || fail 'export did not record the candidate upstream hash'
   grep -q "# local edits" "$TARGET/CLAUDE.md" || fail "export clobbered an existing file"
   grep -qx older-source "$TARGET/.agentic-flow-version" \
     || fail "export advanced installed version while merge conflicts remained"

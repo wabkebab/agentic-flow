@@ -72,6 +72,7 @@ for protected_dest in "${DESTS[@]}"; do
     die "assurance state is project-owned and cannot be a payload destination" ;;
   esac
 done
+payload_upstream_load "$DST" export
 
 # Assurance is project-owned state, outside the upgrade payload. Seed only a new
 # installation and validate an existing choice before touching payload files.
@@ -129,6 +130,7 @@ while [ "$i" -lt "${#FILES[@]}" ]; do
       ;;
   esac
 done
+payload_upstream_write "$DST"
 
 if [ -n "$source_origin" ]; then
   if [ -f "$DST/.agentic-flow-source" ]; then

@@ -681,3 +681,129 @@ PYTHON
       .claude/settings.json >/dev/null || fail 'upgrade retired the scanner behind a broken custom hook'
   )
 fi
+
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Scenario 8. Start with the customized twin and its installed 0.19.0 entry point.
+  upstream_started=$(self_test_now)
+  adopter_twin_build
+  (
+    cd "$ADOPTER_TWIN"
+    for legacy_file in scripts/agentic-flow scripts/lib/payload-apply.sh; do
+      git -C "$ROOT" show "3a8930a:$legacy_file" > "$legacy_file"
+    done
+    record=.agentic-flow-upstream
+    assert_no_file "$record"
+
+    twin_upgrade() {
+      scripts/agentic-flow upgrade --yes > "$TMP/upstream-upgrade.out" 2>&1 \
+        || { cat "$TMP/upstream-upgrade.out" >&2; fail 'upstream tracking upgrade failed'; }
+    }
+    twin_upstream_hash() {
+      shasum -a 256 "$ADOPTER_TWIN_SOURCE/$1" | cut -d ' ' -f 1
+    }
+    twin_release() {
+      git -C "$ADOPTER_TWIN_SOURCE" add -- "$@"
+      git -C "$ADOPTER_TWIN_SOURCE" commit -qm 'Release upstream tracking fixture'
+    }
+
+    twin_upgrade
+    offered=$(twin_upstream_hash templates/harness/CLAUDE.md)
+    grep -Fxq "offered=$offered  CLAUDE.md" "$record" \
+      || fail 'legacy entry did not record the upstream candidate'
+    cmp -s CLAUDE.md.agentic-new "$ADOPTER_TWIN_SOURCE/templates/harness/CLAUDE.md" \
+      || fail 'legacy entry did not offer the changed upstream bytes'
+    # Complete the tool upgrade before invoking a flag the 0.19.0 CLI never parsed.
+    for tool in scripts/agentic-flow scripts/lib/payload-apply.sh; do
+      mv "$tool.agentic-new" "$tool"
+    done
+    printf 'accepted=%s  obsolete-payload-file\n' "$offered" >> "$record"
+    printf 'accepted=%s  ../outside-payload\n' "$offered" >> "$record"
+    before=$(tree_digest "$PWD")
+    scripts/agentic-flow upgrade --yes > "$TMP/upstream-unsafe.out" 2>&1 \
+      && fail 'upgrade accepted a traversal in the upstream record'
+    grep -q 'unsafe.*path' "$TMP/upstream-unsafe.out" && [ "$before" = "$(tree_digest "$PWD")" ] \
+      || fail 'upgrade did not reject the unsafe path before changing the adopter'
+    sed '$d' "$record" > "$record.next"
+    mv "$record.next" "$record"
+    before=$(tree_digest "$PWD")
+    scripts/agentic-flow upgrade --merged templates/ci/README.md > "$TMP/upstream-no-candidate.out" 2>&1 \
+      && fail 'upgrade acknowledged a path with no candidate'
+    if ! grep -q 'no candidate' "$TMP/upstream-no-candidate.out" || [ "$before" != "$(tree_digest "$PWD")" ]; then
+      cat "$TMP/upstream-no-candidate.out" >&2
+      fail 'upgrade did not reject the missing candidate before changing the adopter'
+    fi
+
+    printf '\nAdopter reconciled the first upstream release.\n' >> CLAUDE.md
+    scripts/agentic-flow upgrade --merged CLAUDE.md > "$TMP/upstream-merged.out" \
+      || fail 'explicit acknowledgment of a hand merge failed'
+    assert_no_file CLAUDE.md.agentic-new
+    grep -Fxq "accepted=$offered  CLAUDE.md" "$record" \
+      || fail 'explicit acknowledgment did not accept the offered hash'
+    # Keep the twin's other customizations and its generated docs index.
+    rm -- Makefile.agentic-new .claude/settings.json.agentic-new .codex/hooks.json.agentic-new docs/README.md.agentic-new
+    candidate_version=$(cat .agentic-flow-candidate-version)
+    twin_upgrade
+    if ! grep -q 'kept *CLAUDE.md$' "$TMP/upstream-upgrade.out" ||
+      ! grep -q 'kept *Makefile$' "$TMP/upstream-upgrade.out"; then
+      fail 'retry did not keep both explicitly and implicitly acknowledged customizations'
+    fi
+    grep -Fxq "accepted=$(twin_upstream_hash templates/harness/Makefile)  Makefile" "$record" \
+      || fail 'deleting a candidate did not accept its upstream hash'
+    if grep -q 'obsolete-payload-file' "$record"; then fail 'upgrade retained an obsolete upstream entry'; fi
+    grep -Fxq "$candidate_version" .agentic-flow-version \
+      || { cat "$TMP/upstream-upgrade.out" >&2; fail 'retry did not advance the installed version'; }
+    assert_no_file .agentic-flow-candidate-version
+    assert_no_file CLAUDE.md.agentic-new
+    customized=$(shasum -a 256 CLAUDE.md | cut -d ' ' -f 1)
+    grep -Fxq "file=$customized  CLAUDE.md" .agentic-flow-installation \
+      || fail 'retry did not record the hand-merged file as installed'
+
+    upstream="$ADOPTER_TWIN_SOURCE/templates/harness/CLAUDE.md"
+    { cat "$upstream"; printf '\n'; } > "$upstream.next"
+    mv "$upstream.next" "$upstream"
+    pristine=templates/ci/README.md
+    printf 'Updated CI notes.\n' > "$ADOPTER_TWIN_SOURCE/$pristine.next"
+    mv "$ADOPTER_TWIN_SOURCE/$pristine.next" "$ADOPTER_TWIN_SOURCE/$pristine"
+    twin_release templates/harness/CLAUDE.md "$pristine"
+    twin_upgrade
+    cmp -s "$upstream" CLAUDE.md.agentic-new && grep -Fxq "$candidate_version" .agentic-flow-version &&
+      [ "$customized" = "$(shasum -a 256 CLAUDE.md | cut -d ' ' -f 1)" ] \
+      || fail 'whitespace-only upstream change did not preserve and offer a merge for the customized file'
+    cmp -s "$ADOPTER_TWIN_SOURCE/$pristine" "$pristine" \
+      || fail 'upgrade did not overwrite a pristine file'
+
+    printf '10.1.0\n' > "$ADOPTER_TWIN_SOURCE/VERSION.next"
+    mv "$ADOPTER_TWIN_SOURCE/VERSION.next" "$ADOPTER_TWIN_SOURCE/VERSION"
+    twin_release VERSION
+    twin_upgrade
+    grep -q 'CLAUDE.md.agentic-new .*pending' "$TMP/upstream-upgrade.out" &&
+      grep -Fxq "$candidate_version" .agentic-flow-version &&
+      [ "$(find . -name 'CLAUDE.md.agentic-new*' | wc -l)" -eq 1 ] \
+      || fail 'unchanged unresolved upstream did not stay pending without a duplicate candidate'
+
+    printf '\nNext upstream guidance.\n' >> "$upstream"
+    twin_release templates/harness/CLAUDE.md
+    twin_upgrade
+    newest="CLAUDE.md.agentic-new.$(cat .agentic-flow-candidate-version)"
+    cmp -s "$upstream" "$newest" || fail 'new upstream did not produce a versioned candidate'
+    mv CLAUDE.md.agentic-new "$TMP/older-candidate"
+    twin_upgrade
+    if ! grep -Fq "$newest   (pending" "$TMP/upstream-upgrade.out" ||
+      ! grep -Fxq "$candidate_version" .agentic-flow-version; then
+      fail 'deleting only the older candidate acknowledged the unresolved offer'
+    fi
+    mv "$TMP/older-candidate" CLAUDE.md.agentic-new
+    scripts/agentic-flow upgrade --merged CLAUDE.md > "$TMP/upstream-merged.out" \
+      || fail 'upgrade did not acknowledge the newest of two candidates'
+    assert_no_file CLAUDE.md.agentic-new
+    assert_no_file "$newest"
+    if ! grep -Fxq '  removed    CLAUDE.md.agentic-new' "$TMP/upstream-merged.out" ||
+      ! grep -Fxq "  removed    $newest" "$TMP/upstream-merged.out" ||
+      ! grep -Fxq "accepted=$(twin_upstream_hash templates/harness/CLAUDE.md)  CLAUDE.md" "$record"; then
+      fail 'acknowledgment did not list both candidates and accept the newest hash'
+    fi
+  )
+  upstream_seconds=$(( $(self_test_now) - upstream_started ))
+  measure_event "group:upgrade:upstream:$upstream_seconds"
+  check_wall_ceiling upgrade:upstream "$upstream_seconds"
+fi

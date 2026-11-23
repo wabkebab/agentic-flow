@@ -285,7 +285,7 @@ fi
 
 # Validate against the dispatcher inventory in every mode, including make check.
 load_wall_ceilings() {
-  local key keys="$SELF_TEST_GROUPS" file="$ROOT/config/test-wall-ceilings.tsv"
+  local key keys="$SELF_TEST_GROUPS upgrade:upstream" file="$ROOT/config/test-wall-ceilings.tsv"
   for key in $CONTROLLER_SCENARIOS; do keys="$keys controller:$key"; done
   for key in $STATIONS_SCENARIOS; do keys="$keys stations:$key"; done
   [ -r "$file" ] || fail 'missing wall-time ceiling file: config/test-wall-ceilings.tsv'
