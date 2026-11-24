@@ -16,10 +16,49 @@ packet_words() {
   if [ "$content" -gt "$serialized" ]; then printf '%s\n' "$content"; else printf '%s\n' "$serialized"; fi
 }
 
+packet_decision() { # station journal-json normalized-comments-json
+  jq -cs --arg station "$1" '
+    def heading($entry):
+      (if $entry.event=="ask" then "### ❓ Decision requested · " else "### ▶️ Resumed · " end) + $entry.step;
+    def prose($entry):
+      split("\n") |
+      (if (.[0]|startswith("<!-- agentic-flow-transition:")) and index("-->")!=null then
+         .[(index("-->")+1):]
+       elif (.[0]|startswith("agentic-flow-transition:")) then .[1:]
+       else . end) |
+      (heading($entry) as $heading |
+       if (.[0]//""|.==$heading or startswith($heading+" — "))
+       then .[1:] | if .[0]=="" then .[1:] else . end |
+         ("Role: \($entry.role) · Transition: \($entry.seq)" +
+           (if ($entry.head//"none")=="none" then "" else " · Head: `\($entry.head[:12])`" end)) as $facts |
+         if .[0]==$facts then .[1:] else . end
+       else . end) | join("\n") |
+      sub("(^|\\n)<!--\\nagentic-flow-run: run=[a-zA-Z0-9/._-]+; host=[a-zA-Z0-9._-]+\\n-->\\n*\\z";"") |
+      (if $entry.event=="ask" then sub("(^|\\n\\n)@[a-zA-Z0-9-]+ needs a decision: [^\\n]*\\n*\\z";"") else . end) |
+      sub("\\A\\n+|\\n+\\z";"";"g");
+    def body($comments; $entry):
+      ([$comments[]|select(.id==$entry.comment_id)|.body]|first) //
+        ("packet: decision comment \($entry.comment_id) not found; retry\n"|halt_error(3)) |
+      prose($entry);
+    .[0].accepted as $entries | .[1] as $comments |
+    ([$entries[]|select(.event=="submit")]|last|.seq//0) as $cutoff |
+    ([$entries[]|select(.event=="ask" and .role==$station and .seq>$cutoff)]|last) as $ask |
+    if $ask==null then null else
+      ([$entries[]|select(.event=="resume" and .seq==($ask.seq+1))]|first) as $answer |
+      {ask:($ask|{seq,role,comment_id,body:body($comments;$ask)}),
+       answer:(if $answer==null then null else $answer|{seq,comment_id,body:body($comments;$answer)} end)}
+    end' <<< "$2"$'\n'"$3" || return 3
+}
+
 packet_format() { # packet JSON file -> station prompt
   jq -r '
     "Station: "+.station+" · issue #"+(.issue|tostring)+" · approved "+.approved,
-    .brief,"Journal:",(.journal|tojson),"Findings:",
+    .brief,
+    (.decision|select(.!=null)|
+      "Owner decision:", "Question (seq \(.ask.seq)):", .ask.body,
+      (if .answer==null then "Answer: none yet" else "Answer (seq \(.answer.seq)):", .answer.body end),
+      (.file|select(.!=null)|"Full text: \(.path) (sha256 \(.sha256))")),
+    "Journal:",(.journal|tojson),"Findings:",
     (.findings_file|select(.!=null)|"Findings file: "+.path+" (count "+(.count|tostring)+", sha256 "+.sha256+")"),
     (.findings[]?|if has("body") then .body else "\(.severity) \(.file):\(.line//"?") \(.text)" end),
     .findings_index[]?,
@@ -33,8 +72,121 @@ packet_measure() { # packet JSON file, requested presentation file
   if [ "$count" -gt "$words" ]; then printf '%s\n' "$count"; else printf '%s\n' "$words"; fi
 }
 
+packet_render_words() { # packet JSON file rendered file
+  packet_format "$1" > "$2" && packet_measure "$1" "$2"
+}
+
+packet_over_limit() { # packet JSON file effective-limit measured-words
+  local packet=$1 limit=$2 words=$3 part count largest='' maximum=0
+  for part in brief journal decision findings submit verification; do
+    count=$(jq --arg part "$part" '.[$part]' "$packet" | packet_words)
+    if [ "$count" -gt "$maximum" ]; then maximum=$count; largest=$part; fi
+  done
+  packet_error "packet exceeds 3000 words ($((words+3000-limit))); largest part: $largest ($maximum words)"
+  return 3
+}
+
+packet_clip_decision() { # intact decision file shell decision file prose budget
+  jq --argjson budget "$3" --slurpfile shell "$2" '
+    def clip($words; $take):
+      if ($words|length)<=$take then .
+      elif $take==0 then "[clipped]"
+      else .[:($words[$take-1]|.offset+.length)]+" [clipped]" end;
+    [.ask.body|match("\\S+";"g")] as $question |
+    [.answer.body//""|match("\\S+";"g")] as $answer |
+    ([($question|length), ([60,($budget*0.4|floor)]|max)]|min) as $question_share |
+    ([($answer|length), ($budget-$question_share)]|min) as $answer_share |
+    .ask.body |= clip($question; $budget-$answer_share) |
+    (if .answer!=null then .answer.body |= clip($answer; $answer_share) else . end) |
+    .clipped=true | .file=$shell[0].file' "$1"
+}
+
+packet_fit_decision() { # packet scratch directory word-limit measured-full-packet findings-file plan issue
+  local tmp=$1 limit=$2 full_words=$3 findings_file=$4 plan=$5 number=$6
+  local base base_words intact_words reserve prose room=0 seq common dest path shell_words words fitted
+  local index_budget=0 pass=0 clipped=false
+  base="$tmp/base"
+  jq --slurpfile other "$tmp/findings-other" '.findings=$other[0]' "$tmp/packet" > "$base" || return 3
+  base_words=$(packet_render_words "$base" "$tmp/base-rendered") || return 3
+  fitted="$tmp/intact-decision"
+  jq '.+{clipped:false,file:null}' "$tmp/decision" > "$fitted" || return 3
+  jq --slurpfile decision "$fitted" '.decision=$decision[0]' "$base" > "$tmp/intact" || return 3
+  intact_words=$(packet_render_words "$tmp/intact" "$tmp/probe") || return 3
+  prose=$(jq '[(.ask.body, (.answer.body//"")) | scan("\\S+")]|length' "$tmp/decision") || return 3
+  reserve=$((intact_words-base_words))
+  if [ "$prose" -gt 600 ] || [ "$intact_words" -gt "$limit" ]; then
+    clipped=true
+    seq=$(jq -r .ask.seq "$tmp/decision") || return 3
+    common=$(git rev-parse --git-common-dir) && common=$(cd "$common" && pwd -P) || return 3
+    dest="$common/agentic-flow/decisions/$plan/$number/$seq.md"
+    path=$dest
+    if [ -n "${PACKET_FINDINGS_DIR:-}" ]; then path="$PACKET_FINDINGS_DIR/decision.md"; fi
+    jq --arg path "$path" '
+      .ask.body="[clipped]" | if .answer!=null then .answer.body="[clipped]" else . end |
+      .clipped=true | .file={path:$path,sha256:("0"*64)}' "$tmp/decision" > "$tmp/shell" || return 3
+    jq --slurpfile shell "$tmp/shell" '.decision=$shell[0]' "$base" > "$tmp/probe-json" || return 3
+    shell_words=$(packet_render_words "$tmp/probe-json" "$tmp/probe") || return 3
+    room=$((limit-shell_words))
+    [ "$room" -le 600 ] || room=600
+    [ "$room" -ge 80 ] || { packet_over_limit "$tmp/intact" "$limit" "$intact_words"; return 3; }
+    reserve=$((shell_words-base_words+room))
+  fi
+
+  # Try the complete findings with the reserved decision before considering an index.
+  if [ "$findings_file" != null ]; then
+    if [ "$((full_words+reserve))" -le "$limit" ]; then
+      base="$tmp/packet"
+    else
+      index_budget=$((limit-base_words-reserve))
+    fi
+  fi
+  if [ "$clipped" = true ]; then
+    fitted="$tmp/clipped-decision"
+    packet_clip_decision "$tmp/decision" "$tmp/shell" "$room" > "$fitted" || return 3
+  fi
+  while :; do
+    if [ "$index_budget" -ge 12 ]; then
+      packet_findings_index "$tmp/findings-source" "$index_budget" > "$tmp/index" || return 3
+      jq --slurpfile index "$tmp/index" --slurpfile decision "$fitted" \
+        '.findings_index=$index[0] | .decision=$decision[0]' "$base" > "$tmp/candidate" || return 3
+    else
+      jq --slurpfile decision "$fitted" '.decision=$decision[0]' "$base" > "$tmp/candidate" || return 3
+    fi
+    words=$(packet_render_words "$tmp/candidate" "$tmp/output") || return 3
+    [ "$words" -gt "$limit" ] || break
+    if [ "$pass" -eq 3 ]; then packet_over_limit "$tmp/candidate" "$limit" "$words"; return 3; fi
+    if [ "$base" = "$tmp/packet" ]; then
+      # JSON and rendered word counts can dominate different parts of the sum.
+      base="$tmp/base"
+      index_budget=$((limit-base_words-reserve))
+    elif [ "$index_budget" -ge 12 ]; then
+      index_budget=$((index_budget-(words-limit)))
+    else
+      # With no index, an intact decision was already measured to fit the base.
+      room=$((room-(words-limit)))
+      [ "$room" -ge 80 ] || { packet_over_limit "$tmp/candidate" "$limit" "$words"; return 3; }
+      packet_clip_decision "$tmp/decision" "$tmp/shell" "$room" > "$fitted" || return 3
+    fi
+    pass=$((pass+1))
+  done
+  if [ "$clipped" = true ]; then
+    if ! { jq -r '"# Owner decision", "", "## Question (seq \(.ask.seq))", "", .ask.body, "",
+      (if .answer==null then "## Answer: none yet" else "## Answer (seq \(.answer.seq))", "", .answer.body end)' \
+      "$tmp/decision" > "$tmp/decision.md" &&
+      packet_publish_file "$tmp/decision.md" "$dest" "${PACKET_FINDINGS_DIR:-}" decision.md > "$tmp/published"; }; then
+      packet_error "cannot deliver decision for #$number ask $seq"
+      return 3
+    fi
+    jq --slurpfile file "$tmp/published" '.decision.file=$file[0]' "$tmp/candidate" > "$tmp/packet" || return 3
+    packet_render_words "$tmp/packet" "$tmp/output" || return 3
+  else
+    mv "$tmp/candidate" "$tmp/packet" || return 3
+    printf '%s\n' "$words"
+  fi
+}
+
 packet_cmd() (
-  local number=${1:-} station='' json=false root tmp initial body author stamp approved doc step plan query comments accepted submit_id submit_index findings submit dropped brief journal verification common head selected red_base key command_plan record words part count largest='' maximum=0
+  local number=${1:-} station='' json=false root tmp initial body author stamp approved doc step plan query comments accepted submit_id submit_index findings submit dropped brief journal decision verification common head selected red_base key command_plan record words part
   local bounce bounce_id bounce_seq findings_file=null word_limit=3000 reserve
   [[ "$number" =~ ^[1-9][0-9]{0,9}$ ]] || return 2
   shift
@@ -103,9 +255,11 @@ packet_cmd() (
   handoff_read "$number" || return 3
   [ "$(printf '%s' "$HANDOFF_ISSUE" | jq -r .body)" = "$body" ] || { packet_error 'issue changed during admission; retry'; return 3; }
   comments=$(printf '%s' "$HANDOFF_ISSUE" | jq .comments.nodes | journal_normalize) || return 3
+  journal=$HANDOFF_REPLAY
+  decision=$(packet_decision "$station" "$journal" "$comments") || return 3
+  printf '%s\n' "$decision" > "$tmp/decision" || return 3
   printf '%s\n' "$comments" > "$tmp/comments" || return 3
   comments=$(jq 'map(.body|=(split("\n")|map(select(startswith("agentic-flow-run:")|not))|join("\n")))' "$tmp/comments") || return 3
-  journal=$HANDOFF_REPLAY
   dropped=$(printf '%s' "$comments" | jq --arg policy "$REVIEW_EXECUTORS$REVIEW_REVIEWERS$REVIEW_APPROVERS" '[.[]|select(.author as $a|($policy|split(" ")|index($a))==null)]|length') || return 3
   accepted=$(printf '%s' "$journal" | jq -c '[.accepted[]|select(.event=="submit")]|last // null')
   submit_id=$(printf '%s' "$accepted" | jq -r '.comment_id // ""')
@@ -131,7 +285,8 @@ packet_cmd() (
       include "journal-marker";
       [to_entries[] | select(.key>$since) | .value | select(.id!=$bounce) |
         select(.author as $a|($reviewers|split(" ")|index($a))!=null) |
-        select(.body|journal_marker_line|(startswith("agentic-flow-hold:") or startswith("agentic-flow-hold-clear:"))|not)]') || return 3
+        select(.body|journal_marker_line|(startswith("agentic-flow-hold:") or startswith("agentic-flow-hold-clear:") or
+          startswith("agentic-flow-transition:"))|not)]') || return 3
   else
     submit=$(printf '%s' "$comments" | jq --arg id "$submit_id" '[.[]|select(.id==$id)]|first // null')
     verification='"no record; run verify-step"'
@@ -164,10 +319,11 @@ packet_cmd() (
     --argjson findings_file "$findings_file" --slurpfile submit "$tmp/submit" --slurpfile verification "$tmp/verification" --argjson dropped "$dropped" \
     '{v:1,issue:$number,station:$station,approved:$approved,plan:$plan,step:$step,brief:$brief,journal:$journal,
       findings:($source[0]+$other[0]),findings_file:$findings_file,submit:$submit[0],verification:$verification[0],
-      dropped:$dropped,notice:("dropped "+($dropped|tostring)+" comment(s) from authors outside the policy")}' > "$tmp/packet" || return 3
-  packet_format "$tmp/packet" > "$tmp/output" || return 3
-  words=$(packet_measure "$tmp/packet" "$tmp/output") || return 3
-  if [ "$words" -gt "$word_limit" ] && [ "$findings_file" != null ]; then
+      decision:null,dropped:$dropped,notice:("dropped "+($dropped|tostring)+" comment(s) from authors outside the policy")}' > "$tmp/packet" || return 3
+  words=$(packet_render_words "$tmp/packet" "$tmp/output") || return 3
+  if [ "$decision" != null ]; then
+    words=$(packet_fit_decision "$tmp" "$word_limit" "$words" "$findings_file" "$plan" "$number") || return 3
+  elif [ "$words" -gt "$word_limit" ] && [ "$findings_file" != null ]; then
     jq --slurpfile other "$tmp/findings-other" '.findings=$other[0]' "$tmp/packet" > "$tmp/without-source" || return 3
     packet_format "$tmp/without-source" > "$tmp/output" || return 3
     words=$(packet_measure "$tmp/without-source" "$tmp/output") || return 3
@@ -178,11 +334,7 @@ packet_cmd() (
     words=$(packet_measure "$tmp/packet" "$tmp/output") || return 3
   fi
   if [ "$words" -gt "$word_limit" ]; then
-    for part in brief journal findings submit verification; do
-      count=$(jq --arg part "$part" '.[$part]' "$tmp/packet" | packet_words)
-      if [ "$count" -gt "$maximum" ]; then maximum=$count; largest=$part; fi
-    done
-    packet_error "packet exceeds 3000 words ($((words+3000-word_limit))); largest part: $largest ($maximum words)"; return 3
+    packet_over_limit "$tmp/packet" "$word_limit" "$words"; return 3
   fi
   if [ "$json" = true ]; then cat "$tmp/packet"; else cat "$tmp/output"; fi
 )

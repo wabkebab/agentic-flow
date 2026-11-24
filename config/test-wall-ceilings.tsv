@@ -10,7 +10,7 @@ stations	435
 stations:launch	15
 stations:verify	105
 stations:handoff	305
-stations:packet	40
+stations:packet	65
 controller	1950
 controller:launch	150
 controller:ship	30
