@@ -1,13 +1,12 @@
 <!-- TRIAGE (first pass · 2026-11-24) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Standard
 > Six small robustness fixes found reviewing PR #185 (issue #186). Next: human approval, then `plan-to-issues`.
 
 # Feature — Review follow-ups from the flow-ergonomics final review
 
 ## Tracker
-- [ ] F-1 Land the six PR #185 review follow-ups — open
-
+- [x] f-1 — #202; approved=6cf9ac5d5d3961f46780fcc5e276a6bf334ef79b; submissions=6cf9ac5d5d3961f46780fcc5e276a6bf334ef79b
 ---
 
 # Part A — Analysis
@@ -250,10 +249,10 @@ unstamped and `journal=v1` issues, open record with a salvage ref left.
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/202
 - **Approval:** status=approved; by=wabkebab; at=2026-11-24; rev=3cda49e7c803a8c89a6d692f344ecb01cc8a2d8b
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** source=final-approval
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: `ship` finalizes Status and Tracker, sets TRIAGE to Done, and commits this
   document's move and the updated index before the first push. It opens the PR and
   waits for CI. The reviewer runs `final-approve` to record the PR, head, and run attempt

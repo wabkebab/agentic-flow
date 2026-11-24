@@ -122,11 +122,11 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-line-controller | Feature | ✅ Done | done |
 | feature-opencode-reviewer-role | Feature | ✅ Done | done |
 | feature-progressive-assurance-profiles | Feature | 🕰️ Superseded | done |
+| feature-review-followups-186 | Feature | ✅ Done | done |
 | feature-station-hardening | Feature | ✅ Done | done |
 | feature-test-streamlining | Feature | ✅ Done | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
 | product-roadmap-history | Product Analysis | ✅ Decided | done |
-| feature-review-followups-186 | Feature | 🟦 Proposal | inprogress |
 | feature-role-signing | Feature | 🟦 Proposal | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |
 <!-- END: generated index -->
