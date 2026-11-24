@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-11-22) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Standard
 > When a station asks for a decision and is later resumed, its packet carries neither the
 > ask nor the answer. This adds the question and the owner's answer to the packet. The
@@ -8,8 +8,7 @@
 # Feature — Carry the ask and its answer into the station packet
 
 ## Tracker
-- [ ] A-1 Put the open ask and its resume answer into the station packet — open (#199)
-
+- [x] a-1 — #199; approved=ab2199ba8ea6ba6ed9139fe386a4668421a5f143; submissions=ab2199ba8ea6ba6ed9139fe386a4668421a5f143
 ---
 
 # Part A — Analysis
@@ -349,10 +348,10 @@ scenario covers the cases above.
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/199
 - **Approval:** status=approved; by=wabkebab; at=2026-11-22; rev=b424cb26476b2c3a0348cf8cc4b091ca09f0dbda
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** url=https://github.com/wabkebab/agentic-flow/pull/204
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: `ship` finalizes Status and Tracker, sets TRIAGE to Done, and commits this
   document's move and the updated index before the first push. It opens the PR and
   waits for CI. The reviewer runs `final-approve` to record the PR, head, and run attempt
