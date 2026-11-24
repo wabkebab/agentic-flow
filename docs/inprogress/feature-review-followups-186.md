@@ -55,11 +55,17 @@ Decisions the executor must honor:
   must still be treated as an ordinary comment. Refactor must be behavior-preserving.
 - Item 5 applies to **unstamped** plans only. A `journal=v1` stamp disables legacy replay
   (`scripts/lib/journal.sh:17`); that must not change.
-- Item 6: an `open` record with no worktree and no branch tip completes like `pending`
-  **except that salvage refs are preserved**, not deleted, because no ancestry check is
-  possible. It marks the record `closed` (the existing completion and retry behavior),
-  prints the preserved refs, and exits 0. A record with a branch but no worktree keeps
-  today's behavior.
+- Item 6: recovery applies only to an `open` record with no worktree whose branch ref is
+  **confirmed absent** (`git show-ref --verify --quiet "$branch_ref"` exits 1; any other
+  failure exits 3). A ref that exists but does not resolve to a commit keeps today's
+  `cannot resolve branch` refusal; do not collapse the two cases through the existing
+  `rev-parse "$branch_ref^{commit}"` check. The recovery makes **one** atomic
+  `open` → `closed` write (`plan_record closed`) and never writes `pending`, so an
+  interruption cannot send a retry into the `pending` path that deletes salvage refs.
+  It preserves all salvage refs (no ancestry check is possible), prints them, and exits 0.
+  `--dry-run` stays read-only (no record write) and prints "Would mark record closed;
+  salvage refs preserved: …". The existing `pending` path is unchanged. A record whose
+  branch ref exists keeps today's behavior.
 - Item 4 fails safe as today; it only adds a visible signal.
 - Item 5 flips `.prefix` only when the transition line parses, matching the bare path.
 
@@ -108,10 +114,14 @@ Bounds: no new loops or queries.
   followed by bare `Implemented in <sha>` and review-marker comments, then those later
   comments still replay. Given the same comments on a `journal=v1` issue, they are still
   ignored.
-- Given an `open` record whose worktree and branch are both gone and a salvage ref still
-  present, then `clean` marks the record `closed`, keeps the salvage ref, and a retry is a
-  no-op; given no salvage refs it also marks the record closed; given a branch still
-  present, behavior is unchanged.
+- Given an `open` record whose worktree is gone, whose branch ref is confirmed absent, and
+  a salvage ref still present, then `clean` marks the record `closed`, keeps the salvage
+  ref, and a retry prints "Nothing to remove". A fault injected after the write attempt
+  never leaves the record `pending`. `--dry-run` writes nothing and reports the refs would
+  be preserved. Given no salvage refs it also marks the record closed.
+- Given an `open` record whose branch ref exists but cannot resolve to a commit, then
+  `clean` still exits 3 with `cannot resolve branch`; given a resolvable branch, behavior
+  is unchanged.
 
 ## Invariants
 - Bash 3.2 compatible: no `mapfile`, no associative arrays, guard empty arrays under
@@ -135,8 +145,17 @@ Base: `main`. One branch (`review-followups-186`) and one PR; one commit closing
 issue via `Fixes #N`.
 
 ## Definition of done (whole brief)
-All six scenarios covered by tests that fail before the change and pass after;
-`make check` and `make test` green; no unrelated behavior changed.
+Every scenario with an observable baseline failure (items 2, 4, 5, 6) is covered by a
+test declared under Red-first that fails on the base and passes after. Items 1 and 3 are
+compatibility checks: item 3's packet fixtures must be green on both revisions, and
+item 1's logical-`$PWD` test is hardening that passes on both. `make check` and
+`make test` green; no unrelated behavior changed.
+
+Bash 3.2 evidence is collected on the executor's macOS host, where `/bin/bash` is 3.2.57:
+the empty-marker test prints `$BASH_VERSION` and runs `scripts/lifecycle-status.sh` under
+`/bin/bash`. CI's App job runs on Ubuntu (newer Bash, where the empty-array expansion does
+not abort), so CI is not Bash 3.2 evidence; the Red-first failure for item 2 is expected
+only on the macOS host.
 
 ## Verification commands
 ```bash
@@ -167,11 +186,13 @@ unstamped and `journal=v1` issues, open record with a salvage ref left.
 **DoD:** All six scenarios pass; `make check` and `make test` green.
 **Verify:** `make test-one F=lifecycle && make test-one F=controller && make test-one F=stations && make test-one F=contracts`
 **Risks:**
-- Item 6 must not complete a record whose branch still exists, and must not delete
-  salvage refs.
+- Item 6 must not complete a record whose branch ref exists (resolvable or not), must
+  not write `pending`, and must not delete salvage refs.
 - Item 3 must not let a bare marker line enter structured findings parsing.
 - Item 5 must not re-enable legacy replay on `journal=v1` issues.
 **Red-first:** `scripts/self-test.sh --only lifecycle` — scripts/tests/lifecycle.sh
+**Red-first:** `scripts/self-test.sh --only controller` — scripts/tests/controller.sh
+**Red-first:** `scripts/self-test.sh --only contracts` — scripts/tests/contracts.sh
 **Commit:** `Fix the six PR #185 review follow-ups.`
 
 ---
