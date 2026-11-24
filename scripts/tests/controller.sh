@@ -1082,6 +1082,19 @@ test_timing_begin block launch
 #!/usr/bin/env bash
 case "${PLAN_FAULT:-}:${1:-}:${2:-}" in
   slow:fetch:*) exec sleep 30 ;;
+  old-git:show-ref:--exists) exit 129 ;;
+  ref-error:show-ref:--exists) exit 1 ;;
+  branch-reappears:for-each-ref:--count=1001)
+    "$PLAN_FIXTURE_GIT" update-ref refs/heads/stranded "$PLAN_REAPPEARED_TIP" "" || exit ;;
+  term-branch:update-ref:refs/heads/signal-branch)
+    "$PLAN_FIXTURE_GIT" "$@" || exit
+    kill -TERM "$PPID"
+    exit ;;
+  term-start:worktree:add)
+    "$PLAN_FIXTURE_GIT" "$@" || exit
+    kill -TERM "$PPID"
+    exit ;;
+  term-clean:update-ref:-d) kill -TERM "$PPID"; exit 1 ;;
   broken:fetch:*|offline:fetch:*|offline:ls-remote:*) exit 1 ;;
   long-listing:worktree:list)
     "$PLAN_FIXTURE_GIT" "$@" || exit
@@ -1102,6 +1115,16 @@ esac
 exec "$PLAN_FIXTURE_GIT" "$@"
 GIT
   chmod +x "$fixture/bin/git"
+  cat > "$fixture/bin/mv" <<'MV'
+#!/usr/bin/env bash
+if [ "${PLAN_FAULT:-}" = recover-write ]; then
+  cat "${@: -2:1}" >> "$PLAN_WRITE_LOG"
+  command /bin/mv "$@" || exit
+  exit 1
+fi
+exec /bin/mv "$@"
+MV
+  chmod +x "$fixture/bin/mv"
   export PATH="$fixture/bin:$PATH"
 
   plan_cli() {
@@ -1240,11 +1263,30 @@ PLAN
   plan_cli 3 clean demo-plan
   rm "$wt/untracked"
   (cd "$wt" && plan_cli 3 clean demo-plan)
+  ln -s "$wt" "$fixture/worktree-alias"
+  (cd -L "$fixture/worktree-alias" && plan_cli 3 clean demo-plan)
+  grep -Fq 'run from another checkout' "$fixture/output" || fail 'CLI alias lost the inside-worktree refusal'
   [ "$(git rev-parse refs/heads/demo-plan)" = "$tip" ] && git show-ref --verify --quiet "$salvage" || fail 'clean refusal deleted plan refs'
   git -C "$origin" update-ref refs/heads/demo-plan "$base"
   git update-ref refs/remotes/origin/demo-plan "$base"
   git branch -q --set-upstream-to=origin/demo-plan demo-plan
   git checkout -q main
+  (
+    cd -L "$fixture/worktree-alias"
+    [ "$PWD" != "$(pwd -P)" ] || fail 'clean guard fixture did not retain a logical path'
+    . "$ROOT/scripts/lib/start.sh"
+    action=clean id=demo-plan fetch=false dry_run=false
+    common="$project/.git" worktree=$wt record="$project/.git/agentic-flow/plans/$id"
+    rc=0
+    # Supply a merged base and no dirty files so only the alias guard prevents removal.
+    git update-ref refs/remotes/origin/main "$tip"
+    plan_clean > "$fixture/guard-output" 2>&1 || rc=$?
+    [ "$rc" = 3 ] && grep -Fq 'run from another checkout' "$fixture/guard-output" \
+      || fail 'logical path bypassed the clean guard'
+  )
+  git update-ref refs/remotes/origin/main "$base"
+  [ -d "$wt" ] && [ "$(git rev-parse refs/heads/demo-plan)" = "$tip" ] &&
+    git show-ref --verify --quiet "$salvage" || fail 'alias refusal removed a plan artifact'
 
   plan_cli 0 clean demo-plan --dry-run
   for item in "$wt" refs/heads/demo-plan "$salvage"; do
@@ -1310,6 +1352,110 @@ PLAN
   git worktree move "$worktrees/checked-out" "$fixture/moved-worktree"
   PLAN_FAULT=long-listing plan_cli 3 clean checked-out --no-fetch
   [ "$(git -C "$fixture/moved-worktree" rev-parse HEAD)" = "$tip" ] || fail 'clean deleted a branch still checked out elsewhere'
+
+  flow="$project/.git/agentic-flow"
+  recovery_record="$flow/plans/stranded"
+  recovery_salvage=refs/agentic-flow/salvage/stranded/run
+  open_record=$(printf 'open\tstranded\tmain')
+  closed_record=$(printf 'closed\tstranded\tmain')
+  printf '%s\n' "$open_record" > "$recovery_record"
+  git update-ref "$recovery_salvage" "$tip"
+  PLAN_FAULT=old-git plan_cli 3 clean stranded --no-fetch
+  grep -Fq 'cannot resolve branch' "$fixture/output" &&
+    grep -Fq 'Git 2.43 or newer is required to recover this record' "$fixture/output" ||
+    fail 'unsupported Git recovery lacked the version hint'
+  printf 'open\told-start\tmain\n' > "$flow/plans/old-start"
+  PLAN_FAULT=old-git plan_cli 0 start old-start --no-fetch
+  [ -d "$worktrees/old-start" ] || fail 'old Git lost an existing start path'
+
+  git_exists_rc=0
+  git show-ref --exists refs/heads/main >/dev/null 2>&1 || git_exists_rc=$?
+  # Positive recovery fixtures require native --exists. The fallback above runs on all Git versions.
+  if [ "$git_exists_rc" -ne 129 ]; then
+    plan_cli 0 clean stranded --dry-run --no-fetch
+    grep -Fxq "Would mark record closed; salvage refs preserved: $recovery_salvage" "$fixture/output" &&
+      [ "$(cat "$recovery_record")" = "$open_record" ] || fail 'stranded dry-run changed the record or hid its salvage'
+
+    handoff_lock="$flow/locks/stranded"
+    controller_lock="$flow/locks/controller-stranded"
+    worktree_lock="$flow/worktree-locks/stranded"
+    mkdir -p "$handoff_lock" "$controller_lock" "$worktree_lock"
+    touch -t 200001010000 "$handoff_lock" "$worktree_lock"
+    for lock_owner in held ownerless; do
+      if [ "$lock_owner" = held ]; then printf '%s\n' "$$" > "$worktree_lock/owner"; fi
+      for action in start clean; do
+        plan_cli 3 "$action" stranded --no-fetch
+        for detail in "$worktree_lock" 'agentic-flow start' 'clean' 'ps -p <pid>' 'any host' 'remove' 'owner' 'rmdir'; do
+          grep -Fq "$detail" "$fixture/output" || fail "worktree lock recovery omitted $detail"
+        done
+        absent stranded
+        [ -d "$worktree_lock" ] && [ "$(cat "$recovery_record")" = "$open_record" ] &&
+          [ "$(git rev-parse "$recovery_salvage")" = "$tip" ] || fail 'worktree lock contention changed plan state'
+      done
+      plan_cli 0 clean stranded --dry-run --no-fetch
+      [ -d "$worktree_lock" ] || fail 'dry-run removed the held worktree lock'
+      if [ "$lock_owner" = held ]; then
+        [ "$(cat "$worktree_lock/owner")" = "$$" ] || fail 'contention changed the lock owner'
+        rm "$worktree_lock/owner"
+      fi
+    done
+    rmdir "$worktree_lock"
+    PLAN_FAULT=ref-error plan_cli 3 clean stranded --no-fetch
+    grep -Fq 'cannot resolve branch' "$fixture/output" || fail 'ref lookup error was treated as absence'
+    git symbolic-ref refs/heads/stranded refs/heads/missing-target
+    plan_cli 3 clean stranded --no-fetch
+    grep -Fq 'cannot resolve branch' "$fixture/output" &&
+      [ "$(git symbolic-ref refs/heads/stranded)" = refs/heads/missing-target ] || fail 'clean removed a dangling branch'
+    git symbolic-ref --delete refs/heads/stranded
+    # A lightweight branch ref can point at an object whose type cannot peel to a commit.
+    git rev-parse "$tip^{tree}" > "$project/.git/refs/heads/stranded"
+    plan_cli 3 clean stranded --no-fetch
+    grep -Fq 'cannot resolve branch' "$fixture/output" &&
+      git show-ref --exists refs/heads/stranded || fail 'clean removed a non-commit branch'
+    rm "$project/.git/refs/heads/stranded"
+    [ "$(cat "$recovery_record")" = "$open_record" ] && [ ! -e "$worktree_lock" ] ||
+      fail 'recovery refusal changed the record or left the worktree lock'
+
+    PLAN_FAULT=branch-reappears PLAN_REAPPEARED_TIP="$tip" plan_cli 3 clean stranded --no-fetch
+    [ "$(cat "$recovery_record")" = "$open_record" ] && [ "$(git rev-parse refs/heads/stranded)" = "$tip" ] ||
+      fail 'recovery failed to recheck branch absence before closing'
+    git update-ref -d refs/heads/stranded "$tip"
+
+    PLAN_FAULT=recover-write PLAN_WRITE_LOG="$fixture/record-writes" plan_cli 3 clean stranded --no-fetch
+    [ "$(cat "$fixture/record-writes")" = "$closed_record" ] &&
+      [ "$(cat "$recovery_record")" = "$closed_record" ] && [ ! -e "$worktree_lock" ] ||
+      fail 'interrupted recovery did not publish only a closed record'
+    plan_cli 0 clean stranded --no-fetch
+    grep -Fq 'Nothing to remove' "$fixture/output" &&
+      [ "$(git rev-parse "$recovery_salvage")" = "$tip" ] || fail 'recovery retry lost salvage or did not complete'
+    [ -d "$handoff_lock" ] && [ -d "$controller_lock" ] || fail 'clean disturbed another lock namespace'
+
+    printf '%s\n' "$open_record" > "$recovery_record"
+    plan_cli 0 clean stranded --no-fetch
+    grep -Fq "$recovery_salvage" "$fixture/output" &&
+      [ "$(git rev-parse "$recovery_salvage")" = "$tip" ] &&
+      [ "$(cat "$recovery_record")" = "$closed_record" ] || fail 'recovery failed to close and report preserved salvage'
+    printf 'open\tno-salvage\tmain\n' > "$flow/plans/no-salvage"
+    plan_cli 0 clean no-salvage --no-fetch
+    grep -q '^closed' "$flow/plans/no-salvage" || fail 'recovery needed a salvage ref to close'
+    plan_cli 0 start stranded --no-fetch
+    [ "$(cat "$recovery_record")" = "$open_record" ] && [ -d "$handoff_lock" ] && [ -d "$controller_lock" ] ||
+      fail 'start after recovery did not preserve the fresh record and separate locks'
+    plan_cli 3 clean stranded --no-fetch
+    grep -Fq 'worktree is dirty' "$fixture/output" && [ "$(cat "$recovery_record")" = "$open_record" ] ||
+      fail 'clean did not see the newly opened plan'
+  fi
+  for signal_point in branch start; do
+    PLAN_FAULT="term-$signal_point" plan_cli 3 start "signal-$signal_point" --no-fetch
+    absent "signal-$signal_point"
+    [ ! -e "$flow/worktree-locks/signal-$signal_point" ] || fail 'interrupted start kept its lock'
+  done
+  git branch signal-clean "$tip"
+  printf 'open\tsignal-clean\tmain\n' > "$flow/plans/signal-clean"
+  PLAN_FAULT=term-clean plan_cli 3 clean signal-clean --no-fetch
+  [ ! -e "$flow/worktree-locks/signal-clean" ] &&
+    git show-ref --verify --quiet refs/heads/signal-clean || fail 'interrupted clean kept its lock or deleted its branch'
+  plan_cli 0 clean signal-clean --no-fetch
 )
 
 # Advisory verdict lengths warn; hard bounds and structural rules still refuse.

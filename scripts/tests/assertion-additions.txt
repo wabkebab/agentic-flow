@@ -530,3 +530,42 @@ publication_expect	0 --surface tree --resolve "$id"
 publication_expect	1 --surface all --report "$fixture/report"
 publication_expect	1 --surface tree
 publication_expect	5 --surface all --report "$fixture/incomplete"
+fail	"$workflow accepted the unreadable key"
+fail	"$workflow could block App checks or try cache restore without a key"
+fail	"$workflow emitted a key after a parse error"
+fail	"$workflow fixture did not change the filter format"
+fail	"$workflow omitted the App key fallback warning"
+fail	"empty review marker aborted lifecycle: $(cat "$TMP/lifecycle-empty-marker.out")"
+fail	"worktree lock recovery omitted $detail"
+fail	'CLI alias lost the inside-worktree refusal'
+fail	'alias refusal removed a plan artifact'
+fail	'bare transition exposed structured findings'
+fail	'clean did not see the newly opened plan'
+fail	'clean disturbed another lock namespace'
+fail	'clean guard fixture did not retain a logical path'
+fail	'clean removed a dangling branch'
+fail	'clean removed a non-commit branch'
+fail	'contention changed the lock owner'
+fail	'dry-run removed the held worktree lock'
+fail	'empty review marker did not report malformed review record'
+fail	'handoff recovery disturbed the ownerless worktree lock'
+fail	'interrupted clean kept its lock or deleted its branch'
+fail	'interrupted recovery did not publish only a closed record'
+fail	'interrupted start kept its lock'
+fail	'journal=v1 replayed legacy comments'
+fail	'logical path bypassed the clean guard'
+fail	'near-miss journal fixture setup failed'
+fail	'near-miss journal stamp rejected'
+fail	'near-miss legacy stamp rejected'
+fail	'near-miss marker prevented legacy submit and review replay'
+fail	'old Git lost an existing start path'
+fail	'recovery failed to close and report preserved salvage'
+fail	'recovery failed to recheck branch absence before closing'
+fail	'recovery needed a salvage ref to close'
+fail	'recovery refusal changed the record or left the worktree lock'
+fail	'recovery retry lost salvage or did not complete'
+fail	'ref lookup error was treated as absence'
+fail	'start after recovery did not preserve the fresh record and separate locks'
+fail	'stranded dry-run changed the record or hid its salvage'
+fail	'unsupported Git recovery lacked the version hint'
+fail	'worktree lock contention changed plan state'
