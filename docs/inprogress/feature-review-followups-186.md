@@ -248,7 +248,7 @@ unstamped and `journal=v1` issues, open record with a salvage ref left.
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-24; rev=3cda49e7c803a8c89a6d692f344ecb01cc8a2d8b
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
