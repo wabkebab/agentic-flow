@@ -58,10 +58,10 @@ A closed Strict step means reviewed clean. The Status block and CI record shippi
 > into the Makefile. Treat it as a proposal: verify the commands against this project's
 > manifests and scripts before considering adoption complete.
 >
-> **Assess the stack before you wire it up** (`METHODOLOGY.md` §9). Read the manifests,
-> lockfiles, and installed toolchain versions to see what this project actually runs; check
-> current stable/LTS releases from release notes, changelogs, and official docs — *not*
-> training-data recall, which skews stale. Install a modern version by default; record any
+> **Assess the stack before you wire it up** ([stack assessment](docs/reference/stack-assessment.md)).
+> Read the manifests, lockfiles, and installed toolchain versions to see what this project
+> actually runs. Check current stable/LTS releases from release notes, changelogs, and
+> official docs. Install a modern version by default and record any
 > deliberate deviation (peer-dependency ceiling, platform constraint, known-bad release)
 > under Gotchas. Pin the versions actually chosen in the manifests, lockfiles, and Makefile
 > — not just in prose here.
@@ -101,18 +101,14 @@ only a named narrower command to resolve a concrete gap.
   committing it in a target project.
 <!-- END SHARED CLAUDE TOOLS -->
 
-### Hooks (enforced, not optional)
-Six hooks in `.claude/settings.json` enforce the contract (`METHODOLOGY.md` §8):
-- **SessionStart → cached step context** (`scripts/hooks/session-context.sh`)
-- **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`)
-- **PreToolUse(Bash) → block `git add -A` / `.` / `--all`** (`scripts/hooks/block-git-add-all.sh`)
-- **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)
-- **PreToolUse(Bash) → scan staged content before a commit** (`scripts/hooks/scan-secrets.sh`)
-  — override a false positive with `AGENTIC_ALLOW_SECRET=1` on the commit.
-- **PreToolUse(Bash) → route workflow writes through `handoff`**
-  (`scripts/hooks/require-step-comment.sh`) — Claude/Codex only; **OpenCode has no hook
-  engine in this stack**, so the reviewer side still relies on
-  `.opencode/agent/code-reviewer.md` being followed, not on mechanical enforcement.
+### Command policy and hooks
+
+- `config/command-policy.tsv` generates native deny rules for Claude, Codex and OpenCode.
+  They block pushes, merges, broad staging and direct workflow writes.
+- Git runs `scripts/git-hooks/pre-commit` via `core.hooksPath` to scan staged secrets.
+- Claude and Codex use `check-gate.sh` for Stop/SubagentStop and `session-context.sh` for
+  cached step context at SessionStart. Codex also uses `guard-attached-git-dir.sh`.
+- See `METHODOLOGY.md` §8 for enforcement and `ADOPTION.md` for setup.
 
 ## Architecture (orient an agent fast)
 <!-- The map: top-level components, where the domain logic lives, the data model, the

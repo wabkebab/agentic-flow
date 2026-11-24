@@ -1,5 +1,5 @@
 # Native Release — build and attach per-platform binaries when a version tag is pushed.
-# See METHODOLOGY.md §10 for the reasoning behind this shape.
+# See docs/reference/ci-cd.md for the reasoning behind this shape.
 #
 # Shipped INERT: copy to .github/workflows/release-native.yml to activate. Fill every
 # <ANGLE-BRACKET> spot and the native-build block in each platform job before you turn it
@@ -8,7 +8,7 @@
 # attach here and should rely on deploy.yml instead, not both.
 #
 # Action SHAs below were current when this template shipped. Re-verify them against the
-# latest releases when you adopt it (METHODOLOGY.md §9) — a pin you inherited is not a
+# latest releases when you adopt it (docs/reference/stack-assessment.md) — a pin you inherited is not a
 # version you chose.
 #
 # Action pins verified: 2026-07-25

@@ -11,7 +11,7 @@
 > (fast type-check + lint gate), `make test`, `make test-one F=…`, `make build`, `make run`.
 > `CLAUDE.md` explains those targets and their gotchas; the `Makefile` runs them.
 >
-> **Standard version:** [`VERSION`](VERSION) — a human-facing semver, bumped deliberately
+> **Standard version:** The scaffold's `VERSION` is a human-facing semver, bumped deliberately
 > on a contract change (a section here, in `CLAUDE.md`/`AGENTS.md`, or a hook/script
 > behavior an adopted project depends on). `scripts/export.sh` and `scripts/init.sh` combine
 > it with the exact commit as `<semver>+<sha>` (semver build-metadata syntax) and stamp it
@@ -93,7 +93,7 @@ skips the unattended entry gate. Interactive stations use the commands in §6.
 the PR merges, so GitHub issue state is deliberately *not* the shipping signal. What shipped
 is recorded in the implementation doc's Status block and enforced by
 `scripts/lifecycle-status.sh --doc <moved-document> --phase close-out --check --verify-evidence`
-against a CI run (§10). The Strict tracker or Standard work issue stays open through
+against a [CI run](docs/reference/ci-cd.md). The Strict tracker or Standard work issue stays open through
 close-out; use `close-out prep|finish` (§6).
 
 **Why the handoffs carry data, not just labels.** `agentic-flow handoff` journals the
@@ -167,8 +167,8 @@ baseline, never lower it.
 Strict is mandatory for authentication, secrets, destructive or data-loss behavior,
 migrations, public compatibility contracts, money or entitlements, release infrastructure,
 sensitive data, or an explicit human request. Quick is local and never authorizes a push or
-merge. Every profile keeps the same engineering standards, secret and push hooks, CI
-authority, and human ownership of pushing and merging. Review identity guarantees still
+merge. Every profile keeps the same engineering standards, command policy, pre-commit scan,
+CI authority, and human ownership of pushing and merging. Review identity guarantees still
 depend on the configured review identity mode, not the profile.
 
 Profiled specs activate the matching issue topology. A profile-less existing spec retains
@@ -398,7 +398,10 @@ Rules:
    the close-out and stops before pushing so the closer can commit it.
 2. The human runs `agentic-flow ship <doc> --wait-review`. It runs `make ship-gate` when
    available, pushes the prepared head once, opens the PR, and waits for CI and final review.
-   A review bounce that changes the head requires another push and fresh evidence.
+   On a re-run, it reuses a green gate record for the same tree, gate inputs, and harness
+   version. `--force-gate` clears the matching record and reruns the gate. It skips the push
+   when it can confirm that the branch at the configured push destination already has the
+   exact head. A review bounce that changes the head requires another push and fresh evidence.
 3. After CI succeeds, the reviewer records final approval for that PR, head, run, and attempt
    with `agentic-flow final-approve <moved-doc>`. `ship` finishes close-out, closes the tracker
    or Standard work issue, and checks pre-merge readiness. The human merges and runs
@@ -452,8 +455,20 @@ Fixes #73
 
 ## 8. Enforcement & harness capabilities
 
-### Shipped guardrails (in the scaffold, enforced — not convention)
-`.claude/settings.json` wires hooks that mechanize the contract so it can't be quietly missed:
+### Shipped guardrails
+
+- **Native command policy.** `config/command-policy.tsv` generates deny rules for Claude
+  Code, Codex, and OpenCode. These reserve push and merge for the human, enforce named
+  staging, and route workflow writes through the lifecycle commands. The controller loads
+  the station rules. Codex also uses `scripts/hooks/guard-attached-git-dir.sh` for the
+  attached Git-directory option. Install the Codex rules for interactive sessions.
+  [Adoption and verification](ADOPTION.md#verify)
+- **Git pre-commit secret scan.** Set `core.hooksPath` to `scripts/git-hooks`, or chain
+  `scripts/git-hooks/pre-commit` from your existing pre-commit hook and propagate its exit
+  status. This scans staged content in human, agent, and scripted commits. The scan requires
+  both `gitleaks` and the local high-signal pattern set. Use `AGENTIC_ALLOW_SECRET=1` on the
+  commit to override a false positive. See the
+  [scanner layering rule](docs/reference/engineering-standards.md#111-automate-what-a-human-should-never-review).
 - **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`): blocks a turn from
   ending while the fast gate is red, feeding the failure back to the agent; if the retry is
   still red it warns and allows rather than looping forever. Only an exact green state
@@ -462,20 +477,9 @@ Fixes #73
   takes over half the hook timeout must raise that timeout to accommodate both runs.
   Scoped to the *fast* gate, not the full suite. `check` ships prefilled with harness sanity
   checks; extend it with the stack's type-check + lint.
-- **PreToolUse(Bash) → block `git add -A` / `git add .` / `--all`**
-  (`scripts/hooks/block-git-add-all.sh`): enforces §7's "stage files by name" mechanically.
-- **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`):
-  enforces §7's "never push — the human controls all pushes and merges" mechanically.
-- **PreToolUse(Bash) → scan staged content for credentials** (`scripts/hooks/scan-secrets.sh`):
-  enforces §11.1's "secret scanning at the commit boundary". Blocks a commit whose staged
-  diff carries a credential shape, because CI catches that one step too late — a committed
-  secret has to be rotated. Runs `gitleaks` (required) **and** a local high-signal pattern
-  set, always both — see §11.1 on why the second layer is not a fallback.
-  `AGENTIC_ALLOW_SECRET=1` overrides a false positive, visibly.
-- **PreToolUse(Bash) → route workflow writes through `handoff`**
-  (`scripts/hooks/require-step-comment.sh`): blocks raw workflow label mutations,
-  closing/reopening plan-stamped issues, and direct role-token calls. Claude and Codex
-  use the shared lexer; OpenCode follows its reviewer contract without a hook engine.
+- **SessionStart** (`scripts/hooks/session-context.sh`) gives Claude and Codex cached step
+  context when available. Review and trust Codex's project hooks with `/hooks` after adoption
+  or a hook change.
 - **`scripts/docs-index.sh`** keeps `docs/README.md`'s index derived from each doc's TRIAGE
   header (run it, or `--check` in CI) so the index can't go stale by hand.
 - **`scripts/check-payload-manifest.sh`** fails when an agent adapter, harness template, or
@@ -491,7 +495,7 @@ Fixes #73
   candidates, real Make targets, CI posture, and docs-index freshness.
 - **`scripts/check-action-pins.sh`** keeps GitHub Actions pinned to immutable SHAs with a
   readable version comment (fatal), and nags when the pins haven't been re-verified in
-  months (`--strict` to enforce, `--online` to check against GitHub). See §10.
+  months (`--strict` to enforce, `--online` to check against GitHub). See the [CI/CD reference](docs/reference/ci-cd.md).
 - **`scripts/self-test.sh`** exercises the scaffold's offline invariants, especially export
   behavior and hook behavior.
 
@@ -520,7 +524,7 @@ These make the handoff explicit and parallel instead of sequential:
   reviewers* is worth paying for: an architecture-level pass, a security-critical change, or
   a branch already shipping. Never a default, never a substitute for §1's per-step review.
   Severity and verdict vocabulary come from §5 unchanged — an ensemble adds reviewers, not a
-  scale. Each verdict names its own reviewer, as §10's close-out check already requires.
+  scale. Each verdict names its own reviewer, for [close-out](#close-out-and-shipping).
   **Aggregation is not a vote.** One named arbiter re-checks every `high` finding, and every
   finding the reviewers disagree on, against the source before it counts; disagreement is
   settled by that check, and unresolved disagreement is reported as unresolved rather than
@@ -531,8 +535,7 @@ These make the handoff explicit and parallel instead of sequential:
 - **`/security-review`** — a security pass on the pending branch diff; complements a
   Security doc.
 - **`/verify` and `/run`** — drive the app to confirm a fix behaves, not just that tests pass.
-- **More hooks** — beyond the six shipped hooks: a PostToolUse reminder on shared-type edits,
-  a commit-message-format check, etc.
+- **Project hooks** can remind agents about shared-type edits or enforce commit message format.
 - **Memory** — persist durable decisions (this methodology, the commit contract, recurring
   review themes) so each session doesn't re-derive them.
 
@@ -540,271 +543,12 @@ These make the handoff explicit and parallel instead of sequential:
 
 ## 9. Starting a project — assess the stack first
 
-Before the first line of code on a new project (and when adopting the scaffold into a young
-one), **establish what the current stack actually is, then install a modern version of it.**
-An agent's default is training-data recall, which skews stale by months to years — it will
-happily scaffold last year's major version and pin it.
-
-1. **Assess what's there.** For an existing project: read the manifests and lockfiles
-   (`package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, …) and the installed toolchain
-   versions (`node -v`, `python -V`, `cargo -V`, …). Note anything already end-of-life.
-2. **Check what's current.** Look up current stable releases from release notes / changelogs
-   / official docs — not from memory. Note the LTS line where one exists.
-3. **Choose deliberately.** Default to the current stable (or current LTS for runtimes).
-   Deviate only for a stated reason — a peer dependency's ceiling, a platform constraint, a
-   known-bad release — and write that reason down in `CLAUDE.md` → Gotchas.
-4. **Pin it where it executes.** Versions live in the manifests, lockfiles, and `Makefile` —
-   the places that run. Prose in `CLAUDE.md` explains; it doesn't pin.
-5. **Verify green before building on it.** `make check && make test` on the fresh stack, so a
-   later failure is attributable to your code and not the scaffold.
-
-The same discipline applies mid-project when adding a dependency: check the current version
-rather than typing the one you remember.
-
----
+See [Starting a project — assess the stack first](docs/reference/stack-assessment.md).
 
 ## 10. CI/CD pipeline shape
 
-The reference structure, extracted from a working two-workflow setup. Stack-agnostic: the
-*shape* is the standard, the commands inside it come from the `Makefile`.
-
-> **Working templates ship in [`templates/ci/`](templates/ci/README.md)** — `ci.yml`,
-> `deploy.yml`, and `release-native.yml`, exported **inert** so adoption never activates a
-> workflow (least of all a deploy, or a release with `contents: write`) behind you. Copy
-> into `.github/workflows/` and fill the `<ANGLE-BRACKET>` spots. This section is the *why*;
-> those files are the *what*.
-
-**Three workflows, three different risk postures.**
-
-| | `ci.yml` | `deploy.yml` | `release-native.yml` |
-|---|---|---|---|
-| Trigger | `pull_request` | `push` to release branches + `workflow_dispatch` | push of a `v*` tag + `workflow_dispatch` |
-| Concurrency group | per PR number | per ref name | none — parallel releases of different tags are fine |
-| `cancel-in-progress` | **`true`** — superseded runs are waste | **`false`** — finishing a deploy beats half-deploying | n/a |
-| Permissions | `contents: read` (+ `pull-requests: read` for path filtering) | `contents: read` + only the write scope the registry push needs | `contents: write` — creating the release and uploading assets needs it |
-
-`release-native.yml` only fits a stack that compiles to a standalone native binary (Go,
-Rust, a bundled Node CLI, …); a service deployed via `deploy.yml` has nothing to attach
-there and should not ship both.
-
-### Rules that apply to both
-
-- **Pin everything.** Third-party actions by **full commit SHA** with a `# vX.Y.Z` trailing
-  comment; runners by version (`ubuntu-24.04`, never `ubuntu-latest`). A tag is mutable —
-  a SHA is the only pin that resists a compromised action.
-- **Enforce the pins with `scripts/check-action-pins.sh`.** Pins rot two ways and the check
-  grades them differently. *Structure* — a tag pin, or a SHA with no version comment — is
-  always fatal; it runs in `make check`. *Staleness* is only a warning there, because pins
-  decay with the calendar rather than with edits, and failing the fast gate on a date would
-  turn a repo red with no change to it (and, via the Stop hook, block agents from ending
-  turns). Enforcement lives in a scheduled `--strict` run instead. `--online` resolves each
-  pin against GitHub to prove it really is the version its comment claims and to report
-  newer releases; `--stamp` records the re-verification date.
-- **Least-privilege `permissions:` declared explicitly** at workflow level. Add a scope only
-  where a step actually needs it, and comment *why* (e.g. path-filter actions call the Pulls
-  API and fail with "Resource not accessible by integration" without `pull-requests: read`).
-- **Steps stay thin — call `make` targets.** The Makefile is the one executable source of
-  truth (§ top-matter); a CI step that inlines its own command sequence is a second source
-  that will drift from what runs locally. Keep the YAML to checkout/setup/`make …`.
-- **The workflow file is its own trigger.** Include `.github/workflows/<file>.yml` in every
-  path filter, so editing CI re-runs everything it gates.
-- **Ship the runbook with the workflow.** A trailing comment block listing one-time server
-  setup and every required repository secret — the operational knowledge dies otherwise.
-
-### `ci.yml` — job structure
-
-```
-changes ──┬─▶ app checks        (if changes.app and no reusable green result)
-          ├─▶ docs checks       (if changes.docs)
-          ├─▶ compose syntax    (if changes.docker)
-          └─▶ <area N>          (if changes.<area>)
-secrets-scan  (never filtered — always runs)
-                    │
-                    ▼
-              ci-gate           needs: [everything], if: always()
-```
-
-1. **`changes`** outputs gate independently testable areas. The App filter runs App checks
-   when any changed path falls outside its explicit bookkeeping list. The shipped list covers
-   `docs/inprogress/**/*.md`, `docs/done/**/*.md`, `docs/backlog/**/*.md`,
-   `docs/memory/**/*.md`, `docs/MEMORY.md`, `ROADMAP.md`, and `docs/agentic-flow-explained.html`.
-   Keep payload files and App inputs outside these exclusions. The Docs job covers the
-   bookkeeping paths and runs the docs-index and memory-index checks.
-   When App is selected, `scripts/app-input-key.sh` hashes the tracked App entries (paths,
-   modes, and object IDs) from the PR merge checkout using the same exclusions. A successful
-   App job saves its run URL and attempt under that key. CI skips App only on an exact cache
-   hit with a valid source run reference and reports that source in the run summary. A miss
-   or a key, cache, or source-reference error runs App checks. The current head still needs
-   a green CI gate and final approval.
-2. **Per-area jobs** run when their change flag is true. App also requires a cache miss
-   or an unusable cache result.
-3. **`secrets-scan`** — scans the PR diff range (`base…head`) for **verified** leaked
-   secrets. Never path-filtered: a leak can land in any file.
-4. **The app job runs cheapest-first, fail-fast:** checkout → set up runtime *with dependency
-   caching* → **install from the lockfile** (`npm ci`, `poetry install --sync`, …, never a
-   resolving install) → audit production dependencies at a severity threshold → typecheck →
-   lint → test → build. Give the build dummy CI env values so it never needs real secrets.
-5. **`ci-gate`** — the single **required status check** in branch protection:
-
-   ```yaml
-   ci-gate:
-     needs: [changes, secrets-scan, app, docs, compose-syntax]
-     if: always()
-     steps:
-       - run: |
-           for result in "${{ needs.secrets-scan.result }}" "${{ needs.app.result }}" "${{ needs.docs.result }}" …; do
-             case "$result" in
-               success|skipped) ;;
-               *) echo "Upstream job ended in '$result'"; exit 1 ;;
-             esac
-           done
-   ```
-
-   **This job exists because path filtering and required checks conflict.** A skipped job
-   never reports, so naming the per-area jobs directly as required checks would block every
-   PR that legitimately skips one. The gate collapses them into one always-reporting status
-   that treats `skipped` as pass and `cancelled`/`failure` as fail.
-
-### `deploy.yml` — job structure
-
-1. **Build & push an image**, tagged twice: a moving `latest` pointer *and* an immutable
-   per-commit tag for rollback. Use registry/GHA layer caching.
-2. **Deploy pulls by digest**, not by tag — the tag can be re-pointed between push and pull;
-   the digest is what was actually built and tested.
-3. **SSH properly:** an ssh-agent action for the key, and `known_hosts` populated from an
-   `ssh-keyscan` output stored as a secret. Never `StrictHostKeyChecking=no`.
-4. **Sync deploy assets through an explicit allowlist** (rsync `--include … --exclude='*'`).
-   Operator-maintained state on the server — the runtime `.env`, TLS certs — must never be
-   in the sync set.
-5. **Wait for readiness, then verify from outside:** `up -d --wait --wait-timeout N`, then an
-   external healthcheck against the public URL with bounded retries and backoff. Skip
-   gracefully (don't fail) when the URL secret isn't configured.
-6. **Gate optional stacks** (monitoring, workers) on their own path filter *or* a
-   `workflow_dispatch` input, so routine app deploys don't restart them.
-
-### `release-native.yml` — job structure
-
-```
-create-release ──┬─▶ build-linux    (matrix: target triples)
-                  ├─▶ build-macos    (matrix: target triples)
-                  └─▶ build-windows
-```
-
-1. **`create-release`** resolves the tag once — from the pushed ref, or from a
-   `workflow_dispatch` input so a failed platform can be re-run without re-tagging — and
-   creates the (draft-free) GitHub release every build job then uploads to. A hyphen in the
-   tag (`v1.2.3-rc1`) marks it prerelease automatically via SemVer's own convention, so
-   there is nothing separate to keep in sync.
-2. **One job per OS**, matrixed over target triples within a job where cross-compilation
-   supports it (e.g. Rust). Packaging genuinely differs per OS — archive format, binary
-   extension, shell — which is why these are three explicit jobs, not one OS-matrixed job
-   branching three ways internally.
-3. **Each platform job**: checkout → native build (stack-specific, the fill-in block) →
-   smoke-test the binary exists and is executable → package into an archive → upload it to
-   the release created in step 1.
-4. **No `ci-gate`-style aggregation job.** Unlike `ci.yml`, nothing here is a required
-   status check gating a merge — a failed platform build fails its own job, visibly, and
-   can be re-run individually via `workflow_dispatch` without re-running the others.
-
-### Wiring it to the harness
-
-CI green must mean the same thing as local green: the CI gate is `make check && make test`
-(§ Stack profile in `CLAUDE.md`), plus `scripts/docs-index.sh --check` where practical. If a
-CI step needs a command that isn't a Make target, that's a signal the Makefile is incomplete
-— add the target and call it, rather than growing logic in YAML.
-
----
+See [CI/CD pipeline shape](docs/reference/ci-cd.md).
 
 ## 11. Engineering standards
 
-The practices that make review cheap and bugs rare. §1–§10 cover *process*; this covers the
-work itself. Ordered by when it applies, not by importance.
-
-### 11.1 Automate what a human should never review
-
-Anything a machine can catch must not cost review attention. In value-per-effort order:
-
-1. **Linter + formatter, failing the build.** Ends style argument permanently and catches a
-   real bug class — unused variables, shadowing, unreachable code. Formatting is not a
-   review topic.
-2. **Static analysis / type checking, strict mode on.** The single highest-yield item if the
-   language has it. Strict from day one; retrofitting strictness onto a grown codebase is a
-   project, not a setting.
-3. **Dependency scanning, blocking on high severity.** `npm audit`, `pip-audit`,
-   `cargo audit`, Dependabot — whatever fits. In CI (§10 shows the step), not on a human's
-   memory.
-4. **Secret scanning at the commit boundary.** The scaffold ships this as a hook
-   (`scripts/hooks/scan-secrets.sh`) rather than CI-only, because *CI is one step too late*:
-   a secret that reaches a commit must be rotated, and rewriting history does not un-leak
-   it. The hook fails at the last moment the fix is still free.
-
-   **Layer scanners; never let one substitute for another.** The hook runs `gitleaks` *and*
-   a local pattern set, always both. Treating the local set as a fallback made the hook
-   weaker on machines that had gitleaks, whose default config allowlists documented sample
-   credentials — a staged AWS example key came back clean and nothing else ran. Any gate
-   whose strength depends on which tools happen to be installed will eventually be green for
-   the wrong reason: see also `make test` silently skipping `shellcheck`.
-
-> **The ratchet:** when a reviewer catches the same *class* of issue twice, it stops being a
-> review comment and becomes a lint rule, a type, or a test. A review that repeats itself is
-> a missing automation.
-
-Wire each of these into `make check` / `make test` so local and CI enforce identically —
-never into CI alone, or the feedback arrives after the context is gone.
-
-### 11.2 Design stage — before any code
-
-These go in the Feature/Security doc (Part A), not in the implementer's head:
-
-- **Write the interface before the implementation.** Function signatures, endpoint
-  contracts, data shapes. Most architecture problems are visible here, where they cost
-  nothing to fix, and invisible once there's code to be attached to.
-- **Threat-model in one paragraph.** Who are the untrusted actors, what data actually
-  matters, what is the worst thing an attacker could do. Ten minutes, mandatory for anything
-  touching auth, money, or user data. The Security template has a slot; the Feature template
-  now does too.
-- **Decide the failure behavior up front.** For each external call: what happens on timeout,
-  on a malformed response, on partial success. Decided during coding, these become ad-hoc
-  guesses that no one revisits.
-
-### 11.3 Coding stage
-
-- **Validate at the boundary, once.** All external input — HTTP, files, env, DB rows — is
-  parsed into a validated type at the edge. Interior code then trusts its inputs. Defensive
-  checks scattered through the interior is the anti-pattern: it never adds up to a guarantee,
-  and it hides where the real contract is.
-- **Never build strings that get interpreted.** Parameterized queries, argument *arrays* for
-  subprocesses, no string-concatenated HTML or paths. This removes most of the injection
-  category by construction rather than by vigilance.
-- **Deny by default, at a chokepoint.** Authorization in middleware or a decorator, not
-  per-handler. Per-handler means you will eventually miss one, and the miss is silent.
-- **Secrets from config, never literals.** Including in tests. Including "temporarily" — the
-  commit boundary is where temporary becomes permanent.
-- **No unbounded anything.** Every query has a limit, every loop over external data has a
-  cap, every outbound request has a timeout.
-- **Make illegal states unrepresentable** where the language allows it. A type that cannot
-  hold the bad value needs no runtime check and no test.
-
-### 11.4 Verification
-
-- **Test the failure path first.** Everyone tests the happy path; the bugs are in the other
-  one. If a step's tests only cover success, the step is not done.
-- **Every bug fix starts with a failing test that reproduces it.** This is already the
-  contract for Security fixes (§3) — it applies to every fix. It prevents the regression and,
-  more importantly, forces understanding the cause instead of pattern-matching a change that
-  makes the symptom go away.
-- **Test behavior, not implementation.** If a refactor that preserves behavior breaks the
-  tests, the tests were asserting the wrong thing and are now blocking the cleanup.
-
-### 11.5 Review
-
-- **Small diffs.** A 200-line PR gets a real review; a 2000-line one gets a rubber stamp.
-  This is the highest-leverage habit available, solo or not — it's why §7 requires one
-  logical commit per step and §6 requires one issue per independently-shippable step.
-- **Explain the change in writing before submitting.** Half the problems surface while
-  writing the explanation. The *why*-first commit body (§7) is where this goes — it is not
-  ceremony, it is the review you give yourself.
-- **Use a checklist, not vibes.** Minimum viable version, applied to every change:
-  1. Is all external input validated at the boundary?
-  2. Are the failure paths handled — timeout, malformed, partial?
-  3. Is there enough logging to debug this at 2am without a debugger?
+See [Engineering standards](docs/reference/engineering-standards.md).

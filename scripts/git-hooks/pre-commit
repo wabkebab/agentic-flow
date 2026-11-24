@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -uo pipefail
+hook_dir=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck source=scripts/lib/staged-secrets.sh
+. "$hook_dir/../lib/staged-secrets.sh" || exit 2
+# Git already resolved the worktree and index for this invocation.
+SCAN_CWD=$(pwd -P) || scan_error 'working directory'
+EFFECTIVE_CWD=$SCAN_CWD
+SCAN_ENV=()
+HOOK_GIT_ARGS=()
+scan_index

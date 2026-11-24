@@ -38,11 +38,15 @@ plan_fill_template() {
       $0="Base: `" base "`." substr($0,length("Base: `<base branch>`.")+1); bases++
     }
     /^```agentic-flow-plan$/ {block=1; blocks++}
-    /^```$/ {block=0}
+    /^```$/ {
+      if (block && !formats) print "format: 2"
+      block=0
+    }
+    block && /^format:/ {formats++; if ($0!="format: 2") invalid_format=1}
     block && $0=="id: <stable-plan-id>" {$0="id: " id; ids++}
     block && $0=="branch: <branch>" {$0="branch: " branch; branches++}
     {print}
-    END {if (dates!=1 || bases!=1 || blocks!=1 || block || ids!=1 || branches!=1) exit 1}
+    END {if (dates!=1 || bases!=1 || blocks!=1 || block || ids!=1 || branches!=1 || formats>1 || invalid_format) exit 1}
   ' "$1"
 }
 

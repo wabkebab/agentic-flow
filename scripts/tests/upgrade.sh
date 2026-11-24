@@ -73,6 +73,7 @@ printf '# source\tdestination\tscope\tmerge-policy\tdisposition\n.claude/setting
   > "$STATUS_FIX/config/payload.tsv"
 cp "$ROOT/scripts/doctor.sh" "$STATUS_FIX/scripts/doctor.sh"
 cp "$ROOT/scripts/lib/payload-apply.sh" "$STATUS_FIX/scripts/lib/payload-apply.sh"
+ln "$ROOT/scripts/lib/git-guards.sh" "$STATUS_FIX/scripts/lib/git-guards.sh"
 chmod +x "$STATUS_FIX/scripts/doctor.sh"
 "$AGENTIC_FLOW_CLI" --help > "$TMP/agentic-flow-help.out" 2>&1
 grep -q "project's installed harness stamp" "$TMP/agentic-flow-help.out" \
@@ -423,6 +424,8 @@ fi
 # and its pristine templates, just as for the export group's source-only cases.
 if [ -f "$ROOT/scripts/export.sh" ]; then
   adopter_twin_build
+  export CODEX_HOME="$TMP/upgrade-codex-home"
+  git -C "$ADOPTER_TWIN" config --local core.hooksPath scripts/git-hooks
   (
     cd "$ADOPTER_TWIN"
     twin_before=$(tree_digest "$ADOPTER_TWIN")
@@ -459,4 +462,348 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     git checkout -- Makefile
     adopter_twin_preserved
   )
+fi
+
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Run the installed 0.19.0 entry point, with the current worktree as the release.
+  legacy_release="$TMP/legacy-guard-release"
+  legacy_twin="$TMP/legacy-guard-adopter"
+  bridge_temp="$TMP/bridge-temp"
+  mkdir -p "$legacy_release" "$bridge_temp"
+  git -C "$ROOT" archive 3a8930a | tar -x -C "$legacy_release"
+  fresh_export "$legacy_release" "$legacy_twin"
+  (
+    cd "$legacy_twin"
+    export TMPDIR="$bridge_temp"
+    touch "$bridge_temp/keep"
+    git init -q
+    git config user.name 'Legacy adopter'
+    git config user.email legacy@example.invalid
+    git config commit.gpgsign false
+    jq '.hooks.PreToolUse[0].hooks += [{type:"command",command:"test -f CLAUDE.md"}]' \
+      .claude/settings.json > customized
+    mv customized .claude/settings.json
+    printf 'origin file://%s\nref main\n' "$ADOPTER_TWIN_SOURCE" > .agentic-flow-source
+    git ls-files --others --exclude-standard -z | xargs -0 git add --
+    git commit -qm 'Install and customize 0.19.0'
+
+    legacy_snapshot() {
+      git rev-parse HEAD
+      git for-each-ref --format='%(refname) %(objectname)'
+      cksum .git/index
+      tree_digest "$PWD"
+    }
+    before=$(legacy_snapshot)
+    status=0
+    scripts/agentic-flow diff --json > "$TMP/legacy-diff.out" || status=$?
+    if [ "$status" -ne 1 ] || ! jq -e .changes_available "$TMP/legacy-diff.out" >/dev/null; then
+      fail 'legacy diff did not report the available upgrade'
+    fi
+    [ "$before" = "$(legacy_snapshot)" ] || fail 'legacy diff wrote to the adopter'
+
+    mkdir "$bridge_temp/not-a-fetch" "$TMP/agentic-flow-fetch.XYZ999"
+    ln -s "$TMP/agentic-flow-fetch.XYZ999" "$bridge_temp/agentic-flow-fetch.XYZ999"
+    for forged in "$bridge_temp/not-a-fetch" "$TMP/agentic-flow-fetch.XYZ999" "$bridge_temp/agentic-flow-fetch.XYZ999"; do
+      status=0
+      "$AGENTIC_FLOW_CLI" upgrade --bridged-from "$forged" --confirmed > "$TMP/bridge-reject.out" 2>&1 || status=$?
+      if [ "$status" -ne 2 ] || ! grep -q 'invalid upgrade fetch directory' "$TMP/bridge-reject.out"; then
+        fail 'forged bridge directory was not rejected'
+      fi
+      [ "$before" = "$(legacy_snapshot)" ] || fail 'forged bridge changed the adopter'
+    done
+    if [ "$(id -u)" -eq 0 ]; then
+      foreign_fetch="$bridge_temp/agentic-flow-fetch.ABC123"
+      git clone --quiet "$ADOPTER_TWIN_SOURCE" "$foreign_fetch/source"
+      chown 65534 "$foreign_fetch"
+      status=0
+      "$foreign_fetch/source/scripts/agentic-flow" upgrade --bridged-from "$foreign_fetch" --confirmed \
+        > "$TMP/bridge-owner.out" 2>&1 || status=$?
+      [ "$status" -eq 2 ] && [ -d "$foreign_fetch/source" ] \
+        && [ "$before" = "$(legacy_snapshot)" ] || fail 'foreign-owned bridge directory was not rejected'
+      mv "$foreign_fetch" "$bridge_temp/foreign-owner-rejected"
+    fi
+
+    status=0
+    python3 - > "$TMP/bridge-pty.out" 2>&1 <<'PYTHON' || status=$?
+import errno
+import os
+import pty
+import select
+import subprocess
+import sys
+import time
+
+master, slave = pty.openpty()
+process = subprocess.Popen(
+    ["scripts/agentic-flow", "upgrade"], stdin=slave, stdout=slave, stderr=slave
+)
+os.close(slave)
+output = bytearray()
+prompt = b"Apply agentic-flow upgrade now?"
+answered = False
+deadline = time.monotonic() + 30
+try:
+    while time.monotonic() < deadline and len(output) < 1024 * 1024:
+        readable, _, _ = select.select([master], [], [], 0.2)
+        if not readable:
+            continue
+        try:
+            chunk = os.read(master, 8192)
+        except OSError as error:
+            if error.errno != errno.EIO:
+                raise
+            break
+        if not chunk:
+            break
+        output.extend(chunk)
+        if not answered and prompt in output:
+            os.write(master, b"y\n")
+            answered = True
+        if output.count(prompt) > 1:
+            break
+    sys.stdout.buffer.write(output)
+    sys.exit(process.wait(timeout=1) if output.count(prompt) == 1 else 1)
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait()
+    os.close(master)
+PYTHON
+    [ "$status" -eq 0 ] || { cat "$TMP/bridge-pty.out" >&2; fail 'legacy interactive upgrade did not complete'; }
+    [ "$(awk '/Apply agentic-flow upgrade now/ {n++} END {print n+0}' "$TMP/bridge-pty.out")" -eq 1 ] \
+      || fail 'legacy interactive upgrade did not prompt exactly once'
+    [ -f "$bridge_temp/keep" ] &&
+      [ -z "$(find "$bridge_temp" -type d -name 'agentic-flow-fetch.*' -print)" ] \
+      || fail 'bridge did not clean exactly its fetched release'
+    [ "$(git config --local --get core.hooksPath)" = scripts/git-hooks ] \
+      || { cat "$TMP/bridge-pty.out" >&2; fail 'legacy upgrade did not enable Git hooks'; }
+    jq -e 'any(.hooks.PreToolUse[]?.hooks[]?; .command=="test -f CLAUDE.md")' \
+      .claude/settings.json >/dev/null || fail 'legacy upgrade removed a custom hook'
+    for live_settings in .claude/settings.json .codex/hooks.json; do
+      jq -e 'all(.hooks.PreToolUse[]?.hooks[]?; (.command // "") |
+        test("scripts/hooks/(block-git-add-all|block-push|require-step-comment|scan-secrets)\\.sh$") | not)' \
+        "$live_settings" >/dev/null || fail "legacy upgrade left retired hooks in $live_settings"
+    done
+    cmp -s config/stations/command-policy.rules "$CODEX_HOME/rules/agentic-flow.rules" \
+      || fail 'legacy upgrade did not install the interactive Codex policy'
+    for denied in 'git push' 'git add -A' 'gh issue edit'; do
+      jq -e --arg deny "Bash($denied:*)" '.permissions.deny | index($deny) != null' \
+        .claude/settings.json >/dev/null || fail "upgraded CLI settings allow $denied"
+    done
+    printf 'key = "%s"\n' "$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')" > credential
+    git add credential
+    git commit -qm 'Probe upgraded scanner' > "$TMP/upgraded-scan.out" 2>&1 \
+      && fail 'upgraded twin committed a credential'
+    grep -qx 'agentic-flow: staged credential blocked' "$TMP/upgraded-scan.out" \
+      || fail 'upgraded commit failed outside the scanner'
+
+    # shellcheck source=scripts/lib/git-guards.sh
+    . "$PWD/scripts/lib/git-guards.sh"
+    probe_project="$TMP/legacy-probe-alias"
+    ln -s "$(pwd -P)" "$probe_project"
+    for probe_case in scanner inherited-env missing other-rejection custom-chain; do
+      mkdir -p custom-hooks
+      case "$probe_case" in
+        scanner|inherited-env) git config --local core.hooksPath scripts/git-hooks ;;
+        *) git config --local core.hooksPath custom-hooks ;;
+      esac
+      case "$probe_case" in
+        other-rejection) printf '#!/bin/sh\necho another hook rejected >&2\nexit 1\n' > custom-hooks/pre-commit ;;
+        custom-chain) printf '#!/bin/sh\nexec scripts/git-hooks/pre-commit\n' > custom-hooks/pre-commit ;;
+      esac
+      [ ! -f custom-hooks/pre-commit ] || chmod +x custom-hooks/pre-commit
+      before=$(legacy_snapshot)
+      status=0
+      if [ "$probe_case" = inherited-env ]; then
+        GIT_DIR="$PWD/.git" GIT_WORK_TREE="$PWD" GIT_INDEX_FILE="$PWD/.git/index" \
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=missing \
+          git_guard_probe "$probe_project" || status=$?
+      else
+        git_guard_probe "$probe_project" || status=$?
+      fi
+      case "$probe_case" in
+        scanner|inherited-env|custom-chain) [ "$status" -eq 0 ] || fail "Git probe failed ($probe_case)" ;;
+        *) [ "$status" -ne 0 ] || fail "Git probe accepted a non-scanner verdict ($probe_case)" ;;
+      esac
+      [ "$before" = "$(legacy_snapshot)" ] || fail "Git probe touched the adopter ($probe_case)"
+    done
+    git config --local --unset core.hooksPath
+    git_guard_enable "$probe_project" &&
+      [ "$(git config --local --get core.hooksPath)" = scripts/git-hooks ] \
+      || fail 'could not enable the Git hook through a directory alias'
+    # Reuse the upgraded files with the twin's original registrations to
+    # exercise failed activation and an unproven custom hooks path.
+    # shellcheck source=scripts/lib/guard-migration.sh
+    . "$ROOT/scripts/lib/guard-migration.sh"
+    scopes='core claude codex opencode ci docs'
+    git checkout HEAD -- .claude/settings.json .codex/hooks.json
+    codex_before=$(cksum .codex/hooks.json)
+    for bad_adapter in conflicting malformed; do
+      case "$bad_adapter" in
+        conflicting)
+          jq '.permissions = false' .claude/settings.json > conflicting
+          mv conflicting .claude/settings.json ;;
+        malformed) printf '{' >> .claude/settings.json ;;
+      esac
+      guard_before=$(cksum .claude/settings.json)
+      migrate_guards "$ADOPTER_TWIN_SOURCE" "$PWD" "$scopes" \
+        > "$TMP/activation-error.out" 2>&1 && fail "migration accepted $bad_adapter adapter settings"
+      grep -q 'pending: command policy not active' "$TMP/activation-error.out" \
+        || fail "migration did not report $bad_adapter adapter settings"
+      [ "$guard_before" = "$(cksum .claude/settings.json)" ] &&
+        [ "$codex_before" = "$(cksum .codex/hooks.json)" ] || fail 'failed activation retired guards'
+      git checkout HEAD -- .claude/settings.json
+    done
+    conflict_home="$TMP/codex-rules-conflict"
+    conflict_path="$conflict_home/rules/agentic-flow.rules"
+    mkdir -p "$conflict_path"
+    claude_hooks_before=$(jq -c .hooks .claude/settings.json)
+    CODEX_HOME="$conflict_home" migrate_guards "$ADOPTER_TWIN_SOURCE" "$PWD" "$scopes" \
+      > "$TMP/rules-conflict.out" 2>&1 && fail 'migration completed without installing Codex rules'
+    grep -q 'pending: command policy not active' "$TMP/rules-conflict.out" \
+      || fail 'migration did not report the conflicting Codex rules path'
+    [ "$claude_hooks_before" = "$(jq -c .hooks .claude/settings.json)" ] &&
+      [ "$codex_before" = "$(cksum .codex/hooks.json)" ] &&
+      [ -z "$(ls -A "$conflict_path")" ] || fail 'conflicting Codex rules path changed the guards or destination'
+    must_block "$PWD/scripts/hooks/block-push.sh" 'git push'
+    must_block "$PWD/scripts/hooks/block-git-add-all.sh" 'git add -A'
+    must_block "$PWD/scripts/hooks/require-step-comment.sh" 'gh issue edit 1 --add-label needs-review'
+    must_block "$PWD/scripts/hooks/scan-secrets.sh" 'git commit -m probe'
+
+    git config --local core.hooksPath custom-broken
+    migrate_guards "$ADOPTER_TWIN_SOURCE" "$PWD" "$scopes" \
+      > "$TMP/custom-hook-upgrade.out" 2>&1 && fail 'unproven custom hook path completed migration'
+    grep -q 'custom core.hooksPath (custom-broken) kept' "$TMP/custom-hook-upgrade.out" \
+      || fail 'upgrade did not report the custom hook path'
+    [ "$(git config --local --get core.hooksPath)" = custom-broken ] \
+      || fail 'upgrade replaced the custom hook path'
+    jq -e 'any(.hooks.PreToolUse[]?.hooks[]?; .command | endswith("/scripts/hooks/scan-secrets.sh"))' \
+      .claude/settings.json >/dev/null || fail 'upgrade retired the scanner behind a broken custom hook'
+  )
+fi
+
+if [ -f "$ROOT/scripts/export.sh" ]; then
+  # Scenario 8. Start with the customized twin and its installed 0.19.0 entry point.
+  upstream_started=$(self_test_now)
+  adopter_twin_build
+  (
+    cd "$ADOPTER_TWIN"
+    for legacy_file in scripts/agentic-flow scripts/lib/payload-apply.sh; do
+      git -C "$ROOT" show "3a8930a:$legacy_file" > "$legacy_file"
+    done
+    record=.agentic-flow-upstream
+    assert_no_file "$record"
+
+    twin_upgrade() {
+      scripts/agentic-flow upgrade --yes > "$TMP/upstream-upgrade.out" 2>&1 \
+        || { cat "$TMP/upstream-upgrade.out" >&2; fail 'upstream tracking upgrade failed'; }
+    }
+    twin_upstream_hash() {
+      shasum -a 256 "$ADOPTER_TWIN_SOURCE/$1" | cut -d ' ' -f 1
+    }
+    twin_release() {
+      git -C "$ADOPTER_TWIN_SOURCE" add -- "$@"
+      git -C "$ADOPTER_TWIN_SOURCE" commit -qm 'Release upstream tracking fixture'
+    }
+
+    twin_upgrade
+    offered=$(twin_upstream_hash templates/harness/CLAUDE.md)
+    grep -Fxq "offered=$offered  CLAUDE.md" "$record" \
+      || fail 'legacy entry did not record the upstream candidate'
+    cmp -s CLAUDE.md.agentic-new "$ADOPTER_TWIN_SOURCE/templates/harness/CLAUDE.md" \
+      || fail 'legacy entry did not offer the changed upstream bytes'
+    # Complete the tool upgrade before invoking a flag the 0.19.0 CLI never parsed.
+    for tool in scripts/agentic-flow scripts/lib/payload-apply.sh; do
+      mv "$tool.agentic-new" "$tool"
+    done
+    printf 'accepted=%s  obsolete-payload-file\n' "$offered" >> "$record"
+    printf 'accepted=%s  ../outside-payload\n' "$offered" >> "$record"
+    before=$(tree_digest "$PWD")
+    scripts/agentic-flow upgrade --yes > "$TMP/upstream-unsafe.out" 2>&1 \
+      && fail 'upgrade accepted a traversal in the upstream record'
+    grep -q 'unsafe.*path' "$TMP/upstream-unsafe.out" && [ "$before" = "$(tree_digest "$PWD")" ] \
+      || fail 'upgrade did not reject the unsafe path before changing the adopter'
+    sed '$d' "$record" > "$record.next"
+    mv "$record.next" "$record"
+    before=$(tree_digest "$PWD")
+    scripts/agentic-flow upgrade --merged templates/ci/README.md > "$TMP/upstream-no-candidate.out" 2>&1 \
+      && fail 'upgrade acknowledged a path with no candidate'
+    if ! grep -q 'no candidate' "$TMP/upstream-no-candidate.out" || [ "$before" != "$(tree_digest "$PWD")" ]; then
+      cat "$TMP/upstream-no-candidate.out" >&2
+      fail 'upgrade did not reject the missing candidate before changing the adopter'
+    fi
+
+    printf '\nAdopter reconciled the first upstream release.\n' >> CLAUDE.md
+    scripts/agentic-flow upgrade --merged CLAUDE.md > "$TMP/upstream-merged.out" \
+      || fail 'explicit acknowledgment of a hand merge failed'
+    assert_no_file CLAUDE.md.agentic-new
+    grep -Fxq "accepted=$offered  CLAUDE.md" "$record" \
+      || fail 'explicit acknowledgment did not accept the offered hash'
+    # Keep the twin's other customizations and its generated docs index.
+    rm -- Makefile.agentic-new .claude/settings.json.agentic-new .codex/hooks.json.agentic-new docs/README.md.agentic-new
+    candidate_version=$(cat .agentic-flow-candidate-version)
+    twin_upgrade
+    if ! grep -q 'kept *CLAUDE.md$' "$TMP/upstream-upgrade.out" ||
+      ! grep -q 'kept *Makefile$' "$TMP/upstream-upgrade.out"; then
+      fail 'retry did not keep both explicitly and implicitly acknowledged customizations'
+    fi
+    grep -Fxq "accepted=$(twin_upstream_hash templates/harness/Makefile)  Makefile" "$record" \
+      || fail 'deleting a candidate did not accept its upstream hash'
+    if grep -q 'obsolete-payload-file' "$record"; then fail 'upgrade retained an obsolete upstream entry'; fi
+    grep -Fxq "$candidate_version" .agentic-flow-version \
+      || { cat "$TMP/upstream-upgrade.out" >&2; fail 'retry did not advance the installed version'; }
+    assert_no_file .agentic-flow-candidate-version
+    assert_no_file CLAUDE.md.agentic-new
+    customized=$(shasum -a 256 CLAUDE.md | cut -d ' ' -f 1)
+    grep -Fxq "file=$customized  CLAUDE.md" .agentic-flow-installation \
+      || fail 'retry did not record the hand-merged file as installed'
+
+    upstream="$ADOPTER_TWIN_SOURCE/templates/harness/CLAUDE.md"
+    { cat "$upstream"; printf '\n'; } > "$upstream.next"
+    mv "$upstream.next" "$upstream"
+    pristine=templates/ci/README.md
+    printf 'Updated CI notes.\n' > "$ADOPTER_TWIN_SOURCE/$pristine.next"
+    mv "$ADOPTER_TWIN_SOURCE/$pristine.next" "$ADOPTER_TWIN_SOURCE/$pristine"
+    twin_release templates/harness/CLAUDE.md "$pristine"
+    twin_upgrade
+    cmp -s "$upstream" CLAUDE.md.agentic-new && grep -Fxq "$candidate_version" .agentic-flow-version &&
+      [ "$customized" = "$(shasum -a 256 CLAUDE.md | cut -d ' ' -f 1)" ] \
+      || fail 'whitespace-only upstream change did not preserve and offer a merge for the customized file'
+    cmp -s "$ADOPTER_TWIN_SOURCE/$pristine" "$pristine" \
+      || fail 'upgrade did not overwrite a pristine file'
+
+    printf '10.1.0\n' > "$ADOPTER_TWIN_SOURCE/VERSION.next"
+    mv "$ADOPTER_TWIN_SOURCE/VERSION.next" "$ADOPTER_TWIN_SOURCE/VERSION"
+    twin_release VERSION
+    twin_upgrade
+    grep -q 'CLAUDE.md.agentic-new .*pending' "$TMP/upstream-upgrade.out" &&
+      grep -Fxq "$candidate_version" .agentic-flow-version &&
+      [ "$(find . -name 'CLAUDE.md.agentic-new*' | wc -l)" -eq 1 ] \
+      || fail 'unchanged unresolved upstream did not stay pending without a duplicate candidate'
+
+    printf '\nNext upstream guidance.\n' >> "$upstream"
+    twin_release templates/harness/CLAUDE.md
+    twin_upgrade
+    newest="CLAUDE.md.agentic-new.$(cat .agentic-flow-candidate-version)"
+    cmp -s "$upstream" "$newest" || fail 'new upstream did not produce a versioned candidate'
+    mv CLAUDE.md.agentic-new "$TMP/older-candidate"
+    twin_upgrade
+    if ! grep -Fq "$newest   (pending" "$TMP/upstream-upgrade.out" ||
+      ! grep -Fxq "$candidate_version" .agentic-flow-version; then
+      fail 'deleting only the older candidate acknowledged the unresolved offer'
+    fi
+    mv "$TMP/older-candidate" CLAUDE.md.agentic-new
+    scripts/agentic-flow upgrade --merged CLAUDE.md > "$TMP/upstream-merged.out" \
+      || fail 'upgrade did not acknowledge the newest of two candidates'
+    assert_no_file CLAUDE.md.agentic-new
+    assert_no_file "$newest"
+    if ! grep -Fxq '  removed    CLAUDE.md.agentic-new' "$TMP/upstream-merged.out" ||
+      ! grep -Fxq "  removed    $newest" "$TMP/upstream-merged.out" ||
+      ! grep -Fxq "accepted=$(twin_upstream_hash templates/harness/CLAUDE.md)  CLAUDE.md" "$record"; then
+      fail 'acknowledgment did not list both candidates and accept the newest hash'
+    fi
+  )
+  upstream_seconds=$(( $(self_test_now) - upstream_started ))
+  measure_event "group:upgrade:upstream:$upstream_seconds"
+  check_wall_ceiling upgrade:upstream "$upstream_seconds"
 fi

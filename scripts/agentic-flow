@@ -11,14 +11,14 @@ usage:
   agentic-flow handoff <issue> reconcile [--json] [--check]
   agentic-flow close-out prep <doc> [--pr <url>] [--dry-run]
   agentic-flow close-out finish <doc>
-  agentic-flow ship <doc> [--wait-review]
+  agentic-flow ship <doc> [--wait-review] [--force-gate]
   agentic-flow final-approve <doc> [--body-file <path>]
   agentic-flow packet <issue> --station executor|reviewer [--json]
   agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--force] [--json]
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
   agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
-  agentic-flow doctor --stations [--station executor|reviewer] [--json]
+  agentic-flow doctor --stations [--station executor|reviewer] [--interactive] [--json]
   agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]
   agentic-flow approve <doc> --by <login>
   agentic-flow hold clear <doc> <hold-id> [--rebaseline] [--note <text>]
@@ -26,6 +26,7 @@ usage:
   agentic-flow status [--json]
   agentic-flow diff [--ref <ref>] [--json]
   agentic-flow upgrade [--ref <ref>] [--force] [--yes]
+  agentic-flow upgrade --merged <path>
   agentic-flow --help | --version
 
   --version reports the adopted project's installed harness stamp.
@@ -43,6 +44,15 @@ load_payload_lib() { # <root>
     || die "payload library not found: scripts/lib/payload-apply.sh"
   # shellcheck disable=SC1091 # The library is resolved from the adopted project root.
   . "$root/scripts/lib/payload-apply.sh"
+}
+
+load_local_upstream_lib() { # <adopted-root>; for a PATH alias or an older fetched ref
+  if [ -f "$1/scripts/lib/payload-apply.sh" ]; then
+    load_payload_lib "$1"
+  fi
+  if ! declare -F payload_upstream_load >/dev/null; then
+    load_payload_lib "$(dirname "${BASH_SOURCE[0]}")/.."
+  fi
 }
 
 check_project_owned_state() {
@@ -202,6 +212,9 @@ diff_cmd() {
   PAYLOAD_DRY=true
   PAYLOAD_FORCE=false
   PAYLOAD_DST_ROOT="$root"
+  if declare -F payload_upstream_load >/dev/null; then
+    payload_upstream_load "$root" upgrade
+  fi
 
   [ "$json" = true ] || {
     echo "agentic-flow diff"
@@ -219,7 +232,7 @@ diff_cmd() {
     payload_apply_entry "$s" "$d" dry-run >/dev/null
     classification="$PAYLOAD_RESULT_CLASSIFICATION"
     case "$classification" in
-      same)
+      same|kept)
         same=$((same + 1))
         ;;
       create)
@@ -255,14 +268,47 @@ diff_cmd() {
   [ "$changed" = false ] || exit 1
 }
 
+validate_bridge() { # return the physical fetch directory
+  local requested="$1" base parent name script_dir
+  [ -d "$requested" ] && [ ! -L "$requested" ] && [ -O "$requested" ] || return 1
+  base=$(cd "${TMPDIR:-/tmp}" && pwd -P) || return 1
+  parent=$(cd "$(dirname "$requested")" && pwd -P) || return 1
+  name=${requested##*/}
+  [ "$parent" = "$base" ] || return 1
+  case "$name" in agentic-flow-fetch.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) ;; *) return 1 ;; esac
+  parent="$base/$name"
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) || return 1
+  [ ! -L "$parent/source" ] && [ ! -L "$parent/source/.git" ] &&
+    [ -f "$parent/source/.git/HEAD" ] && [ -d "$parent/source/.git/objects" ] &&
+    [ "$script_dir" = "$parent/source/scripts" ] &&
+    [ ! -L "${BASH_SOURCE[0]}" ] || return 1
+  printf '%s\n' "$parent"
+}
+
+# shellcheck disable=SC2329 # EXIT trap.
+cleanup_fetch() {
+  [ -z "${FETCH_PARENT:-}" ] || rm -rf -- "$FETCH_PARENT" ||
+    printf 'warning: could not remove upgrade fetch directory %s\n' "$FETCH_PARENT" >&2
+}
+
 upgrade_cmd() {
   local yes=false force=false override_ref="" root installed origin ref last_origin source available
-  local created=0 same=0 merge=0 overwritten=0 candidate_created=0 candidate_reused=0
-  local classification rel dest s d pending_count
+  local bridged_from='' confirmed=false bridged=false migrate=false guards_pending=false merged_path=''
+  # shellcheck disable=SC2034 # The sourced payload library checks the entry protocol.
+  local PAYLOAD_ENTRY=2
+  local created=0 same=0 kept=0 merge=0 overwritten=0 candidate_created=0 candidate_reused=0
+  local classification rel dest s d pending_count apply_mode
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --yes) yes=true; shift ;;
       --force) force=true; shift ;;
+      --bridged-from)
+        [ "$#" -ge 2 ] && [ -n "$2" ] && [ "$bridged" = false ] || die "invalid --bridged-from"
+        bridged=true; bridged_from="$2"; shift 2 ;;
+      --confirmed) confirmed=true; shift ;;
+      --merged)
+        [ "$#" -ge 2 ] && [ -n "$2" ] && [ -z "$merged_path" ] || die "--merged requires one path"
+        merged_path="$2"; shift 2 ;;
       --ref)
         [ "$#" -ge 2 ] || die "--ref requires a value"
         override_ref="$2"; shift 2 ;;
@@ -271,7 +317,23 @@ upgrade_cmd() {
     esac
   done
 
+  [ "$bridged" = "$confirmed" ] || die "--bridged-from and --confirmed must be paired"
+  FETCH_PARENT=""
+  FETCHED_SOURCE=""
+  if [ "$bridged" = true ]; then
+    FETCH_PARENT=$(validate_bridge "$bridged_from") || die "invalid upgrade fetch directory"
+    FETCHED_SOURCE="$FETCH_PARENT/source"
+  fi
+  trap cleanup_fetch EXIT
+
   root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
+  if [ -n "$merged_path" ]; then
+    [ "$force" = false ] && [ -z "$override_ref" ] && [ "$bridged" = false ] \
+      || die "--merged is a standalone operation"
+    load_local_upstream_lib "$root"
+    payload_acknowledge_merge "$root" "$merged_path"
+    return
+  fi
   origin=$(read_source_field "$root" 1 origin)
   ref=${override_ref:-$(read_source_field "$root" 2 ref)}
   [ -n "$origin" ] || die "no .agentic-flow-source recorded; back-fill with: printf 'origin <url>\\nref main\\n' > .agentic-flow-source"
@@ -282,14 +344,17 @@ upgrade_cmd() {
   fi
   installed=$(sed -n '1p' "$root/.agentic-flow-version")
 
-  confirm_upgrade "$yes"
-
-  FETCH_PARENT=""
-  FETCHED_SOURCE=""
-  trap '[ -z "${FETCH_PARENT:-}" ] || rm -rf "$FETCH_PARENT"' EXIT
-  fetch_standard "$origin" "$ref"
+  if [ "$bridged" = false ]; then
+    confirm_upgrade "$yes"
+    fetch_standard "$origin" "$ref"
+  fi
   source="$FETCHED_SOURCE"
   load_payload_lib "$source"
+  # An explicit ref can point to a release from before upstream tracking.
+  if ! declare -F payload_upstream_load >/dev/null; then
+    load_local_upstream_lib "$root"
+  fi
+  [ ! -f "$source/scripts/lib/guard-migration.sh" ] || migrate=true
   payload_resolve_installation "$root" "$source/config/payload.tsv"
   payload_load_manifest "$source/config/payload.tsv"
   PAYLOAD_DST_ROOT="$root"
@@ -304,6 +369,7 @@ upgrade_cmd() {
   PAYLOAD_FORCE="$force"
   # shellcheck disable=SC2034 # Read by payload_apply_entry in the sourced library.
   PAYLOAD_DST_ROOT="$root"
+  payload_upstream_load "$root" upgrade
 
   echo "agentic-flow upgrade"
   echo "source: $origin (ref $ref)"
@@ -318,17 +384,29 @@ upgrade_cmd() {
     i=$((i + 1))
     payload_is_excluded "$rel" && continue
     s="$source/$rel"; d="$root/$dest"
-    payload_apply_entry "$s" "$d" "$([ "$force" = true ] && echo force || echo apply)" >/dev/null
+    apply_mode=apply
+    if [ "$force" = true ]; then
+      apply_mode=force
+      # Existing registrations must survive a failed policy activation, even
+      # when the caller force-overwrites the rest of the payload.
+      if [ "$migrate" = true ]; then
+        case "$dest" in .claude/settings.json|.codex/hooks.json) apply_mode=apply ;; esac
+      fi
+    fi
+    payload_apply_entry "$s" "$d" "$apply_mode" >/dev/null
     classification="$PAYLOAD_RESULT_CLASSIFICATION"
     case "$classification" in
       same)
         same=$((same + 1))
         ;;
+      kept)
+        echo "  kept        $dest"; kept=$((kept + 1))
+        ;;
       overwrite)
         echo "  overwrite   $dest"; overwritten=$((overwritten + 1))
         ;;
       candidate|pending)
-        if [ "$classification" = candidate ]; then
+        if [ "$PAYLOAD_RESULT_CANDIDATE_ACTION" = candidate ]; then
           candidate_created=$((candidate_created + 1))
         else
           candidate_reused=$((candidate_reused + 1))
@@ -342,23 +420,35 @@ upgrade_cmd() {
     esac
   done
 
+  payload_upstream_write "$root"
+
+  if [ "$migrate" = true ]; then
+    # shellcheck disable=SC1091 # Use the fetched upgrade implementation.
+    . "$source/scripts/lib/guard-migration.sh"
+    migrate_guards "$source" "$root" "$PAYLOAD_ACTIVE_SCOPES" || guards_pending=true
+  fi
+
   pending_count="$merge"
   if [ "$force" = false ] && find "$root" -type f -name '*.agentic-new*' -print -quit 2>/dev/null | grep -q .; then
     pending_count=1
   fi
-  if [ "$force" = true ] || [ "$pending_count" -eq 0 ]; then
+  if [ "$guards_pending" = true ]; then
+    pending_count=1
+    PAYLOAD_FORCE=false
+  fi
+  if [ "$PAYLOAD_FORCE" = true ] || [ "$pending_count" -eq 0 ]; then
     payload_write_installation "$root" "$source/config/payload.tsv"
     record_applied_source "$root" "$origin" "$ref"
   fi
   payload_stamp_version "$source" "$root" "$pending_count"
-  if [ "$force" = true ] || [ "$pending_count" -eq 0 ]; then
+  if [ "$PAYLOAD_FORCE" = true ] || [ "$pending_count" -eq 0 ]; then
     echo "  installed   .agentic-flow-version ($available)"
   else
     echo "  pending     .agentic-flow-candidate-version ($available)"
   fi
 
   echo
-  echo "Summary: $created created, $overwritten overwritten, $merge to-merge, $same already up to date."
+  echo "Summary: $created created, $overwritten overwritten, $merge to-merge, $same already up to date, $kept kept."
   if [ "$merge" -gt 0 ]; then
     echo "         $candidate_created merge candidate(s) created, $candidate_reused already pending."
   fi

@@ -14,7 +14,7 @@ ship_gate_tests() (
   SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   SHIP_CI_TIMEOUT=3600
   HANDOFF_REPO=owner/repo SHIP_TITLE=Fixture SHIP_PLAN=fixture
-  SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3"}'
+  SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3","title":"Fixture","bodyIsBlank":false}'
   export SHIP_GATE_ACTIONS="$fixture/actions"
   git() {
     case "$1" in
@@ -28,10 +28,11 @@ ship_gate_tests() (
   ship_pr_body() { return 0; }
   close_out_cmd() { printf '%s\n' "$1" >> "$SHIP_GATE_ACTIONS"; }
   handoff_gh() { printf 'pr-create\n' >> "$SHIP_GATE_ACTIONS"; }
-  ship_pr() { SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3"}'; }
+  ship_pr() { SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3","title":"Fixture","bodyIsBlank":false}'; }
   ship_wait_visibility() { return 0; }
   ship_wait_ci() { return 0; }
   ship_lifecycle() { printf 'READY fixture\n'; }
+  andon_desktop() { :; }
   # A gate failure must stop each push path, including the initial PR-creation push.
   for phase in initial final; do
     SHIP_DOC=docs/done/plan.md

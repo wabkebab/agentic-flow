@@ -6,7 +6,7 @@
 #   scripts/docs-index.sh            rewrite the generated block in docs/README.md
 #   scripts/docs-index.sh --check    exit non-zero if the block is stale (for CI / a hook)
 #
-# Scans docs/**/*.md, skipping templates/, README.md, and accepted_risks.md. Reads the
+# Scans docs/**/*.md, skipping non-lifecycle paths such as templates/ and reference/. Reads the
 # `> **Type:** … · **Status:** …` TRIAGE line and the file's stage (its folder under docs/).
 # Tracker-checkbox sync from live GitHub issue state is a planned follow-up layer.
 set -euo pipefail
@@ -27,7 +27,7 @@ build_table() {
   local found=0 f rel stage triage type status name
   while IFS= read -r f; do
     case "$f" in
-      */templates/*|*/README.md|*/accepted_risks.md|*/memory/*|*/MEMORY.md) continue ;;
+      "$DOCS_DIR/reference/"*|*/templates/*|*/README.md|*/accepted_risks.md|*/memory/*|*/MEMORY.md) continue ;;
     esac
     rel="${f#"$DOCS_DIR"/}"
     stage="${rel%/*}"

@@ -285,7 +285,7 @@ fi
 
 # Validate against the dispatcher inventory in every mode, including make check.
 load_wall_ceilings() {
-  local key keys="$SELF_TEST_GROUPS" file="$ROOT/config/test-wall-ceilings.tsv"
+  local key keys="$SELF_TEST_GROUPS upgrade:upstream" file="$ROOT/config/test-wall-ceilings.tsv"
   for key in $CONTROLLER_SCENARIOS; do keys="$keys controller:$key"; done
   for key in $STATIONS_SCENARIOS; do keys="$keys stations:$key"; done
   [ -r "$file" ] || fail 'missing wall-time ceiling file: config/test-wall-ceilings.tsv'
@@ -349,7 +349,7 @@ assert_cost_budget() { # <event-file> <fast|full>
     # (989e849) measured 190 test copies; the derived 188 was two short.
     # The snapshot is counted once above; retain the one-tree and fast limits.
     # Raised to 194 on 2026-11-21 (owner-approved): the first source-layout run of flow-ergonomics
-    # measured 194 copies in CI (run 44872894369); the exported ship-gate does not count them.
+    # measured 194 copies in CI (run 44872894369).
     [ "$file_copies" -le 194 ] || fail "full mode made $file_copies fixture file copies; limit 194"
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
@@ -587,6 +587,10 @@ if [ "$SHIP_GATE" = 1 ]; then
     ' "$gate_events")
     fail "exported full suite failed (group: $gate_group)"
   fi
+  exported_copy_limit=117
+  exported_copies=$(cost_count "$gate_events" fixture_file_copy)
+  [ "$exported_copies" -le "$exported_copy_limit" ] \
+    || fail "exported full mode made $exported_copies fixture file copies; limit $exported_copy_limit"
   echo 'ship-gate passed (exported full suite).'
   exit 0
 fi

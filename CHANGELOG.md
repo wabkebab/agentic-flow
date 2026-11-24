@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.20.0
+
+Harness simplification, Phase 4.
+
+- Claude Code, Codex, and OpenCode use native deny rules generated from
+  `config/command-policy.tsv`. Claude and Codex keep the Stop gate and SessionStart
+  context. Codex keeps a focused guard for the attached Git-directory option.
+- Git runs the staged-secret scan at pre-commit for human, agent, and scripted commits.
+  Upgrade verifies the replacement guards before retiring the corresponding legacy
+  agent hook entries.
+- `ship` reuses a passing gate record for the same tree, gate inputs, and harness
+  version. It skips a push when it confirms the destination branch already has the
+  exact head. `--force-gate` invalidates the matching record and runs the gate again.
+- Upgrade keeps local customizations when upstream is unchanged and creates merge
+  candidates when both sides changed.
+- New briefs start Part B with acceptance scenarios and cap it at 1,500 words plus
+  500 per step. Red-first verification runs when the step names a selector.
+  Stack assessment, CI/CD, and engineering standards now live in reference docs.
+
+After `scripts/agentic-flow upgrade`, resolve any merge candidates, install or refresh
+the native rules for interactive Codex, and run `scripts/doctor.sh --check`.
+If you use a custom `core.hooksPath`, chain the scaffold's pre-commit hook
+from your existing hook. [Adoption and verification](ADOPTION.md#verify)
+
 ## 0.19.0
 
 Flow ergonomics before Phase 4 (tracker #175).

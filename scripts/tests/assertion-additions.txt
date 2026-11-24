@@ -341,3 +341,192 @@ fail	'run chose between branches containing the same plan doc'
 fail	'run did not name dirty plan worktree paths'
 fail	'run omitted the unique plan worktree path'
 fail	'shipping fixture could not create a linked worktree'
+fail	'ship-gate accepted a ShellCheck warning in a shipped script'
+fail	'ship-gate accepted one fixture copy over the exported limit'
+fail	'ship-gate did not complete the exported suite before lint'
+fail	'ship-gate did not name the exported copy count and limit'
+fail	'ship-gate did not report the ShellCheck warning'
+fail	"exported full mode made $exported_copies fixture file copies; limit $exported_copy_limit"
+fail	"ship failed on remote lookup: $remote_response"
+fail	"ship retry gate count differs: $(cat "$stored/out")"
+fail	"ship retry push count differs: $(cat "$stored/out")"
+fail	'close-out attempted more than one push'
+fail	'failed forced gate left evidence or proceeded'
+fail	'ordinary ship did not retry a failed forced gate'
+fail	'ship compared the head of a different repository'
+fail	'ship did not check the remote head before pushing'
+fail	'ship did not recover from a corrupt gate record and API 500'
+fail	'ship did not write the passing gate record'
+fail	'ship failed after the gate script changed'
+fail	'ship failed after the head tree changed'
+fail	'ship failed after the installed harness version changed'
+fail	'ship failed when only the commit changed'
+fail	'ship failed with a non-GitHub push URL'
+fail	'ship failed with a rewritten push URL'
+fail	'ship failed with a separate push repository'
+fail	'ship failed with multiple push URLs'
+fail	'ship rejected --force-gate'
+fail	'ship retry did not reach CI'
+fail	'ship retry gate probe count differs'
+fail	'ship retry key-touch prompt or notification count differs'
+fail	'ship accepted a fork or foreign PR'
+fail	'ship could not continue after the PR body changed during rendering'
+fail	'ship could not continue with a template-like PR body'
+fail	'ship could not fill an empty or whitespace-only PR body'
+fail	'ship did not adopt the PR with the original renderer and preserve its title'
+fail	'ship did not attempt one PR edit, preserve the body and continue to CI'
+fail	'ship did not keep the template-like PR body'
+fail	'ship edited the wrong PR or fields'
+fail	'ship omitted the PR base mismatch details'
+fail	'ship omitted the PR edit warning'
+fail	'ship omitted the PR title warning'
+fail	'ship omitted the successful PR edit or its message'
+fail	'ship overwrote a body added during rendering'
+fail	'ship stopped after a failed PR edit'
+fail	'wrong PR base did not stop public ship before push or edit'
+fail	'wrong PR base did not stop ship internally before push or edit'
+assert_no_file	"$newest"
+assert_no_file	"$record"
+assert_no_file	.agentic-flow-candidate-version
+assert_no_file	CLAUDE.md.agentic-new
+fail	'acknowledgment did not list both candidates and accept the newest hash'
+fail	'deleting a candidate did not accept its upstream hash'
+fail	'deleting only the older candidate acknowledged the unresolved offer'
+fail	'explicit acknowledgment did not accept the offered hash'
+fail	'explicit acknowledgment of a hand merge failed'
+fail	'export did not record the candidate upstream hash'
+fail	'export did not record the installed upstream hash'
+fail	'legacy entry did not offer the changed upstream bytes'
+fail	'legacy entry did not record the upstream candidate'
+fail	'new upstream did not produce a versioned candidate'
+fail	'retry did not advance the installed version'
+fail	'retry did not keep both explicitly and implicitly acknowledged customizations'
+fail	'retry did not record the hand-merged file as installed'
+fail	'unchanged unresolved upstream did not stay pending without a duplicate candidate'
+fail	'upgrade accepted a traversal in the upstream record'
+fail	'upgrade acknowledged a path with no candidate'
+fail	'upgrade did not acknowledge the newest of two candidates'
+fail	'upgrade did not overwrite a pristine file'
+fail	'upgrade did not reject the missing candidate before changing the adopter'
+fail	'upgrade did not reject the unsafe path before changing the adopter'
+fail	'upgrade retained an obsolete upstream entry'
+fail	'upstream tracking upgrade failed'
+fail	'whitespace-only upstream change did not preserve and offer a merge for the customized file'
+fail	"$type template did not lead Part B with scenarios and invariants"
+fail	"$type template did not parse"
+fail	"$type template omitted format 2"
+fail	"$type template opted into red-first by default"
+fail	"archived brief no longer parses: $archived_brief"
+fail	"plan-to-issues ${mode:-dry run} accepted an oversized format 2 brief"
+fail	"plan-to-issues ${mode:-dry run} called GitHub for an oversized brief"
+fail	"plan-to-issues ${mode:-dry run} did not report the Part B cap"
+fail	"start did not write one format 2 field for $type"
+fail	"start failed for $type template"
+fail	'format 2 accepted a Part B one word over the cap'
+fail	'format 2 did not report the Part B word count and cap'
+fail	'format 2 rejected Part B at the cap'
+fail	'legacy approved brief failed dry run in a fresh adopter repository'
+fail	'legacy approved brief was capped'
+fail	'red-first opt-out did not parse'
+fail	"workflow explainer is missing an agentic-flow $command command example"
+fail	'could not read agentic-flow usage'
+fail	'documentation link check accepted a missing fragment'
+fail	'documentation link check accepted a missing target'
+fail	'documentation link check did not name the missing fragment'
+fail	'documentation link check did not report the dangling link'
+fail	'documentation link check rejected a restored target'
+fail	'documentation link check rejected a valid fragment'
+fail	'fresh export has broken documentation links'
+fail	'missing scaffold workflow explainer'
+fail	'no subcommands found in agentic-flow usage'
+fail	'scaffold documentation has broken local links'
+assert_no_file	real-command-ran
+fail	"Git probe accepted a non-scanner verdict ($probe_case)"
+fail	"Git probe failed ($probe_case)"
+fail	"Git probe touched the adopter ($probe_case)"
+fail	"interactive command-policy doctor failed: $(cat "$C1/doctor.json")"
+fail	"legacy upgrade left retired hooks in $live_settings"
+fail	"migration accepted $bad_adapter adapter settings"
+fail	"migration did not report $bad_adapter adapter settings"
+fail	"pre-commit did not block the $caller commit"
+fail	"retired guards registered in $shipped_hooks"
+fail	"station doctor accepted $fault"
+fail	"station doctor lost the sentinel for $fault: $(cat "$C1/doctor.err") $(cat "$C1/doctor.json")"
+fail	"upgraded CLI settings allow $denied"
+fail	'Codex residual guard is not registered'
+fail	'bridge did not clean exactly its fetched release'
+fail	'cannot enter policy probe worktree'
+fail	'command policy renderer is missing'
+fail	'conflicting Codex rules path changed the guards or destination'
+fail	'control command did not execute the sentinel'
+fail	'could not enable the Git hook through a directory alias'
+fail	'edited rendered policy passed check'
+fail	'failed activation retired guards'
+fail	'foreign-owned bridge directory was not rejected'
+fail	'forged bridge changed the adopter'
+fail	'forged bridge directory was not rejected'
+fail	'ignored rule with a sentinel counted as native denial'
+fail	'init did not configure the Git pre-commit hook'
+fail	'interactive native denial was not reported'
+fail	'legacy diff did not report the available upgrade'
+fail	'legacy diff wrote to the adopter'
+fail	'legacy interactive upgrade did not complete'
+fail	'legacy interactive upgrade did not prompt exactly once'
+fail	'legacy upgrade did not enable Git hooks'
+fail	'legacy upgrade did not install the interactive Codex policy'
+fail	'legacy upgrade removed a custom hook'
+fail	'migration completed without installing Codex rules'
+fail	'migration did not report the conflicting Codex rules path'
+fail	'missing station deny was not diagnosed'
+fail	'observed native denial did not pass'
+fail	'policy probe could not wire sentinels'
+fail	'policy probe missed a command that reached the control script'
+fail	'process failure counted as native denial'
+fail	'project settings masked a missing station deny'
+fail	'renderer accepted a tab inside a prefix'
+fail	'renderer did not diagnose the malformed TSV'
+fail	'renderer did not identify the drifted file'
+fail	'renderer did not retire a removed rule while preserving an unrelated deny'
+fail	'renderer did not retire the removed interactive rule'
+fail	'shipped command policy does not check cleanly'
+fail	'unproven custom hook path completed migration'
+fail	'updated command policy did not render'
+fail	'updated command policy drifted'
+fail	'upgrade did not report the custom hook path'
+fail	'upgrade replaced the custom hook path'
+fail	'upgrade retired the scanner behind a broken custom hook'
+fail	'upgraded commit failed outside the scanner'
+fail	'upgraded twin committed a credential'
+must_allow	"$ATTACHED_GUARD" 'git --git-dir=/tmp/x add named-file'
+must_allow	"$ATTACHED_GUARD" 'git --git-dir=/tmp/x add push'
+must_allow	"$ATTACHED_GUARD" 'git-codex commit -m "Cover git --git-dir=/tmp/x push"'
+must_allow	"$ATTACHED_GUARD" 'git-codex commit -m probe'
+must_allow	"$ATTACHED_GUARD" 'scripts/agentic-flow handoff 1 submit --as executor'
+must_block	"$ATTACHED_GUARD" 'git --git-dir="/tmp/with spaces" add --all'
+must_block	"$ATTACHED_GUARD" 'git --git-dir=/tmp/x add -A'
+must_block	"$ATTACHED_GUARD" 'git --git-dir=/tmp/x add .'
+must_block	"$ATTACHED_GUARD" 'git --git-dir=/tmp/x push'
+must_block	"$PWD/scripts/hooks/block-git-add-all.sh" 'git add -A'
+must_block	"$PWD/scripts/hooks/block-push.sh" 'git push'
+must_block	"$PWD/scripts/hooks/require-step-comment.sh" 'gh issue edit 1 --add-label needs-review'
+must_block	"$PWD/scripts/hooks/scan-secrets.sh" 'git commit -m probe'
+probe_case	in scanner inherited-env missing other-rejection custom-chain
+fail	"publication scan did not name $1"
+fail	"publication scan exited $status, expected $expected"
+fail	"publication scan omitted a required finding: $pattern"
+fail	'API failure leaked its response'
+fail	'allow-list did not match the exact finding'
+fail	'allow-list hid the value at another location'
+fail	'complete clean scan had no provisional GO'
+fail	'deleted history was omitted'
+fail	'gitleaks failure leaked its response'
+fail	'incomplete publication scan emitted a verdict'
+fail	'publication location could not be resolved'
+fail	'publication report differs from stdout'
+fail	'publication scan is missing'
+fail	'publication scan leaked a planted value or path'
+publication_expect	0 --surface all
+publication_expect	0 --surface tree --resolve "$id"
+publication_expect	1 --surface all --report "$fixture/report"
+publication_expect	1 --surface tree
+publication_expect	5 --surface all --report "$fixture/incomplete"
