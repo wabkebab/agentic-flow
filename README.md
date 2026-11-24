@@ -103,6 +103,21 @@ version is unchanged and uses `.agentic-new` candidates when both sides changed.
 also activates the native rules and verifies the Git pre-commit scan before retiring
 the corresponding legacy hook entries. Follow the [upgrade instructions](ADOPTION.md#upgrading).
 
+## Answer a station's question
+
+When a station stops with an `ask`, the controller raises andon on the step's issue.
+Answer it from the plan worktree:
+
+```bash
+scripts/agentic-flow handoff <issue> resume --as approver --body-file <note>
+```
+
+The step returns to the station that asked. Its next packet includes the question and
+your note under "Owner decision", so the station acts on the answer instead of asking
+again. Only that station's latest ask since the last submit is carried, so a reviewer's
+question stays with the reviewer. A long exchange is clipped in the packet, and the full
+text is delivered as `decision.md` in the station's scratch directory.
+
 ## Resume shipping
 
 Run `scripts/agentic-flow ship <doc> --wait-review` from the plan worktree. A re-run
