@@ -46,9 +46,13 @@ independent, so a single review pass covers them. Alternative considered: Strict
 steps — more per-item history, disproportionate overhead for fixes this size.
 
 Decisions the executor must honor:
-- Item 1 is preventive hardening: compare against `pwd -P` and add a compatibility test
-  that calls the guard with a logical `$PWD` (a unit-level call, since no supported
-  environment reaches it through the CLI). Do not claim a baseline failure through the CLI.
+- Item 1 is hardening of an unreachable-through-the-CLI path: compare against `pwd -P`.
+  Two tests with distinct expectations: (a) a CLI case `cd`-ing through an alias refuses
+  on both revisions (compatibility check, since Git and `cd "$root"` normalize the path);
+  (b) a unit-level call of the clean function from a logical-`$PWD` alias, against an
+  otherwise eligible fixture (worktree present, clean, branch merged), **fails on the
+  baseline** (the guard misses the alias and the worktree is removed) and passes after.
+  Test (b) is item 1's Red-first evidence.
 - Item 3 keeps the hidden-wrapper check (`<!-- ` opener plus `-->` terminator) as the
   predicate for metadata. `journal_marker_line` also accepts bare transition lines, so use
   it only to share the marker-text rule, never as the sole predicate. A bare marker line
@@ -56,8 +60,12 @@ Decisions the executor must honor:
 - Item 5 applies to **unstamped** plans only. A `journal=v1` stamp disables legacy replay
   (`scripts/lib/journal.sh:17`); that must not change.
 - Item 6: recovery applies only to an `open` record with no worktree whose branch ref is
-  **confirmed absent** (`git show-ref --verify --quiet "$branch_ref"` exits 1; any other
-  failure exits 3). A ref that exists but does not resolve to a commit keeps today's
+  **confirmed absent**. Use `git show-ref --exists "$branch_ref"`, which separates exit 2
+  (missing) from exit 0 (present, including a dangling symbolic ref) and any other status
+  (lookup error, exit 3); `--verify --quiet` returns 1 for both missing and dangling, so
+  do not use it here. Start's eligibility check for an `open` record uses the same
+  present/missing/error helper so both commands agree. A ref that is present but does not
+  resolve to a commit keeps today's
   `cannot resolve branch` refusal; do not collapse the two cases through the existing
   `rev-parse "$branch_ref^{commit}"` check. The recovery makes **one** atomic
   `open` → `closed` write (`plan_record closed`) and never writes `pending`, so an
@@ -66,6 +74,15 @@ Decisions the executor must honor:
   `--dry-run` stays read-only (no record write) and prints "Would mark record closed;
   salvage refs preserved: …". The existing `pending` path is unchanged. A record whose
   branch ref exists keeps today's behavior.
+- Start/clean coordination for one plan ID: both non-dry-run commands take an exclusive
+  per-plan lock, `mkdir "$common/agentic-flow/locks/<id>"` (atomic, Bash 3.2-safe, no
+  `flock`), held from before their first eligibility check until after their last record
+  write, and released on every exit path including INT/TERM and start's rollback. `clean`
+  re-reads the record and re-checks branch and worktree absence **under the lock**
+  immediately before the `closed` write. Contention fails fast with exit 3 and a message
+  naming the lock directory; a lock left by a crash is never stolen automatically, and
+  the message gives the exact `rmdir` remedy. `--dry-run` takes no lock. Result: a fresh
+  `open` record from a concurrent `start` is never overwritten by `closed`.
 - Item 4 fails safe as today; it only adds a visible signal.
 - Item 5 flips `.prefix` only when the transition line parses, matching the bare path.
 
@@ -97,9 +114,10 @@ Bounds: no new loops or queries.
 # Part B — Implementation Brief
 
 ## Acceptance scenarios
-- Given the clean guard evaluated with a logical `$PWD` alias of the plan worktree, then
-  it refuses with the inside-worktree error and removes nothing; the direct-`cd` case
-  still refuses. (Preventive hardening; see Current state.)
+- Given the clean function called from a logical-`$PWD` alias of the plan worktree, over
+  an otherwise eligible fixture, then it refuses with the inside-worktree error and
+  removes nothing (fails on the baseline); the CLI alias case and the direct-`cd` case
+  refuse on both revisions.
 - Given a review comment line of exactly `agentic-flow-review: `, then lifecycle reports
   `BLOCKED ... malformed review record` and exits normally, on bash 3.2.
 - Given a hidden-wrapper findings comment and a bare transition-line comment, then
@@ -119,6 +137,11 @@ Bounds: no new loops or queries.
   ref, and a retry prints "Nothing to remove". A fault injected after the write attempt
   never leaves the record `pending`. `--dry-run` writes nothing and reports the refs would
   be preserved. Given no salvage refs it also marks the record closed.
+- Given the per-plan lock held, then `start` and non-dry-run `clean` for that ID exit 3
+  without touching refs, worktrees, or the record, and `--dry-run` still works. Given
+  `clean` finishing before `start`, then `start` creates a fresh `open` record that a
+  later `clean` run sees; the lock is released after failures and interrupts.
+- Given a dangling symbolic branch ref, then `clean` exits 3 with `cannot resolve branch`.
 - Given an `open` record whose branch ref exists but cannot resolve to a commit, then
   `clean` still exits 3 with `cannot resolve branch`; given a resolvable branch, behavior
   is unchanged.
@@ -145,10 +168,11 @@ Base: `main`. One branch (`review-followups-186`) and one PR; one commit closing
 issue via `Fixes #N`.
 
 ## Definition of done (whole brief)
-Every scenario with an observable baseline failure (items 2, 4, 5, 6) is covered by a
-test declared under Red-first that fails on the base and passes after. Items 1 and 3 are
-compatibility checks: item 3's packet fixtures must be green on both revisions, and
-item 1's logical-`$PWD` test is hardening that passes on both. `make check` and
+Every scenario with an observable baseline failure (items 1, 2, 4, 5, 6) is covered by a
+test declared under Red-first that fails on the base and passes after. Only item 3 is a
+pure compatibility check: its packet fixtures must be green on both revisions. Item 1's
+CLI alias case is also a compatibility check; its unit-level guard test is the Red-first
+evidence. `make check` and
 `make test` green; no unrelated behavior changed.
 
 Bash 3.2 evidence is collected on the executor's macOS host, where `/bin/bash` is 3.2.57:
@@ -178,7 +202,8 @@ regression test next to the existing coverage: item 1 and 6 in
 `scripts/tests/lifecycle.sh`, item 4 in `scripts/tests/contracts.sh`, items 3 and 5 in
 whichever group already covers the packet and journal replay.
 
-**Test:** Cover every acceptance scenario, failure paths first: logical-`$PWD` guard,
+**Test:** Cover every acceptance scenario, failure paths first: lock contention and
+dangling ref, logical-`$PWD` guard,
 empty review marker (run explicitly under `/bin/bash`, Bash 3.2), unparseable App filter
 (no key, App checks still eligible, warning, both workflow files), near-miss marker on
 unstamped and `journal=v1` issues, open record with a salvage ref left.
@@ -186,6 +211,8 @@ unstamped and `journal=v1` issues, open record with a salvage ref left.
 **DoD:** All six scenarios pass; `make check` and `make test` green.
 **Verify:** `make test-one F=lifecycle && make test-one F=controller && make test-one F=stations && make test-one F=contracts`
 **Risks:**
+- Item 6 must not use `show-ref --verify --quiet` as its absence test, and the lock must
+  never be stolen automatically.
 - Item 6 must not complete a record whose branch ref exists (resolvable or not), must
   not write `pending`, and must not delete salvage refs.
 - Item 3 must not let a bare marker line enter structured findings parsing.
