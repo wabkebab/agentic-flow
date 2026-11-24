@@ -87,9 +87,14 @@ Decisions the executor must honor:
   write, and released on every exit path including INT/TERM and start's rollback. `clean`
   re-reads the record and re-checks branch and worktree absence **under the lock**
   immediately before the `closed` write. Contention fails fast with exit 3 and a message
-  naming the lock directory. A lock is never stolen automatically. Only when `owner`
-  names a PID that `kill -0` shows is not running does the message give the manual
-  remedy (remove `owner`, then `rmdir` the directory); otherwise it says to wait. `--dry-run` takes no lock. Result: a fresh
+  naming the lock directory. A lock is never stolen automatically, and `kill -0` is never taken
+  as proof the owner exited (it also fails on a permissions error). Every contention
+  message, with or without an `owner` file, prints the same operator recovery: confirm no
+  `agentic-flow start` or `clean` for this plan ID is running (check the PID in `owner`
+  with `ps -p <pid>` when present, and list processes for `agentic-flow start|clean` on
+  any host sharing the repository), then remove `owner` if present and `rmdir` the lock
+  directory. An ownerless lock left by a process that died between `mkdir` and writing
+  `owner` is recovered the same way, so it cannot block both commands indefinitely. `--dry-run` takes no lock. Result: a fresh
   `open` record from a concurrent `start` is never overwritten by `closed`.
 - Item 4 fails safe as today; it only adds a visible signal.
 - Item 5 flips `.prefix` only when the transition line parses, matching the bare path.
@@ -147,7 +152,8 @@ Bounds: no new loops or queries.
   be preserved. Given no salvage refs it also marks the record closed.
 - Given a stale-looking `locks/<id>` handoff lock and a held worktree lock for the same
   plan ID, then neither protocol moves, blocks, or removes the other's directory, and a
-  worktree lock with no `owner` file is never treated as stale.
+  worktree lock with no `owner` file is never treated as stale, and its contention message
+  carries the full operator recovery steps (no automatic takeover).
 - Given a Git whose `show-ref --exists` exits 129 (a PATH shim in the test), then `clean`
   on that record exits 3 with the Git 2.43 hint, and `start` behaves exactly as today.
 - Given the per-plan lock held, then `start` and non-dry-run `clean` for that ID exit 3
