@@ -63,7 +63,10 @@ jobs:
         if: steps.filter.outputs.app == 'true'
         continue-on-error: true
         run: |
-          key=$(scripts/app-input-key.sh)
+          if ! key=$(scripts/app-input-key.sh); then
+            echo '::warning::App-input key unavailable; App checks run every time'
+            exit 1
+          fi
           printf 'key=%s\n' "$key" >> "$GITHUB_OUTPUT"
       - name: Restore green App result
         id: app_cache

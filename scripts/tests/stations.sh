@@ -991,7 +991,12 @@ jq -e '.["2"].state=="closing" and .["1"].state=="approved"' "$TMP/station.out" 
 # A dead process lock is recoverable; two concurrent approvals serialize to one.
 mkdir -p "$STATION_FIX/project/.git/agentic-flow/locks/fixture"
 printf '%s\n' 99999999 > "$STATION_FIX/project/.git/agentic-flow/locks/fixture/pid"
+STATION_WORKTREE_LOCK="$STATION_FIX/project/.git/agentic-flow/worktree-locks/fixture"
+mkdir -p "$STATION_WORKTREE_LOCK"
 station_run 0 1 reconcile
+[ -d "$STATION_WORKTREE_LOCK" ] && [ ! -e "$STATION_WORKTREE_LOCK/owner" ] \
+  || fail 'handoff recovery disturbed the ownerless worktree lock'
+rmdir "$STATION_WORKTREE_LOCK"
 rm "$STATION_STATE/2.json" "$STATION_STATE/4.json"
 station_issue 1 step:alpha standard
 STATION_LOGIN='exec'
@@ -1374,6 +1379,13 @@ agentic-flow-review: status=changes-requested; step=alpha; head=$PACKET_REV; rol
     elif [ "$mode" = fits ]; then
       jq -e '.findings[0].text=="Fix issue." and .findings_index==null' "$TMP/packet.json" >/dev/null ||
         fail 'small findings were not inlined'
+      # Keep the payload and terminator intact but remove the hidden opener.
+      jq '.comments.nodes[-1].body |= ltrimstr("<!-- ")' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+      mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+      packet_run 0 --station executor --json
+      jq -e --slurpfile issue "$STATION_STATE/1.json" \
+        '.findings==[{body:$issue[0].comments.nodes[-1].body}]' "$TMP/packet.json" >/dev/null ||
+        fail 'bare transition exposed structured findings'
     fi
   done
   rm "$findings_dir/2.json"

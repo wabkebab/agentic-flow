@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # A packet may quote the findings source, but the file always keeps it intact.
+# shellcheck source=scripts/lib/journal.sh
+. "$(dirname "${BASH_SOURCE[0]}")/journal.sh"
 
 packet_findings_error() { packet_error "findings-incomplete: $*"; return 13; }
 
 packet_findings_source() { # plan issue admitted bounce comment JSON-file output-file
   local plan=$1 issue=$2 bounce=$3 comment=$4 output=$5 metadata seq head run
-  metadata=$(jq -c '
-    .body|split("\n") |
-    if (.[0]|startswith("<!-- agentic-flow-transition:")) then
-      [limit(1;range(1;length) as $i|select(.[$i]=="-->")|$i)] as $end |
-      .[1:($end[0]//1)] | map(select(startswith("findings-complete=")))
+  # shellcheck disable=SC2016 # jq variables
+  metadata=$(journal_jq -c '
+    include "journal-marker";
+    .body | split("\n") as $lines | ($lines | index("-->")) as $end |
+    if ($lines[0]|startswith("<!-- ")) and $end!=null and
+      (journal_marker_line|startswith("agentic-flow-transition:")) then
+      $lines[1:$end] | map(select(startswith("findings-complete=")))
     else [] end' "$comment") || return 1
   seq=$(printf '%s' "$bounce" | jq .seq)
   head=$(printf '%s' "$bounce" | jq -r .head)

@@ -352,6 +352,27 @@ ci_app_cache_tests() (
   export APP_CACHE_FILE="$TMP/ci-app-green" GITHUB_STEP_SUMMARY="$TMP/ci-app-summary" \
     GITHUB_OUTPUT="$TMP/ci-app-output" GITHUB_SERVER_URL=https://github.com \
     GITHUB_REPOSITORY=owner/repo GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=2
+  # Double quotes are valid in the path filter YAML but unsupported by the key reader.
+  (
+    cd "$(mktemp -d "$TMP/ci-key-fallback.XXXXXX")"
+    git init -q
+    mkdir -p scripts/lib .github/workflows
+    ln -s "$ROOT/scripts/app-input-key.sh" scripts/
+    ln -s "$ROOT/scripts/lib/ci-bookkeeping.sh" scripts/lib/
+    sed -E "s/'(!ROADMAP\.md)'/\"\1\"/" "$workflow" > .github/workflows/ci.yml
+    grep -Fq '"!ROADMAP.md"' .github/workflows/ci.yml || fail "$workflow fixture did not change the filter format"
+    : > "$GITHUB_OUTPUT"
+    body=$(sed -n '/^        run: |$/,$s/^          //p' <<< "$key")
+    bash -e -c "$body" > out 2>&1 && fail "$workflow accepted the unreadable key"
+    [ ! -s "$GITHUB_OUTPUT" ] || fail "$workflow emitted a key after a parse error"
+    if ! { grep -Fxq "        if: steps.filter.outputs.app == 'true'" <<< "$key" &&
+      grep -Fxq '        continue-on-error: true' <<< "$key" &&
+      grep -Fxq "        if: steps.app_key.outcome == 'success'" <<< "$restore"; }; then
+      fail "$workflow could block App checks or try cache restore without a key"
+    fi
+    grep -Fxq '::warning::App-input key unavailable; App checks run every time' out \
+      || fail "$workflow omitted the App key fallback warning"
+  )
   source=https://github.com/owner/repo/actions/runs/123/attempts/2
   body=$(sed -n '/^        run: |$/,$s/^          //p' <<< "$marker")
   bash -e -c "$body"
