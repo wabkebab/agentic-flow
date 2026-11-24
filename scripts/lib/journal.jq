@@ -53,8 +53,8 @@ reduce .[] as $c
     ($c.body|journal_marker_line) as $line |
     if .unjournaled!=null then .
     elif ($line|startswith("agentic-flow-transition:")) then
-      .prefix=false | ([transition($line)] | map(select(.!=null)) | .[0]) as $t |
-      if $t==null then .skipped+=1 else accept($t;$c;false) end
+      ([transition($line)] | map(select(.!=null)) | .[0]) as $t |
+      if $t==null then .skipped+=1 else .prefix=false | accept($t;$c;false) end
     elif .prefix then
       ([legacy_marker($c)]|map(select(.!=null))|.[0]) as $t |
       if $t==null then . else

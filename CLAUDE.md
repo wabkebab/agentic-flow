@@ -85,17 +85,14 @@ only a named narrower command to resolve a concrete gap.
   committing it in a target project.
 <!-- END SHARED CLAUDE TOOLS -->
 
-### Hooks (enforced, not optional)
-Six hooks in `.claude/settings.json` enforce the contract (`METHODOLOGY.md` §8):
-- **SessionStart → cached step context** (`scripts/hooks/session-context.sh`)
-- **Stop / SubagentStop → `make check`** (`scripts/hooks/check-gate.sh`)
-- **PreToolUse(Bash) → block `git add -A` / `.` / `--all`** (`scripts/hooks/block-git-add-all.sh`)
-- **PreToolUse(Bash) → block `git push` / `gh pr merge`** (`scripts/hooks/block-push.sh`)
-- **PreToolUse(Bash) → scan staged content before a commit** (`scripts/hooks/scan-secrets.sh`)
-  — override a false positive with `AGENTIC_ALLOW_SECRET=1` on the commit.
-- **PreToolUse(Bash) → route workflow writes through `handoff`**
-  (`scripts/hooks/require-step-comment.sh`) — Claude/Codex only; **OpenCode has no hook
-  engine here**, so its side still relies on `.opencode/agent/code-reviewer.md`.
+### Command policy and hooks
+
+- `config/command-policy.tsv` generates native deny rules for Claude, Codex and OpenCode.
+  They block pushes, merges, broad staging and direct workflow writes.
+- Git runs `scripts/git-hooks/pre-commit` via `core.hooksPath` to scan staged secrets.
+- Claude and Codex use `check-gate.sh` for Stop/SubagentStop and `session-context.sh` for
+  cached step context at SessionStart. Codex also uses `guard-attached-git-dir.sh`.
+- See `METHODOLOGY.md` §8 for enforcement and `ADOPTION.md` for setup.
 
 ## Architecture (orient an agent fast)
 
@@ -103,8 +100,7 @@ Six hooks in `.claude/settings.json` enforce the contract (`METHODOLOGY.md` §8)
 Pristine root harness files are sourced from `templates/harness/`, while this repo's root
 `CLAUDE.md`, `AGENTS.md`, and `Makefile` are its own filled-in instance. Data-only files in
 `profiles/` render stack-specific Make recipes. `scripts/doctor.sh` reports adoption gaps,
-`scripts/self-test.sh` covers offline regressions, and the hooks in `scripts/hooks/`
-enforce the local stop gate, named staging, and no-push contract.
+and `scripts/self-test.sh` covers offline regressions.
 
 ## Gotchas (the top traps)
 
@@ -126,11 +122,8 @@ enforce the local stop gate, named staging, and no-push contract.
   included. The pattern is deliberately narrow (double-brace UPPER_SNAKE) so shipped docs
   can quote GitHub Actions `dollar-brace` expressions without tripping it. `make check`
   asserts the local assignments stay byte-identical.
-- **Same rule for anything credential-shaped.** `scan-secrets.sh` reads the staged diff, so
-  a real-looking key or a quoted `password = "…"` written literally into any file — hook
-  patterns, test fixtures, docs examples — blocks every commit that touches that file.
-  Assemble them with `printf` (see the fixtures in `self-test.sh`). Both scripts learned
-  this the hard way; the pattern set is written split for exactly this reason.
+- Build credential-shaped test fixtures with `printf` so the staged-secret scan
+  accepts the test source.
 
 ---
 

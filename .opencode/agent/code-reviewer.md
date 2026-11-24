@@ -4,7 +4,168 @@ mode: subagent
 model: opencode-go/glm-5.2
 permission:
   edit: deny
-  bash: ask
+  bash:
+    "*": ask
+    # BEGIN AGENTIC-FLOW COMMAND POLICY
+    "git push": deny
+    "git push *": deny
+    "gh pr merge": deny
+    "gh pr merge *": deny
+    "git add -A": deny
+    "git add -A *": deny
+    "git add .": deny
+    "git add . *": deny
+    "git add --all": deny
+    "git add --all *": deny
+    "git add :/": deny
+    "git add :/ *": deny
+    "git add -- .": deny
+    "git add -- . *": deny
+    "git add -- :/": deny
+    "git add -- :/ *": deny
+    "git commit": deny
+    "git commit *": deny
+    "git commit -n": deny
+    "git commit -n *": deny
+    "git commit --no-verify": deny
+    "git commit --no-verify *": deny
+    "gh issue edit": deny
+    "gh issue edit *": deny
+    "gh issue close": deny
+    "gh issue close *": deny
+    "gh issue reopen": deny
+    "gh issue reopen *": deny
+    "gh label": deny
+    "gh label *": deny
+    "gh api": deny
+    "gh api *": deny
+    "gh -R": deny
+    "gh -R *": deny
+    "gh --repo": deny
+    "gh --repo *": deny
+    "gh --repo=*": deny
+    "rtk gh": deny
+    "rtk gh *": deny
+    "git -C": deny
+    "git -C *": deny
+    "git -c": deny
+    "git -c *": deny
+    "git --git-dir": deny
+    "git --git-dir *": deny
+    "git --git-dir=*": deny
+    "git --work-tree": deny
+    "git --work-tree *": deny
+    "git --work-tree=*": deny
+    "git --no-pager -C": deny
+    "git --no-pager -C *": deny
+    "git -p -C": deny
+    "git -p -C *": deny
+    "git --no-pager push": deny
+    "git --no-pager push *": deny
+    "git -p push": deny
+    "git -p push *": deny
+    "git --no-pager add -A": deny
+    "git --no-pager add -A *": deny
+    "git --no-pager add .": deny
+    "git --no-pager add . *": deny
+    "git --no-pager add --all": deny
+    "git --no-pager add --all *": deny
+    "git -p add -A": deny
+    "git -p add -A *": deny
+    "git -p add .": deny
+    "git -p add . *": deny
+    "git -p add --all": deny
+    "git -p add --all *": deny
+    "env": deny
+    "env *": deny
+    "GIT_COMMON_DIR=*": deny
+    "sudo": deny
+    "sudo *": deny
+    "nohup": deny
+    "nohup *": deny
+    "nice": deny
+    "nice *": deny
+    "time": deny
+    "time *": deny
+    "timeout": deny
+    "timeout *": deny
+    "bash -lc": deny
+    "bash -lc *": deny
+    "bash -c": deny
+    "bash -c *": deny
+    "scripts/agentic-flow ship": deny
+    "scripts/agentic-flow ship *": deny
+    "scripts/agentic-flow approve": deny
+    "scripts/agentic-flow approve *": deny
+    "scripts/agentic-flow hold clear": deny
+    "scripts/agentic-flow hold clear *": deny
+    "scripts/agentic-flow token": deny
+    "scripts/agentic-flow token *": deny
+    "rtk proxy scripts/agentic-flow ship": deny
+    "rtk proxy scripts/agentic-flow ship *": deny
+    "rtk proxy scripts/agentic-flow token": deny
+    "rtk proxy scripts/agentic-flow token *": deny
+    "git-claude push": deny
+    "git-claude push *": deny
+    "git-claude add -A": deny
+    "git-claude add -A *": deny
+    "git-claude add .": deny
+    "git-claude add . *": deny
+    "git-claude add --all": deny
+    "git-claude add --all *": deny
+    "git-claude add :/": deny
+    "git-claude add :/ *": deny
+    "git-claude add -- .": deny
+    "git-claude add -- . *": deny
+    "git-claude add -- :/": deny
+    "git-claude add -- :/ *": deny
+    "git-claude commit -n": deny
+    "git-claude commit -n *": deny
+    "git-claude commit --no-verify": deny
+    "git-claude commit --no-verify *": deny
+    "git-claude commit * -n": deny
+    "git-claude commit * --no-verify": deny
+    "git-codex push": deny
+    "git-codex push *": deny
+    "git-codex add -A": deny
+    "git-codex add -A *": deny
+    "git-codex add .": deny
+    "git-codex add . *": deny
+    "git-codex add --all": deny
+    "git-codex add --all *": deny
+    "git-codex add :/": deny
+    "git-codex add :/ *": deny
+    "git-codex add -- .": deny
+    "git-codex add -- . *": deny
+    "git-codex add -- :/": deny
+    "git-codex add -- :/ *": deny
+    "git-codex commit -n": deny
+    "git-codex commit -n *": deny
+    "git-codex commit --no-verify": deny
+    "git-codex commit --no-verify *": deny
+    "git-codex commit * -n": deny
+    "git-codex commit * --no-verify": deny
+    "git-opencode push": deny
+    "git-opencode push *": deny
+    "git-opencode add -A": deny
+    "git-opencode add -A *": deny
+    "git-opencode add .": deny
+    "git-opencode add . *": deny
+    "git-opencode add --all": deny
+    "git-opencode add --all *": deny
+    "git-opencode add :/": deny
+    "git-opencode add :/ *": deny
+    "git-opencode add -- .": deny
+    "git-opencode add -- . *": deny
+    "git-opencode add -- :/": deny
+    "git-opencode add -- :/ *": deny
+    "git-opencode commit -n": deny
+    "git-opencode commit -n *": deny
+    "git-opencode commit --no-verify": deny
+    "git-opencode commit --no-verify *": deny
+    "git-opencode commit * -n": deny
+    "git-opencode commit * --no-verify": deny
+    # END AGENTIC-FLOW COMMAND POLICY
 ---
 
 You are the **code reviewer** for the agentic-flow project. You review, you do

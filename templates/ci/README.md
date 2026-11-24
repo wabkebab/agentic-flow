@@ -1,7 +1,7 @@
 # CI workflow templates
 
-Reference implementations of the pipeline shape in [`METHODOLOGY.md`](../../METHODOLOGY.md)
-§10. Both ship **inert** — the scaffold exports them here, not into `.github/workflows/`,
+Reference implementations of the [CI/CD pipeline shape](../../docs/reference/ci-cd.md).
+The templates ship **inert** — the scaffold exports them here, not into `.github/workflows/`,
 so adopting the harness never activates CI or a deploy behind your back.
 
 | File | Trigger | Activate by |
@@ -18,7 +18,7 @@ so adopting the harness never activates CI or a deploy behind your back.
    Extend that list only when the Docs job covers every check that reads those files.
 3. Confirm `make check`, `make test`, and `make build` are real recipes — the workflow
    calls Make targets so CI green means the same thing as local green.
-4. Re-verify the pinned action SHAs against current releases (§9). A pin you inherited
+4. Re-verify the pinned action SHAs against current releases ([stack assessment](../../docs/reference/stack-assessment.md)). A pin you inherited
    is not a version you chose.
 5. Open a throwaway PR and let it run before making anything required.
 6. In branch protection, make **`CI gate`** the required status check — and *only* that

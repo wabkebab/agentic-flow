@@ -116,7 +116,7 @@ parse_review_marker() { # <line>
   raw=${raw#agentic-flow-review: }
   local -a parts
   IFS=';' read -r -a parts <<< "$raw"
-  for part in "${parts[@]}"; do
+  for part in "${parts[@]:-}"; do
     part=${part#"${part%%[![:space:]]*}"}
     part=${part%"${part##*[![:space:]]}"}
     [ -n "$part" ] || continue

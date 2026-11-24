@@ -52,6 +52,8 @@ PAYLOAD_LIB="$ROOT/scripts/lib/payload-apply.sh"
 [ -f "$PAYLOAD_LIB" ] || { echo "error: payload library missing: $PAYLOAD_LIB" >&2; exit 1; }
 # shellcheck disable=SC1090 # The library is resolved from this adopted project root.
 . "$PAYLOAD_LIB"
+# shellcheck source=scripts/lib/git-guards.sh
+. "$ROOT/scripts/lib/git-guards.sh"
 if [ -f "$ROOT/config/payload.tsv" ] && command -v payload_resolve_installation >/dev/null 2>&1; then
   payload_resolve_installation "$ROOT" "$ROOT/config/payload.tsv"
   payload_load_manifest "$ROOT/config/payload.tsv"
@@ -92,19 +94,6 @@ pretool_hook_wired() {
       | .command?
       | strings]
     | any(contains($script))
-  ' "$file" >/dev/null 2>&1
-}
-
-# Every matching handler must fail closed, including duplicate registrations.
-pretool_hook_fail_closed() {
-  local file="$1" script="$2"
-  jq -e --arg script "$script" '
-    [.hooks.PreToolUse[]?
-      | select(.matcher == "Bash")
-      | .hooks[]?
-      | select(.command? | strings | contains($script))] as $handlers
-    | ($handlers | length) > 0
-      and all($handlers[]; .type == "command" and .onFailure == "block")
   ' "$file" >/dev/null 2>&1
 }
 
@@ -168,6 +157,9 @@ if [ "$SCOPE" = env ] || [ "$SCOPE" = all ]; then
     ok "execution mode: Claude + Codex"
     payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES" && require_tool git-claude
     require_tool git-codex
+    if ! cmp -s "$ROOT/config/stations/command-policy.rules" "${CODEX_HOME:-$HOME/.codex}/rules/agentic-flow.rules"; then
+      fail 'interactive Codex command policy missing or stale. Follow the installation command in ADOPTION.md'
+    fi
   fi
 fi
 
@@ -179,6 +171,12 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_file AGENTS.md
   require_file Makefile
   require_file config/payload.tsv
+  if "$ROOT/scripts/render-command-policy.sh" --check; then
+    ok "rendered command policy matches config/command-policy.tsv"
+  else
+    fail "rendered command policy matches config/command-policy.tsv"
+  fi
+  warn 'Claude and OpenCode native command-policy matching was not probed on the executor host. Use scripts/agentic-flow doctor --stations on an authenticated host.'
   require_file .agentic-flow-review-policy
   if payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES"; then require_file .claude/settings.json; fi
   if payload_has_word codex "$PAYLOAD_ACTIVE_SCOPES"; then
@@ -332,6 +330,12 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   require_executable scripts/hooks/block-git-add-all.sh
   require_executable scripts/hooks/block-push.sh
   require_executable scripts/hooks/scan-secrets.sh
+  require_executable scripts/git-hooks/pre-commit
+  if git_guard_probe "$ROOT"; then
+    ok "active Git pre-commit hook blocks staged credentials"
+  else
+    fail "active Git pre-commit scanner (set core.hooksPath to scripts/git-hooks or chain scripts/git-hooks/pre-commit)"
+  fi
 
   echo
   real_make_target check
@@ -365,22 +369,14 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     else
       fail "$adapter Stop/SubagentStop hooks wired to check-gate.sh"
     fi
-    for guard in block-git-add-all.sh block-push.sh scan-secrets.sh; do
-      if pretool_hook_wired "$ROOT/$adapter" "scripts/hooks/$guard"; then
-        ok "$adapter PreToolUse: $guard"
-      else
-        fail "$adapter PreToolUse wired to scripts/hooks/$guard"
-      fi
-      if [ "$adapter" = .claude/settings.json ]; then
-        if pretool_hook_fail_closed "$ROOT/$adapter" "scripts/hooks/$guard"; then
-          ok "$adapter PreToolUse: $guard onFailure=block"
-        else
-          fail "$adapter PreToolUse: $guard requires onFailure=block"
-        fi
-      fi
-    done
     case "$adapter" in
       .codex/*)
+        require_executable scripts/hooks/guard-attached-git-dir.sh
+        if pretool_hook_wired "$ROOT/$adapter" scripts/hooks/guard-attached-git-dir.sh; then
+          ok "$adapter PreToolUse: attached Git-directory guard"
+        else
+          fail "$adapter PreToolUse wired to scripts/hooks/guard-attached-git-dir.sh"
+        fi
         if codex_hooks_portable "$ROOT/$adapter"; then
           ok "$adapter hooks resolve the repo root portably"
         else

@@ -24,6 +24,45 @@ set -euo pipefail
 
 ROOT=${AGENTIC_PROJECT_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}
 
+"$ROOT/scripts/render-command-policy.sh" --check || exit 1
+
+# The scaffold owns the shape of sections 9–11. Adopters may have retained a
+# customized methodology on upgrade. Check the reference targets they use.
+if [ -f "$ROOT/METHODOLOGY.md" ]; then
+  require_pointers=0
+  [ ! -d "$ROOT/templates/harness" ] || require_pointers=1
+  references=$(awk -v required="$require_pointers" '
+    /^## (9|10|11)\. / { section = $2; sections[section]++; next }
+    /^## / { section = "" }
+    section != "" && NF {
+      lines[section]++
+      if (match($0, /\(docs\/reference\/[a-z0-9-]+\.md\)\.$/) && $0 ~ /^See \[[^]]+\]\(/) {
+        pointers[section]++
+        paths[section] = substr($0, RSTART + 1, RLENGTH - 3)
+      }
+    }
+    END {
+      for (n = 9; n <= 11; n++) {
+        key = n "."
+        if (required && (sections[key] != 1 || lines[key] != 1 || pointers[key] != 1)) {
+          print "harness sync: expected a single docs/reference pointer in METHODOLOGY.md §" n > "/dev/stderr"
+          failed = 1
+        } else if (pointers[key]) {
+          print paths[key]
+        }
+      }
+      exit failed
+    }
+  ' "$ROOT/METHODOLOGY.md") || exit 1
+  while IFS= read -r reference; do
+    [ -n "$reference" ] || continue
+    if [ ! -f "$ROOT/$reference" ]; then
+      printf 'harness sync: METHODOLOGY.md points to missing reference %s\n' "$reference" >&2
+      exit 1
+    fi
+  done <<< "$references"
+fi
+
 # Adopted projects receive scripts/ but not templates/harness/, so there is nothing to
 # compare there. Same source-vs-adopted distinction self-test.sh makes.
 if [ ! -d "$ROOT/templates/harness" ]; then

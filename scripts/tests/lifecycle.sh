@@ -14,7 +14,7 @@ ship_gate_tests() (
   SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   SHIP_CI_TIMEOUT=3600
   HANDOFF_REPO=owner/repo SHIP_TITLE=Fixture SHIP_PLAN=fixture
-  SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3"}'
+  SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3","title":"Fixture","bodyIsBlank":false}'
   export SHIP_GATE_ACTIONS="$fixture/actions"
   git() {
     case "$1" in
@@ -28,10 +28,11 @@ ship_gate_tests() (
   ship_pr_body() { return 0; }
   close_out_cmd() { printf '%s\n' "$1" >> "$SHIP_GATE_ACTIONS"; }
   handoff_gh() { printf 'pr-create\n' >> "$SHIP_GATE_ACTIONS"; }
-  ship_pr() { SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3"}'; }
+  ship_pr() { SHIP_PR='{"number":3,"url":"https://github.com/owner/repo/pull/3","title":"Fixture","bodyIsBlank":false}'; }
   ship_wait_visibility() { return 0; }
   ship_wait_ci() { return 0; }
   ship_lifecycle() { printf 'READY fixture\n'; }
+  andon_desktop() { :; }
   # A gate failure must stop each push path, including the initial PR-creation push.
   for phase in initial final; do
     SHIP_DOC=docs/done/plan.md
@@ -480,6 +481,15 @@ bound_case 'duplicate attempt' BLOCKED 'malformed review record' 0
 sed 's|; run=https://github.com/owner/repo/actions/runs/100|; run=https://github.com/owner/repo/actions/runs/100; run=https://github.com/owner/repo/actions/runs/100|' \
   "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-comments-case.json"
 bound_case 'duplicate run' BLOCKED 'malformed review record' 0
+jq '.data.repository.issue.comments.nodes[0].body = "agentic-flow-review: "' \
+  "$TMP/lifecycle-comments.json" > "$TMP/lifecycle-empty-marker.json"
+LIFE_COMMENTS_JSON="$TMP/lifecycle-empty-marker.json" PATH="$LIFE_API:$PATH" AGENTIC_PROJECT_ROOT="$V2FIX" \
+  /bin/bash -c 'printf "Empty review marker under Bash %s\n" "$BASH_VERSION"; exec /bin/bash "$@"' bash \
+  "$ROOT/scripts/lifecycle-status.sh" --doc "$V2FIX/docs/inprogress/feature-v2.md" --verify-evidence \
+  > "$TMP/lifecycle-empty-marker.out" 2>&1 || fail "empty review marker aborted lifecycle: $(cat "$TMP/lifecycle-empty-marker.out")"
+head -n 1 "$TMP/lifecycle-empty-marker.out"
+grep -q '^BLOCKED.*malformed review record' "$TMP/lifecycle-empty-marker.out" \
+  || fail 'empty review marker did not report malformed review record'
 LIFE_COMMENTS_JSON="$TMP/lifecycle-comments.json"; export LIFE_COMMENTS_JSON
 LIFE_RUN_FAIL=true
 bound_case 'deleted run' UNVERIFIED 'Actions run 100 unavailable' 1
@@ -648,6 +658,26 @@ jq 'del(.data.repository.issue.body) | .data.repository.issue.comments.nodes[].b
 LIFE_STEP_COMMENTS_JSON="$TMP/journal-legacy-reader.json"
 review_case 'legacy latest marker selects bounce' BLOCKED 'does not approve'
 LIFE_STEP_COMMENTS_JSON="$TMP/lifecycle-step-comments.json"
+# A malformed transition opener cannot cut off historical prose replay.
+(
+  . "$ROOT/scripts/lib/workflow.sh"
+  . "$ROOT/scripts/lib/review-policy.sh"
+  . "$ROOT/scripts/lib/journal.sh"
+  if ! { workflow_load "$ROOT" && read_review_policy "$V2FIX"; }; then
+    fail 'near-miss journal fixture setup failed'
+  fi
+  journal_body=$(jq -r '.data.repository.issue.body' "$TMP/journal-approved.json")
+  journal_comments=$(jq '.data.repository.issue.comments.nodes | [{id:"near-miss",fullDatabaseId:"8",
+    author:{login:"executor"},lastEditedAt:null,body:"<!-- agentic-flow-transition: garbage"}] + .' \
+    "$TMP/lifecycle-step-comments.json" | journal_normalize)
+  journal_context "$journal_body" || fail 'near-miss journal stamp rejected'
+  journal_replay "$journal_comments" step-strict | jq -e \
+    '.state=="executing" and .seq==0 and .skipped==1' >/dev/null || fail 'journal=v1 replayed legacy comments'
+  journal_context "${journal_body/ journal=v1/}" || fail 'near-miss legacy stamp rejected'
+  journal_replay "$journal_comments" step-strict | jq -e \
+    '.state=="approved" and .seq==2 and .skipped==1 and all(.accepted[]; .legacy)' >/dev/null \
+    || fail 'near-miss marker prevented legacy submit and review replay'
+)
 # Unlisted authors cannot inject malformed evidence or replace a real handoff.
 sed 's/^reviewer=.*/reviewer=review-app[bot]/; s/^executor=.*/executor=execute-app[bot]/' \
   "$TMP/lifecycle-policy-valid" > "$V2FIX/.agentic-flow-review-policy"

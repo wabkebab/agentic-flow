@@ -7,16 +7,11 @@
 <style>
   :root {
     --bg: #fbfaf8;
-    --panel: #ffffff;
     --fg: #1d1c1a;
     --muted: #6b6862;
     --faint: #e6e2db;
-    --stroke: #d3cec5;
-    --stroke-strong: #8c877e;
     --accent: #b4532a;
     --accent-bg: #fdf1ea;
-    --claude: #b4532a;
-    --claude-bg: #fdf1ea;
     --codex: #2f6f6b;
     --codex-bg: #e9f4f3;
     --human: #4a5a8a;
@@ -28,16 +23,11 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #171614;
-      --panel: #1f1e1b;
       --fg: #ece9e3;
       --muted: #9a958c;
       --faint: #2c2a26;
-      --stroke: #413e39;
-      --stroke-strong: #7d786f;
       --accent: #e0855a;
       --accent-bg: #2a1d16;
-      --claude: #e0855a;
-      --claude-bg: #2a1d16;
       --codex: #6fbdb6;
       --codex-bg: #142625;
       --human: #92a5d8;
@@ -48,16 +38,16 @@
     }
   }
   :root[data-theme="dark"] {
-    --bg: #171614; --panel: #1f1e1b; --fg: #ece9e3; --muted: #9a958c;
-    --faint: #2c2a26; --stroke: #413e39; --stroke-strong: #7d786f;
-    --accent: #e0855a; --accent-bg: #2a1d16; --claude: #e0855a; --claude-bg: #2a1d16;
+    --bg: #171614; --fg: #ece9e3; --muted: #9a958c;
+    --faint: #2c2a26;
+    --accent: #e0855a; --accent-bg: #2a1d16;
     --codex: #6fbdb6; --codex-bg: #142625; --human: #92a5d8; --human-bg: #1a1e2b;
     --opencode: #d4b86a; --opencode-bg: #262010; --code-bg: #262421;
   }
   :root[data-theme="light"] {
-    --bg: #fbfaf8; --panel: #ffffff; --fg: #1d1c1a; --muted: #6b6862;
-    --faint: #e6e2db; --stroke: #d3cec5; --stroke-strong: #8c877e;
-    --accent: #b4532a; --accent-bg: #fdf1ea; --claude: #b4532a; --claude-bg: #fdf1ea;
+    --bg: #fbfaf8; --fg: #1d1c1a; --muted: #6b6862;
+    --faint: #e6e2db;
+    --accent: #b4532a; --accent-bg: #fdf1ea;
     --codex: #2f6f6b; --codex-bg: #e9f4f3; --human: #4a5a8a; --human-bg: #edf0f8;
     --opencode: #7a6420; --opencode-bg: #f7f1e0; --code-bg: #f2efe9;
   }
@@ -74,22 +64,19 @@
   .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px 96px; }
 
   header.hero { padding: 72px 0 40px; border-bottom: 1px solid var(--faint); margin-bottom: 8px; }
-  .eyebrow { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
   h1 { font-size: clamp(32px, 6vw, 48px); line-height: 1.1; margin: 12px 0 16px; letter-spacing: -.02em; }
   .lede { font-size: 19px; color: var(--muted); max-width: 62ch; margin: 0; }
 
   h2 {
     font-size: 26px; letter-spacing: -.01em; margin: 56px 0 4px; padding-top: 8px;
   }
-  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 10px; font-size: 18px; vertical-align: 3px; }
   h3 { font-size: 17px; margin: 32px 0 6px; }
   p { max-width: 68ch; }
-  .sub { color: var(--muted); margin-top: 0; max-width: 68ch; }
   ul, ol { max-width: 68ch; padding-left: 22px; }
   li { margin: 6px 0; }
   a { color: var(--accent); }
 
-  code, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: .88em; }
+  code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: .88em; }
   :not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
   pre {
     background: var(--code-bg); border: 1px solid var(--faint); border-radius: 8px;
@@ -97,909 +84,176 @@
   }
   pre code { background: none; padding: 0; }
 
-  .fig { margin: 26px 0 30px; }
-  .fig .scroller { overflow-x: auto; padding-bottom: 4px; }
-  .fig svg { display: block; min-width: 620px; max-width: 100%; height: auto; margin: 0 auto; }
-  figcaption { color: var(--muted); font-size: 13.5px; margin-top: 10px; text-align: center; }
-
-  /* SVG theming */
-  .d-box { fill: var(--panel); stroke: var(--stroke); stroke-width: 1.25; }
-  .d-claude { fill: var(--claude-bg); stroke: var(--claude); stroke-width: 1.25; }
-  .d-codex  { fill: var(--codex-bg);  stroke: var(--codex);  stroke-width: 1.25; }
-  .d-human  { fill: var(--human-bg);  stroke: var(--human);  stroke-width: 1.25; }
-  .d-opencode { fill: var(--opencode-bg); stroke: var(--opencode); stroke-width: 1.25; }
-  .d-ghost  { fill: none; stroke: var(--stroke); stroke-width: 1.25; stroke-dasharray: 5 4; }
-  .t  { fill: var(--fg); font: 600 14px ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
-  .ts { fill: var(--muted); font: 11.5px ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
-  .tm { fill: var(--fg); font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .tl { fill: var(--muted); font: 11px ui-sans-serif, -apple-system, "Segoe UI", sans-serif; letter-spacing: .08em; text-transform: uppercase; }
-  .cc { fill: var(--claude); font: 600 11px ui-sans-serif, sans-serif; letter-spacing: .06em; }
-  .cx { fill: var(--codex);  font: 600 11px ui-sans-serif, sans-serif; letter-spacing: .06em; }
-  .ch { fill: var(--human);  font: 600 11px ui-sans-serif, sans-serif; letter-spacing: .06em; }
-  .co { fill: var(--opencode); font: 600 11px ui-sans-serif, sans-serif; letter-spacing: .06em; }
-  .ln { stroke: var(--stroke-strong); stroke-width: 1.5; fill: none; }
-  .ln-d { stroke: var(--stroke-strong); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
-  .ar { fill: var(--stroke-strong); }
-
   table { border-collapse: collapse; width: 100%; font-size: 14.5px; margin: 18px 0 8px; }
   .tablewrap { overflow-x: auto; }
   th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--faint); vertical-align: top; }
   th { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; }
   tbody tr:last-child td { border-bottom: none; }
 
-  .card {
-    background: var(--panel); border: 1px solid var(--faint); border-radius: 10px;
-    padding: 16px 20px; margin: 18px 0;
-  }
   .callout {
     border-left: 3px solid var(--accent); background: var(--accent-bg);
     padding: 12px 18px; border-radius: 0 8px 8px 0; margin: 22px 0;
   }
   .callout p { margin: 6px 0; }
-  .callout .label { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
-
-  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 20px 0; }
-  .grid .card { margin: 0; }
-  .grid h4 { margin: 0 0 4px; font-size: 15px; }
-  .grid p { margin: 0; font-size: 14px; color: var(--muted); }
-
   .roles { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); margin: 22px 0; }
   .role { border-radius: 10px; padding: 16px 18px; border: 1px solid; }
-  .role.claude { border-color: var(--claude); background: var(--claude-bg); }
   .role.codex  { border-color: var(--codex);  background: var(--codex-bg); }
   .role.human  { border-color: var(--human);  background: var(--human-bg); }
   .role.opencode { border-color: var(--opencode); background: var(--opencode-bg); }
   .role .who { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700; }
-  .role.claude .who { color: var(--claude); }
   .role.codex  .who { color: var(--codex); }
   .role.human  .who { color: var(--human); }
   .role.opencode .who { color: var(--opencode); }
-  .role h4 { margin: 6px 0 6px; font-size: 17px; }
+  .role h3 { margin: 6px 0; font-size: 17px; }
   .role p { margin: 0; font-size: 14px; }
 
   footer { margin-top: 72px; padding-top: 22px; border-top: 1px solid var(--faint); color: var(--muted); font-size: 14px; }
 </style>
 </head>
 <body>
-<p>METHODOLOGY.md §6 is authoritative for workflow states and transitions.</p>
 <div class="wrap">
-
 <header class="hero">
-  <div class="eyebrow">agentic-flow · standard 0.14.0</div>
-  <h1>How this agentic flow works</h1>
-  <p class="lede">A copy-paste scaffold for running software work across three AI agents and one
-  human, without losing track of intent, evidence, or who is allowed to press which button.
-  One planner, one executor, one independent reviewer, one owner — and a set of hooks and
-  checks that make the contract mechanical instead of aspirational.</p>
+  <h1>How agentic-flow works</h1>
+  <p class="lede">Start a plan in its own worktree, approve the brief, and let the controller
+  coordinate implementation and review. The owner handles decisions and ships the reviewed branch.</p>
 </header>
 
-<h2><span class="num">01</span>The shape of it</h2>
-<p>Most agentic setups fail in the same two places: the reasoning behind a change evaporates the
-moment the code lands, and the agent quietly does something the human never approved. This
-scaffold answers both with the same move — <strong>separate the roles, and write the design
-down in a document that outlives the issues.</strong></p>
-<p>Work flows one direction. A document states intent. An approved document becomes GitHub
-issues. Issues become commits. A separate reviewer judges each commit against the brief. The
-planner closes out the pass with its evidence, and a human merges. The document then moves to
-<code>docs/done/</code> carrying that evidence. Issues are disposable; the document is not.</p>
+<main>
+<section>
+<h2>Start and approve a plan</h2>
+<p>Run <code>agentic-flow start &lt;plan-id&gt;</code> from the project. It creates the plan branch,
+worktree and draft in <code>docs/inprogress/</code>. Use <code>--type security</code> for a Security
+plan. Draft the analysis and its implementation brief in that worktree, starting with the
+acceptance scenarios. The approved revision binds the steps and their verification commands.
+Merge base-branch updates into the plan branch to preserve that revision.</p>
+<p>The owner approves the committed brief. For an approved plan that needs a clarification,
+commit the clarification first. <code>agentic-flow approve &lt;doc&gt; --by &lt;login&gt;</code>
+stages the updated approval for an authorized approver to commit.</p>
+<pre><code>scripts/plan-to-issues.sh --doc &lt;doc&gt;
+scripts/plan-to-issues.sh --doc &lt;doc&gt; --apply</code></pre>
+<p>After approval, use the <code>plan-to-issues</code> skill. The dry run previews the generated
+work and <code>--apply</code> reconciles it on GitHub. Standard uses one work issue.
+Strict uses a tracker and a sub-issue for each step. Reapply after a clarification to update
+issue packets. The plan uses one branch and one PR, with one implementation commit per step.</p>
+</section>
 
+<section>
+<h2>Run the controller</h2>
+<p><code>agentic-flow run &lt;doc&gt;</code> reads the approved plan and issue journals,
+selects the next station, and checks the station's result before recording it. Use
+<code>agentic-flow run &lt;doc&gt; --once</code> for a supervised turn. Unattended runs require
+distinct accounts, verified role credentials and validated station launch settings.</p>
 <div class="roles">
-  <div class="role claude">
-    <div class="who">Plan / Close-out</div>
-    <h4>Claude</h4>
-    <p>Writes the analysis docs and the inlined implementation brief, generates the issues,
-    and after review ticks the Tracker, fills the Status block, verifies the evidence, moves the
-    doc, and closes the tracking issue. Commits with <code>git-claude</code>.</p>
-  </div>
   <div class="role codex">
-    <div class="who">Execute</div>
-    <h4>Codex</h4>
-    <p>Implements the issues — one logical commit per step, a regression test per fix — and
-    comments the commit SHA and the verification it actually ran on the step issue. Does not
-    expand scope. Commits with <code>git-codex</code>.</p>
+    <div class="who">Executor</div>
+    <h3>Implement a step</h3>
+    <p>Read the packet, implement the step, run the prescribed checks and commit
+    with <code>Fixes #N</code>. Return the full implementation SHA to the controller.</p>
   </div>
   <div class="role opencode">
-    <div class="who">Review</div>
-    <h4>OpenCode</h4>
-    <p>Reviews each step against the brief. Returns findings to Codex, or posts a structured
-    approving verdict and closes the step. The agent that wrote the code is never the one that
-    judges it. Commits notes with <code>git-opencode</code>.</p>
+    <div class="who">Reviewer</div>
+    <h3>Review the submitted commit</h3>
+    <p>Review the code and verification evidence against the approved brief. Return an
+    approval or cite actionable findings tied to the submitted commit.</p>
   </div>
   <div class="role human">
-    <div class="who">Own / merge / deploy</div>
-    <h4>You</h4>
-    <p>Approves plans before any issue exists, pushes, merges the PR, and controls every
-    release. No agent can push or merge — that's enforced, not requested.</p>
+    <div class="who">Owner</div>
+    <h3>Resolve decisions and ship</h3>
+    <p>Approve the plan, answer escalations and clear holds when resolved. Ship the
+    reviewed plan and merge after final approval and CI.</p>
   </div>
 </div>
+<p>The controller runs <code>agentic-flow verify-step &lt;sha&gt; --doc &lt;doc&gt; --step &lt;id&gt;</code>
+for the executor's commit. It checks the step's prescribed gates and recorded red-first checks
+where the brief requires them. The reviewer receives that verification record and can rerun a
+focused check to fill a specific gap.</p>
+<p>In a manual session, use <code>agentic-flow brief &lt;doc&gt; &lt;step-id&gt;</code> to read the
+approved step and <code>agentic-flow packet &lt;issue&gt; --station &lt;role&gt;</code> to retrieve
+its station context. Manual stations verify and record their own handoffs with
+<code>agentic-flow handoff &lt;issue&gt; &lt;event&gt; --as &lt;role&gt;</code>. Under the
+controller, stations return result JSON and the controller records the handoff.</p>
+</section>
 
-<p class="sub">Three agents is the default, not a requirement. A project can drop Codex
-(<code>--claude-only</code>; Claude plans and executes) or drop OpenCode (Claude reviews with
-<code>/code-review</code> or a written review doc, and says the independence is weaker).
-<strong>Exactly one role reviews</strong> — an opt-out reassigns the review, it never
-duplicates it.</p>
-
-<p class="sub">Context is loaded progressively. Codex starts from <code>AGENTS.md</code>, the
-issue, the linked brief step, and the live code. Claude starts from <code>CLAUDE.md</code> plus
-the template or the Tracker, issue states, verdicts, and CI evidence it needs.
-<code>METHODOLOGY.md</code> is read by section, never wholesale.</p>
-
-<h2><span class="num">02</span>The loop</h2>
-<p>Everything below is one pass through this cycle. Two properties matter most. A human
-approval gate sits between <em>design</em> and <em>execution</em>, so no issue exists and no
-code gets written until a human has read the plan. And every handoff carries data. A label
-says who holds the work; the comment behind it says what they are holding.</p>
-
-<figure class="fig">
-<div class="scroller">
-<svg viewBox="0 0 880 840" role="img" aria-label="The loop from analysis document through approval, issues, execution, independent review, close-out, and merge">
-  <defs>
-    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
-    </marker>
-  </defs>
-
-  <!-- lane labels -->
-  <text x="18" y="52"  class="cc">CLAUDE</text>
-  <text x="18" y="256" class="ch">HUMAN</text>
-  <text x="18" y="330" class="cc">CLAUDE</text>
-  <text x="18" y="428" class="cx">CODEX</text>
-  <text x="18" y="540" class="co">OPENCODE</text>
-  <text x="18" y="652" class="cc">CLAUDE</text>
-  <text x="18" y="758" class="ch">HUMAN</text>
-
-  <!-- 1 plan -->
-  <rect x="150" y="24" width="500" height="62" rx="9" class="d-claude"/>
-  <text x="172" y="50" class="t">Plan — write the analysis document</text>
-  <text x="172" y="70" class="ts">Security · Feature · Product Analysis, from docs/templates/</text>
-
-  <path d="M400,86 L400,116" class="ln" marker-end="url(#a1)"/>
-
-  <!-- 2 doc -->
-  <rect x="150" y="118" width="500" height="80" rx="9" class="d-box"/>
-  <text x="172" y="144" class="tm">docs/inprogress/&lt;doc&gt;.md</text>
-  <text x="172" y="166" class="ts">Part A: goal, current state, threat model, approach, what not to build</text>
-  <text x="172" y="184" class="ts">Part B: the implementation brief — ordered steps, DoD, verify commands (not code)</text>
-
-  <path d="M400,198 L400,228" class="ln" marker-end="url(#a1)"/>
-
-  <!-- 3 approval -->
-  <rect x="250" y="230" width="300" height="42" rx="21" class="d-human"/>
-  <text x="400" y="256" class="t" text-anchor="middle">Human approves the plan</text>
-
-  <path d="M400,272 L400,302" class="ln" marker-end="url(#a1)"/>
-
-  <!-- 4 issues -->
-  <rect x="150" y="304" width="500" height="62" rx="9" class="d-claude"/>
-  <text x="172" y="330" class="t">plan-to-issues</text>
-  <text x="172" y="350" class="ts">Standard: one work issue · Strict: tracking issue + one sub-issue per step</text>
-
-  <path d="M400,366 L400,396" class="ln" marker-end="url(#a1)"/>
-
-  <!-- 5 execute -->
-  <rect x="150" y="398" width="500" height="92" rx="9" class="d-codex"/>
-  <text x="172" y="424" class="t">Execute the steps</text>
-  <text x="172" y="444" class="ts">One branch + one PR for the whole pass</text>
-  <text x="172" y="462" class="ts">One commit per step with “Fixes #N”, then a comment: SHA + verification run</text>
-  <text x="172" y="480" class="ts">Relabel → agent:opencode + needs-review</text>
-
-  <path d="M400,490 L400,508" class="ln" marker-end="url(#a1)"/>
-
-  <!-- 6 review -->
-  <rect x="150" y="510" width="500" height="92" rx="9" class="d-opencode"/>
-  <text x="172" y="536" class="t">Review each step against the brief</text>
-  <text x="172" y="556" class="ts">Approved → structured verdict comment on the step issue</text>
-  <text x="172" y="574" class="ts">Strict: reviewer closes the step · Standard: work issue → needs-closing</text>
-  <text x="172" y="592" class="ts">Last step approved → tracker gets agent:claude + needs-closing</text>
-
-  <!-- feedback loop right -->
-  <path d="M650,556 C 740,556 740,444 654,444" class="ln-d" marker-end="url(#a1)"/>
-  <text x="746" y="486" class="ts" text-anchor="start">findings comment</text>
-  <text x="746" y="502" class="ts" text-anchor="start">→ back to Codex</text>
-  <text x="746" y="518" class="ts" text-anchor="start">(2 returns, then human)</text>
-
-  <path d="M400,602 L400,620" class="ln" marker-end="url(#a1)"/>
-
-  <!-- 7 close-out -->
-  <rect x="150" y="622" width="500" height="92" rx="9" class="d-claude"/>
-  <text x="172" y="648" class="t">Close-out</text>
-  <text x="172" y="668" class="ts">Tick the Tracker, fill the v2 Status block, move the doc to docs/done/</text>
-  <text x="172" y="686" class="ts">Human pushes → CI + final reviewer approval on that exact PR head</text>
-  <text x="172" y="704" class="ts">lifecycle-status.sh --phase close-out --verify-evidence → close the issue</text>
-
-  <path d="M400,714 L400,736" class="ln" marker-end="url(#a1)"/>
-
-  <!-- 8 merge -->
-  <rect x="150" y="738" width="500" height="42" rx="9" class="d-human"/>
-  <text x="172" y="764" class="t">Human merges the PR (after a --phase pre-merge check)</text>
-
-  <path d="M400,780 L400,800" class="ln" marker-end="url(#a1)"/>
-  <text x="400" y="820" class="tm" text-anchor="middle">docs/done/  ·  gaps in docs/accepted_risks.md</text>
-</svg>
-</div>
-<figcaption>The loop is one-directional: document → issues → commits. Issue edits never sync
-back into the document. Review and close-out close the issues, not the merge.</figcaption>
-</figure>
-
+<section>
+<h2>Read the journal and resolve andon</h2>
+<p>Authorized issue comments form the journal. It records transitions, evidence and the
+commit each verdict covers. Labels and issue state are derived from that journal.
+The controller also keeps a local ledger in the shared Git directory for station attempts,
+verification and recovery. Use <code>agentic-flow handoff &lt;issue&gt; reconcile</code> to
+repair issue projections or <code>agentic-flow run &lt;doc&gt; --reconcile-only</code>
+to reconcile the plan without launching stations.</p>
 <div class="callout">
-  <div class="label">The one rule that keeps this honest</div>
-  <p>The document is the source of design intent; issues are disposable execution units. If the
-  plan changes, you change the document and regenerate the issues — never the reverse. Reverse
-  syncing is how a codebase ends up with no record of why anything was built.</p>
+  <p><strong>Andon means the controller needs a human decision.</strong> It surfaces the
+  reason in the issue and stops launches. Read the journal and the controller's diagnostic
+  before resuming work.</p>
 </div>
+<ul>
+  <li>A station's <code>ask</code> or a second review bounce escalates a step.
+  The approver records the resolution with
+  <code>agentic-flow handoff &lt;issue&gt; resume --as approver --body-file &lt;note&gt;</code>
+  to return the step to its prior station.</li>
+  <li>A plan hold, such as unexplained worktree changes, blocks further launches until
+  cleared. Inspect the cause and any salvage reference. Use
+  <code>agentic-flow hold clear &lt;doc&gt; &lt;hold-id&gt; --note &lt;text&gt;</code>
+  after resolving it. Use <code>--rebaseline</code> only when intentionally accepting a
+  changed worktree baseline.</li>
+</ul>
+</section>
 
-<h3>Assurance follows the risk</h3>
-<p>Quick, Standard, and Strict are defined in <code>METHODOLOGY.md</code> §2. The tracked
-<code>.agentic-flow-assurance</code> file holds the project's minimum; new adoptions start at
-Standard, and a brief may raise it but never lower it. <code>scripts/assurance.sh</code> reads,
-checks, and raises it. A downgrade needs <code>--approved-by</code> and <code>--reason</code>
-and appends to <code>.agentic-flow-assurance-audit</code>. That records a claim for review in
-the diff; the CLI cannot authenticate who made it.</p>
+<section>
+<h2>Close out, ship and clean</h2>
+<ol>
+  <li>Once the steps are approved, complete the Tracker and Status fields and run
+  <code>agentic-flow close-out prep &lt;doc&gt;</code>. Commit the staged move to
+  <code>docs/done/</code> or <code>docs/done/security/</code> and the updated index.</li>
+  <li>Run <code>agentic-flow ship &lt;moved-doc&gt; --wait-review</code>. It runs
+  <code>make ship-gate</code> when defined, pushes the prepared head and opens or adopts
+  the PR. A retry can reuse a passing gate for the same inputs and skips the push when
+  the remote branch already carries the prepared SHA.</li>
+  <li>After CI passes, the reviewer runs <code>agentic-flow final-approve &lt;moved-doc&gt;</code>.
+  The final verdict identifies the PR head, CI run and attempt. <code>ship</code> finishes
+  close-out, closes the plan's tracking issue and checks pre-merge readiness. To invoke
+  that final close-out action directly, use
+  <code>agentic-flow close-out finish &lt;moved-doc&gt;</code>.</li>
+  <li>Merge the PR so the plan tip is reachable from the base. Run
+  <code>agentic-flow clean &lt;plan-id&gt; --dry-run</code> to preview removal, then
+  <code>agentic-flow clean &lt;plan-id&gt;</code> to remove the merged worktree and branch.</li>
+</ol>
+</section>
+
+<section>
+<h2>Station setup and harness maintenance</h2>
+<p>Use <code>agentic-flow --help</code> for command options and
+<code>agentic-flow --version</code> for the installed harness stamp.</p>
 <div class="tablewrap">
 <table>
-  <thead><tr><th>Profile</th><th>Work and artifact</th><th>Review and evidence</th></tr></thead>
+  <thead><tr><th scope="col">Command</th><th scope="col">What it does</th></tr></thead>
   <tbody>
-    <tr><td><strong>Quick</strong></td><td>Explicit bounded local work; no formal brief or issue</td><td>Focused checks and self-check; non-authoritative. Never authorizes a push; promote to Standard before the normal merge workflow.</td></tr>
-    <tr><td><strong>Standard</strong></td><td>One-step Feature brief and one work issue, no parent tracker</td><td>Separate-role review, regression test, <code>make check</code>, proportionate broader tests, and CI evidence</td></tr>
-    <tr><td><strong>Strict</strong></td><td>Full Feature/Security analysis, tracker, and one sub-issue per shippable step</td><td>Separate-role review and failure-path test per step, full suite, and bound CI and close-out evidence</td></tr>
+    <tr><td><code>agentic-flow roles</code></td><td>Show station assignments. Use
+    <code>roles set</code>, <code>unset</code> or <code>manual</code> to change how a station runs.</td></tr>
+    <tr><td><code>agentic-flow doctor --stations</code></td><td>Check station launchers and
+    command policies before running the controller.</td></tr>
+    <tr><td><code>agentic-flow token &lt;role&gt; --check</code></td><td>Check the configured
+    GitHub identity for the executor, reviewer or approver.</td></tr>
+    <tr><td><code>agentic-flow metrics</code></td><td>Read station timing, review bounces and
+    andon counts from the local ledger.</td></tr>
+    <tr><td><code>agentic-flow status</code></td><td>Show the installed harness version,
+    recorded source and pending merge candidates.</td></tr>
+    <tr><td><code>agentic-flow diff</code></td><td>Preview the changes in a published
+    scaffold revision.</td></tr>
+    <tr><td><code>agentic-flow upgrade</code></td><td>Apply the published payload and
+    review any <code>.agentic-new</code> candidates. Use
+    <code>agentic-flow upgrade --merged &lt;path&gt;</code> after resolving a candidate.</td></tr>
   </tbody>
 </table>
 </div>
-<p>Strict is mandatory for authentication, secrets, destructive or data-loss behavior,
-migrations, public compatibility contracts, money, release infrastructure, sensitive data, or
-an explicit human request. Every profile keeps the same engineering standards, hooks, CI
-authority, and human ownership of pushes and merges. Decision is a Product Analysis document
-type; emergency restoration may ship as a hotfix, followed by a retrospective
-Feature/Security document.</p>
-
-<h2><span class="num">03</span>Documents, and where they live</h2>
-<p>Four document types, each with a template in <code>docs/templates/</code>. Copy one out —
-never edit a template in place.</p>
-
-<div class="tablewrap">
-<table>
-  <thead><tr><th>Type</th><th>What it's for</th><th>Carries a brief?</th></tr></thead>
-  <tbody>
-    <tr><td><strong>Security</strong></td><td>A review or hardening pass. Severity-graded findings, each with <code>file:line</code> and a concrete fix.</td><td>Yes — inlined</td></tr>
-    <tr><td><strong>Feature</strong></td><td>Designing a change: goal, current state, approach, and explicitly what not to build.</td><td>Yes — inlined</td></tr>
-    <tr><td><strong>Product Analysis</strong></td><td>Exploratory architecture or product analysis. Options, trade-offs, a recommendation. A decision record.</td><td>No</td></tr>
-    <tr><td><strong>Review</strong></td><td>A post-execution architectural review with findings, evidence, and a verdict.</td><td>No</td></tr>
-  </tbody>
-</table>
-</div>
-
-<p>A document moves through folders as its state changes. The folder <em>is</em> the status —
-there is no separate board to keep in sync.</p>
-
-<figure class="fig">
-<div class="scroller">
-<svg viewBox="0 0 860 300" role="img" aria-label="Document lifecycle from backlog to inprogress to done, with accepted risks as an alternate exit">
-  <defs>
-    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
-    </marker>
-  </defs>
-
-  <rect x="30" y="96" width="180" height="70" rx="9" class="d-box"/>
-  <text x="120" y="126" class="tm" text-anchor="middle">docs/backlog/</text>
-  <text x="120" y="146" class="ts" text-anchor="middle">identified, not started</text>
-
-  <path d="M212,131 L268,131" class="ln" marker-end="url(#a2)"/>
-
-  <rect x="270" y="86" width="200" height="90" rx="9" class="d-claude"/>
-  <text x="370" y="118" class="tm" text-anchor="middle">docs/inprogress/</text>
-  <text x="370" y="138" class="ts" text-anchor="middle">plan → execute → review</text>
-  <text x="370" y="156" class="ts" text-anchor="middle">the tracker is ticked here</text>
-
-  <path d="M472,110 L556,60" class="ln" marker-end="url(#a2)"/>
-  <path d="M472,152 L556,214" class="ln-d" marker-end="url(#a2)"/>
-
-  <rect x="560" y="20" width="270" height="76" rx="9" class="d-box"/>
-  <text x="580" y="48" class="tm">docs/done/</text>
-  <text x="580" y="68" class="tm">docs/done/security/</text>
-  <text x="580" y="86" class="ts">shipped, with a verified Status block</text>
-
-  <rect x="560" y="186" width="270" height="76" rx="9" class="d-ghost"/>
-  <text x="580" y="214" class="tm">docs/accepted_risks.md</text>
-  <text x="580" y="234" class="ts">risk accepted or feature declined —</text>
-  <text x="580" y="250" class="ts">a decision, recorded, not forgotten</text>
-
-  <text x="120" y="212" class="ts" text-anchor="middle">work can start</text>
-  <text x="120" y="228" class="ts" text-anchor="middle">straight in the middle</text>
-  <path d="M120,190 C 120,180 150,178 200,150" class="ln-d" marker-end="url(#a2)"/>
-</svg>
-</div>
-<figcaption>Two legitimate exits. A document leaves <code>inprogress/</code> either because the
-work shipped, or because someone decided it shouldn't happen — and that decision gets written
-down too. A shipped pass can also record accepted review gaps there.</figcaption>
-</figure>
-
-<h3>Conventions that make documents scannable</h3>
-<p>Every document opens with a <strong>TRIAGE header</strong> — type, status emoji, and one or
-two lines saying what's current versus historical. <code>scripts/docs-index.sh</code> derives
-the whole <code>docs/README.md</code> index from those headers, so the index can't rot by hand;
-<code>--check</code> in <code>make check</code> makes staleness fail the gate. A
-<code>.md</code> file under <code>docs/</code> outside the lifecycle folders also fails it.</p>
-<p>Every Security and Feature document also carries a <strong>tracker</strong> near the top —
-the burndown ticked as reviewed commits land — and a <strong>Status block</strong> that
-close-out fills with machine-checked evidence (see §05):</p>
-<pre><code>## Tracker
-- [x] SEC-1 Backup restore destroys QA data — fixed in a1b2c3d (#70)
-- [ ] SEC-2 KDM expiry only checks start — open (#72)</code></pre>
-
-<h3>Memory: traps that outlive a session</h3>
-<p>A trap worth keeping lives in <code>docs/memory/</code> as one file, with one line in
-<code>docs/MEMORY.md</code>. Agents read the index every session and open a body only when a
-line looks relevant. Close-out records a memory decision in the Status block, even if it is
-<code>n/a</code>. <code>scripts/check-memory-index.sh</code> runs in <code>make check</code>.
-It fails on an entry with no index line, an index line with no file, a <code>path:line</code>
-citation that no longer resolves, or an index over 50 lines. When an entry keeps proving
-itself, it graduates into a <code>CLAUDE.md</code> Gotcha or a <code>make check</code>
-assertion and leaves the index.</p>
-
-<h2><span class="num">04</span>From an approved plan to issues</h2>
-<p>The implementation brief is already an ordered list of independently-shippable steps, so
-converting it into GitHub issues is mechanical. The <code>plan-to-issues</code> skill does it.
-Standard creates one work issue. Strict creates one tracking issue plus one sub-issue per step.
-Each issue carries an executor packet from the approved brief: brief, definition of done,
-verification, and risks. The driver rejects a packet over 800 words rather than truncating
-acceptance criteria. Issue bodies never copy Make recipes; the <code>Makefile</code> owns
-those.</p>
-
-<figure class="fig">
-<div class="scroller">
-<svg viewBox="0 0 860 330" role="img" aria-label="A Strict implementation brief expanding into a tracking issue with sub-issues, all landing on one branch and one pull request">
-  <defs>
-    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
-    </marker>
-  </defs>
-
-  <rect x="20" y="90" width="190" height="130" rx="9" class="d-box"/>
-  <text x="40" y="118" class="t">Implementation</text>
-  <text x="40" y="136" class="t">brief (Part B)</text>
-  <text x="40" y="162" class="ts">Step 1 · Step 2 · Step 3</text>
-  <text x="40" y="182" class="ts">packet per step</text>
-  <text x="40" y="202" class="ts">approved by the human</text>
-
-  <path d="M212,155 L266,155" class="ln" marker-end="url(#a3)"/>
-  <text x="239" y="144" class="ts" text-anchor="middle">skill</text>
-
-  <rect x="270" y="34" width="220" height="46" rx="9" class="d-claude"/>
-  <text x="290" y="62" class="t">Tracking issue · label: plan</text>
-
-  <rect x="290" y="106" width="200" height="40" rx="8" class="d-box"/>
-  <text x="308" y="131" class="ts">#71 Step 1 — agent:codex</text>
-  <rect x="290" y="156" width="200" height="40" rx="8" class="d-box"/>
-  <text x="308" y="181" class="ts">#72 Step 2 — agent:codex</text>
-  <rect x="290" y="206" width="200" height="40" rx="8" class="d-box"/>
-  <text x="308" y="231" class="ts">#73 Step 3 — agent:codex</text>
-
-  <path d="M380,80 L380,104" class="ln" marker-end="url(#a3)"/>
-  <path d="M272,126 L272,226" class="ln" style="marker-end:none"/>
-
-  <path d="M492,126 C 540,126 540,150 566,150" class="ln" marker-end="url(#a3)"/>
-  <path d="M492,176 L566,176" class="ln" marker-end="url(#a3)"/>
-  <path d="M492,226 C 540,226 540,202 566,202" class="ln" marker-end="url(#a3)"/>
-
-  <rect x="570" y="96" width="270" height="110" rx="9" class="d-codex"/>
-  <text x="590" y="124" class="t">One branch, one PR</text>
-  <text x="590" y="146" class="ts">commit 1 → “Fixes #71”</text>
-  <text x="590" y="166" class="ts">commit 2 → “Fixes #72”</text>
-  <text x="590" y="186" class="ts">commit 3 → “Fixes #73”</text>
-
-  <path d="M705,206 L705,248" class="ln" marker-end="url(#a3)"/>
-  <rect x="570" y="250" width="270" height="56" rx="9" class="d-opencode"/>
-  <text x="590" y="274" class="t">Reviewer closes each step</text>
-  <text x="590" y="294" class="ts">on its approving verdict, before merge</text>
-</svg>
-</div>
-<figcaption>Issues are the <em>tracking</em> unit; the pass is the <em>shipping</em> unit. A
-reviewer sees the complete arc of the change, not fragments merged out of order. A closed
-step means <em>reviewed clean</em>, not <em>shipped</em>.</figcaption>
-</figure>
-
-<h3>The label state machine</h3>
-<p>Labels move in pairs: one <code>agent:*</code> naming who holds the issue, one
-<code>needs-*</code> naming what it needs. The <code>create-tags</code> skill creates all six
-with fixed colors; <code>plan-to-issues.sh</code> invokes it only when none exist yet.
-Reapplying a plan never moves a live step backward. Duplicate or incomplete issue discovery
-stops before any issue changes.</p>
-
-<figure class="fig">
-<div class="scroller">
-<svg viewBox="0 0 860 290" role="img" aria-label="Step issue label state machine: executor, reviewer, and close-out states with the comments that move an issue between them">
-  <defs>
-    <marker id="a7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
-    </marker>
-  </defs>
-
-  <text x="20" y="28" class="tl">require-step-comment.sh blocks a relabel or close without its comment</text>
-
-  <text x="20" y="90" class="ts">plan-to-issues</text>
-  <path d="M20,138 L50,138" class="ln" marker-end="url(#a7)"/>
-
-  <rect x="54" y="98" width="200" height="80" rx="9" class="d-codex"/>
-  <text x="154" y="124" class="tm" text-anchor="middle">agent:codex</text>
-  <text x="154" y="144" class="tm" text-anchor="middle">needs-execution</text>
-  <text x="154" y="166" class="ts" text-anchor="middle">executor implements</text>
-
-  <rect x="330" y="98" width="200" height="80" rx="9" class="d-opencode"/>
-  <text x="430" y="124" class="tm" text-anchor="middle">agent:opencode</text>
-  <text x="430" y="144" class="tm" text-anchor="middle">needs-review</text>
-  <text x="430" y="166" class="ts" text-anchor="middle">reviewer judges</text>
-
-  <rect x="606" y="98" width="230" height="80" rx="9" class="d-claude"/>
-  <text x="721" y="124" class="tm" text-anchor="middle">agent:claude</text>
-  <text x="721" y="144" class="tm" text-anchor="middle">needs-closing</text>
-  <text x="721" y="166" class="ts" text-anchor="middle">tracker / work issue</text>
-
-  <path d="M256,118 L326,118" class="ln" marker-end="url(#a7)"/>
-  <text x="291" y="72" class="ts" text-anchor="middle">comment:</text>
-  <text x="291" y="88" class="ts" text-anchor="middle">SHA + verification</text>
-
-  <path d="M430,180 C 430,240 154,240 154,182" class="ln-d" marker-end="url(#a7)"/>
-  <text x="292" y="252" class="ts" text-anchor="middle">comment: findings — capped at two returns;</text>
-  <text x="292" y="268" class="ts" text-anchor="middle">a third escalates to the human</text>
-
-  <path d="M532,138 L602,138" class="ln" marker-end="url(#a7)"/>
-  <text x="567" y="72" class="ts" text-anchor="middle">verdict comment;</text>
-  <text x="567" y="88" class="ts" text-anchor="middle">step closed</text>
-
-  <text x="721" y="206" class="ts" text-anchor="middle">Claude closes it only after</text>
-  <text x="721" y="222" class="ts" text-anchor="middle">the evidence verifies</text>
-</svg>
-</div>
-<figcaption>The tracker label is a notification, not the authority. Close-out still confirms
-that every step is actually closed.</figcaption>
-</figure>
-
-<p>Anything else — <code>plan</code> on the tracker, <code>sev:high|med|low|nit</code> on
-findings — gets a neutral gray. The severity scale and the three verdicts
-(<code>approved</code>, <code>changes requested</code>, <code>pending</code>) are one shared
-contract, rendered identically into every agent's instructions.</p>
-
-<h2><span class="num">05</span>Close-out and evidence</h2>
-<p>Because review closes the step issues before anything merges, GitHub issue state can't be
-the shipping signal. The document's <strong>Status block</strong> is, and a script checks it
-rather than trusting it. The v2 schema has exactly eight keys, one per line:</p>
-<pre><code>- **Evidence schema:** v2
-- **Tracking issue:** url=https://github.com/&lt;owner&gt;/&lt;repo&gt;/issues/93
-- **Approval:** status=approved; by=&lt;human&gt;; at=2026-09-20
-- **Implementation head:** source=pr-head
-- **Implementation PR:** url=https://github.com/&lt;owner&gt;/&lt;repo&gt;/pull/106
-- **Verification evidence:** source=final-approval-run
-- **Review verdict:** source=pr-head-approval
-- **Memory:** status=n/a</code></pre>
-<p>Verdicts are structured comments, never free text. Each step issue gets one tied to the
-executor's full SHA. After the human pushes the close-out commit and CI passes, the reviewer
-posts a final one on the tracking issue, bound to that PR head and that CI run attempt:</p>
-<pre><code>agentic-flow-review: status=approved; pr=106; head=&lt;40-hex&gt;; run=https://github.com/…/actions/runs/&lt;id&gt;; attempt=1; role=reviewer</code></pre>
-
-<div class="grid">
-  <div class="card"><h4>ACTIVE</h4><p>Tracker items still open.</p></div>
-  <div class="card"><h4>UNVERIFIED</h4><p>Status fields missing, or the external evidence can't be confirmed yet — e.g. no approval for the current head.</p></div>
-  <div class="card"><h4>BLOCKED</h4><p>The Status block fails to parse, holds an invalid field, or an authoritative verdict was edited.</p></div>
-  <div class="card"><h4>READY</h4><p>Local Status valid and, with <code>--verify-evidence</code>, the issue, PR head, CI run, and verdict author all check out.</p></div>
-</div>
-
-<p><code>scripts/lifecycle-status.sh --doc docs/done/&lt;doc&gt;.md --phase close-out --check
---verify-evidence</code> runs before Claude closes the issue. The human runs
-<code>--phase pre-merge</code> just before merging, which expects the issue already closed.
-Close-out is the <em>last</em> repository change. Any edit after approval moves the head and
-restarts the CI and review round.</p>
-
-<div class="callout">
-  <div class="label">What verification does not prove</div>
-  <p>Comments and Actions runs are mutable, so the check is point-in-time, not a merge guard.
-  In single-operator mode the gate authenticates who posted a verdict, but the reviewer role
-  is an attestation, not proof of independence. This repository records that as an accepted
-  risk rather than implying otherwise.</p>
-</div>
-
-<h2><span class="num">06</span>The Makefile is the only source of truth</h2>
-<p>This is the load-bearing piece that makes the rest stack-agnostic. Every command that
-builds, checks, or tests the project lives in one <code>Makefile</code>. Humans, all agents,
-the hooks, and CI call the same five targets. Nothing hard-codes a raw command anywhere
-else — so "green locally" and "green in CI" cannot drift apart.</p>
-
-<figure class="fig">
-<div class="scroller">
-<svg viewBox="0 0 860 330" role="img" aria-label="Humans, agents, hooks and CI all calling the same five Makefile targets">
-  <defs>
-    <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
-    </marker>
-  </defs>
-
-  <rect x="30" y="20"  width="150" height="46" rx="9" class="d-human"/>
-  <text x="105" y="48" class="t" text-anchor="middle">Human</text>
-  <rect x="30" y="94"  width="150" height="46" rx="9" class="d-claude"/>
-  <text x="105" y="122" class="t" text-anchor="middle">Agents</text>
-  <rect x="30" y="168" width="150" height="46" rx="9" class="d-box"/>
-  <text x="105" y="190" class="t" text-anchor="middle">Stop hook</text>
-  <text x="105" y="206" class="ts" text-anchor="middle">make check</text>
-  <rect x="30" y="242" width="150" height="46" rx="9" class="d-box"/>
-  <text x="105" y="264" class="t" text-anchor="middle">CI</text>
-  <text x="105" y="280" class="ts" text-anchor="middle">make check &amp;&amp; make test</text>
-
-  <path d="M182,43  C 250,43  260,120 316,138" class="ln" marker-end="url(#a4)"/>
-  <path d="M182,117 C 250,117 260,140 316,150" class="ln" marker-end="url(#a4)"/>
-  <path d="M182,191 C 250,191 260,175 316,164" class="ln" marker-end="url(#a4)"/>
-  <path d="M182,265 C 250,265 260,200 316,176" class="ln" marker-end="url(#a4)"/>
-
-  <rect x="320" y="60" width="230" height="196" rx="10" class="d-box"/>
-  <text x="435" y="92" class="t" text-anchor="middle">Makefile</text>
-  <text x="435" y="110" class="ts" text-anchor="middle">the stack profile</text>
-  <line x1="344" y1="124" x2="526" y2="124" stroke="var(--faint)" stroke-width="1"/>
-  <text x="348" y="148" class="tm">make check</text>
-  <text x="348" y="172" class="tm">make test</text>
-  <text x="348" y="196" class="tm">make test-one F=…</text>
-  <text x="348" y="220" class="tm">make build</text>
-  <text x="348" y="244" class="tm">make run</text>
-
-  <path d="M552,158 L604,158" class="ln" marker-end="url(#a4)"/>
-
-  <rect x="608" y="60" width="230" height="196" rx="10" class="d-ghost"/>
-  <text x="628" y="92" class="t">Whatever the stack is</text>
-  <text x="628" y="118" class="ts">tsc · eslint · vitest</text>
-  <text x="628" y="140" class="ts">ruff · mypy · pytest</text>
-  <text x="628" y="162" class="ts">cargo clippy · cargo test</text>
-  <text x="628" y="184" class="ts">go vet · go test</text>
-  <text x="628" y="212" class="ts">Rendered from profiles/,</text>
-  <text x="628" y="230" class="ts">so the methodology above</text>
-  <text x="628" y="248" class="ts">never mentions a language.</text>
-</svg>
-</div>
-<figcaption>Change languages and only the Makefile recipes change. If a CI step needs a command
-that isn't a target, that's a signal the Makefile is incomplete — not a reason to grow logic in
-YAML.</figcaption>
-</figure>
-
-<div class="tablewrap">
-<table>
-  <thead><tr><th>Target</th><th>Contract</th></tr></thead>
-  <tbody>
-    <tr><td><code>make check</code></td><td>The fast gate: the stack's type-check and lint, plus harness checks — shell syntax, docs index, payload manifest, root/template contract sync, memory index, action pins, and a fast self-test. Cheap enough to run constantly — and the Stop hook does.</td></tr>
-    <tr><td><code>make test</code></td><td>The full suite, plus <code>shellcheck</code> over the shipped scripts. Fails loudly when a required tool is missing rather than skipping silently.</td></tr>
-    <tr><td><code>make test-one F=…</code></td><td>One focused group, so an agent can iterate on a step without paying for the suite. The scaffold's groups: <code>export</code>, <code>contracts</code>, <code>hooks</code>, <code>plan-to-issues</code>, <code>lifecycle</code>, <code>upgrade</code>.</td></tr>
-    <tr><td><code>make build</code></td><td>The production build, with dummy CI env values so it never needs real secrets. (Here: a dry-run export into a temp directory.)</td></tr>
-    <tr><td><code>make run</code></td><td>Start the app locally — what <code>/run</code> and <code>/verify</code> drive to confirm a fix actually behaves. (Here: the doctor report.)</td></tr>
-  </tbody>
-</table>
-</div>
-
-<h3>Keeping the gate cheap enough to keep</h3>
-<p>A gate that gets slow gets bypassed, so its cost is measured and budgeted.
-<code>self-test.sh --fast</code> runs structural and hook smoke checks with no fixture
-tree copies. In the scaffold source, <code>--full</code> runs all eight groups from one source
-snapshot, hard-linking unchanged files into isolated fixtures and copying only files a test
-mutates. Each normal run asserts its copy budget, and
-<code>scripts/measure-harness.sh</code> reports groups, PATH scans, and copies deterministically.</p>
-<p>In an exported project, <code>make test</code> runs the local <code>contracts</code> and
-<code>hooks</code> groups, plus the scaffold groups when harness files change. Harness paths
-come from the payload manifest's export destinations. Detection includes committed, staged,
-unstaged and untracked files against the merge base with the first resolving integration ref:
-<code>AGENTIC_BASE_REF</code>, <code>origin/$GITHUB_BASE_REF</code>, <code>origin/HEAD</code>,
-<code>origin/main</code>, then <code>origin/master</code>. The feature branch's upstream is
-never used. If Git cannot resolve a base or compute the changed set, every group runs.
-The CI template fetches full history and supplies the PR base for the test step.</p>
-<p><code>scripts/self-test.sh --full --all-groups</code> forces every group. The scaffold's
-<code>make ship-gate</code> runs that command inside a fresh export for close-out and CI.</p>
-
-<h2><span class="num">07</span>Guardrails that don't depend on good intentions</h2>
-<p>Every rule above is also a hook. An agent that forgets the contract gets stopped by the
-harness rather than caught in review — which matters most for the rules whose violation is
-expensive to undo. The same hooks are wired for Claude and Codex.</p>
-
-<figure class="fig">
-<div class="scroller">
-<svg viewBox="0 0 860 500" role="img" aria-label="Where each hook fires during an agent turn: four pre-tool-use hooks on Bash commands, and the stop hook runs make check">
-  <defs>
-    <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
-    </marker>
-  </defs>
-
-  <text x="20" y="30" class="tl">An agent turn</text>
-  <line x1="20" y1="46" x2="840" y2="46" stroke="var(--faint)" stroke-width="1"/>
-
-  <rect x="20" y="66" width="150" height="52" rx="9" class="d-box"/>
-  <text x="95" y="90" class="t" text-anchor="middle">Agent edits</text>
-  <text x="95" y="108" class="ts" text-anchor="middle">files change</text>
-
-  <path d="M172,92 L226,92" class="ln" marker-end="url(#a5)"/>
-
-  <rect x="230" y="66" width="260" height="52" rx="9" class="d-box"/>
-  <text x="360" y="90" class="t" text-anchor="middle">Runs a Bash command</text>
-  <text x="360" y="108" class="ts" text-anchor="middle">git add / commit / push · gh issue edit / close</text>
-
-  <path d="M360,120 L360,152" class="ln" marker-end="url(#a5)"/>
-
-  <rect x="120" y="154" width="620" height="226" rx="10" class="d-claude"/>
-  <text x="140" y="180" class="tl">PreToolUse(Bash) — four blocking hooks, one shared command parser</text>
-  <text x="140" y="208" class="tm">block-git-add-all.sh</text>
-  <text x="140" y="226" class="ts">rejects <tspan class="tm">git add -A</tspan> / <tspan class="tm">.</tspan> / <tspan class="tm">--all</tspan> — stage files by name, always</text>
-  <text x="140" y="254" class="tm">block-push.sh</text>
-  <text x="140" y="272" class="ts">rejects <tspan class="tm">git push</tspan> and <tspan class="tm">gh pr merge</tspan> — the human owns those</text>
-  <text x="140" y="300" class="tm">scan-secrets.sh</text>
-  <text x="140" y="318" class="ts">gitleaks + local patterns, both always, on the index the commit will actually use</text>
-  <text x="140" y="346" class="tm">require-step-comment.sh</text>
-  <text x="140" y="364" class="ts">no step-issue relabel or close until its SHA, findings, or verdict comment exists</text>
-
-  <path d="M430,380 C 430,404 300,398 250,414" class="ln" marker-end="url(#a5)"/>
-
-  <rect x="20" y="422" width="420" height="46" rx="9" class="d-box"/>
-  <text x="40" y="450" class="t">Agent tries to end the turn</text>
-
-  <path d="M442,445 L494,445" class="ln" marker-end="url(#a5)"/>
-
-  <rect x="498" y="414" width="352" height="62" rx="9" class="d-claude"/>
-  <text x="518" y="438" class="tl">Stop / SubagentStop hook</text>
-  <text x="518" y="462" class="tm">make check</text>
-  <text x="640" y="462" class="ts">— a red gate blocks the turn</text>
-</svg>
-</div>
-<figcaption>The Stop hook is skipped when the working tree is clean, and when the tree is
-unchanged since the last green run. It blocks once, then warns and allows — a gate that loops
-forever is a gate people disable.</figcaption>
-</figure>
-
-<p>The PreToolUse hooks don't grep command text. A bounded Bash lexer parses words, quoting,
-separators, environment assignments, and Git global options, then applies one canonical list
-of commit wrappers. An uncertain protected command — say <code>sudo git add -A</code> behind an
-unmodeled prefix, or a redirected <code>GIT_DIR</code> — blocks with a value-free diagnostic
-instead of slipping through. OpenCode has no hook engine in this stack, so the reviewer side of
-<code>require-step-comment</code> still relies on its agent instructions.</p>
-
-<div class="callout">
-  <div class="label">Why secret scanning is a commit hook, not a CI job</div>
-  <p>CI is one step too late. A secret that reaches a commit has to be <em>rotated</em> —
-  rewriting history does not un-leak it. The hook fails at the last moment the fix is still
-  free.</p>
-  <p>It runs <strong>two scanners, always both</strong>. Treating the local pattern set as a
-  fallback made the hook weaker on machines that <em>had</em> gitleaks, because its default
-  config allowlists documented sample credentials — a staged AWS example key came back clean
-  and nothing else ran. Any gate whose strength depends on which tools happen to be installed
-  will eventually be green for the wrong reason. <code>AGENTIC_ALLOW_SECRET=1</code> overrides
-  a false positive, visibly.</p>
-</div>
-
-<div class="callout">
-  <div class="label">Two agents editing at once need two worktrees</div>
-  <p>Fanning out is optional; isolation stops being optional once two agents edit at the same
-  time. Without it they share a working directory, and one can stage or overwrite the other's
-  half-finished edit. The Stop gate's stamp is keyed on the whole tree, so a green run would
-  certify the mixture rather than either change. Read-only <code>Explore</code> /
-  <code>Plan</code> fan-outs need no isolation.</p>
-</div>
-
-<h3>The supporting scripts</h3>
-<div class="grid">
-  <div class="card"><h4><span class="mono">plan-to-issues.sh</span></h4><p>Creates or reconciles the Standard work issue or Strict tracker and steps from an approved spec, with exact identity matching.</p></div>
-  <div class="card"><h4><span class="mono">lifecycle-status.sh</span></h4><p>Parses the v2 Status block and reports ACTIVE, UNVERIFIED, BLOCKED, or READY; <code>--verify-evidence</code> checks it against GitHub.</p></div>
-  <div class="card"><h4><span class="mono">assurance.sh</span></h4><p>Reads, validates, raises, or (with recorded approval) lowers the project's assurance baseline.</p></div>
-  <div class="card"><h4><span class="mono">docs-index.sh</span></h4><p>Regenerates the docs index from TRIAGE headers. <code>--check</code> keeps it from going stale.</p></div>
-  <div class="card"><h4><span class="mono">check-memory-index.sh</span></h4><p>Keeps <code>docs/MEMORY.md</code> honest: every entry indexed, every pointer and citation still real, the index short.</p></div>
-  <div class="card"><h4><span class="mono">check-harness-sync.sh</span></h4><p>Keeps the root and template contract files structurally in step; <code>render-shared.sh</code> checks generated shared regions byte for byte.</p></div>
-  <div class="card"><h4><span class="mono">check-action-pins.sh</span></h4><p>Fails on unpinned GitHub Actions; warns when pins haven't been re-verified in months.</p></div>
-  <div class="card"><h4><span class="mono">check-payload-manifest.sh</span></h4><p>Rejects any adapter, template, or profile living outside <code>config/payload.tsv</code>.</p></div>
-  <div class="card"><h4><span class="mono">doctor.sh</span></h4><p>The adoption checklist: files, tools, hook wiring (including portable Codex hook paths), stack and version state, merge candidates, Make targets, CI posture.</p></div>
-  <div class="card"><h4><span class="mono">agentic-flow</span></h4><p>The adopter's CLI: offline <code>status</code>, read-only <code>diff</code>, and manifest-bounded <code>upgrade</code>.</p></div>
-  <div class="card"><h4><span class="mono">self-test.sh</span></h4><p>Offline regression suite for the scaffold's invariants, in fast, full, and single-group modes.</p></div>
-  <div class="card"><h4><span class="mono">measure-harness.sh</span></h4><p>Deterministic report of role-context size and self-test work, so cost regressions show up.</p></div>
-</div>
-
-<h2><span class="num">08</span>The commit contract</h2>
-<p>Identity is enforced by wrapper scripts, each carrying its own SSH signing key:
-<code>git-claude</code> for the planner, <code>git-codex</code> for the executor,
-<code>git-opencode</code> for the reviewer. The <code>Co-Authored-By</code> trailer is appended
-by the wrapper, so no one hand-maintains a model name that will go stale.</p>
-<ul>
-  <li><strong>Stage files by name.</strong> Never <code>git add -A</code>.</li>
-  <li><strong>One logical commit per step.</strong> Don't bundle; don't split without reason.</li>
-  <li><strong>A verbose, why-first body.</strong> Name the risk, the approach, the blast radius,
-  and the verification actually run.</li>
-  <li><strong>Reference the issue</strong> with <code>Fixes #N</code> — for traceability; review
-  or close-out does the closing.</li>
-  <li><strong>Never push.</strong></li>
-</ul>
-<pre><code>Bind session and exchange JWTs to the tenant schema
-
-Signed payloads omitted any tenant identifier, so with a shared secret a
-cookie from tenant A verified at tenant B. Add `schema` to every signed
-payload and reject mismatches in requireAuth. Legacy missing-claim cookies
-are treated as the default tenant for one release to ease rollout.
-
-Fixes #73</code></pre>
-<p class="sub">Writing that body is not ceremony — it's the review you give yourself. Half the
-problems in a change surface while explaining it.</p>
-
-<h2><span class="num">09</span>What CI looks like</h2>
-<p>Three workflow templates, because they carry three different risk postures.
-<code>ci.yml</code> runs on pull requests and cancels superseded runs — a stale run is waste.
-<code>deploy.yml</code> runs on pushes to release branches and never cancels — finishing a
-deploy beats half-deploying. <code>release-native.yml</code> runs on <code>v*</code> tags for
-stacks that ship a native binary, and is the only one granted <code>contents: write</code>.</p>
-
-<figure class="fig">
-<div class="scroller">
-<svg viewBox="0 0 860 320" role="img" aria-label="CI job graph: a path-filter job gating per-area jobs, an unfiltered secrets scan, and a single ci-gate required check">
-  <defs>
-    <marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" class="ar"/>
-    </marker>
-  </defs>
-
-  <rect x="20" y="112" width="150" height="56" rx="9" class="d-box"/>
-  <text x="95" y="138" class="t" text-anchor="middle">changes</text>
-  <text x="95" y="156" class="ts" text-anchor="middle">path filters</text>
-
-  <path d="M172,128 C 220,128 230,52 276,52" class="ln" marker-end="url(#a6)"/>
-  <path d="M172,140 C 220,140 230,124 276,124" class="ln" marker-end="url(#a6)"/>
-  <path d="M172,152 C 220,152 230,196 276,196" class="ln" marker-end="url(#a6)"/>
-
-  <rect x="280" y="24" width="230" height="56" rx="9" class="d-box"/>
-  <text x="300" y="48" class="t">app checks</text>
-  <text x="300" y="68" class="ts">install from lockfile → audit → typecheck → lint → test → build</text>
-
-  <rect x="280" y="96" width="230" height="56" rx="9" class="d-box"/>
-  <text x="300" y="120" class="t">compose / infra syntax</text>
-  <text x="300" y="140" class="ts">if changes.docker</text>
-
-  <rect x="280" y="168" width="230" height="56" rx="9" class="d-box"/>
-  <text x="300" y="192" class="t">&lt;area N&gt;</text>
-  <text x="300" y="212" class="ts">one job per independently-testable area</text>
-
-  <rect x="280" y="240" width="230" height="56" rx="9" class="d-claude"/>
-  <text x="300" y="264" class="t">secrets-scan</text>
-  <text x="300" y="284" class="ts">never path-filtered — always runs</text>
-
-  <path d="M512,52  C 570,52  580,140 626,152" class="ln" marker-end="url(#a6)"/>
-  <path d="M512,124 C 570,124 580,148 626,158" class="ln" marker-end="url(#a6)"/>
-  <path d="M512,196 C 570,196 580,168 626,166" class="ln" marker-end="url(#a6)"/>
-  <path d="M512,268 C 570,268 580,190 626,176" class="ln" marker-end="url(#a6)"/>
-
-  <rect x="630" y="112" width="210" height="90" rx="9" class="d-human"/>
-  <text x="735" y="140" class="t" text-anchor="middle">ci-gate</text>
-  <text x="735" y="160" class="ts" text-anchor="middle">needs: everything · if: always()</text>
-  <text x="735" y="180" class="ts" text-anchor="middle">skipped = pass</text>
-  <text x="735" y="196" class="ts" text-anchor="middle">cancelled / failure = fail</text>
-
-  <text x="735" y="232" class="tl" text-anchor="middle">the one required check</text>
-  <text x="735" y="252" class="ts" text-anchor="middle">in branch protection</text>
-</svg>
-</div>
-<figcaption>The gate job exists because path filtering and required checks conflict: a skipped
-job never reports, so naming per-area jobs as required checks would block every PR that
-legitimately skips one. The <code>changes</code> job itself must succeed.</figcaption>
-</figure>
-
-<ul>
-  <li><strong>Pin everything.</strong> Third-party actions by full commit SHA with a
-  <code># vX.Y.Z</code> comment; runners by version, never <code>ubuntu-latest</code>. A tag is
-  mutable — a SHA is the only pin that resists a compromised action.</li>
-  <li><strong>Pin the tools the gate depends on, too.</strong> CI installs ShellCheck 0.11.0
-  from the upstream release, verified against a pinned SHA-256. The runner image's 0.9.0 flagged
-  code that 0.11.0 accepts, so the verdict depended on whatever the image happened to ship.</li>
-  <li><strong>Steps stay thin.</strong> Checkout, set up the runtime, call <code>make</code>.
-  Inlined command sequences are a second source of truth that will drift.</li>
-  <li><strong>The workflow file is its own trigger.</strong> Include it in every path filter,
-  so editing CI re-runs what CI gates.</li>
-  <li><strong>Ship the runbook with the workflow</strong> — a trailing comment listing one-time
-  server setup and every required secret. That operational knowledge dies otherwise.</li>
-</ul>
-
-<h2><span class="num">10</span>Adopting and upgrading</h2>
-<p>One command installs the harness into a target project. It copies the manifest-declared
-payload, fills the project name, preserves any differing existing file as
-<code>&lt;file&gt;.agentic-new</code> instead of overwriting it, applies a stack profile, sets
-the Standard assurance baseline, records the upgrade source when the scaffold has a git remote, stamps the scaffold version, and
-prints the doctor report.</p>
-<pre><code>scripts/init.sh /path/to/target-project --name my-project --stack node --yes
-
-# then, inside the target:
-scripts/doctor.sh --check
-scripts/assurance.sh status
-make check</code></pre>
-<p>Stack profiles are <code>generic</code>, <code>node</code>, <code>python</code>,
-<code>go</code>, and <code>rust</code>; detection proposes one from the project's manifests but
-an explicit flag always wins. CI templates export <strong>inert</strong> — adoption never
-activates a workflow behind you, least of all a deploy. Watch for a blanket
-<code>.claude/</code> ignore rule: it hides the hook configuration from git even though it
-exists on disk. <code>doctor.sh</code> and <code>agentic-flow status</code> both report
-git-ignored payload paths.</p>
-
-<h3>Staying current</h3>
-<p>Adopted projects get <code>scripts/agentic-flow</code>, and pull upgrades from the source
-recorded in <code>.agentic-flow-source</code>:</p>
-<pre><code>scripts/agentic-flow status        # offline: version, candidates, adapters, source
-scripts/agentic-flow diff          # read-only: what an upgrade would change
-scripts/agentic-flow upgrade --yes # apply only files declared in config/payload.tsv</code></pre>
-<p>Upgrade follows the same <code>.agentic-new</code> policy as adoption and executes nothing
-from the fetched standard. <code>.agentic-flow-version</code> (<code>&lt;semver&gt;+&lt;sha&gt;</code>)
-advances only once no merge candidates remain; until then
-<code>.agentic-flow-candidate-version</code> records what is pending. It preserves the
-project's assurance baseline, even under <code>--force</code>. If the recorded origin changes,
-upgrade stops until you inspect it.</p>
-<p>Afterwards, the things worth doing by hand are filling in <code>CLAUDE.md</code>'s
-<strong>Architecture</strong> and <strong>Gotchas</strong> sections, and capturing traps in
-<code>docs/memory/</code> as you learn the codebase. Those orient an agent in the first thirty
-seconds of a session, and no scaffold can generate them for you.</p>
-
-<h2><span class="num">11</span>The standards underneath</h2>
-<p>Process is only half of it. These are the engineering rules the loop assumes, ordered by
-when they apply.</p>
-
-<h3>Automate what a human should never review</h3>
-<p>Anything a machine can catch must not cost review attention: a formatter and linter that
-fail the build, strict static typing from day one, dependency scanning blocking on high
-severity, and secret scanning at the commit boundary. Wire each into <code>make check</code> or
-<code>make test</code> — never into CI alone, or the feedback arrives after the context is
-gone.</p>
-<div class="callout">
-  <div class="label">The ratchet</div>
-  <p>When a reviewer catches the same <em>class</em> of issue twice, it stops being a review
-  comment and becomes a lint rule, a type, or a test. A review that repeats itself is a missing
-  automation.</p>
-</div>
-
-<h3>Before any code</h3>
-<ul>
-  <li><strong>Assess the stack first.</strong> Look up current stable releases rather than
-  typing the version you remember, pin them where they execute, and get
-  <code>make check &amp;&amp; make test</code> green before building on it.</li>
-  <li><strong>Write the interface first.</strong> Signatures, endpoint contracts, data shapes.
-  Most architecture problems are visible here, where they cost nothing, and invisible once
-  there's code attached to them.</li>
-  <li><strong>Threat-model in one paragraph.</strong> Who is untrusted, what data matters, what's
-  the worst an attacker could do. Ten minutes, mandatory for anything touching auth, money, or
-  user data.</li>
-  <li><strong>Decide the failure behavior up front</strong> for every external call — timeout,
-  malformed response, partial success. Decided during coding, these become guesses no one
-  revisits.</li>
-</ul>
-
-<h3>While coding</h3>
-<ul>
-  <li><strong>Validate at the boundary, once.</strong> Parse external input into a validated type
-  at the edge; interior code then trusts its inputs. Scattered defensive checks never add up to
-  a guarantee and hide where the real contract is.</li>
-  <li><strong>Never build strings that get interpreted.</strong> Parameterized queries, argument
-  arrays for subprocesses. This removes most of the injection category by construction rather
-  than by vigilance.</li>
-  <li><strong>Deny by default, at a chokepoint.</strong> Per-handler authorization means you
-  will eventually miss one, and the miss is silent.</li>
-  <li><strong>No unbounded anything.</strong> Every query has a limit, every loop over external
-  data a cap, every outbound request a timeout.</li>
-  <li><strong>Make illegal states unrepresentable</strong> where the language allows it. A type
-  that cannot hold the bad value needs no runtime check and no test.</li>
-</ul>
-
-<h3>Verifying and reviewing</h3>
-<ul>
-  <li><strong>Test the failure path first.</strong> Everyone tests the happy path; the bugs are
-  in the other one.</li>
-  <li><strong>Every bug fix starts with a failing test</strong> that reproduces it — it forces
-  understanding the cause instead of pattern-matching a change that makes the symptom go
-  away.</li>
-  <li><strong>Test behavior, not implementation.</strong> If a behavior-preserving refactor
-  breaks the tests, the tests were asserting the wrong thing.</li>
-  <li><strong>Small diffs.</strong> A 200-line PR gets a real review; a 2000-line one gets a
-  rubber stamp. This is why the loop insists on one issue and one commit per step.</li>
-  <li><strong>One reviewer, by default.</strong> A multi-reviewer ensemble is an option for
-  architecture-level or security-critical passes. Aggregation is not a vote: a named arbiter
-  re-checks every high finding and every disagreement against the source.</li>
-</ul>
+</section>
+</main>
 
 <footer>
-  <p>This page summarizes <span class="mono">METHODOLOGY.md</span>, <span class="mono">CLAUDE.md</span>,
-  <span class="mono">AGENTS.md</span>, and <span class="mono">ADOPTION.md</span> in the
-  agentic-flow repository as of standard 0.14.0. Those files are the source of truth; if this
-  page and they disagree, they win.</p>
+  <p>Workflow rules and reference links are in the <a href="../METHODOLOGY.md">methodology</a>.
+  Setup and upgrades are covered in <a href="../ADOPTION.md">the adoption guide</a>.</p>
 </footer>
-
 </div>
 </body>
 </html>

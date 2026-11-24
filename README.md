@@ -15,6 +15,7 @@ It encodes one loop:
 > `docs/accepted_risks.md`.
 
 The full standard is in **[`METHODOLOGY.md`](METHODOLOGY.md)**.
+The [workflow explainer](docs/agentic-flow-explained.html) follows a plan from start through cleanup.
 
 ## What's in here
 
@@ -25,11 +26,12 @@ ADOPTION.md                       init.sh usage, flags, and verification notes
 CLAUDE.md                         planner/reviewer contract + the Stack-profile explainer
 AGENTS.md                         executor (Codex) contract + commit format
 Makefile                          the Stack profile: make check / test / test-one / build / run
-.claude/settings.json             enforced hooks (Stop→make check; block git add -A; block git push; scan staged secrets)
+.claude/settings.json             Claude deny rules and Stop / SubagentStop / SessionStart hooks
 .claude/skills/plan-to-issues/    skill: approved brief → GitHub tracking issue + sub-issues
-.codex/hooks.json                 Codex mirror of the enforced lifecycle hooks
+.codex/hooks.json                 Codex lifecycle hooks and attached Git-directory guard
 .agents/skills/plan-to-issues/    Codex skill mirror
 config/payload.tsv                canonical source→destination export manifest
+config/command-policy.tsv         source of native deny rules for Claude Code, Codex, and OpenCode
 profiles/                         data-only generic / Node / Python / Go / Rust stack profiles
 scripts/export.sh                 copy the standard into a target project (non-destructive)
 scripts/init.sh                   one-command scaffold adoption; wraps export + token fill + doctor
@@ -40,9 +42,10 @@ scripts/lifecycle-status.sh       derive ACTIVE / READY / BLOCKED / UNVERIFIED /
 scripts/doctor.sh                 adoption checklist / scaffold health check
 scripts/agentic-flow              adopted-project status / diff / upgrade command
 scripts/self-test.sh              offline regression checks for this scaffold
-scripts/hooks/                    the six hook scripts settings.json calls
+scripts/hooks/                    agent hooks and legacy upgrade fallbacks
+scripts/git-hooks/pre-commit      staged-secret scan for Git commits
 templates/harness/                pristine CLAUDE/AGENTS/Makefile forms shipped by export.sh
-ROADMAP.md                        planned evolution of the standard (Tier 2 / Tier 3)
+ROADMAP.md                        open scaffold work and pending decisions
 docs/
 ├── README.md                     docs index + naming conventions
 ├── accepted_risks.md             living register of accepted risks / declined features
@@ -67,7 +70,9 @@ scripts/init.sh /path/to/target-project --name my-project --stack node --yes
 It copies the allow-list, fills the project name, preserves differing existing files as
 `<file>.agentic-new`, applies the requested stack/opt-out flags, writes the scaffold version
 stamp (`<semver>+<sha>` from [`VERSION`](VERSION) plus the exact commit — see `ADOPTION.md`),
-and prints the doctor report. Claude and Codex hook/skill adapters ship together.
+and prints the doctor report. In a Git checkout it sets an unset `core.hooksPath` to
+`scripts/git-hooks` so Git scans staged secrets before each commit. If you use a custom
+hooks path, chain `scripts/git-hooks/pre-commit` from your existing pre-commit hook.
 
 Stack profiles are `generic`, `node`, `python`, `go`, and `rust`; `none` remains an alias
 for `generic`. Detection proposes a profile from project manifests but never overrides an
@@ -75,9 +80,9 @@ explicit flag. Use `--claude-only` for projects that opt out of Codex execution 
 `--yes` in a terminal for prompts. `scripts/export.sh` remains the source-repository,
 low-level non-destructive copy command for manual or unusual adoptions.
 
-After adoption, fill in `CLAUDE.md`'s **Architecture** and **Gotchas** as you learn the
-codebase, start a doc from `docs/templates/`, and keep the index current with
-`scripts/docs-index.sh`.
+Install the native rules for interactive Codex, then run `scripts/doctor.sh --check`.
+Fill in `CLAUDE.md`'s **Architecture** and **Gotchas** as you learn the codebase,
+start a doc from `docs/templates/`, and keep the index current with `scripts/docs-index.sh`.
 
 See [`ADOPTION.md`](ADOPTION.md) for flags and verification.
 
@@ -93,9 +98,17 @@ scripts/agentic-flow upgrade --yes
 ```
 
 `status` is offline and read-only. `diff` and `upgrade` fetch the recorded source/ref into a
-temporary cache; `diff` writes nothing, and `upgrade` applies only manifest-declared payload
-files under the existing `.agentic-new` policy. Older adopters can back-fill
-`.agentic-flow-source` by following [`ADOPTION.md`](ADOPTION.md#upgrading).
+temporary cache. `diff` is read-only. `upgrade` keeps customized files whose upstream
+version is unchanged and uses `.agentic-new` candidates when both sides changed. It
+also activates the native rules and verifies the Git pre-commit scan before retiring
+the corresponding legacy hook entries. Follow the [upgrade instructions](ADOPTION.md#upgrading).
+
+## Resume shipping
+
+Run `scripts/agentic-flow ship <doc> --wait-review` from the plan worktree. A re-run
+reuses a passing `make ship-gate` record for the same tree, gate inputs, and harness
+version. It skips pushing when the destination branch is confirmed at the current
+head. Use `--force-gate` to rerun the optional gate.
 
 ## Required tools
 

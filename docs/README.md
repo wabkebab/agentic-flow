@@ -16,6 +16,7 @@ docs/
 ├── inprogress/          ← active (being written, executed, or reviewed)
 ├── done/                ← completed Feature / Product analyses
 │   └── security/        ← completed Security reviews
+├── reference/           ← shared guidance outside the document lifecycle
 └── templates/           ← copy these out; don't edit in place
     ├── security-review.md     (analysis + inlined implementation brief)
     ├── feature-analysis.md    (analysis + inlined implementation brief)
@@ -44,7 +45,8 @@ docs/
 Those four are the **only** stages `scripts/docs-index.sh` accepts. A `.md` file anywhere
 else under `docs/` — including `docs/` itself — fails the index build (and therefore
 `make check`) rather than being listed under an invented stage. Non-Markdown files and
-`README.md` / `accepted_risks.md` / `templates/` and the memory tree are skipped entirely.
+`README.md` / `accepted_risks.md` / `templates/` / `reference/` and the memory tree are
+skipped entirely.
 
 Start Feature and Security plans with `agentic-flow start` and work in the plan worktree.
 Use `close-out prep <doc>` and commit the move before the first push. The human runs
@@ -57,6 +59,12 @@ field values in their templates. Resolve the pending fields before close-out.
 Check the open tracking issue with `--phase close-out`; after closing and pushing,
 use `--doc <exact-path> --phase pre-merge` on the moved document. Fully checked
 schema-less documents report `LEGACY` and need migration to the v2 template.
+
+## Reference
+
+- [Stack assessment](reference/stack-assessment.md)
+- [CI/CD pipeline shape](reference/ci-cd.md)
+- [Engineering standards](reference/engineering-standards.md)
 
 ## memory/ — durable traps, indexed
 
@@ -109,13 +117,16 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-gate-and-handoff-fixes | Feature | ✅ Done | done |
 | feature-harness-integrity-and-lifecycle | Feature | ✅ Done | done |
 | feature-harness-optimization | Feature | ✅ Done | done |
+| feature-harness-simplification | Feature | ✅ Done | done |
 | feature-init-and-template-split | Feature | ✅ Done | done |
 | feature-line-controller | Feature | ✅ Done | done |
 | feature-opencode-reviewer-role | Feature | ✅ Done | done |
 | feature-progressive-assurance-profiles | Feature | 🕰️ Superseded | done |
+| feature-review-followups-186 | Feature | ✅ Done | done |
 | feature-station-hardening | Feature | ✅ Done | done |
 | feature-test-streamlining | Feature | ✅ Done | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
+| product-roadmap-history | Product Analysis | ✅ Decided | done |
 | feature-ask-answer-packet | Feature | 🟦 Proposal | inprogress |
 | feature-role-signing | Feature | 🟦 Proposal | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |

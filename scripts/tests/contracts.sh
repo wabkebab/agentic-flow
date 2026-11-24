@@ -1,6 +1,207 @@
 #!/usr/bin/env bash
 # Sourced by self-test.sh; shared fixture context is intentional.
-# shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
+# shellcheck disable=SC1091,SC2030,SC2034,SC2153,SC2164,SC2329 # Intentional fixture subshells and dispatcher context.
+
+# Harness simplification scenario 11. Fake the two scanners' external responses
+# and use real Git objects and refs, with no network or GitHub writes.
+publish_scan_tests() (
+  local fixture="$TMP/publish-scan" scanner="$ROOT/scripts/publish-scan.sh"
+  local deleted merged home host email key_path token project oid base tip merge clean id hash status pattern
+  export SCAN_REAL_GIT
+  SCAN_REAL_GIT=$(command -v git)
+  mkdir -p "$fixture/bin"
+  cd "$fixture"
+  git init -q -b main --template= repo
+  git init -q --bare --template= remote
+  cd repo
+  git config user.name Fixture
+  git config user.email 'fixture@users.noreply.github.com'
+  git config commit.gpgsign false
+  git remote add origin "$fixture/remote"
+  mkdir config
+  export SCAN_CREDENTIAL
+  SCAN_CREDENTIAL=$(printf '%s%s' 'ghp_' 'abcdefghijklmnopqrstuvwxyz0123456789')
+  token=$SCAN_CREDENTIAL
+  home=$(printf '/%s/%s' Users scanvisible)
+  deleted=$(printf '/%s/%s' Users scandeleted)
+  merged=$(printf '/%s/%s' Users scanmerged)
+  host=$(printf '%s.%s' scanhost local)
+  email=$(printf '%s@%s' scan-author example.test)
+  key_path=$(printf '%s_%s' id ed25519)
+  project=$(printf '%s-%s' scan privateproject)
+
+  printf 'ordinary content\n' > ordinary.txt
+  git add -- ordinary.txt
+  git commit -qm 'Clean base'
+  base=$(git rev-parse HEAD)
+  git branch side
+  printf '%s\n' "$deleted" > deleted.txt
+  printf 'ordinary content\n' > "$key_path"
+  git add -- deleted.txt "$key_path"
+  GIT_AUTHOR_EMAIL="$email" git commit -qm 'Deleted content'
+  git rm -q -- deleted.txt "$key_path"
+  printf 'main\n' > main.txt
+  git add -- main.txt
+  git commit -qm 'Main change'
+
+  git checkout -q side
+  printf 'side\n' > side.txt
+  git add -- side.txt
+  git commit -qm 'Side change'
+  git checkout -q main
+  git merge -q --no-ff --no-commit side >/dev/null 2>&1
+  printf '%s\n' "$merged" > merged.txt
+  git add -- merged.txt
+  git commit -qm 'Merge introduces scan fixture'
+  merge=$(git rev-parse HEAD:merged.txt)
+  git rm -q -- merged.txt
+  printf '%s\n' "$home" "$token" "https://github.com/fixture/$project.git" > visible.txt
+  printf '%s\n' "$home" > duplicate.txt
+  git add -- visible.txt duplicate.txt
+  git commit -qm 'Current content'
+  tip=$(git rev-parse HEAD)
+  oid=$(git rev-parse "$tip:visible.txt")
+  git --git-dir="$fixture/remote" config core.alternateRefsCommand 'true'
+  printf '%s\n' "$fixture/repo/.git/objects" > "$fixture/remote/objects/info/alternates"
+  git --git-dir="$fixture/remote" update-ref refs/heads/main "$tip"
+  git --git-dir="$fixture/remote" update-ref refs/tags/fixture "$base"
+
+  [ -x "$scanner" ] || fail 'publication scan is missing'
+  hash=$(printf '%s' "$project" | shasum -a 256)
+  awk -v hash="${hash%% *}" '
+    { print }
+    END { printf "private-project\tall\tsha256:%s\tFixture private repository\n", hash }
+  ' "$ROOT/config/publish-scan.tsv" > config/publish-scan.tsv
+  : > config/publish-scan-allow.tsv
+  cat > "$fixture/bin/gitleaks" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then printf '8.30.1\n'; exit; fi
+[ "${SCAN_LEAKS_FAIL:-0}" = 0 ] || { printf '%s\n' "$SCAN_CREDENTIAL" >&2; exit 2; }
+for dir; do :; done
+status=0
+files=$(grep -r -l -F -- "$SCAN_CREDENTIAL" "$dir") || status=$?
+case "$status" in
+  0)
+    printf '%s\n' "$files" | jq -nR --arg s "$SCAN_CREDENTIAL" '[inputs|{File:.,RuleID:"github-pat",Secret:$s}]' || exit 2
+    exit 3 ;;
+  1) printf '[]\n' ;;
+  *) exit 2 ;;
+esac
+STUB
+  cat > "$fixture/bin/git" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  'remote get-url origin') printf 'git@github.com:fixture/fixture.git\n' ;;
+  *) exec "$SCAN_REAL_GIT" "$@" ;;
+esac
+STUB
+  cat > "$fixture/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then printf 'gh version 2.80.0\n'; exit; fi
+for endpoint; do :; done
+suffix=${endpoint#repos/fixture/fixture}
+case "$suffix" in
+  '/issues?'*)
+    printf 'HTTP/2.0 200 OK\r\n\r\n'
+    printf '[{"id":1,"number":1,"title":"Fixture","body":null,"comments":101}]\n' ;;
+  '/issues/1/comments?'*'page=1')
+    printf 'HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repos/fixture/fixture/issues/1/comments?per_page=100&page=2>; rel="next"\r\n\r\n'
+    jq -nc --arg body "$SCAN_HOST" '[range(2;102)|{id:.,body:(if .==2 then $body else null end)}]' ;;
+  '/issues/1/comments?'*'page=2')
+    [ "${SCAN_GH_FAIL:-0}" = 0 ] || { printf '%s\n' "$SCAN_HOST" >&2; exit 1; }
+    if [ "${SCAN_GH_TRUNCATE:-0}" = 1 ]; then
+      printf 'HTTP/2.0 200 OK\r\n\r\n[]\n'
+      exit 0
+    fi
+    printf 'HTTP/2.0 200 OK\r\n\r\n[{"id":102,"body":null}]\n' ;;
+  '/pulls?'*|'/releases?'*)
+    printf 'HTTP/2.0 200 OK\r\n\r\n[]\n' ;;
+  *) exit 2 ;;
+esac
+STUB
+  chmod +x "$fixture/bin/git" "$fixture/bin/gitleaks" "$fixture/bin/gh"
+  export SCAN_HOST="$host"
+
+  publication_expect() {
+    local expected=$1
+    shift
+    status=0
+    PATH="$fixture/bin:$PATH" "$scanner" "$@" > "$fixture/out" 2> "$fixture/err" || status=$?
+    [ "$status" = "$expected" ] || fail "publication scan exited $status, expected $expected"
+  }
+  publication_incomplete() {
+    publication_expect 5 --surface all --report "$fixture/incomplete"
+    grep -qi "$1" "$fixture/err" || fail "publication scan did not name $1"
+    [ ! -e "$fixture/incomplete" ] && [ ! -s "$fixture/out" ] \
+      || fail 'incomplete publication scan emitted a verdict'
+  }
+
+  publication_incomplete 'remote tag'
+  git update-ref refs/tags/fixture "$base"
+  git --git-dir="$fixture/remote" update-ref refs/pull/1/head "$tip"
+  publication_incomplete 'pull.request'
+  git update-ref refs/pull/1/head "$tip"
+  git --git-dir="$fixture/remote" update-ref refs/heads/main "$base"
+  publication_incomplete 'remote branch'
+  git --git-dir="$fixture/remote" update-ref refs/heads/main "$tip"
+  git config remote.origin.promisor true
+  publication_incomplete 'partial'
+  git config --unset remote.origin.promisor
+  git config extensions.partialClone origin
+  publication_incomplete 'partial'
+  git config --unset extensions.partialClone
+  git clone -q --branch main --depth=1 "file://$fixture/remote" "$fixture/shallow"
+  (cd "$fixture/shallow"; publication_incomplete 'shallow')
+
+  export SCAN_GH_FAIL=1
+  publication_incomplete 'GitHub'
+  ! grep -Fq "$host" "$fixture/err" || fail 'API failure leaked its response'
+  unset SCAN_GH_FAIL
+  export SCAN_GH_TRUNCATE=1
+  publication_incomplete 'truncated collection'
+  unset SCAN_GH_TRUNCATE
+  export SCAN_LEAKS_FAIL=1
+  publication_incomplete 'gitleaks'
+  ! grep -Fq "$token" "$fixture/err" || fail 'gitleaks failure leaked its response'
+  unset SCAN_LEAKS_FAIL
+
+  publication_expect 1 --surface all --report "$fixture/report"
+  cmp -s "$fixture/out" "$fixture/report" || fail 'publication report differs from stdout'
+  for pattern in "$token" "$home" "$deleted" "$merged" "$email" "$host" "$key_path" "$project" \
+      deleted.txt merged.txt duplicate.txt visible.txt; do
+    ! grep -Fq -- "$pattern" "$fixture/out" "$fixture/err" "$fixture/report" config/publish-scan-allow.tsv \
+      || fail 'publication scan leaked a planted value or path'
+  done
+  for pattern in 'tree .* github-pat ' 'tree .* home-path ' 'tree .* private-project ' "history ${merge:0:12} .* home-path " \
+      'metadata .* personal-email ' 'github .* local-hostname ' 'history .* private-key-file '; do
+    grep -Eq "$pattern" "$fixture/report" || fail "publication scan omitted a required finding: $pattern"
+  done
+  hash=$(printf '%s' "$deleted" | shasum -a 256)
+  grep -Eq "history .* home-path ${hash:0:12}$" "$fixture/report" || fail 'deleted history was omitted'
+  id=$(printf '%s' visible.txt | shasum -a 256)
+  id=${id:0:12}
+  publication_expect 0 --surface tree --resolve "$id"
+  grep -Fxq visible.txt "$fixture/out" || fail 'publication location could not be resolved'
+  hash=$(printf '%s' "$home" | shasum -a 256)
+  printf '%s\thome-path\t%s\tFixture false positive\n' "$id" "${hash:0:12}" >> config/publish-scan-allow.tsv
+  publication_expect 1 --surface tree
+  ! grep -Eq "tree ${oid:0:12} $id home-path " "$fixture/out" || fail 'allow-list did not match the exact finding'
+  grep -Eq 'tree .* home-path ' "$fixture/out" || fail 'allow-list hid the value at another location'
+
+  clean="$fixture/clean"
+  git init -q -b main --template= "$clean"
+  cd "$clean"
+  git config user.name Fixture
+  git config user.email 'fixture@users.noreply.github.com'
+  git config commit.gpgsign false
+  printf 'clean\n' > clean.txt
+  git add -- clean.txt
+  git commit -qm 'Clean fixture'
+  git remote add origin "$fixture/clean"
+  SCAN_HOST=benign publication_expect 0 --surface all
+  grep -Eiq 'provisional.*GO' "$fixture/out" || fail 'complete clean scan had no provisional GO'
+)
+publish_scan_tests
 
 # Flow ergonomics scenario 8. Parse the pinned action's single-quoted filter lists.
 ci_bookkeeping_check() (
@@ -151,6 +352,27 @@ ci_app_cache_tests() (
   export APP_CACHE_FILE="$TMP/ci-app-green" GITHUB_STEP_SUMMARY="$TMP/ci-app-summary" \
     GITHUB_OUTPUT="$TMP/ci-app-output" GITHUB_SERVER_URL=https://github.com \
     GITHUB_REPOSITORY=owner/repo GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=2
+  # Double quotes are valid in the path filter YAML but unsupported by the key reader.
+  (
+    cd "$(mktemp -d "$TMP/ci-key-fallback.XXXXXX")"
+    git init -q
+    mkdir -p scripts/lib .github/workflows
+    ln -s "$ROOT/scripts/app-input-key.sh" scripts/
+    ln -s "$ROOT/scripts/lib/ci-bookkeeping.sh" scripts/lib/
+    sed -E "s/'(!ROADMAP\.md)'/\"\1\"/" "$workflow" > .github/workflows/ci.yml
+    grep -Fq '"!ROADMAP.md"' .github/workflows/ci.yml || fail "$workflow fixture did not change the filter format"
+    : > "$GITHUB_OUTPUT"
+    body=$(sed -n '/^        run: |$/,$s/^          //p' <<< "$key")
+    bash -e -c "$body" > out 2>&1 && fail "$workflow accepted the unreadable key"
+    [ ! -s "$GITHUB_OUTPUT" ] || fail "$workflow emitted a key after a parse error"
+    if ! { grep -Fxq "        if: steps.filter.outputs.app == 'true'" <<< "$key" &&
+      grep -Fxq '        continue-on-error: true' <<< "$key" &&
+      grep -Fxq "        if: steps.app_key.outcome == 'success'" <<< "$restore"; }; then
+      fail "$workflow could block App checks or try cache restore without a key"
+    fi
+    grep -Fxq '::warning::App-input key unavailable; App checks run every time' out \
+      || fail "$workflow omitted the App key fallback warning"
+  )
   source=https://github.com/owner/repo/actions/runs/123/attempts/2
   body=$(sed -n '/^        run: |$/,$s/^          //p' <<< "$marker")
   bash -e -c "$body"
@@ -258,7 +480,7 @@ BODY
     esac
   done
   {
-    for key in $SELF_TEST_GROUPS; do printf '%s\t5\n' "$key"; done
+    for key in $SELF_TEST_GROUPS upgrade:upstream; do printf '%s\t5\n' "$key"; done
     for tag in $CONTROLLER_SCENARIOS; do printf 'controller:%s\t5\n' "$tag"; done
     for tag in $STATIONS_SCENARIOS; do printf 'stations:%s\t5\n' "$tag"; done
   } > "$fixture/ceilings"
@@ -597,7 +819,6 @@ BLOCKS
   grep -qx 'self-test passed.' "$TMP/split-full.out" \
     || fail 'split changed the full-suite completion message'
 )
-split_regression_tests
 
 # Dispatcher scope, ship-gate and ceiling regressions need the source layout.
 if [ -f "$ROOT/scripts/export.sh" ]; then
@@ -758,13 +979,27 @@ GIT_ERROR
     /^  docs:/ { exit } END { exit !(depth && base) }' "$ROOT/templates/ci/ci.yml" \
     || fail 'CI app job does not fetch history and export the PR base'
 
-  # The exported-layout gate must propagate a failing group, then pass all full-mode
-  # arguments into the exported runner. Stub only export and the exported runner.
+  # Exercise the exported suite and lint in order without recursively running the
+  # full suite. The exported runner reports a group and a controlled copy count.
   GATE_FIX="$TMP/ship-gate"
-  mkdir -p "$GATE_FIX/scripts/tests"
+  mkdir -p "$GATE_FIX/scripts/tests" "$GATE_FIX/bin"
   link_test_wall_ceilings "$GATE_FIX"
   ln "$ROOT/scripts/tests/helpers.sh" "$GATE_FIX/scripts/tests/helpers.sh"
   ln "$ROOT/scripts/self-test.sh" "$GATE_FIX/scripts/self-test.sh"
+  ln "$ROOT/scripts/shell-inventory.sh" "$GATE_FIX/scripts/shell-inventory.sh"
+  printf 'scripts/probe.sh\tscripts/probe.sh\tcore\tpreserve\texport\n' > "$GATE_FIX/config/payload.tsv"
+  printf '#!/usr/bin/env bash\nunused=1\n' > "$GATE_FIX/scripts/probe.sh"
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    # The contracts and fast gates also run on machines without ShellCheck.
+    cat > "$GATE_FIX/bin/shellcheck" <<'LINT'
+#!/usr/bin/env bash
+if grep -Fxq 'unused=1' "$2"; then
+  echo "fixture ShellCheck: $2: SC2034"
+  exit 1
+fi
+LINT
+    chmod +x "$GATE_FIX/bin/shellcheck"
+  fi
   cat > "$GATE_FIX/scripts/export.sh" <<'SH'
 #!/usr/bin/env bash
 set -eu
@@ -774,19 +1009,36 @@ cat > "$1/scripts/self-test.sh" <<'RUNNER'
 set -eu
 printf '%s\n' "$*" >> "$GATE_CALLS"
 printf 'group:hooks\n' >> "$AGENTIC_MEASURE_EVENTS"
+for ((i=0; i<GATE_COPIES; i++)); do
+  printf 'fixture_file_copy\n' >> "$AGENTIC_MEASURE_EVENTS"
+done
 [ "${GATE_FAIL:-0}" = 0 ]
 RUNNER
 chmod +x "$1/scripts/self-test.sh"
 SH
   chmod +x "$GATE_FIX/scripts/export.sh"
+  gate_make() {
+    : > "$TMP/gate.calls"
+    PATH="$GATE_FIX/bin:$PATH" GATE_CALLS="$TMP/gate.calls" GATE_COPIES="$1" \
+      make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate > "$TMP/gate.out" 2>&1
+  }
   gate_rc=0
-  GATE_CALLS="$TMP/gate.calls" GATE_FAIL=1 make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate \
-    > "$TMP/gate.out" 2>&1 || gate_rc=$?
+  GATE_FAIL=1 gate_make 0 || gate_rc=$?
   [ "$gate_rc" -ne 0 ] || fail 'ship-gate accepted a failing exported suite'
   grep -q 'group: hooks' "$TMP/gate.out" || fail 'ship-gate did not name the failing exported group'
-  : > "$TMP/gate.calls"
-  GATE_CALLS="$TMP/gate.calls" make -C "$GATE_FIX" -f "$ROOT/Makefile" ship-gate \
-    > "$TMP/gate.out" 2>&1 || { cat "$TMP/gate.out" >&2; fail 'ship-gate rejected a passing exported suite'; }
+
+  gate_copy_limit=117
+  gate_copy_over=$((gate_copy_limit+1))
+  gate_make "$gate_copy_over" && fail 'ship-gate accepted one fixture copy over the exported limit'
+  grep -Fq "exported full mode made $gate_copy_over fixture file copies; limit $gate_copy_limit" "$TMP/gate.out" \
+    || fail 'ship-gate did not name the exported copy count and limit'
+  gate_make "$gate_copy_limit" && fail 'ship-gate accepted a ShellCheck warning in a shipped script'
+  grep -q '^ship-gate passed (exported full suite)\.$' "$TMP/gate.out" \
+    || fail 'ship-gate did not complete the exported suite before lint'
+  grep -q 'SC2034' "$TMP/gate.out" || fail 'ship-gate did not report the ShellCheck warning'
+
+  printf '#!/usr/bin/env bash\n:\n' > "$GATE_FIX/scripts/probe.sh"
+  gate_make "$gate_copy_limit" || { cat "$TMP/gate.out" >&2; fail 'ship-gate rejected a passing exported suite'; }
   grep -qx -- '--full --all-groups' "$TMP/gate.calls" || fail 'ship-gate did not run the exported full suite'
   # CI keeps the costly exported suite as a separate step after everyday tests.
   awk '/run: make test$/ { test=NR } /run: make ship-gate$/ { gate=NR } END { exit !(test && gate>test) }' \
@@ -844,6 +1096,9 @@ SH
   rm -rf "$CEILING_FIXTURE"
 fi
 
+# The red-first overlay carries this test file without the updated inventory.
+# Exercise the ship-gate regression before checking the inventory itself.
+split_regression_tests
 workflow_contract_check
 # T-1: keep the gate cadence identical in the live and exported role contracts.
 # shellcheck disable=SC2016 # Literal Markdown command references.
@@ -879,10 +1134,13 @@ fi
 [ -f "$ROOT/scripts/lib/identity.sh" ] || fail 'identity library is missing'
 IDENTITY_FIX="$TMP/identity"
 mkdir -p "$IDENTITY_FIX/project/scripts/lib" "$IDENTITY_FIX/bin" "$IDENTITY_FIX/config/agentic-flow/identities/owner"
-cp "$ROOT/scripts/agentic-flow" "$IDENTITY_FIX/project/scripts/agentic-flow"
-cp "$ROOT/scripts/lib/identity.sh" "$ROOT/scripts/lib/review-policy.sh" "$IDENTITY_FIX/project/scripts/lib/"
-cp "$ROOT/scripts/lib/payload-apply.sh" "$IDENTITY_FIX/project/scripts/lib/"
-cp "$ROOT/scripts/doctor.sh" "$IDENTITY_FIX/project/scripts/doctor.sh"
+mkdir -p "$IDENTITY_FIX/project/config/stations" "$IDENTITY_FIX/codex/rules"
+# This fixture exercises token and doctor, which read these inputs.
+ln "$ROOT/scripts/agentic-flow" "$ROOT/scripts/doctor.sh" "$IDENTITY_FIX/project/scripts/"
+ln "$ROOT/scripts/lib/identity.sh" "$ROOT/scripts/lib/review-policy.sh" \
+   "$ROOT/scripts/lib/payload-apply.sh" "$ROOT/scripts/lib/git-guards.sh" "$IDENTITY_FIX/project/scripts/lib/"
+ln "$ROOT/config/stations/command-policy.rules" "$IDENTITY_FIX/project/config/stations/"
+ln "$ROOT/config/stations/command-policy.rules" "$IDENTITY_FIX/codex/rules/agentic-flow.rules"
 (
   cd "$IDENTITY_FIX/project"
   git init -q
@@ -1011,6 +1269,7 @@ printf 'reviewer\treview-app[bot]\t123\t456\ttest key\napprover\tplan-app[bot]\t
 identity_doctor() {
   # shellcheck disable=SC2097,SC2098 # Pass fixture state to the child.
   PATH="$IDENTITY_FIX/bin:$PATH" XDG_CONFIG_HOME="$IDENTITY_FIX/config" IDENTITY_FIX="$IDENTITY_FIX" \
+    CODEX_HOME="$IDENTITY_FIX/codex" \
     "$IDENTITY_FIX/project/scripts/doctor.sh" --check --scope env > "$TMP/identity-doctor.out" 2>&1
 }
 identity_doctor || fail "doctor rejected valid role identities: $(cat "$TMP/identity-doctor.out")"
@@ -1064,35 +1323,6 @@ reader=scripts/lifecycle-status.sh
     && fail "workflow accepted drift in $reader"
   grep -Fq 'hard-coded workflow labels drifted' "$TMP/workflow-drift.out" \
     || fail 'workflow drift diagnostic missing'
-# Guard failures must block locally even when a guard cannot return its own exit 2.
-if [ -f "$ROOT/.claude/settings.json" ]; then
-  GUARD_FIX="$TMP/guard-failure-fixture"
-  mkdir -p "$GUARD_FIX/scripts/lib" "$GUARD_FIX/.claude"
-  cp "$ROOT/scripts/doctor.sh" "$GUARD_FIX/scripts/doctor.sh"
-  cp "$ROOT/scripts/lib/payload-apply.sh" "$GUARD_FIX/scripts/lib/payload-apply.sh"
-  for guard in block-git-add-all.sh block-push.sh scan-secrets.sh; do
-    for failure_mode in missing continue; do
-      jq --arg guard "$guard" --arg mode "$failure_mode" '
-        (.hooks.PreToolUse[] | .hooks[]
-          | select(.command | endswith($guard))) |=
-          (if $mode == "missing" then del(.onFailure) else .onFailure = "continue" end)
-      ' "$ROOT/.claude/settings.json" > "$GUARD_FIX/.claude/settings.json"
-      (cd "$GUARD_FIX" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo --skip-make-check) \
-        > "$TMP/guard-failure.out" 2>&1 \
-        && fail "doctor accepted $failure_mode onFailure for $guard"
-      grep -q "missing .claude/settings.json PreToolUse: $guard requires onFailure=block" \
-        "$TMP/guard-failure.out" \
-        || fail "doctor did not name the missing failure policy for $guard ($failure_mode)"
-    done
-  done
-  jq -e '
-    [.hooks[][] .hooks[] | select(has("onFailure"))]
-    | length == 3 and all(.[];
-        .type == "command" and .onFailure == "block" and
-        (.command | test("scripts/hooks/(block-git-add-all|block-push|scan-secrets)\\.sh$")))
-  ' "$ROOT/.claude/settings.json" >/dev/null \
-    || fail "Claude failure policy must cover exactly the three local guards"
-fi
 if [ -f "$ROOT/scripts/export.sh" ]; then
   [ -x "$ROOT/scripts/shell-inventory.sh" ] \
     || fail "scaffold shell inventory is missing"
@@ -1384,6 +1614,49 @@ YAML
     || fail "shipped templates/ci workflows fail the pin guard"
 fi
 
+# Scenario 10 (Phase 4): catch dangling documentation links and require an actual
+# command example for every command listed in the CLI's public usage.
+reference_docs_tests() (
+  # The explainer and the repository-wide documentation scan are scaffold checks.
+  # The export group scans its fresh adopter with the host's tools.
+  [ -f "$ROOT/scripts/export.sh" ] || return 0
+  local fixture="$TMP/reference-docs" checker="$ROOT/scripts/lib/check-doc-links.pl"
+  local usage explainer command
+  mkdir -p "$fixture/docs"
+  printf '[Missing reference](docs/missing.md)\n' > "$fixture/README.md"
+  if perl "$checker" "$fixture" > "$fixture/out" 2>&1; then
+    fail 'documentation link check accepted a missing target'
+  fi
+  grep -Fq 'README.md:1: broken local link: docs/missing.md' "$fixture/out" \
+    || { cat "$fixture/out" >&2; fail 'documentation link check did not report the dangling link'; }
+  cat > "$fixture/docs/missing.md" <<'MARKDOWN'
+# Reference
+
+`[Example](example-only.md)`
+MARKDOWN
+  perl "$checker" "$fixture" || fail 'documentation link check rejected a restored target'
+  printf '<a href="docs/missing.md#wrong">Reference</a>\n' > "$fixture/README.md"
+  if perl "$checker" "$fixture" > "$fixture/out" 2>&1; then
+    fail 'documentation link check accepted a missing fragment'
+  fi
+  grep -Fq 'README.md:1: broken local link: docs/missing.md#wrong' "$fixture/out" \
+    || fail 'documentation link check did not name the missing fragment'
+  printf '<a href="docs/missing.md#reference">Reference</a>\n' > "$fixture/README.md"
+  perl "$checker" "$fixture" || fail 'documentation link check rejected a valid fragment'
+
+  perl "$checker" "$ROOT" || fail 'scaffold documentation has broken local links'
+  explainer="$ROOT/docs/agentic-flow-explained.html"
+  [ -f "$explainer" ] || fail 'missing scaffold workflow explainer'
+  usage=$("$ROOT/scripts/agentic-flow" --help 2>&1) || fail 'could not read agentic-flow usage'
+  usage=$(awk '$1 == "agentic-flow" && $2 ~ /^[a-z][a-z0-9_-]*$/ {print $2}' <<< "$usage" | sort -u)
+  [ -n "$usage" ] || fail 'no subcommands found in agentic-flow usage'
+  while IFS= read -r command; do
+    grep -Eq "<code>(scripts/)?agentic-flow ${command}(</code>|[[:space:]])" "$explainer" \
+      || fail "workflow explainer is missing an agentic-flow $command command example"
+  done <<< "$usage"
+)
+reference_docs_tests
+
 # --- harness/template section sync -------------------------------------------------------
 # CLAUDE.md and AGENTS.md exist twice on purpose and their prose legitimately differs, so
 # nothing compared them and a section added to one side shipped unnoticed. The guard asserts
@@ -1391,7 +1664,9 @@ fi
 SYNC="$ROOT/scripts/check-harness-sync.sh"
 if [ -x "$SYNC" ]; then
   SYNCFIX="$TMP/harness-sync-fixture"
-  mkdir -p "$SYNCFIX/templates/harness"
+  mkdir -p "$SYNCFIX/templates/harness" "$SYNCFIX/scripts"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SYNCFIX/scripts/render-command-policy.sh"
+  chmod +x "$SYNCFIX/scripts/render-command-policy.sh"
   sync_fixture() { # <root-body> <template-body>
     printf '# Contract\n\n%s\n' "$1" > "$SYNCFIX/CLAUDE.md"
     printf '# Contract\n\n%s\n' "$2" > "$SYNCFIX/templates/harness/CLAUDE.md"
@@ -1423,10 +1698,12 @@ Hand the issue to OpenCode review.' '## Roles
 Hand the step to the reviewer.'
   sync_run || fail "harness sync compared prose instead of section structure"
 
-  # An adopted project has no templates/harness/ and must not fail on its absence.
+  # An adopted project can retain a pre-split methodology after upgrading.
   ADOPTEDFIX="$TMP/harness-sync-adopted"
-  mkdir -p "$ADOPTEDFIX"
+  mkdir -p "$ADOPTEDFIX/scripts"
+  ln "$SYNCFIX/scripts/render-command-policy.sh" "$ADOPTEDFIX/scripts/render-command-policy.sh"
   printf '# Contract\n\n## Roles\n' > "$ADOPTEDFIX/CLAUDE.md"
+  printf '# Methodology\n\n## 9. Starting a project\n\nAdopter guidance.\n' > "$ADOPTEDFIX/METHODOLOGY.md"
   AGENTIC_PROJECT_ROOT="$ADOPTEDFIX" "$SYNC" >/dev/null 2>&1 \
     || fail "harness sync failed in an adopted project with no templates/harness"
 
@@ -1649,7 +1926,7 @@ if active_scope codex; then
 fi
 # END ROLE-BUNDLE CEILINGS
 
-# One set of engineering standards across every surface that states them. METHODOLOGY.md §11
+# One set of engineering standards across every surface that states them. The reference
 # is canonical; AGENTS.md (both instances) compresses them into the executor's always-loaded
 # checklist, and the /review agent contract restates them for the reviewer. Those copies are
 # deliberate — routing an executor to a 5,000-word document for six rules would cost more per
@@ -1662,10 +1939,10 @@ fi
 # templates/harness/AGENTS.md only exists in the source repo — an adopted project receives it
 # as its own AGENTS.md — so it joins the list only when present, the same source-vs-adopted
 # distinction the export ceilings already make.
-standards_surfaces="$ROOT/METHODOLOGY.md $ROOT/AGENTS.md"
+standards_surfaces=("$ROOT/docs/reference/engineering-standards.md" "$ROOT/AGENTS.md")
 [ -f "$ROOT/templates/harness/AGENTS.md" ] \
-  && standards_surfaces="$standards_surfaces $ROOT/templates/harness/AGENTS.md"
-for standards_surface in $standards_surfaces; do
+  && standards_surfaces+=("$ROOT/templates/harness/AGENTS.md")
+for standards_surface in "${standards_surfaces[@]}"; do
   [ -f "$standards_surface" ] || fail "missing engineering-standards surface: $standards_surface"
   while IFS= read -r standards_rule; do
     [ -n "$standards_rule" ] || continue
@@ -1734,46 +2011,15 @@ printf '%s' "$ensemble_block" | grep -qi 'blind spot' \
 printf '%s' "$ensemble_block" | grep -q 'sev:' \
   && fail "the ensemble entry restates the severity labels instead of routing to METHODOLOGY.md §5"
 
-# The shipped-hook count is stated in prose in two exported documents and was wrong in both:
-# METHODOLOGY.md §8 offered ideas "beyond the shipped two" and README.md's source-tree
-# inventory called scripts/hooks/ "the two hook scripts", while four ship and settings.json
-# calls all four. Nothing counted. Derive the count and assert the prose agrees, so adding or
-# retiring a hook fails here instead of leaving a stale number in two adopter-facing files.
-# Anchored on the distinctive phrase for the same reason as the standards surfaces above.
-hook_count=$(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | wc -l | tr -d ' ')
-case "$hook_count" in
-  1) hook_word=one ;;
-  2) hook_word=two ;;
-  3) hook_word=three ;;
-  4) hook_word=four ;;
-  5) hook_word=five ;;
-  6) hook_word=six ;;
-  *) hook_word="" ;;
-esac
-if [ -z "$hook_word" ]; then
-  fail "no english number word for the shipped hook count ($hook_count) — extend the case above"
-fi
-grep -q "the $hook_word shipped hooks" "$ROOT/METHODOLOGY.md" \
-  || fail "METHODOLOGY.md does not say \"the $hook_word shipped hooks\" ($hook_count ship)"
-# METHODOLOGY.md is payload and carries this claim into every adoption, so that assertion is
-# unconditional. The root README.md is NOT in config/payload.tsv — it describes this repo's own
-# source tree, and an adopted project's README is its own document about its own project. Assert
-# it only in the scaffold, the same source-vs-adopted split the role-bundle ceilings make.
-if [ -f "$ROOT/scripts/export.sh" ]; then
-  grep -q "the $hook_word hook scripts" "$ROOT/README.md" \
-    || fail "README.md does not say \"the $hook_word hook scripts\" ($hook_count ship)"
-fi
-
-# Counting alone would still let a new hook ship undocumented as long as someone bumped the
-# number. CLAUDE.md is the surface that names each hook and what it enforces, so require every
-# shipped script to appear there by filename.
-while IFS= read -r hook_script; do
-  hook_base=$(basename "$hook_script")
-  if active_scope claude; then
-    grep -q "$hook_base" "$ROOT/CLAUDE.md" \
+# Legacy hook scripts remain in the payload for adopters pending migration.
+# The contracts describe the active command policy and hooks.
+if active_scope claude; then
+  for hook_base in command-policy.tsv scripts/git-hooks/pre-commit check-gate.sh \
+                   session-context.sh guard-attached-git-dir.sh; do
+    grep -Fq "$hook_base" "$ROOT/CLAUDE.md" \
       || fail "CLAUDE.md does not document the shipped hook $hook_base"
-  fi
-done < <(find "$ROOT/scripts/hooks" -maxdepth 1 -name '*.sh' | sort)
+  done
+fi
 
 # §5 is the shared severity source every review surface cites, including the /review agent
 # contract for ordinary diffs — but it was titled "(Security reviews)" and defined its levels

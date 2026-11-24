@@ -761,3 +761,49 @@ for read_command in \
   'scripts/agentic-flow handoff 1 submit --as executor --head abc'; do
   must_allow "$STEP_HOOK" "$read_command"
 done
+
+(
+  repo="$TMP/git-pre-commit"
+  git init -q "$repo"
+  cd "$repo"
+  git config user.name 'Local hook test'
+  git config user.email hooks@example.invalid
+  git config commit.gpgsign false
+  git config core.hooksPath "$ROOT/scripts/git-hooks"
+  printf 'key = "%s"\n' "$(printf 'AKIA%s' 'IOSFODNN7EXAMPLE')" > staged.txt
+  git add staged.txt
+  printf '#!/usr/bin/env bash\nexec git commit -qm probe\n' > commit-from-script
+  for caller in script station human; do
+    status=0
+    case "$caller" in
+      script) bash commit-from-script ;;
+      station) env -i "PATH=$PATH" "HOME=$HOME" bash --noprofile --norc commit-from-script ;;
+      human) git commit -qm probe ;;
+    esac > "$TMP/pre-commit.out" 2>&1 || status=$?
+    if [ "$status" -eq 0 ] || ! grep -qx 'agentic-flow: staged credential blocked' "$TMP/pre-commit.out"; then
+      fail "pre-commit did not block the $caller commit"
+    fi
+  done
+  AGENTIC_ALLOW_SECRET=1 git commit -qm 'Fixture override'
+)
+
+ATTACHED_GUARD="$ROOT/scripts/hooks/guard-attached-git-dir.sh"
+must_block "$ATTACHED_GUARD" 'git --git-dir=/tmp/x push'
+must_block "$ATTACHED_GUARD" 'git --git-dir="/tmp/with spaces" add --all'
+must_block "$ATTACHED_GUARD" 'git --git-dir=/tmp/x add -A'
+must_block "$ATTACHED_GUARD" 'git --git-dir=/tmp/x add .'
+must_allow "$ATTACHED_GUARD" 'git --git-dir=/tmp/x add named-file'
+must_allow "$ATTACHED_GUARD" 'git --git-dir=/tmp/x add push'
+must_allow "$ATTACHED_GUARD" 'git-codex commit -m probe'
+must_allow "$ATTACHED_GUARD" 'git-codex commit -m "Cover git --git-dir=/tmp/x push"'
+must_allow "$ATTACHED_GUARD" 'scripts/agentic-flow handoff 1 submit --as executor'
+for shipped_hooks in .claude/settings.json .codex/hooks.json; do
+  [ -f "$ROOT/$shipped_hooks" ] || continue
+  jq -e 'all(.hooks.PreToolUse[]?.hooks[]?; (.command // "") |
+    test("scripts/hooks/(block-git-add-all|block-push|require-step-comment|scan-secrets)\\.sh$") | not)' \
+    "$ROOT/$shipped_hooks" >/dev/null || fail "retired guards registered in $shipped_hooks"
+done
+if [ -f "$ROOT/.codex/hooks.json" ]; then
+  jq -e 'any(.hooks.PreToolUse[]?.hooks[]?; (.command // "") | endswith("/scripts/hooks/guard-attached-git-dir.sh"))' \
+    "$ROOT/.codex/hooks.json" >/dev/null || fail 'Codex residual guard is not registered'
+fi

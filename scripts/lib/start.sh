@@ -38,11 +38,15 @@ plan_fill_template() {
       $0="Base: `" base "`." substr($0,length("Base: `<base branch>`.")+1); bases++
     }
     /^```agentic-flow-plan$/ {block=1; blocks++}
-    /^```$/ {block=0}
+    /^```$/ {
+      if (block && !formats) print "format: 2"
+      block=0
+    }
+    block && /^format:/ {formats++; if ($0!="format: 2") invalid_format=1}
     block && $0=="id: <stable-plan-id>" {$0="id: " id; ids++}
     block && $0=="branch: <branch>" {$0="branch: " branch; branches++}
     {print}
-    END {if (dates!=1 || bases!=1 || blocks!=1 || block || ids!=1 || branches!=1) exit 1}
+    END {if (dates!=1 || bases!=1 || blocks!=1 || block || ids!=1 || branches!=1 || formats>1 || invalid_format) exit 1}
   ' "$1"
 }
 
@@ -58,6 +62,33 @@ plan_record() { # status, branch, base. Publish atomically for interrupted-clean
   fi
 }
 
+plan_worktree_lock() {
+  local path="$common/agentic-flow/worktree-locks/$id" interrupted=false
+  mkdir -p -- "${path%/*}" || { plan_error "cannot create worktree lock parent: ${path%/*}"; return 3; }
+  # Defer interrupts until the EXIT trap knows whether mkdir acquired the lock.
+  trap 'interrupted=true' INT TERM
+  if (trap '' INT TERM; exec mkdir -- "$path") 2>/dev/null; then lock=$path; fi
+  trap 'exit 3' INT TERM
+  [ "$interrupted" = false ] || return 3
+  if [ -z "$lock" ]; then
+    plan_error "cannot acquire worktree lock: $path"
+    plan_error "If the lock exists, confirm no agentic-flow start or clean for $id is running."
+    plan_error 'Check the PID in owner with ps -p <pid> when present and list processes for agentic-flow start or clean on any host sharing the repository.'
+    plan_error "Then remove $path/owner if present and rmdir $path."
+    return 3
+  fi
+  printf '%s\n' "$$" > "$lock/owner" || { plan_error "cannot record worktree lock owner: $lock"; return 3; }
+}
+
+plan_worktree_cleanup() {
+  trap '' INT TERM
+  if [ "$action" = start ]; then plan_start_rollback; fi
+  if [ -n "$scratch" ]; then rm -rf -- "$scratch"; fi
+  if [ -n "$lock" ] && ! { rm -f -- "$lock/owner" && rmdir -- "$lock"; }; then
+    plan_error "could not release worktree lock: $lock"
+  fi
+}
+
 plan_start_rollback() {
   if [ "$made_worktree" = true ]; then
     # The directory was reserved with mkdir, so it belongs to this invocation.
@@ -70,10 +101,11 @@ plan_start_rollback() {
   fi
 }
 
-plan_start() (
-  local branch_ref="refs/heads/$branch" remote_branch="refs/remotes/origin/$branch"
+plan_start() {
+  local remote_branch="refs/remotes/origin/$branch"
   local base_ref="refs/heads/$base" remote_base="refs/remotes/origin/$base"
-  local tip listing path paths template doc made_branch=false made_worktree=false
+  local listing path paths template doc interrupted=false
+  branch_ref="refs/heads/$branch"
   plan_branch_valid "$branch" || { plan_error "invalid branch name $branch"; return 3; }
   plan_branch_valid "$base" || { plan_error "invalid base name $base"; return 3; }
   if git show-ref --verify --quiet "$branch_ref" ||
@@ -113,14 +145,19 @@ plan_start() (
     if git cat-file -e "$tip:$path" 2>/dev/null; then plan_error "plan doc already exists on $base: $path"; return 3; fi
   done <<< "$paths"
 
-  trap plan_start_rollback EXIT
-  trap 'exit 3' INT TERM
-  if ! git update-ref "$branch_ref" "$tip" ""; then plan_error "could not create $branch_ref"; return 3; fi
+  # Record ownership before interrupt handling can roll back either creation.
+  trap 'interrupted=true' INT TERM
+  if ! (trap '' INT TERM; exec git update-ref "$branch_ref" "$tip" ""); then
+    plan_error "could not create $branch_ref"; return 3
+  fi
   made_branch=true
-  if ! mkdir -p -- "${worktree%/*}" || ! mkdir -- "$worktree"; then
+  [ "$interrupted" = false ] || return 3
+  if ! mkdir -p -- "${worktree%/*}" || ! (trap '' INT TERM; exec mkdir -- "$worktree"); then
     plan_error "could not reserve worktree directory: $worktree"; return 3
   fi
   made_worktree=true
+  trap 'exit 3' INT TERM
+  [ "$interrupted" = false ] || return 3
   if ! git worktree add --quiet -- "$worktree" "$branch"; then
     plan_error "could not add worktree: $worktree"; return 3
   fi
@@ -142,10 +179,14 @@ plan_start() (
   ); then
     plan_error "could not write and stage $doc from $template"; return 3
   fi
-  plan_record open || { plan_error 'could not record the plan worktree'; return 3; }
-  trap - EXIT INT TERM
+  # Once the record is published, its branch and worktree belong to the plan.
+  trap 'interrupted=true' INT TERM
+  (trap '' INT TERM; plan_record open) || { plan_error 'could not record the plan worktree'; return 3; }
+  made_branch=false made_worktree=false
+  trap 'exit 3' INT TERM
+  [ "$interrupted" = false ] || return 3
   printf 'Worktree: %s\nDoc: %s\nNext:\n  cd %q\n  vi %q\n' "$worktree" "$doc" "$worktree" "$doc"
-)
+}
 
 plan_clean_doc() { # <tip> <branch> <plan-id> -> base; 1 absent, 2 invalid or ambiguous
   local paths path found='' fields
@@ -214,9 +255,51 @@ plan_read_record() {
     plan_branch_valid "$recorded_branch" && plan_branch_valid "$recorded_base"
 }
 
-plan_clean() (
+plan_salvage_refs() { # git ref output format
+  local refs
+  refs=$(git for-each-ref --count=1001 --format="$1" "$salvage") || return 3
+  [ "$(printf '%s\n' "$refs" | wc -l)" -le 1000 ] || { plan_error "too many salvage refs under $salvage"; return 3; }
+  printf '%s' "$refs"
+}
+
+plan_require_missing_branch() {
+  local rc=0
+  git show-ref --exists "$branch_ref" >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 2 ] && return 0
+  plan_error "cannot resolve branch $branch"
+  if [ "$rc" = 129 ]; then plan_error 'Git 2.43 or newer is required to recover this record'; fi
+  return 3
+}
+
+plan_check_other_worktrees() {
+  local listing
+  listing=$(git worktree list --porcelain) || return 3
+  if grep -Fxq "branch $branch_ref" <<< "$listing"; then
+    plan_error "$branch is checked out in another worktree"; return 3
+  fi
+}
+
+plan_recover_open_record() {
+  local refs message='Would mark record closed'
+  plan_require_missing_branch || return 3
+  refs=$(plan_salvage_refs '%(refname)') || return 3
+  if ! plan_read_record || [ "$status" != open ] || [ "$recorded_branch" != "$branch" ] ||
+     [ "$recorded_base" != "$base" ] || plan_path_exists "$worktree"; then
+    plan_error "worktree or record changed during recovery for $id"; return 3
+  fi
+  plan_check_other_worktrees && plan_require_missing_branch || return 3
+  if [ "$dry_run" = false ]; then
+    # The salvage refs may be the only pointers to unshipped work.
+    plan_record closed || { plan_error 'could not record completed cleanup'; return 3; }
+    message='Marked record closed'
+  fi
+  printf '%s; salvage refs preserved: %s\n' "$message" "${refs:-none}"
+}
+
+plan_clean() {
   local status='' recorded_branch='' recorded_base='' tip='' doc_base rc
-  local worktree_present=false top wt_common dirty branch_ref base_ref base_tip salvage refs listing scratch=''
+  local worktree_present=false top wt_common dirty branch_ref base_ref base_tip refs listing
+  local salvage="refs/agentic-flow/salvage/$id/"
   if plan_path_exists "$record" && ! plan_read_record; then
     plan_error "invalid worktree record for $id"; return 3
   fi
@@ -227,7 +310,9 @@ plan_clean() (
        [ "$(cd "$wt_common" && pwd -P)" != "$common" ]; then
       plan_error "path is not this repository's plan worktree: $worktree"; return 3
     fi
-    if [ "$PWD" = "$top" ]; then plan_error "run from another checkout to remove $worktree"; return 3; fi
+    local cwd
+    cwd=$(pwd -P) || return 3
+    if [ "$cwd" = "$top" ]; then plan_error "run from another checkout to remove $worktree"; return 3; fi
     branch=$(git -C "$worktree" symbolic-ref --quiet HEAD) || { plan_error "detached plan worktree: $worktree"; return 3; }
     case "$branch" in refs/heads/*) branch=${branch#refs/heads/} ;; *) return 3 ;; esac
     if [ -n "$recorded_branch" ] && [ "$status" != closed ] && [ "$branch" != "$recorded_branch" ]; then
@@ -259,7 +344,6 @@ plan_clean() (
     base_ref="refs/remotes/origin/$base"
     if [ "$fetch" = true ]; then
       if [ "$dry_run" = true ]; then
-        trap 'if [ -n "$scratch" ]; then rm -rf -- "$scratch"; fi' EXIT
         plan_clean_dry_base || return $?
       else
         plan_fetch git fetch --quiet --no-tags --no-recurse-submodules origin "+refs/heads/$base:$base_ref" || return $?
@@ -274,20 +358,19 @@ plan_clean() (
       return 3
     fi
     if [ "$worktree_present" = false ]; then
-      listing=$(git worktree list --porcelain) || return 3
-      if grep -Fxq "branch $branch_ref" <<< "$listing"; then
-        plan_error "$branch is checked out in another worktree"; return 3
-      fi
+      plan_check_other_worktrees || return 3
     fi
+  elif [ "$status" = open ] && [ "$worktree_present" = false ]; then
+    base=$recorded_base
+    plan_recover_open_record
+    return $?
   elif [ "$status" != pending ] || [ "$worktree_present" = true ]; then
     plan_error "cannot resolve branch $branch"; return 3
   else
     base=$recorded_base
   fi
 
-  salvage="refs/agentic-flow/salvage/$id/"
-  refs=$(git for-each-ref --count=1001 --format='%(refname) %(objectname)' "$salvage") || return 3
-  [ "$(printf '%s\n' "$refs" | wc -l)" -le 1000 ] || { plan_error "too many salvage refs under $salvage"; return 3; }
+  refs=$(plan_salvage_refs '%(refname) %(objectname)') || return 3
   if [ "$dry_run" = true ]; then
     if [ "$worktree_present" = true ]; then printf 'Would remove worktree %s\n' "$worktree"; fi
     if [ -n "$tip" ]; then printf 'Would delete %s\n' "$branch_ref"; fi
@@ -315,10 +398,11 @@ plan_clean() (
     printf 'Deleted salvage refs under %s\n' "$salvage"
   fi
   plan_record closed || { plan_error 'could not record completed cleanup'; return 3; }
-)
+}
 
-plan_worktree_cmd() (
+plan_worktree_cmd() {
   local action=$1 id type=feature base=main branch='' fetch=true dry_run=false root common worktree record cli_dir
+  local lock='' scratch='' tip='' branch_ref='' made_branch=false made_worktree=false result=0
   shift
   if [ "$#" -eq 0 ]; then usage; return 2; fi
   case "$1" in -h|--help) usage; return 0 ;; --*) usage; return 2 ;; esac
@@ -342,9 +426,13 @@ plan_worktree_cmd() (
   common=$(git rev-parse --path-format=absolute --git-common-dir) && common=$(cd "$common" && pwd -P) || return 3
   worktree=$(plan_worktree_path "$common" "$id")
   record="$common/agentic-flow/plans/$id"
+  trap plan_worktree_cleanup EXIT
+  trap 'exit 3' INT TERM
+  if [ "$dry_run" = false ]; then plan_worktree_lock || exit 3; fi
   if [ "$action" = start ]; then
-    plan_start
+    plan_start || result=$?
   else
-    plan_clean
+    plan_clean || result=$?
   fi
-)
+  exit "$result"
+}

@@ -991,7 +991,12 @@ jq -e '.["2"].state=="closing" and .["1"].state=="approved"' "$TMP/station.out" 
 # A dead process lock is recoverable; two concurrent approvals serialize to one.
 mkdir -p "$STATION_FIX/project/.git/agentic-flow/locks/fixture"
 printf '%s\n' 99999999 > "$STATION_FIX/project/.git/agentic-flow/locks/fixture/pid"
+STATION_WORKTREE_LOCK="$STATION_FIX/project/.git/agentic-flow/worktree-locks/fixture"
+mkdir -p "$STATION_WORKTREE_LOCK"
 station_run 0 1 reconcile
+[ -d "$STATION_WORKTREE_LOCK" ] && [ ! -e "$STATION_WORKTREE_LOCK/owner" ] \
+  || fail 'handoff recovery disturbed the ownerless worktree lock'
+rmdir "$STATION_WORKTREE_LOCK"
 rm "$STATION_STATE/2.json" "$STATION_STATE/4.json"
 station_issue 1 step:alpha standard
 STATION_LOGIN='exec'
@@ -1374,6 +1379,13 @@ agentic-flow-review: status=changes-requested; step=alpha; head=$PACKET_REV; rol
     elif [ "$mode" = fits ]; then
       jq -e '.findings[0].text=="Fix issue." and .findings_index==null' "$TMP/packet.json" >/dev/null ||
         fail 'small findings were not inlined'
+      # Keep the payload and terminator intact but remove the hidden opener.
+      jq '.comments.nodes[-1].body |= ltrimstr("<!-- ")' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+      mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+      packet_run 0 --station executor --json
+      jq -e --slurpfile issue "$STATION_STATE/1.json" \
+        '.findings==[{body:$issue[0].comments.nodes[-1].body}]' "$TMP/packet.json" >/dev/null ||
+        fail 'bare transition exposed structured findings'
     fi
   done
   rm "$findings_dir/2.json"
@@ -1846,6 +1858,70 @@ unset STATION_STATE
 fi # scenario
 
 if should_run_scenario launch settings; then
+# Native policy must be complete in the selected profile independently of project settings.
+POLICY_FIX="$TMP/command-policy"
+mkdir -p "$POLICY_FIX/config/stations" "$POLICY_FIX/.claude" "$POLICY_FIX/.opencode/agent"
+[ -x "$ROOT/scripts/render-command-policy.sh" ] || fail 'command policy renderer is missing'
+for policy_file in config/command-policy.tsv config/stations/command-policy.rules \
+                   config/stations/claude.settings.json config/stations/opencode.json \
+                   .claude/settings.json .opencode/agent/code-reviewer.md; do
+  cat "$ROOT/$policy_file" > "$POLICY_FIX/$policy_file"
+done
+AGENTIC_PROJECT_ROOT="$POLICY_FIX" "$ROOT/scripts/render-command-policy.sh" --check \
+  || fail 'shipped command policy does not check cleanly'
+(
+  . "$ROOT/scripts/lib/launch.sh"
+  LAUNCH_ROOT="$POLICY_FIX" LAUNCH_CLI=claude LAUNCH_PROFILE="$POLICY_FIX/config/stations/claude.settings.json"
+  jq '.permissions.deny |= map(select(.!="Bash(git push:*)"))' "$LAUNCH_PROFILE" > "$POLICY_FIX/edited"
+  mv "$POLICY_FIX/edited" "$LAUNCH_PROFILE"
+  launch_policy_check > "$POLICY_FIX/check.out" 2>&1 && fail 'project settings masked a missing station deny'
+  grep -q 'command policy' "$POLICY_FIX/check.out" || fail 'missing station deny was not diagnosed'
+)
+AGENTIC_PROJECT_ROOT="$POLICY_FIX" "$ROOT/scripts/render-command-policy.sh" --check > "$POLICY_FIX/check.out" 2>&1 \
+  && fail 'edited rendered policy passed check'
+grep -q 'claude.settings.json' "$POLICY_FIX/check.out" || fail 'renderer did not identify the drifted file'
+printf 'git\tpush\tdeny\tinvalid prefix\n' >> "$POLICY_FIX/config/command-policy.tsv"
+AGENTIC_PROJECT_ROOT="$POLICY_FIX" "$ROOT/scripts/render-command-policy.sh" > "$POLICY_FIX/check.out" 2>&1 \
+  && fail 'renderer accepted a tab inside a prefix'
+grep -q 'invalid command policy row' "$POLICY_FIX/check.out" || fail 'renderer did not diagnose the malformed TSV'
+awk -F '\t' '$1!="git push" && NF==3' "$ROOT/config/command-policy.tsv" > "$POLICY_FIX/config/command-policy.tsv"
+AGENTIC_PROJECT_ROOT="$POLICY_FIX" "$ROOT/scripts/render-command-policy.sh" || fail 'updated command policy did not render'
+AGENTIC_PROJECT_ROOT="$POLICY_FIX" "$ROOT/scripts/render-command-policy.sh" --check || fail 'updated command policy drifted'
+jq -e '.permissions.deny | index("Bash(git push:*)")==null and index("WebFetch(domain:github.com)")!=null' \
+  "$POLICY_FIX/config/stations/claude.settings.json" >/dev/null || fail 'renderer did not retire a removed rule while preserving an unrelated deny'
+jq -e '.permissions.deny | index("Bash(git push:*)")==null' "$POLICY_FIX/.claude/settings.json" >/dev/null \
+  || fail 'renderer did not retire the removed interactive rule'
+
+(
+  . "$ROOT/scripts/lib/probe.sh"
+  printf '%s\n' 'git push origin HEAD' > "$POLICY_FIX/cases"
+  jq -cn '{type:"item.completed",item:{type:"command_execution",command:"git push origin HEAD",
+    status:"failed",aggregated_output:"Rejected: blocked by policy"}}' > "$POLICY_FIX/denial"
+  jq -cn '{type:"item.completed",item:{type:"command_execution",command:"git push origin HEAD",
+    status:"failed",aggregated_output:"fatal: disabled pushurl",exit_code:128}}' > "$POLICY_FIX/ran"
+  probe_policy_result codex "$POLICY_FIX/cases" "$POLICY_FIX/ran" "$POLICY_FIX/sentinel" \
+    | jq -e '.status=="unprobed"' >/dev/null || fail 'process failure counted as native denial'
+  : > "$POLICY_FIX/sentinel"
+  probe_policy_result codex "$POLICY_FIX/cases" "$POLICY_FIX/denial" "$POLICY_FIX/sentinel" \
+    | jq -e '.status=="ran"' >/dev/null || fail 'ignored rule with a sentinel counted as native denial'
+  rm "$POLICY_FIX/sentinel"
+  probe_policy_result codex "$POLICY_FIX/cases" "$POLICY_FIX/denial" "$POLICY_FIX/sentinel" \
+    | jq -e '.status=="denied"' >/dev/null || fail 'observed native denial did not pass'
+
+  mkdir -p "$POLICY_FIX/disposable/worktree/scripts"
+  printf '#!/bin/sh\ntouch real-command-ran\n' > "$POLICY_FIX/disposable/worktree/scripts/agentic-flow"
+  chmod +x "$POLICY_FIX/disposable/worktree/scripts/agentic-flow"
+  probe_policy_prepare "$POLICY_FIX/disposable" || fail 'policy probe could not wire sentinels'
+  cd "$POLICY_FIX/disposable/worktree" || fail 'cannot enter policy probe worktree'
+  sentinel_status=0
+  scripts/agentic-flow token reviewer > "$POLICY_FIX/sentinel.out" 2>&1 || sentinel_status=$?
+  [ "$sentinel_status" -eq 128 ] \
+    || { cat "$POLICY_FIX/sentinel.out" >&2; fail 'control command did not execute the sentinel'; }
+  assert_no_file real-command-ran
+  grep -Fxq 'agentic-flow token reviewer' .agentic-flow-policy-ran \
+    || fail 'policy probe missed a command that reached the control script'
+)
+
 # The shipped station settings are launch inputs; test the direct-read deny list.
 jq -e '.permissions.deny|index("Bash(gh:*)")!=null and index("WebFetch(domain:github.com)")!=null' "$ROOT/config/stations/claude.settings.json" >/dev/null || fail 'Claude station profile does not deny raw GitHub reads'
 jq -e 'any(.permissions[];.action=="shell" and .resource=="gh *" and .effect=="deny")' "$ROOT/config/stations/opencode.json" >/dev/null || fail 'OpenCode station profile does not deny gh'

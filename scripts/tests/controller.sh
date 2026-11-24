@@ -86,9 +86,33 @@ strict_probe() {
   }
   export -f probe_boundary git
   sed 's/write_file() { /write_file() { probe_boundary "$1" || return; /' .agentic-flow-probe.sh > .probe-instrumented
-  local result
+  local result denials='[]'
   result=$(bash .probe-instrumented "$station") || return
   unset -f git
+  if [ -x "${PATH%%:*}/protected" ]; then
+    case "$behavior" in
+      ignore-policy)
+        # This invokes only the probe's temporary PATH wrapper.
+        "${PATH%%:*}/git" push origin HEAD 2>/dev/null || true ;;
+      disabled-pushurl)
+        local failure
+        if failure=$("${PATH%%:*}/git" push origin HEAD 2>&1); then return 2; fi
+        case "$failure" in *'push stopped at disabled pushurl no-push://disabled') ;; *) return 2 ;; esac ;;
+      *)
+        while IFS= read -r command; do
+          case "$cli" in
+            codex)
+              jq -cn --arg cmd "$command" '{type:"item.completed",item:{type:"command_execution",command:$cmd,
+                status:"failed",aggregated_output:"Rejected: blocked by policy"}}' ;;
+            opencode)
+              jq -cn --arg cmd "$command" '{type:"tool_use",sessionID:"ses_probe",part:{tool:"bash",
+                state:{input:{command:$cmd},status:"error",error:"Rejected by a permission rule"}}}' ;;
+            claude)
+              denials=$(jq -cn --argjson d "$denials" --arg cmd "$command" '$d+[{tool_name:"Bash",tool_input:{command:$cmd}}]') ;;
+          esac
+        done < config/stations/command-policy-probes.txt ;;
+    esac
+  fi
   # Faulty evidence must fail even if the CLI emits a perfectly valid result.
   case "$behavior" in
     skip-denied) sed '/"operation":"verify_dir"/d' .agentic-flow-probe.log > .probe-log; mv .probe-log .agentic-flow-probe.log ;;
@@ -110,7 +134,8 @@ strict_probe() {
     claude)
       local session='' previous=''
       for argument in "$@"; do [ "$previous" != --session-id ] || session=$argument; previous=$argument; done
-      jq -nc --arg session "$session" --argjson result "$result" '{type:"result",session_id:$session,structured_output:$result}' ;;
+      jq -nc --arg session "$session" --argjson result "$result" --argjson denials "$denials" \
+        '{type:"result",session_id:$session,structured_output:$result,permission_denials:$denials}' ;;
   esac
 }
 STRICT
@@ -326,7 +351,7 @@ c6_tests() (
   SHIP_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   SHIP_CI_TIMEOUT=3600
   SHIP_RUN_URL=https://github.com/owner/repo/actions/runs/7 SHIP_ATTEMPT=2
-  local pr='{"number":3,"url":"https://github.com/owner/repo/pull/3","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"release","isCrossRepository":false}'
+  local pr='{"number":3,"url":"https://github.com/owner/repo/pull/3","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"release","isCrossRepository":false,"body":"Existing body","title":"Shipping"}'
   SHIP_PR=null
   local AGENTIC_CLOSER_COMMIT=''
   git() {
@@ -343,6 +368,7 @@ c6_tests() (
       'pr list') printf '[%s]\n' "$pr" ;;
       *) return 99 ;; esac
   }
+  andon_desktop() { :; }
   ship_wait_visibility() { ship_pr; }
   ship_wait_ci() { [ "$mode" != failed ] || return 1; printf 'ci\n' >> "$fixture/actions"; }
   ship_ci() { ship_wait_ci; }
@@ -481,8 +507,11 @@ single_push_tests() (
   command git config commit.gpgsign false
   command git remote add origin https://github.com/owner/repo.git
   command git commit --allow-empty -qm base
-  local plan_worktree="$fixture/.git/agentic-flow/worktrees/shipping-fixture"
-  command git worktree add -qb feature "$plan_worktree" || fail 'shipping fixture could not create a linked worktree'
+  local plan_worktree="$TMP/single-push-worktree"
+  local linked_worktree="$fixture/.git/agentic-flow/worktrees/shipping-fixture"
+  command git worktree add -qb feature "$linked_worktree" || fail 'shipping fixture could not create a linked worktree'
+  # Keep an alias even on hosts whose TMPDIR is already a physical path.
+  ln -s "$linked_worktree" "$plan_worktree" || return 1
   cd "$plan_worktree" || return 1
   mkdir -p config docs/inprogress scripts
   ln "$ROOT/config/workflow.tsv" config/workflow.tsv
@@ -544,6 +573,10 @@ LIFECYCLE
   AGENTIC_PROJECT_ROOT=$plan_worktree scripts/docs-index.sh >/dev/null
   command git add -- .agentic-flow-review-policy config/workflow.tsv docs/README.md "$source" fixture.txt \
     scripts/docs-index.sh scripts/lifecycle-status.sh scripts/hooks scripts/lib
+  printf 'ship-gate:\n\t@:\n' > Makefile
+  printf '#!/usr/bin/env bash\n' > scripts/self-test.sh
+  printf '0.1.0\n' > VERSION
+  command git add -- Makefile scripts/self-test.sh VERSION
   command git commit -qm brief
   rev=$(command git rev-parse HEAD)
   sed "/^- \*\*Approval:\*\*/s/pending$/status=approved; by=owner; at=2026-01-01; rev=$rev/" "$source" > "$stored/approved"
@@ -568,6 +601,9 @@ CLOSER
     HANDOFF_ISSUES=1
     jq -n --arg rev "$rev" '{body:("<!-- agentic-flow:plan:shipping-fixture step:alpha spec:"+$rev+" approved="+$rev+" journal=v1 -->\n<!-- agentic-flow:topology:standard -->")}' > "$HANDOFF_TMP/1.issue"
     jq -n --arg head "$tip" '{state:"closing",accepted:[{event:"submit",head:$head},{event:"bounce"},{event:"approve",head:$head}]}' > "$HANDOFF_TMP/1.replay"
+    if [ "$SHIP_TEST_MODE" = body-changed ]; then
+      jq '.[0].body="Body added during rendering"' "$stored/pr" > "$stored/edited-pr" && mv "$stored/edited-pr" "$stored/pr"
+    fi
   }
   git() {
     if [ "$1" = push ]; then
@@ -581,6 +617,8 @@ CLOSER
       command git "$@"
     fi
   }
+  local remote_response=branch gate_result=pass
+  local record="$fixture/.git/agentic-flow/gate/shipping-fixture.json"
   handoff_gh() {
     case "$1 $2" in
       'pr list')
@@ -591,12 +629,45 @@ CLOSER
         [ "${*:3:6}" = '--repo owner/repo --head feature --base release' ] &&
           [ "${10}" = 'Single push' ] && [ "${11}" = --body-file ] || fail 'ship did not admit, push and open against plan base'
         cp "${12}" "$stored/pr-body"
-        jq -n --arg head "$(cat "$stored/remote-head")" '[{number:3,url:"https://github.com/owner/repo/pull/3",headRefOid:$head,baseRefName:"release",isCrossRepository:false}]' > "$stored/pr" ;;
+        jq -n --arg head "$(cat "$stored/remote-head")" --rawfile body "$stored/pr-body" '[{number:3,url:"https://github.com/owner/repo/pull/3",headRefOid:$head,baseRefName:"release",isCrossRepository:false,title:"Single push",body:$body}]' > "$stored/pr" ;;
+      'pr edit')
+        printf 'edit\n' >> "$stored/actions"
+        [ "$#" = 7 ] && [ "${*:3:4}" = '3 --repo owner/repo --body-file' ] || fail 'ship edited the wrong PR or fields'
+        [ "$SHIP_TEST_MODE" != edit-fail ] || return 1
+        jq --rawfile body "$7" '.[0].body=$body' "$stored/pr" > "$stored/edited-pr" && mv "$stored/edited-pr" "$stored/pr" ;;
+      'api --hostname')
+        [ "$3 $4" = 'github.com repos/owner/repo/git/ref/heads/feature' ] || return 99
+        printf '%s\n' "$remote_response" >> "$stored/api"
+        case "$remote_response" in
+          branch) [ -f "$stored/remote-head" ] && jq -n --arg head "$(cat "$stored/remote-head")" '{object:{sha:$head}}' ;;
+          behind) jq -n --arg head "$tip" '{object:{sha:$head}}' ;;
+          malformed) printf 'not json\n' ;;
+          404|500) printf 'HTTP %s\n' "$remote_response" >&2; return 1 ;;
+        esac ;;
       *) return 99 ;;
     esac
   }
-  ship_gate() { printf 'gate\n' >> "$stored/actions"; }
+  make() {
+    # Git resolves the worktree path before ship passes it to make.
+    [[ $# -ge 2 && $1 == -C && $2 -ef $plan_worktree ]] || {
+      printf 'unexpected ship-gate worktree arguments: %s\n' "$*" >&2
+      return 99
+    }
+    shift 2
+    case "$#:$*" in
+      '2:-q ship-gate') printf 'probe\n' >> "$stored/probe"; return 1 ;;
+      '1:ship-gate')
+        printf 'gate\n' >> "$stored/actions"
+        if [ "${SHIP_FORCE_GATE:-false}" = true ] && [ -e "$record" ]; then
+          printf 'record was present at force gate start\n' >> "$stored/actions"
+        fi
+        [ "$gate_result" = pass ] ;;
+      *) return 99 ;;
+    esac
+  }
+  andon_desktop() { printf '%s\n' "$1" >> "$stored/notify"; return 1; }
   ship_ci() {
+    printf 'ci\n' >> "$stored/ci"
     [ "$SHIP_TEST_MODE" != ci-fail ] || { ship_error 'CI failed'; return 1; }
     SHIP_RUN_URL=https://github.com/owner/repo/actions/runs/7 SHIP_ATTEMPT=1
   }
@@ -615,7 +686,7 @@ CLOSER
     fail 'close-out dry run changed or omitted the worktree paths'
   for mode in dirty prep-stray commit-fail commit-noop manual create-fail ci-fail happy; do
     command git reset --hard "$tip" >/dev/null
-    rm -f "$stored/pr" "$stored/remote-head" "$stored/pr-body"
+    rm -f "$stored/pr" "$stored/remote-head" "$stored/pr-body" "$record"
     : > "$stored/actions"
     SHIP_TEST_MODE=$mode ready=true rc=0
     case "$mode" in
@@ -662,9 +733,141 @@ CLOSER
         grep -qFx -- '## Feature — Single push' "$stored/pr-body" || fail 'PR did not show the approved title' ;;
     esac
     case "$mode" in manual|create-fail|ci-fail|happy)
-      [ "$(grep -c '^update$' "$stored/actions")" = 1 ] || fail 'close-out updated the remote more than once' ;;
+      [ "$(grep -c '^update$' "$stored/actions")" = 1 ] || fail 'close-out updated the remote more than once'
+      [ "$(grep -c '^push$' "$stored/actions")" = 1 ] || fail 'close-out attempted more than one push' ;;
     esac
   done
+  ready=true
+  retry_ship() {
+    : > "$stored/actions"; : > "$stored/notify"; : > "$stored/api"; : > "$stored/ci"
+    : > "$stored/probe"
+    ship_cmd ship "$source" --wait-review "$@" > "$stored/out" 2>&1
+  }
+  check_ship_retry() {
+    local gated=$1 pushed=$2
+    [ "$(awk '/^gate$/ {n++} END {print n+0}' "$stored/actions")" = "$gated" ] \
+      || fail "ship retry gate count differs: $(cat "$stored/out")"
+    [ "$(grep -c '^probe$' "$stored/probe")" = "$gated" ] || fail 'ship retry gate probe count differs'
+    [ "$(awk '/^push$/ {n++} END {print n+0}' "$stored/actions")" = "$pushed" ] \
+      || fail "ship retry push count differs: $(cat "$stored/out")"
+    [ "$(grep -c '^pushing — touch your key now$' "$stored/out")" = "$pushed" ] &&
+      [ "$(grep -c '^pushing — touch your key now$' "$stored/notify")" = "$pushed" ] \
+      || fail 'ship retry key-touch prompt or notification count differs'
+    grep -qx ci "$stored/ci" || fail 'ship retry did not reach CI'
+  }
+  mkdir -p "${record%/*}"
+  printf '{broken\n' > "$record"
+  remote_response=500
+  retry_ship || fail 'ship did not recover from a corrupt gate record and API 500'
+  check_ship_retry 1 1
+  [ "$(cat "$stored/api")" = 500 ] || fail 'ship did not check the remote head before pushing'
+  local tree
+  tree=$(git rev-parse 'HEAD^{tree}')
+  jq -e --arg tree "$tree" '.v==1 and .tree==$tree and (.gate_hash|test("^[0-9a-f]{64}$")) and
+    .harness=="0.1.0" and (.passed_at|type)=="number"' "$record" >/dev/null || fail 'ship did not write the passing gate record'
+
+  remote_response=branch
+  command git config remote.origin.pushurl git@github.com:other/repo.git
+  retry_ship || fail 'ship failed with a separate push repository'
+  check_ship_retry 0 1
+  [ ! -s "$stored/api" ] || fail 'ship compared the head of a different repository'
+  command git config --unset-all remote.origin.pushurl
+  command git config --add remote.origin.pushurl git@github.com:owner/repo.git
+  command git config --add remote.origin.pushurl git@github.com:other/repo.git
+  retry_ship || fail 'ship failed with multiple push URLs'
+  check_ship_retry 0 1
+  command git config --unset-all remote.origin.pushurl
+  command git config remote.origin.pushurl ssh://git@example.invalid/owner/repo.git
+  retry_ship || fail 'ship failed with a non-GitHub push URL'
+  check_ship_retry 0 1
+  command git config remote.origin.pushurl ssh://git@github.com/owner/repo.git
+  for remote_response in behind 404 malformed branch; do
+    retry_ship || fail "ship failed on remote lookup: $remote_response"
+    if [ "$remote_response" = branch ]; then check_ship_retry 0 0; else check_ship_retry 0 1; fi
+  done
+  command git config remote.origin.pushurl https://example.invalid/owner/repo.git
+  command git config url.https://github.com/.insteadOf https://example.invalid/
+  retry_ship || fail 'ship failed with a rewritten push URL'
+  check_ship_retry 0 0
+
+  # CI/PR visibility is doubled for the new heads used in cache-key checks.
+  ship_wait_visibility() { return 0; }
+  command git commit --allow-empty -qm 'same tree'
+  retry_ship || { cat "$stored/out" >&2; fail 'ship failed when only the commit changed'; }
+  check_ship_retry 0 1
+  printf 'different tree\n' >> fixture.txt
+  command git commit -qam 'new tree'
+  retry_ship || fail 'ship failed after the head tree changed'
+  check_ship_retry 1 1
+  printf '# changed gate\n' >> scripts/self-test.sh
+  command git commit -qam 'new gate'
+  # Give the old gate hash the new tree to exercise hash comparison independently.
+  jq --arg tree "$(git rev-parse 'HEAD^{tree}')" '.tree=$tree' "$record" > "$stored/record"
+  mv "$stored/record" "$record"
+  retry_ship || fail 'ship failed after the gate script changed'
+  check_ship_retry 1 1
+  printf '0.2.0\n' > .agentic-flow-version
+  printf '.agentic-flow-version\n' >> "$fixture/.git/info/exclude"
+  retry_ship || fail 'ship failed after the installed harness version changed'
+  check_ship_retry 1 0
+
+  retry_ship --force-gate || fail 'ship rejected --force-gate'
+  check_ship_retry 1 0
+  gate_result=fail; rc=0
+  retry_ship --force-gate || rc=$?
+  [ "$rc" = 1 ] && [ "$(cat "$stored/actions")" = gate ] &&
+    [ ! -e "$record" ] && [ ! -s "$stored/ci" ] || fail 'failed forced gate left evidence or proceeded'
+  gate_result=pass
+  retry_ship || fail 'ordinary ship did not retry a failed forced gate'
+  check_ship_retry 1 0
+
+  # Reuse the approved close-out and compare adoption with the body from creation.
+  local body invalid_pr
+  jq --arg head "$(git rev-parse HEAD)" '.[0] |= (.headRefOid=$head | .body="")' "$stored/pr" > "$stored/manual-pr"
+  jq '.[0].baseRefName="main"' "$stored/manual-pr" > "$stored/pr"
+  remote_response=behind
+  : > "$stored/actions"
+  rc=0; ship_dispatch ship "$source" > "$stored/out" 2>&1 || rc=$?
+  [ "$rc" = 3 ] && [ ! -s "$stored/actions" ] || fail 'wrong PR base did not stop ship internally before push or edit'
+  rc=0; retry_ship || rc=$?
+  [ "$rc" = 1 ] && [ ! -s "$stored/actions" ] || fail 'wrong PR base did not stop public ship before push or edit'
+  grep -Fq 'PR #3 base main differs from brief base release' "$stored/out" || fail 'ship omitted the PR base mismatch details'
+  for invalid_pr in '.[0].isCrossRepository=true' '.[0].url="https://github.com/other/repo/pull/3"'; do
+    jq "$invalid_pr" "$stored/manual-pr" > "$stored/pr"
+    rc=0; retry_ship || rc=$?
+    [ "$rc" = 1 ] && [ ! -s "$stored/actions" ] || fail 'ship accepted a fork or foreign PR'
+  done
+
+  remote_response=branch
+  cp "$stored/manual-pr" "$stored/pr"
+  SHIP_TEST_MODE=edit-fail
+  retry_ship || fail 'ship stopped after a failed PR edit'
+  [ "$(grep -c '^edit$' "$stored/actions")" = 1 ] && grep -qx ci "$stored/ci" && cmp -s "$stored/manual-pr" "$stored/pr" ||
+    fail 'ship did not attempt one PR edit, preserve the body and continue to CI'
+  grep -q 'warning:.*PR #3' "$stored/out" || fail 'ship omitted the PR edit warning'
+  SHIP_TEST_MODE=''
+
+  for body in '' $' \t\r\n'; do
+    jq --arg body "$body" '.[0] |= (.body=$body | .title="Manual title")' "$stored/manual-pr" > "$stored/pr"
+    retry_ship || fail 'ship could not fill an empty or whitespace-only PR body'
+    grep -qx edit "$stored/actions" && grep -Fxq 'PR #3: wrote generated body' "$stored/out" ||
+      fail 'ship omitted the successful PR edit or its message'
+    jq -e --rawfile body "$stored/pr-body" '.[0].body==$body and .[0].title=="Manual title"' "$stored/pr" >/dev/null ||
+      fail 'ship did not adopt the PR with the original renderer and preserve its title'
+    grep -q 'warning:.*PR #3.*title' "$stored/out" || fail 'ship omitted the PR title warning'
+  done
+  jq --arg body $'## Summary\n\n<!-- Fill this in -->\n' '.[0].body=$body' "$stored/manual-pr" > "$stored/pr"
+  cp "$stored/pr" "$stored/template-pr"
+  retry_ship || fail 'ship could not continue with a template-like PR body'
+  ! grep -q '^edit$' "$stored/actions" && cmp -s "$stored/template-pr" "$stored/pr" &&
+    grep -Fxq 'PR #3: kept existing body' "$stored/out" || fail 'ship did not keep the template-like PR body'
+
+  cp "$stored/manual-pr" "$stored/pr"
+  SHIP_TEST_MODE='body-changed'
+  retry_ship || fail 'ship could not continue after the PR body changed during rendering'
+  ! grep -q '^edit$' "$stored/actions" && grep -Fxq 'PR #3: kept existing body' "$stored/out" &&
+    jq -e '.[0].body=="Body added during rendering"' "$stored/pr" >/dev/null || fail 'ship overwrote a body added during rendering'
+
   jq -n --arg head "$tip" '
     {pull_request:{title:"Large plan",goal:"Long goal",brief:"brief",tracker:"tracker",issue_root:"issues",
       steps:[range(1;21) | {title:("Step \(.) — "+("<!-- @user <placeholder> --> | " * 200)),issue:.,head:$head,bounces:0}]}}' |
@@ -879,6 +1082,19 @@ test_timing_begin block launch
 #!/usr/bin/env bash
 case "${PLAN_FAULT:-}:${1:-}:${2:-}" in
   slow:fetch:*) exec sleep 30 ;;
+  old-git:show-ref:--exists) exit 129 ;;
+  ref-error:show-ref:--exists) exit 1 ;;
+  branch-reappears:for-each-ref:--count=1001)
+    "$PLAN_FIXTURE_GIT" update-ref refs/heads/stranded "$PLAN_REAPPEARED_TIP" "" || exit ;;
+  term-branch:update-ref:refs/heads/signal-branch)
+    "$PLAN_FIXTURE_GIT" "$@" || exit
+    kill -TERM "$PPID"
+    exit ;;
+  term-start:worktree:add)
+    "$PLAN_FIXTURE_GIT" "$@" || exit
+    kill -TERM "$PPID"
+    exit ;;
+  term-clean:update-ref:-d) kill -TERM "$PPID"; exit 1 ;;
   broken:fetch:*|offline:fetch:*|offline:ls-remote:*) exit 1 ;;
   long-listing:worktree:list)
     "$PLAN_FIXTURE_GIT" "$@" || exit
@@ -899,6 +1115,16 @@ esac
 exec "$PLAN_FIXTURE_GIT" "$@"
 GIT
   chmod +x "$fixture/bin/git"
+  cat > "$fixture/bin/mv" <<'MV'
+#!/usr/bin/env bash
+if [ "${PLAN_FAULT:-}" = recover-write ]; then
+  cat "${@: -2:1}" >> "$PLAN_WRITE_LOG"
+  command /bin/mv "$@" || exit
+  exit 1
+fi
+exec /bin/mv "$@"
+MV
+  chmod +x "$fixture/bin/mv"
   export PATH="$fixture/bin:$PATH"
 
   plan_cli() {
@@ -1037,11 +1263,30 @@ PLAN
   plan_cli 3 clean demo-plan
   rm "$wt/untracked"
   (cd "$wt" && plan_cli 3 clean demo-plan)
+  ln -s "$wt" "$fixture/worktree-alias"
+  (cd -L "$fixture/worktree-alias" && plan_cli 3 clean demo-plan)
+  grep -Fq 'run from another checkout' "$fixture/output" || fail 'CLI alias lost the inside-worktree refusal'
   [ "$(git rev-parse refs/heads/demo-plan)" = "$tip" ] && git show-ref --verify --quiet "$salvage" || fail 'clean refusal deleted plan refs'
   git -C "$origin" update-ref refs/heads/demo-plan "$base"
   git update-ref refs/remotes/origin/demo-plan "$base"
   git branch -q --set-upstream-to=origin/demo-plan demo-plan
   git checkout -q main
+  (
+    cd -L "$fixture/worktree-alias"
+    [ "$PWD" != "$(pwd -P)" ] || fail 'clean guard fixture did not retain a logical path'
+    . "$ROOT/scripts/lib/start.sh"
+    action=clean id=demo-plan fetch=false dry_run=false
+    common="$project/.git" worktree=$wt record="$project/.git/agentic-flow/plans/$id"
+    rc=0
+    # Supply a merged base and no dirty files so only the alias guard prevents removal.
+    git update-ref refs/remotes/origin/main "$tip"
+    plan_clean > "$fixture/guard-output" 2>&1 || rc=$?
+    [ "$rc" = 3 ] && grep -Fq 'run from another checkout' "$fixture/guard-output" \
+      || fail 'logical path bypassed the clean guard'
+  )
+  git update-ref refs/remotes/origin/main "$base"
+  [ -d "$wt" ] && [ "$(git rev-parse refs/heads/demo-plan)" = "$tip" ] &&
+    git show-ref --verify --quiet "$salvage" || fail 'alias refusal removed a plan artifact'
 
   plan_cli 0 clean demo-plan --dry-run
   for item in "$wt" refs/heads/demo-plan "$salvage"; do
@@ -1107,6 +1352,110 @@ PLAN
   git worktree move "$worktrees/checked-out" "$fixture/moved-worktree"
   PLAN_FAULT=long-listing plan_cli 3 clean checked-out --no-fetch
   [ "$(git -C "$fixture/moved-worktree" rev-parse HEAD)" = "$tip" ] || fail 'clean deleted a branch still checked out elsewhere'
+
+  flow="$project/.git/agentic-flow"
+  recovery_record="$flow/plans/stranded"
+  recovery_salvage=refs/agentic-flow/salvage/stranded/run
+  open_record=$(printf 'open\tstranded\tmain')
+  closed_record=$(printf 'closed\tstranded\tmain')
+  printf '%s\n' "$open_record" > "$recovery_record"
+  git update-ref "$recovery_salvage" "$tip"
+  PLAN_FAULT=old-git plan_cli 3 clean stranded --no-fetch
+  grep -Fq 'cannot resolve branch' "$fixture/output" &&
+    grep -Fq 'Git 2.43 or newer is required to recover this record' "$fixture/output" ||
+    fail 'unsupported Git recovery lacked the version hint'
+  printf 'open\told-start\tmain\n' > "$flow/plans/old-start"
+  PLAN_FAULT=old-git plan_cli 0 start old-start --no-fetch
+  [ -d "$worktrees/old-start" ] || fail 'old Git lost an existing start path'
+
+  git_exists_rc=0
+  git show-ref --exists refs/heads/main >/dev/null 2>&1 || git_exists_rc=$?
+  # Positive recovery fixtures require native --exists. The fallback above runs on all Git versions.
+  if [ "$git_exists_rc" -ne 129 ]; then
+    plan_cli 0 clean stranded --dry-run --no-fetch
+    grep -Fxq "Would mark record closed; salvage refs preserved: $recovery_salvage" "$fixture/output" &&
+      [ "$(cat "$recovery_record")" = "$open_record" ] || fail 'stranded dry-run changed the record or hid its salvage'
+
+    handoff_lock="$flow/locks/stranded"
+    controller_lock="$flow/locks/controller-stranded"
+    worktree_lock="$flow/worktree-locks/stranded"
+    mkdir -p "$handoff_lock" "$controller_lock" "$worktree_lock"
+    touch -t 200001010000 "$handoff_lock" "$worktree_lock"
+    for lock_owner in held ownerless; do
+      if [ "$lock_owner" = held ]; then printf '%s\n' "$$" > "$worktree_lock/owner"; fi
+      for action in start clean; do
+        plan_cli 3 "$action" stranded --no-fetch
+        for detail in "$worktree_lock" 'agentic-flow start' 'clean' 'ps -p <pid>' 'any host' 'remove' 'owner' 'rmdir'; do
+          grep -Fq "$detail" "$fixture/output" || fail "worktree lock recovery omitted $detail"
+        done
+        absent stranded
+        [ -d "$worktree_lock" ] && [ "$(cat "$recovery_record")" = "$open_record" ] &&
+          [ "$(git rev-parse "$recovery_salvage")" = "$tip" ] || fail 'worktree lock contention changed plan state'
+      done
+      plan_cli 0 clean stranded --dry-run --no-fetch
+      [ -d "$worktree_lock" ] || fail 'dry-run removed the held worktree lock'
+      if [ "$lock_owner" = held ]; then
+        [ "$(cat "$worktree_lock/owner")" = "$$" ] || fail 'contention changed the lock owner'
+        rm "$worktree_lock/owner"
+      fi
+    done
+    rmdir "$worktree_lock"
+    PLAN_FAULT=ref-error plan_cli 3 clean stranded --no-fetch
+    grep -Fq 'cannot resolve branch' "$fixture/output" || fail 'ref lookup error was treated as absence'
+    git symbolic-ref refs/heads/stranded refs/heads/missing-target
+    plan_cli 3 clean stranded --no-fetch
+    grep -Fq 'cannot resolve branch' "$fixture/output" &&
+      [ "$(git symbolic-ref refs/heads/stranded)" = refs/heads/missing-target ] || fail 'clean removed a dangling branch'
+    git symbolic-ref --delete refs/heads/stranded
+    # A lightweight branch ref can point at an object whose type cannot peel to a commit.
+    git rev-parse "$tip^{tree}" > "$project/.git/refs/heads/stranded"
+    plan_cli 3 clean stranded --no-fetch
+    grep -Fq 'cannot resolve branch' "$fixture/output" &&
+      git show-ref --exists refs/heads/stranded || fail 'clean removed a non-commit branch'
+    rm "$project/.git/refs/heads/stranded"
+    [ "$(cat "$recovery_record")" = "$open_record" ] && [ ! -e "$worktree_lock" ] ||
+      fail 'recovery refusal changed the record or left the worktree lock'
+
+    PLAN_FAULT=branch-reappears PLAN_REAPPEARED_TIP="$tip" plan_cli 3 clean stranded --no-fetch
+    [ "$(cat "$recovery_record")" = "$open_record" ] && [ "$(git rev-parse refs/heads/stranded)" = "$tip" ] ||
+      fail 'recovery failed to recheck branch absence before closing'
+    git update-ref -d refs/heads/stranded "$tip"
+
+    PLAN_FAULT=recover-write PLAN_WRITE_LOG="$fixture/record-writes" plan_cli 3 clean stranded --no-fetch
+    [ "$(cat "$fixture/record-writes")" = "$closed_record" ] &&
+      [ "$(cat "$recovery_record")" = "$closed_record" ] && [ ! -e "$worktree_lock" ] ||
+      fail 'interrupted recovery did not publish only a closed record'
+    plan_cli 0 clean stranded --no-fetch
+    grep -Fq 'Nothing to remove' "$fixture/output" &&
+      [ "$(git rev-parse "$recovery_salvage")" = "$tip" ] || fail 'recovery retry lost salvage or did not complete'
+    [ -d "$handoff_lock" ] && [ -d "$controller_lock" ] || fail 'clean disturbed another lock namespace'
+
+    printf '%s\n' "$open_record" > "$recovery_record"
+    plan_cli 0 clean stranded --no-fetch
+    grep -Fq "$recovery_salvage" "$fixture/output" &&
+      [ "$(git rev-parse "$recovery_salvage")" = "$tip" ] &&
+      [ "$(cat "$recovery_record")" = "$closed_record" ] || fail 'recovery failed to close and report preserved salvage'
+    printf 'open\tno-salvage\tmain\n' > "$flow/plans/no-salvage"
+    plan_cli 0 clean no-salvage --no-fetch
+    grep -q '^closed' "$flow/plans/no-salvage" || fail 'recovery needed a salvage ref to close'
+    plan_cli 0 start stranded --no-fetch
+    [ "$(cat "$recovery_record")" = "$open_record" ] && [ -d "$handoff_lock" ] && [ -d "$controller_lock" ] ||
+      fail 'start after recovery did not preserve the fresh record and separate locks'
+    plan_cli 3 clean stranded --no-fetch
+    grep -Fq 'worktree is dirty' "$fixture/output" && [ "$(cat "$recovery_record")" = "$open_record" ] ||
+      fail 'clean did not see the newly opened plan'
+  fi
+  for signal_point in branch start; do
+    PLAN_FAULT="term-$signal_point" plan_cli 3 start "signal-$signal_point" --no-fetch
+    absent "signal-$signal_point"
+    [ ! -e "$flow/worktree-locks/signal-$signal_point" ] || fail 'interrupted start kept its lock'
+  done
+  git branch signal-clean "$tip"
+  printf 'open\tsignal-clean\tmain\n' > "$flow/plans/signal-clean"
+  PLAN_FAULT=term-clean plan_cli 3 clean signal-clean --no-fetch
+  [ ! -e "$flow/worktree-locks/signal-clean" ] &&
+    git show-ref --verify --quiet refs/heads/signal-clean || fail 'interrupted clean kept its lock or deleted its branch'
+  plan_cli 0 clean signal-clean --no-fetch
 )
 
 # Advisory verdict lengths warn; hard bounds and structural rules still refuse.
@@ -1175,6 +1524,7 @@ printf '{}\n' > "$C1/home/.codex/auth.json"
 printf 'operator instructions must never reach a station\n' > "$C1/home/.codex/AGENTS.md"
 ln "$ROOT/config/stations/"* "$C1/project/config/stations/"
 ln "$ROOT/config/roles.tsv" "$C1/project/config/roles.tsv"
+ln "$ROOT/config/command-policy.tsv" "$C1/project/config/command-policy.tsv"
 ln "$ROOT/config/stations/codex.config.toml" "$C1/home/.codex/agentic-station.config.toml"
 mkdir -p "$C1/project/.agents/skills/review-execution" "$C1/project/scripts/lib" "$C1/project/docs"
 ln "$ROOT/AGENTS.md" "$C1/project/AGENTS.md"
@@ -1183,6 +1533,7 @@ ln "$ROOT/AGENTS.md" "$C1/project/AGENTS.md"
 ln "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md" 2>/dev/null \
   || ln -s "$ROOT/.agents/skills/review-execution/SKILL.md" "$C1/project/.agents/skills/review-execution/SKILL.md"
 ln "$ROOT/scripts/lib/station-output.jq" "$ROOT/scripts/lib/station-config.pl" "$ROOT/scripts/lib/roles.sh" "$ROOT/scripts/lib/launch.sh" "$ROOT/scripts/lib/probe.sh" "$ROOT/scripts/lib/ledger.sh" "$ROOT/scripts/lib/ledger.pl" "$C1/project/scripts/lib/"
+ln "$ROOT/scripts/lib/command-policy.sh" "$C1/project/scripts/lib/"
 printf 'PLANNER_MUST_NOT_BE_THE_STATION_CONTRACT\n' > "$C1/project/CLAUDE.md"
 printf '0.15.0\n' > "$C1/project/.agentic-flow-version"
 printf 'fixture packet\n' > "$C1/packet with spaces.md"
@@ -1624,7 +1975,22 @@ launch_tests() (
   # Force-doctor bypasses a passing cache and emits all per-station properties.
   (cd "$C1/project" && "$ROOT/scripts/agentic-flow" doctor --stations --json) > "$C1/doctor.json" 2> "$C1/doctor.err" \
     || fail "station doctor failed: $(cat "$C1/doctor.err") $(cat "$C1/doctor.json")"
-  jq -e 'length==2 and all(.launched and .error==null and (.attempts|length)==5)' "$C1/doctor.json" >/dev/null || fail 'station doctor report incomplete'
+  jq -e 'length==2 and all(.launched and .error==null and .native_policy.status=="denied" and (.attempts|length)==5)' \
+    "$C1/doctor.json" >/dev/null || fail 'station doctor report incomplete'
+  mkdir -p "$HOME/.codex/rules"
+  ln "$ROOT/config/stations/command-policy.rules" "$HOME/.codex/rules/agentic-flow.rules"
+  (cd "$C1/project" && "$ROOT/scripts/agentic-flow" doctor --stations --station executor --interactive --json) \
+    > "$C1/doctor.json" 2> "$C1/doctor.err" || fail "interactive command-policy doctor failed: $(cat "$C1/doctor.json")"
+  jq -e '.[0].native_policy == {status:"denied", mode:"interactive", unprobed:[]}' \
+    "$C1/doctor.json" >/dev/null || fail 'interactive native denial was not reported'
+  for fault in ignore-policy disabled-pushurl; do
+    printf '%s\n' "$fault" > "$C1/behavior"
+    (cd "$C1/project" && "$ROOT/scripts/agentic-flow" doctor --stations --station executor --json) \
+      > "$C1/doctor.json" 2> "$C1/doctor.err" && fail "station doctor accepted $fault"
+    jq -e '.[0].native_policy.status=="ran"' "$C1/doctor.json" >/dev/null \
+      || fail "station doctor lost the sentinel for $fault: $(cat "$C1/doctor.err") $(cat "$C1/doctor.json")"
+  done
+  rm "$C1/behavior"
   # Strict flags reject defects independently of the launcher's own assumptions.
   "$C1/bin/codex" app-server -c 'mcp_servers."fixture".enabled=false' </dev/null > "$C1/strict" 2>&1 && fail 'stub accepted quoted -c key'
   grep -q 'quoted -c key' "$C1/strict" || fail 'quoted key failed for wrong reason'
@@ -2571,6 +2937,7 @@ NOTIFY
   mkdir -p "$project/config/stations"
   for file in "$ROOT/config/stations/"*; do ln "$file" "$project/config/stations/${file##*/}"; done
   ln "$ROOT/config/roles.tsv" "$project/config/roles.tsv"
+  ln "$ROOT/config/command-policy.tsv" "$project/config/command-policy.tsv"
   printf 'executor\tmanual\t-\t-\t-\t-\t10\tconfig/stations/codex.config.toml\nreviewer\tmanual\t-\t-\t-\t-\t10\tconfig/stations/opencode.json\n' > "$project/.agentic-flow-roles"
   git -C "$project" add config .agentic-flow-roles
   git -C "$project" commit -qm 'Configure manual stations'

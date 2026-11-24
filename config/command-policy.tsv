@@ -1,0 +1,85 @@
+prefix	decision	reason
+git push	deny	the human pushes
+gh pr merge	deny	the human merges
+git add -A	deny	stage files by name
+git add .	deny	stage files by name
+git add --all	deny	stage files by name
+git add :/	deny	stage files by name
+git add -- .	deny	stage files by name
+git add -- :/	deny	stage files by name
+git commit	deny	use the role signing wrapper so bare Git cannot skip scanning
+git commit -n	deny	preserve pre-commit scanning
+git commit --no-verify	deny	preserve pre-commit scanning
+gh issue edit	deny	workflow writes go through handoff
+gh issue close	deny	workflow writes go through handoff
+gh issue reopen	deny	workflow writes go through handoff
+gh label	deny	workflow writes go through handoff
+gh api	deny	approved wider deny for GraphQL and REST mutation forms
+gh -R	deny	approved wider deny for repository selectors
+gh --repo	deny	approved wider deny for repository selectors
+gh --repo=*	deny	approved wider deny for repository selectors with attached values
+rtk gh	deny	approved wider deny for wrapped GitHub calls
+git -C	deny	approved wider deny for variable repository paths
+git -c	deny	approved wider deny for variable Git configuration
+git --git-dir	deny	approved wider deny for variable Git directories
+git --git-dir=*	deny	approved wider deny for Git directory options with attached values
+git --work-tree	deny	approved wider deny for variable worktrees
+git --work-tree=*	deny	approved wider deny for worktree options with attached values
+git --no-pager -C	deny	approved wider deny for variable repository paths
+git -p -C	deny	approved wider deny for variable repository paths
+git --no-pager push	deny	the human pushes
+git -p push	deny	the human pushes
+git --no-pager add -A	deny	stage files by name
+git --no-pager add .	deny	stage files by name
+git --no-pager add --all	deny	stage files by name
+git -p add -A	deny	stage files by name
+git -p add .	deny	stage files by name
+git -p add --all	deny	stage files by name
+env	deny	approved wider deny for variable shell environment assignments
+GIT_COMMON_DIR=*	deny	approved wider deny for unmodeled Git environment assignments
+sudo	deny	approved wider deny for wrapped privileged commands
+nohup	deny	approved wider deny for opaque wrappers
+nice	deny	approved wider deny for opaque wrappers
+time	deny	approved wider deny for opaque wrappers
+timeout	deny	approved wider deny for a variable wrapper duration
+bash -lc	deny	approved wider deny for opaque shell payloads
+bash -c	deny	approved wider deny for opaque shell payloads
+scripts/agentic-flow ship	deny	the human ships
+scripts/agentic-flow approve	deny	the human approves
+scripts/agentic-flow hold clear	deny	the human clears holds
+scripts/agentic-flow token	deny	the controller owns workflow credentials
+rtk proxy scripts/agentic-flow ship	deny	the human ships
+rtk proxy scripts/agentic-flow token	deny	the controller owns workflow credentials
+git-claude push	deny	the human pushes
+git-claude add -A	deny	stage files by name
+git-claude add .	deny	stage files by name
+git-claude add --all	deny	stage files by name
+git-claude add :/	deny	stage files by name
+git-claude add -- .	deny	stage files by name
+git-claude add -- :/	deny	stage files by name
+git-claude commit -n	deny	preserve pre-commit scanning
+git-claude commit --no-verify	deny	preserve pre-commit scanning
+git-claude commit * -n	deny	preserve pre-commit scanning with a later bypass flag
+git-claude commit * --no-verify	deny	preserve pre-commit scanning with a later bypass flag
+git-codex push	deny	the human pushes
+git-codex add -A	deny	stage files by name
+git-codex add .	deny	stage files by name
+git-codex add --all	deny	stage files by name
+git-codex add :/	deny	stage files by name
+git-codex add -- .	deny	stage files by name
+git-codex add -- :/	deny	stage files by name
+git-codex commit -n	deny	preserve pre-commit scanning
+git-codex commit --no-verify	deny	preserve pre-commit scanning
+git-codex commit * -n	deny	preserve pre-commit scanning with a later bypass flag
+git-codex commit * --no-verify	deny	preserve pre-commit scanning with a later bypass flag
+git-opencode push	deny	the human pushes
+git-opencode add -A	deny	stage files by name
+git-opencode add .	deny	stage files by name
+git-opencode add --all	deny	stage files by name
+git-opencode add :/	deny	stage files by name
+git-opencode add -- .	deny	stage files by name
+git-opencode add -- :/	deny	stage files by name
+git-opencode commit -n	deny	preserve pre-commit scanning
+git-opencode commit --no-verify	deny	preserve pre-commit scanning
+git-opencode commit * -n	deny	preserve pre-commit scanning with a later bypass flag
+git-opencode commit * --no-verify	deny	preserve pre-commit scanning with a later bypass flag
