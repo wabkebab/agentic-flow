@@ -348,10 +348,10 @@ scenario covers the cases above.
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/199
 - **Approval:** status=approved; by=wabkebab; at=2026-11-22; rev=b424cb26476b2c3a0348cf8cc4b091ca09f0dbda
 - **Implementation head:** source=pr-head
-- **Implementation PR:** url=https://github.com/wabkebab/agentic-flow/pull/204
+- **Implementation PR:** source=final-approval
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** status=n/a
+- **Memory:** path=docs/memory/close-out-after-merged-pr.md
 - Close-out: `ship` finalizes Status and Tracker, sets TRIAGE to Done, and commits this
   document's move and the updated index before the first push. It opens the PR and
   waits for CI. The reviewer runs `final-approve` to record the PR, head, and run attempt
