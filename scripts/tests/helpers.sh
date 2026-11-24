@@ -400,6 +400,8 @@ ADOPTER_DOC
     cat "$TMP/adopter-hooks" > "$ADOPTER_TWIN/$adapter"
   done
   printf 'origin file://%s\nref main\n' "$ADOPTER_TWIN_SOURCE" > "$ADOPTER_TWIN/.agentic-flow-source"
+  # This snapshot represents an installation from before upstream tracking.
+  rm -f "$ADOPTER_TWIN/.agentic-flow-upstream"
   printf 'older-adopter\n' > "$ADOPTER_TWIN/.agentic-flow-version"
   (
     cd "$ADOPTER_TWIN"

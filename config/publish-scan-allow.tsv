@@ -1,0 +1,12 @@
+# location-id	rule-id	value-sha256-12	reason
+2f291358f987	temp-path	11fe14a563f7	Generic path example in the approved brief
+2f291358f987	temp-path	a0bb3a2c8b0b	Generic path example in the approved brief
+57ff5c1e39c6	personal-email	3de132cd98be	GitHub SSH transport username in a remote URL
+57ff5c1e39c6	run-host	439087482d21	Synthetic station run-marker fixture
+6162292ca10b	personal-email	3de132cd98be	GitHub SSH transport username in a remote URL
+7353945001ba	personal-email	3de132cd98be	GitHub SSH transport username in a remote URL
+aed7e5f6fcca	personal-email	3de132cd98be	GitHub SSH transport username in a remote URL
+b5a25cdf5ce0	personal-email	3de132cd98be	GitHub SSH transport username in a remote URL
+b7d5e39100bf	run-host	439087482d21	Synthetic station run-marker fixture
+d899697276d4	personal-email	3de132cd98be	GitHub SSH transport username in a remote URL
+f0dbffea8124	run-host	439087482d21	Synthetic station run-marker fixture

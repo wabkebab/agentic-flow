@@ -16,11 +16,14 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # The source fixture omits live lifecycle docs, so regenerate its derived index.
   "$SOURCE_FIXTURE/scripts/docs-index.sh" >/dev/null
 
-  # Let the fixture resolve the real source HEAD for the version-stamp assertion without
-  # copying or mutating the repository's git database.
-  source_git_dir=$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)
-  if [ -n "$source_git_dir" ]; then
-    printf 'gitdir: %s\n' "$source_git_dir" > "$SOURCE_FIXTURE/.git"
+  # Own the fixture's Git configuration while preserving the source HEAD
+  # used by the version-stamp assertion.
+  git -C "$SOURCE_FIXTURE" init -q
+  git -C "$SOURCE_FIXTURE" fetch --quiet "$ROOT" HEAD
+  git -C "$SOURCE_FIXTURE" update-ref HEAD FETCH_HEAD
+  git -C "$SOURCE_FIXTURE" config --local core.hooksPath scripts/git-hooks
+  if source_origin=$(git -C "$ROOT" remote get-url origin 2>/dev/null); then
+    git -C "$SOURCE_FIXTURE" remote add origin "$source_origin"
   fi
 
   # Export may not copy a stale generated adapter or create a partial target.
@@ -384,6 +387,9 @@ DOCTOR_SESSION
   assert_file "$TARGET/.agentic-flow-version"
   grep -qx "$expected_version" "$TARGET/.agentic-flow-version" \
     || fail "export version stamp did not match source HEAD"
+  exported_claude=$(shasum -a 256 "$SOURCE_FIXTURE/templates/harness/CLAUDE.md" | cut -d ' ' -f 1)
+  grep -Fxq "accepted=$exported_claude  CLAUDE.md" "$TARGET/.agentic-flow-upstream" \
+    || fail 'export did not record the installed upstream hash'
   if [ -n "$expected_origin" ]; then
     assert_file "$TARGET/.agentic-flow-source"
     grep -qx "origin $expected_origin" "$TARGET/.agentic-flow-source" \
@@ -459,6 +465,8 @@ SH
   printf '%s\n' older-source > "$TARGET/.agentic-flow-version"
   "$SOURCE_FIXTURE/scripts/export.sh" "$TARGET" >/dev/null
   assert_file "$TARGET/CLAUDE.md.agentic-new"
+  grep -Fxq "offered=$exported_claude  CLAUDE.md" "$TARGET/.agentic-flow-upstream" \
+    || fail 'export did not record the candidate upstream hash'
   grep -q "# local edits" "$TARGET/CLAUDE.md" || fail "export clobbered an existing file"
   grep -qx older-source "$TARGET/.agentic-flow-version" \
     || fail "export advanced installed version while merge conflicts remained"
@@ -479,11 +487,12 @@ SH
   grep -q "# second candidate content" "$second_candidate" \
     || fail "versioned merge candidate does not contain the new source content"
 
-  (cd "$ROOT" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >"$TMP/doctor.log" 2>&1 \
+  rm "$DOC_LEAK_SENTINEL"
+  (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >"$TMP/doctor.log" 2>&1 \
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
 
   INIT_TARGET="$TMP/init-empty"
-  "$ROOT/scripts/init.sh" "$INIT_TARGET" --owner-login wabkebab --name demo-proj --stack none --yes >"$TMP/init-empty.log" 2>&1 \
+  "$ROOT/scripts/init.sh" "$INIT_TARGET" --owner-login wabkebab --name demo-proj --stack none --git-init --yes >"$TMP/init-empty.log" 2>&1 \
     || { cat "$TMP/init-empty.log" >&2; fail "init failed for an empty target"; }
   if grep -RE "$TOKEN_RE" "$INIT_TARGET" >/dev/null 2>&1; then
     grep -RE "$TOKEN_RE" "$INIT_TARGET" >&2 || true
@@ -492,6 +501,8 @@ SH
   grep -q "demo-proj" "$INIT_TARGET/CLAUDE.md" || fail "init did not stamp project name in CLAUDE.md"
   grep -q "demo-proj" "$INIT_TARGET/AGENTS.md" || fail "init did not stamp project name in AGENTS.md"
   assert_file "$INIT_TARGET/.agentic-flow-version"
+  [ "$(git -C "$INIT_TARGET" config --local --get core.hooksPath)" = scripts/git-hooks ] \
+    || fail 'init did not configure the Git pre-commit hook'
   (cd "$INIT_TARGET" && make check) >"$TMP/init-empty-check.log" 2>&1 \
     || { cat "$TMP/init-empty-check.log" >&2; fail "make check failed in initialized target"; }
 
@@ -693,6 +704,8 @@ SH
     || fail "doctor did not warn about a stamped project with no source"
 
   # Reuse the final pristine export rather than copy another project tree.
+  perl "$NO_REMOTE_TARGET/scripts/lib/check-doc-links.pl" "$NO_REMOTE_TARGET" \
+    || fail 'fresh export has broken documentation links'
   adopter_twin_build "$NO_REMOTE_TARGET"
   adopter_twin_check
   [ "$snapshot_digest" = "$(tree_digest "$SOURCE_SNAPSHOT")" ] \

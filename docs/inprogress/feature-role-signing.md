@@ -18,7 +18,7 @@
 
 ## Goal
 
-Every commit in this repo is already signed: `git-claude`, `git-codex` and `git-opencode` each sign with their own SSH key. Nothing checks those signatures. GitHub shows them as Unverified (reason `no_user`), because `claude@danimon.local` belongs to no account. Locally, `git log --format=%G?` errors because no allowed-signers file is configured. So a step commit made by the wrong wrapper, by hand, or unsigned would pass every gate.
+Every commit in this repo is already signed: `git-claude`, `git-codex` and `git-opencode` each sign with their own SSH key. Nothing checks those signatures. GitHub shows them as Unverified (reason `no_user`), because the local signing address belongs to no GitHub account. Locally, `git log --format=%G?` errors because no allowed-signers file is configured. So a step commit made by the wrong wrapper, by hand, or unsigned would pass every gate.
 
 This pass makes signatures evidence. Each role has a published public key. Lifecycle checks that every commit in a step's range was signed by the executor key, and that plan and close-out commits were signed by the approver key. CI rejects unsigned commits and commits from unknown keys. The key follows the role, not the vendor, so a Claude executor under Phase 2's `roles` still signs as the executor.
 

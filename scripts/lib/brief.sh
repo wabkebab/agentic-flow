@@ -61,9 +61,28 @@ brief_parse() { # file, display path, revision, optional issue-layout -> JSON sp
     block && /^```$/ {block=0; next}
     block {
       key=$0; sub(/:.*/,"",key); value=$0; sub(/^[^:]*: /,"",value)
-      if (key !~ /^(id|profile|tracking|branch|base|steps)$/ || value==$0 || value=="") bad("invalid plan field")
+      if (key !~ /^(id|profile|tracking|branch|base|steps|format)$/ || value==$0 || value=="") bad("invalid plan field")
       if (key in plan) bad("duplicate plan field " key)
+      if (key=="format" && value !~ /^2$/) bad("unsupported plan format " value)
       plan[key]=value; next
+    }
+    # Count the Markdown body, excluding the plan block above and the Status section.
+    # Headings inside ordinary code fences are part of the body.
+    {
+      if (!cap_fence && /^# /) {
+        cap_part_b=(/^# Part B /)
+        cap_status=0
+      } else {
+        if (!cap_fence && /^## /)
+          cap_status=(/^## (Status|Implementation status|Status \/ Implementation status)$/)
+        if (cap_part_b && !cap_status) part_b_words+=NF
+      }
+      if (match($0,/^ ? ? ?(```+|~~~+)/)) {
+        cap_marker=substr($0,1,RLENGTH)
+        sub(/^ +/,"",cap_marker)
+        if (!cap_fence) cap_fence=cap_marker
+        else if (index(cap_marker,cap_fence)==1 && substr($0,RLENGTH+1) ~ /^[ \t]*$/) cap_fence=""
+      }
     }
     part && /^## [A-Za-z0-9][A-Za-z0-9._-]* — / {
       id=tolower($2); if (id in heading) bad("duplicate step " id)
@@ -131,6 +150,8 @@ brief_parse() { # file, display path, revision, optional issue-layout -> JSON sp
         if(fields[step,"DoD"]=="" || fields[step,"Verify"]=="" || fields[step,"Risks"]=="") bad("missing DoD, Verify or Risks for " step)
       }
       for(i=1;i<=sections;i++) if(!(order[i] in seen)) bad("section has no steps entry: " order[i])
+      cap=1500+500*count
+      if ("format" in plan && part_b_words>cap) bad("Part B has " part_b_words " words; cap is " cap)
       printf "{\"id\":%s,\"profile\":%s,\"branch\":%s,\"labels\":[\"plan\"],",quote(plan["id"]),quote(plan["profile"]),quote(plan["branch"])
       if(plan["base"]!="") printf "\"base\":%s,",quote(plan["base"])
       if(plan["profile"]=="strict") printf "\"tracking\":{\"title\":%s},",quote(plan["tracking"])

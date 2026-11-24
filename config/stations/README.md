@@ -67,6 +67,15 @@ rule by itself. End-to-end headless isolation remains controller work.
 References: [profiles](https://learn.chatgpt.com/docs/config-file/config-advanced#profiles)
 and [configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
 
+The launcher installs the generated command rules in the station
+`CODEX_HOME/rules/agentic-flow.rules`. To enable the same rules interactively,
+run these from the repository root:
+
+```sh
+mkdir -p ~/.codex/rules
+cp config/stations/command-policy.rules ~/.codex/rules/agentic-flow.rules
+```
+
 ## OpenCode
 
 Load `opencode.json` as the station configuration using `OPENCODE_CONFIG` in the
@@ -81,6 +90,16 @@ GitHub client or filesystem credential read. The controller must supply the OS
 network and credential boundary and check effective merged permissions.
 
 Reference: [OpenCode permissions](https://opencode.ai/docs/permissions/).
+
+## Probe the command policy
+
+Run `scripts/agentic-flow doctor --stations` to exercise the assigned CLI's
+station policy. Add `--interactive` to exercise the local rules installed for
+interactive use in the disposable probe worktree. Both modes require working
+model authentication. A case passes when the CLI reports a native refusal and
+the protected command's PATH sentinel is absent. The report lists unprobed
+canaries. See [the coverage matrix](../../docs/reference/command-policy-coverage.md)
+for rule limits and host verification status.
 
 ## Run ledger and metrics
 
