@@ -22,7 +22,10 @@ Each item was verified against `main` at `6bee48d`:
 
 1. `scripts/lib/start.sh:230` compares logical `$PWD` with `$top`, which is `pwd -P`
    normalized on the line above. A symlink alias into the plan worktree bypasses the
-   inside-worktree refusal.
+   inside-worktree refusal. **Reachability (checked on Git 2.55.0):** `rev-parse
+   --show-toplevel` returns the physical path from an alias, and the CLI's `cd "$root"`
+   (`scripts/lib/start.sh`, `plan_worktree_cmd`) makes `$PWD` physical before the guard
+   runs, so the bypass does not reproduce here. Treat this as preventive hardening.
 2. `scripts/lifecycle-status.sh:117-119` splits an empty marker into an empty array;
    `"${parts[@]}"` is unbound under `set -u` on bash 3.2, so the whole script exits.
 3. `scripts/lib/packet-findings.sh:15` hardcodes the `<!-- agentic-flow-transition:`
@@ -33,7 +36,9 @@ Each item was verified against `main` at `6bee48d`:
 5. `scripts/lib/journal.jq:53-56` sets `.prefix=false` before the transition line is
    validated, so a near-miss marker stops legacy prose replay for the rest of the thread.
 6. `scripts/lib/start.sh:286-287` makes an `open` record with no worktree and no branch
-   exit 3 forever; only `pending` records complete.
+   exit 3 forever; only `pending` records complete. The `pending` path deletes every
+   `refs/agentic-flow/salvage/<id>/` ref without an ancestry check, and those refs may be
+   the only pointers to unshipped commits.
 
 ## Proposed approach
 **One Standard step, one commit** (chosen by the owner). The six items are small and
@@ -41,8 +46,20 @@ independent, so a single review pass covers them. Alternative considered: Strict
 steps — more per-item history, disproportionate overhead for fixes this size.
 
 Decisions the executor must honor:
-- Item 6 takes the optional path: an `open` record with no worktree **and** no branch tip
-  completes like `pending`. A record with a branch but no worktree keeps today's behavior.
+- Item 1 is preventive hardening: compare against `pwd -P` and add a compatibility test
+  that calls the guard with a logical `$PWD` (a unit-level call, since no supported
+  environment reaches it through the CLI). Do not claim a baseline failure through the CLI.
+- Item 3 keeps the hidden-wrapper check (`<!-- ` opener plus `-->` terminator) as the
+  predicate for metadata. `journal_marker_line` also accepts bare transition lines, so use
+  it only to share the marker-text rule, never as the sole predicate. A bare marker line
+  must still be treated as an ordinary comment. Refactor must be behavior-preserving.
+- Item 5 applies to **unstamped** plans only. A `journal=v1` stamp disables legacy replay
+  (`scripts/lib/journal.sh:17`); that must not change.
+- Item 6: an `open` record with no worktree and no branch tip completes like `pending`
+  **except that salvage refs are preserved**, not deleted, because no ancestry check is
+  possible. It marks the record `closed` (the existing completion and retry behavior),
+  prints the preserved refs, and exits 0. A record with a branch but no worktree keeps
+  today's behavior.
 - Item 4 fails safe as today; it only adds a visible signal.
 - Item 5 flips `.prefix` only when the transition line parses, matching the bare path.
 
@@ -74,25 +91,34 @@ Bounds: no new loops or queries.
 # Part B — Implementation Brief
 
 ## Acceptance scenarios
-- Given `clean <plan>` run from a symlink alias into the plan worktree, then it refuses
-  with the inside-worktree error and removes nothing; the direct-`cd` case still refuses.
+- Given the clean guard evaluated with a logical `$PWD` alias of the plan worktree, then
+  it refuses with the inside-worktree error and removes nothing; the direct-`cd` case
+  still refuses. (Preventive hardening; see Current state.)
 - Given a review comment line of exactly `agentic-flow-review: `, then lifecycle reports
   `BLOCKED ... malformed review record` and exits normally, on bash 3.2.
-- Given a findings comment, then `packet-findings.sh` detects the opener through
-  `journal_marker_line`, with identical results to today on existing fixtures.
-- Given a workflow format the key script cannot parse, then the CI step still falls back
-  to running App checks and emits the warning; a contracts test mutates the format and
-  asserts the warning.
-- Given a `journal=v1` plan whose thread has `<!-- agentic-flow-transition: garbage`
+- Given a hidden-wrapper findings comment and a bare transition-line comment, then
+  `packet-findings.sh` parses structured findings only from the hidden wrapper and treats
+  the bare form as ordinary; results are identical on the existing packet fixtures at both
+  the base and the new revision.
+- Given a workflow format the key script cannot parse, then the key step publishes no
+  `key`, App checks stay eligible when the path filter selects them, and the warning is
+  emitted. A contracts test mutates the format and asserts all three, for both
+  `.github/workflows/ci.yml` and `templates/ci/ci.yml`.
+- Given an **unstamped** plan whose thread has `<!-- agentic-flow-transition: garbage`
   followed by bare `Implemented in <sha>` and review-marker comments, then those later
-  comments still replay.
-- Given an `open` record whose worktree and branch are both gone, then `clean` completes
-  and removes the record; given a branch still present, behavior is unchanged.
+  comments still replay. Given the same comments on a `journal=v1` issue, they are still
+  ignored.
+- Given an `open` record whose worktree and branch are both gone and a salvage ref still
+  present, then `clean` marks the record `closed`, keeps the salvage ref, and a retry is a
+  no-op; given no salvage refs it also marks the record closed; given a branch still
+  present, behavior is unchanged.
 
 ## Invariants
 - Bash 3.2 compatible: no `mapfile`, no associative arrays, guard empty arrays under
   `set -u`.
 - All six paths stay fail-closed; none gains an authorization path.
+- `clean` never deletes a ref it cannot prove was shipped.
+- The `journal=v1` stamp keeps legacy replay disabled.
 - `export.sh`, `doctor.sh`, and `self-test.sh` stay consistent in the same commit; new
   assertion messages follow the existing `scripts/tests/assertion-*` convention.
 
@@ -115,9 +141,10 @@ All six scenarios covered by tests that fail before the change and pass after;
 ## Verification commands
 ```bash
 make check
-make test-one F=lifecycle
-make test-one F=controller
-make test-one F=contracts
+make test-one F=lifecycle     # items 2, 5 (empty marker under /bin/bash 3.2)
+make test-one F=controller    # items 1, 6 (clean guard, salvage preservation)
+make test-one F=stations      # item 3 (packet fixtures, both marker forms)
+make test-one F=contracts     # item 4 (active workflow and shipped template)
 make test
 ```
 
@@ -132,15 +159,18 @@ regression test next to the existing coverage: item 1 and 6 in
 `scripts/tests/lifecycle.sh`, item 4 in `scripts/tests/contracts.sh`, items 3 and 5 in
 whichever group already covers the packet and journal replay.
 
-**Test:** Cover every acceptance scenario, failure paths first: symlink-alias refusal,
-empty review marker, unparseable App filter warning, near-miss legacy marker, open record
-with nothing left.
+**Test:** Cover every acceptance scenario, failure paths first: logical-`$PWD` guard,
+empty review marker (run explicitly under `/bin/bash`, Bash 3.2), unparseable App filter
+(no key, App checks still eligible, warning, both workflow files), near-miss marker on
+unstamped and `journal=v1` issues, open record with a salvage ref left.
 
 **DoD:** All six scenarios pass; `make check` and `make test` green.
-**Verify:** `make test-one F=lifecycle`
+**Verify:** `make test-one F=lifecycle && make test-one F=controller && make test-one F=stations && make test-one F=contracts`
 **Risks:**
-- Item 6 must not complete a record whose branch still exists.
-- Item 3 must keep results identical on existing packet fixtures.
+- Item 6 must not complete a record whose branch still exists, and must not delete
+  salvage refs.
+- Item 3 must not let a bare marker line enter structured findings parsing.
+- Item 5 must not re-enable legacy replay on `journal=v1` issues.
 **Red-first:** `scripts/self-test.sh --only lifecycle` — scripts/tests/lifecycle.sh
 **Commit:** `Fix the six PR #185 review follow-ups.`
 
