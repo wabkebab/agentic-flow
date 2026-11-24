@@ -63,8 +63,12 @@ Decisions the executor must honor:
   **confirmed absent**. Use `git show-ref --exists "$branch_ref"`, which separates exit 2
   (missing) from exit 0 (present, including a dangling symbolic ref) and any other status
   (lookup error, exit 3); `--verify --quiet` returns 1 for both missing and dangling, so
-  do not use it here. Start's eligibility check for an `open` record uses the same
-  present/missing/error helper so both commands agree. A ref that is present but does not
+  do not use it here. `--exists` needs Git 2.43; the repository states no Git floor, so
+  the floor applies only to this recovery. If `--exists` is unsupported (exit 129),
+  recovery is unavailable: `clean` keeps today's `cannot resolve branch` refusal, adds the
+  hint "Git 2.43 or newer is required to recover this record", and exits 3. Start's
+  eligibility check is **not** changed, so no Git version loses a path it has today.
+  A ref that is present but does not
   resolve to a commit keeps today's
   `cannot resolve branch` refusal; do not collapse the two cases through the existing
   `rev-parse "$branch_ref^{commit}"` check. The recovery makes **one** atomic
@@ -75,13 +79,17 @@ Decisions the executor must honor:
   salvage refs preserved: …". The existing `pending` path is unchanged. A record whose
   branch ref exists keeps today's behavior.
 - Start/clean coordination for one plan ID: both non-dry-run commands take an exclusive
-  per-plan lock, `mkdir "$common/agentic-flow/locks/<id>"` (atomic, Bash 3.2-safe, no
-  `flock`), held from before their first eligibility check until after their last record
+  per-plan lock, `mkdir "$common/agentic-flow/worktree-locks/<id>"` (atomic, Bash 3.2-safe,
+  no `flock`). It is a separate namespace: `locks/<id>` belongs to `handoff` (which moves
+  a lock without a PID file after two seconds) and `locks/controller-<id>` to the
+  controller; neither may be reused. The lock directory holds an `owner` file with the
+  holder's PID; a directory without one is treated as held, never as stale. It is held from before their first eligibility check until after their last record
   write, and released on every exit path including INT/TERM and start's rollback. `clean`
   re-reads the record and re-checks branch and worktree absence **under the lock**
   immediately before the `closed` write. Contention fails fast with exit 3 and a message
-  naming the lock directory; a lock left by a crash is never stolen automatically, and
-  the message gives the exact `rmdir` remedy. `--dry-run` takes no lock. Result: a fresh
+  naming the lock directory. A lock is never stolen automatically. Only when `owner`
+  names a PID that `kill -0` shows is not running does the message give the manual
+  remedy (remove `owner`, then `rmdir` the directory); otherwise it says to wait. `--dry-run` takes no lock. Result: a fresh
   `open` record from a concurrent `start` is never overwritten by `closed`.
 - Item 4 fails safe as today; it only adds a visible signal.
 - Item 5 flips `.prefix` only when the transition line parses, matching the bare path.
@@ -137,6 +145,11 @@ Bounds: no new loops or queries.
   ref, and a retry prints "Nothing to remove". A fault injected after the write attempt
   never leaves the record `pending`. `--dry-run` writes nothing and reports the refs would
   be preserved. Given no salvage refs it also marks the record closed.
+- Given a stale-looking `locks/<id>` handoff lock and a held worktree lock for the same
+  plan ID, then neither protocol moves, blocks, or removes the other's directory, and a
+  worktree lock with no `owner` file is never treated as stale.
+- Given a Git whose `show-ref --exists` exits 129 (a PATH shim in the test), then `clean`
+  on that record exits 3 with the Git 2.43 hint, and `start` behaves exactly as today.
 - Given the per-plan lock held, then `start` and non-dry-run `clean` for that ID exit 3
   without touching refs, worktrees, or the record, and `--dry-run` still works. Given
   `clean` finishing before `start`, then `start` creates a fresh `open` record that a
@@ -202,7 +215,8 @@ regression test next to the existing coverage: item 1 and 6 in
 `scripts/tests/lifecycle.sh`, item 4 in `scripts/tests/contracts.sh`, items 3 and 5 in
 whichever group already covers the packet and journal replay.
 
-**Test:** Cover every acceptance scenario, failure paths first: lock contention and
+**Test:** Cover every acceptance scenario, failure paths first: lock namespaces, old-Git
+shim, lock contention and
 dangling ref, logical-`$PWD` guard,
 empty review marker (run explicitly under `/bin/bash`, Bash 3.2), unparseable App filter
 (no key, App checks still eligible, warning, both workflow files), near-miss marker on
@@ -211,8 +225,9 @@ unstamped and `journal=v1` issues, open record with a salvage ref left.
 **DoD:** All six scenarios pass; `make check` and `make test` green.
 **Verify:** `make test-one F=lifecycle && make test-one F=controller && make test-one F=stations && make test-one F=contracts`
 **Risks:**
-- Item 6 must not use `show-ref --verify --quiet` as its absence test, and the lock must
-  never be stolen automatically.
+- Item 6 must not use `show-ref --verify --quiet` as its absence test, must not reuse
+  the handoff or controller lock namespaces, and the lock must never be stolen
+  automatically.
 - Item 6 must not complete a record whose branch ref exists (resolvable or not), must
   not write `pending`, and must not delete salvage refs.
 - Item 3 must not let a bare marker line enter structured findings parsing.
