@@ -51,6 +51,12 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
    ```
    Reapply stamps `approved=<rev>` without changing existing workflow labels or
    `journal=` eligibility. A changed plan names the first changing commit: re-approve it.
+   To adopt open issues in the current repository, add `--adopt <step-id>=<number>`
+   for each existing issue. Strict plans also accept `--adopt tracker=<number>` and
+   create issues for unmapped steps. Dry run lists the mappings and `--diff` validates
+   them against GitHub. Apply retains the original title, text, and labels, adds the
+   creation labels, and appends the generated content below
+   `<!-- agentic-flow:adopted -->`. Keep handwritten edits above that marker.
 6. **Legacy JSON path.** For legacy plans and Security docs without a plan block, write
    a JSON spec and use `scripts/plan-to-issues.sh <spec.json>` to dry-run; `--diff` compares,
    and `--apply --approved-by <human> [--doc <path>] <spec.json>` reconciles.
@@ -66,8 +72,8 @@ This skill does the reading/extraction; the deterministic GitHub calls live in
 ## Notes
 - The script stamps work issues, trackers, and steps with their stable IDs. Repeating `--apply` updates
   existing issues, resumes interrupted runs, creates added steps, and closes removed steps
-  with a history-preserving comment. Spec labels apply only when an issue is created;
-  reapply preserves the live reviewer/executor label state.
+  with a history-preserving comment. Spec labels apply when an issue is created or first
+  adopted. Reapply preserves the live reviewer/executor label state.
 - A plan's topology is immutable. Changing Standard, Strict, or legacy shape requires an
   explicit migration; the driver rejects the reapply before any GitHub mutation.
 - Sub-issue linking is best-effort via the GitHub sub-issues API; if unavailable, the

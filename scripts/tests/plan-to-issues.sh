@@ -42,6 +42,20 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   "label create") exit 0 ;;
+  "issue view")
+    case "${FAKE_GH_VIEW_FAILURE:-}" in
+      malformed) printf '%s\n' '{broken'; exit 0 ;;
+      timeout) exec sleep 10 ;;
+    esac
+    num=$3
+    dir="$state/issue-$num"
+    [ -d "$dir" ] || exit 1
+    jq -n --argjson number "$num" --rawfile body "$dir/body" \
+      --arg issue_state "$(cat "$dir/state")" \
+      --arg url "$(cat "$dir/url" 2>/dev/null || printf 'https://github.com/owner/repo/issues/%s' "$num")" \
+      '{number:$number,body:$body,state:$issue_state,url:$url}'
+    exit 0
+    ;;
   "issue list")
     if [ -n "${FAKE_GH_LIST_OVERRIDE:-}" ]; then
       cat "$FAKE_GH_LIST_OVERRIDE"
@@ -51,10 +65,14 @@ case "${1:-} ${2:-}" in
     : > "$out"
     for dir in "$state"/issue-*; do
       [ -d "$dir" ] || continue
+      if [ "${FAKE_GH_SEARCH_ONLY:-}" = 1 ]; then
+        # The live stamp search does not discover handwritten issues.
+        grep -Fq 'agentic-flow:plan:' "$dir/body" || continue
+      fi
       num=${dir##*-}
       jq -n --argjson number "$num" \
         --arg title "$(cat "$dir/title")" \
-        --arg body "$(cat "$dir/body")" \
+        --rawfile body "$dir/body" \
         --arg issue_state "$(cat "$dir/state")" \
         --arg url "https://github.com/owner/repo/issues/$num" \
         '{number:$number,title:$title,body:$body,state:$issue_state,url:$url}' >> "$out"
@@ -95,11 +113,16 @@ case "${1:-} ${2:-}" in
       case "$1" in
         --title) printf '%s\n' "$2" > "$dir/title"; shift 2 ;;
         --body) printf '%s\n' "$2" > "$dir/body"; shift 2 ;;
+        --body-file) cat "$2" > "$dir/body"; shift 2 ;;
+        --add-label)
+          { cat "$dir/labels"; printf '\n%s\n' "$2"; } | tr ',' '\n' | sed '/^$/d' | sort -u > "$dir/labels.next"
+          mv "$dir/labels.next" "$dir/labels"
+          shift 2 ;;
         --remove-label)
           [ "$(cat "$dir/state")" = CLOSED ] || exit 2
           printf '%s\n' "$2" >> "$dir/removed-labels"
           shift 2 ;;
-        --repo|--add-label) shift 2 ;;
+        --repo) shift 2 ;;
         *) shift ;;
       esac
     done
@@ -981,3 +1004,191 @@ sed -E 's/ approved=[a-f0-9]{40}//' "$TMP/std-before" > "$TMP/standard-brief-gh/
 standard_brief_apply || fail "Standard revision migration failed: $(cat "$TMP/std.out")"
 cmp -s "$TMP/std-before" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard revision migration changed more than its stamp'
 if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Standard revision migration reset live labels'; fi
+
+# Existing issues must be looked up directly, since the stamp search misses them.
+(
+  cd "$STANDARD_BRIEF"
+  export PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/adopt-gh" FAKE_GH_CALLS="$TMP/adopt-calls"
+  export FAKE_GH_SEARCH_ONLY=1
+  doc=docs/inprogress/plan.md
+  git checkout -- "$doc"
+  strict_doc=docs/inprogress/strict.md
+  awk '
+    /^id: / { $0="id: strict-adoption" }
+    /^profile: / { print "profile: strict"; $0="tracking: Plan: Strict adoption" }
+    /^steps: / { $0="steps: alpha beta" }
+    /^## Status / {
+      print "## beta — Second"
+      print "**DoD:** A fresh step is created."
+      print "**Verify:** make check"
+      print "**Red-first:** none"
+      print "**Risks:** Invalid targets."
+    }
+    /^- \*\*Approval:\*\*/ { $0="- **Approval:** pending" }
+    {print}
+  ' "$doc" > "$strict_doc"
+  git add -- "$strict_doc"
+  git -c commit.gpgsign=false commit -qm 'Record Strict adoption fixture'
+  strict_rev=$(git rev-parse HEAD)
+  sed "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=Tester; at=2026-01-01; rev=$strict_rev/" \
+    "$strict_doc" > "$TMP/strict-adoption-approved"
+  cat "$TMP/strict-adoption-approved" > "$strict_doc"
+  git add -- "$strict_doc"
+  git -c commit.gpgsign=false commit -qm 'Approve Strict adoption fixture'
+
+  seed_adoption() { # issue-number, state
+    local dir="$FAKE_GH_STATE/issue-$1"
+    mkdir -p "$dir"
+    printf 'Handwritten issue %s\n' "$1" > "$dir/title"
+    printf 'Original café for #%s  \n\n\n' "$1" > "$dir/body"
+    printf '%s\n' "$2" > "$dir/state"
+    printf 'triage\n' > "$dir/labels"
+  }
+  no_adoption_mutation() {
+    if grep -Eq '^(issue (create|edit|close|comment)|label create|api --method POST)( |$)' "$FAKE_GH_CALLS"; then
+      fail 'adoption preflight mutated GitHub'
+    fi
+  }
+  adoption_refused() { # document, expected diagnostic, driver args
+    local doc_path=$1 expected=$2
+    shift 2
+    : > "$FAKE_GH_CALLS"
+    if "$PLAN_DRIVER" --doc "$doc_path" --apply "$@" > "$TMP/adopt-out" 2>&1; then
+      fail "adoption accepted invalid input ($expected)"
+    fi
+    grep -Fq -- "$expected" "$TMP/adopt-out" || fail "adoption omitted diagnostic ($expected): $(cat "$TMP/adopt-out")"
+    no_adoption_mutation
+  }
+  seed_adoption 41 OPEN
+  seed_adoption 42 CLOSED
+  seed_adoption 43 OPEN
+  seed_adoption 44 OPEN
+  seed_adoption 45 OPEN
+  seed_adoption 46 OPEN
+  seed_adoption 47 OPEN
+  printf 'https://github.com/owner/repo/pull/43\n' > "$FAKE_GH_STATE/issue-43/url"
+  printf 'https://github.com/other/repo/issues/44\n' > "$FAKE_GH_STATE/issue-44/url"
+  printf '<!--\n  agentic-flow:brief:docs/elsewhere.md\n-->\n' >> "$FAKE_GH_STATE/issue-45/body"
+  awk 'BEGIN {for (i=0; i<65536; i++) printf "x"}' > "$FAKE_GH_STATE/issue-46/body"
+  printf '<!-- agentic-flow:plan:standard-doc step:alpha spec:%s -->\n<!-- agentic-flow:topology:standard -->\n' \
+    "$STANDARD_REV" > "$FAKE_GH_STATE/issue-47/body"
+
+  adoption_refused "$doc" 'already stamped on issue #47' --adopt alpha=41
+  printf '<!-- agentic-flow:adopted -->\n' > "$TMP/forged-adopted"
+  cat "$FAKE_GH_STATE/issue-47/body" >> "$TMP/forged-adopted"
+  cat "$TMP/forged-adopted" > "$FAKE_GH_STATE/issue-47/body"
+  printf '%s\n' '[]' > "$TMP/empty-search"
+  FAKE_GH_LIST_OVERRIDE="$TMP/empty-search" adoption_refused "$doc" \
+    'issue #47 already contains an agentic-flow comment' --adopt alpha=47
+  rm -r "$FAKE_GH_STATE/issue-47"
+  adoption_refused "$doc" 'could not read issue #48' --adopt alpha=48
+  adoption_refused "$doc" 'issue #42 is closed' --adopt alpha=42
+  adoption_refused "$doc" 'issue #43 is not in owner/repo' --adopt alpha=43
+  adoption_refused "$doc" 'issue #44 is not in owner/repo' --adopt alpha=44
+  adoption_refused "$doc" 'issue #45 already contains an agentic-flow comment' --adopt alpha=45
+  adoption_refused "$doc" '65,536 characters' --adopt alpha=46
+  FAKE_GH_VIEW_FAILURE=malformed adoption_refused "$doc" 'malformed response for issue #41' --adopt alpha=41
+  AGENTIC_REVIEW_TIMEOUT=1 FAKE_GH_VIEW_FAILURE=timeout adoption_refused "$doc" 'could not read issue #41' --adopt alpha=41
+  adoption_refused "$doc" 'unknown step' --adopt missing=41
+  adoption_refused "$doc" 'tracker requires a Strict plan' --adopt tracker=41
+  adoption_refused "$doc" 'duplicate adoption for alpha' --adopt alpha=41 --adopt alpha=42
+  adoption_refused "$doc" 'expected --adopt' --adopt alpha=041
+  adoption_refused "$strict_doc" 'duplicate adoption issue #41' --adopt tracker=41 --adopt alpha=41
+  adoption_refused "$strict_doc" 'issue #42 is closed' --adopt tracker=41 --adopt alpha=42
+  adoption_refused "$strict_doc" '65,536 characters' --adopt tracker=41 --adopt alpha=46
+  : > "$FAKE_GH_CALLS"
+  if "$PLAN_DRIVER" --adopt alpha=41 --apply "$STANDARD_SPEC" > "$TMP/adopt-out" 2>&1; then
+    fail 'legacy spec accepted issue adoption'
+  fi
+  grep -Fq -- '--adopt requires an approved --doc' "$TMP/adopt-out" || fail 'legacy adoption refusal omitted reason'
+  [ ! -s "$FAKE_GH_CALLS" ] || fail 'legacy adoption reached GitHub'
+
+  "$PLAN_DRIVER" --doc "$doc" --adopt alpha=41 > "$TMP/adopt-out" || fail 'adoption dry run failed'
+  grep -Fq 'Adopt alpha: #41' "$TMP/adopt-out" || fail 'adoption dry run omitted mapping'
+  [ ! -s "$FAKE_GH_CALLS" ] || fail 'offline adoption dry run reached GitHub'
+  "$PLAN_DRIVER" --doc "$doc" --adopt alpha=41 --diff > "$TMP/adopt-out" || fail 'adoption diff failed'
+  grep -Fq 'Adopt alpha: #41' "$TMP/adopt-out" || fail 'adoption diff omitted mapping'
+  grep -Eq '^issue view 41 .*--repo owner/repo' "$FAKE_GH_CALLS" || fail 'adoption skipped direct issue lookup'
+  no_adoption_mutation
+
+  cp "$FAKE_GH_STATE/issue-41/body" "$TMP/adoption-prefix"
+  "$PLAN_DRIVER" --doc "$doc" --adopt alpha=41 --apply > "$TMP/adopt-out" || fail 'Standard adoption failed'
+  [ "$(cat "$FAKE_GH_STATE/issue-41/title")" = 'Handwritten issue 41' ] || fail 'Standard adoption changed the title'
+  [ "$(cat "$FAKE_GH_STATE/issue-41/labels")" = "$(printf '%s\n' agent:codex needs-execution triage)" ] \
+    || fail 'Standard adoption did not add creation labels alongside existing labels'
+  prefix_size=$(wc -c < "$TMP/adoption-prefix" | tr -d ' ')
+  head -c "$prefix_size" "$FAKE_GH_STATE/issue-41/body" > "$TMP/adoption-prefix-after"
+  cmp -s "$TMP/adoption-prefix" "$TMP/adoption-prefix-after" || fail 'Standard adoption changed the original body bytes'
+  grep -Fxq '<!-- agentic-flow:adopted -->' "$FAKE_GH_STATE/issue-41/body" || fail 'Standard adoption omitted marker'
+  grep -Fq "step:alpha spec:" "$FAKE_GH_STATE/issue-41/body" || fail 'Standard adoption omitted identity stamp'
+  grep -Fq "journal=v1 approved=$STANDARD_REV approved-by:Tester" "$FAKE_GH_STATE/issue-41/body" \
+    || fail 'Standard adoption omitted journal or approval metadata'
+  grep -Fq 'https://github.com/owner/repo/issues/41' "$doc" || fail 'Standard adoption omitted the work URL from the doc'
+  if grep -q '^issue create ' "$FAKE_GH_CALLS"; then fail 'Standard adoption created a duplicate issue'; fi
+  git add -- "$doc"
+  git -c commit.gpgsign=false commit -qm 'Record adopted work URL'
+
+  # Keep edits above the boundary byte for byte, even when they resemble metadata.
+  {
+    printf '%s\n' 'Edited by a human approved-by:Somebody approved-at:wrong -->' \
+      '<!-- agentic-flow:topology:strict -->' "<!-- agentic-flow:plan:standard-doc tracker spec:$STANDARD_REV -->"
+    cat "$FAKE_GH_STATE/issue-41/body"
+  } > "$TMP/adopt-edited"
+  cat "$TMP/adopt-edited" > "$FAKE_GH_STATE/issue-41/body"
+  printf '%s\n' agent:opencode needs-review triage > "$FAKE_GH_STATE/issue-41/labels"
+  : > "$FAKE_GH_CALLS"
+  "$PLAN_DRIVER" --doc "$doc" --apply > "$TMP/adopt-out" || fail 'Standard adopted reapply failed'
+  cmp -s "$TMP/adopt-edited" "$FAKE_GH_STATE/issue-41/body" || fail 'Standard reapply changed preserved issue text'
+  if grep -Eq 'issue edit 41 .*--(title|add-label)' "$FAKE_GH_CALLS"; then fail 'Standard reapply reset adopted metadata'; fi
+  sed -E "s/ approved=$STANDARD_REV//" "$TMP/adopt-edited" > "$FAKE_GH_STATE/issue-41/body"
+  "$PLAN_DRIVER" --doc "$doc" --apply > "$TMP/adopt-out" || fail 'adopted approval migration failed'
+  cmp -s "$TMP/adopt-edited" "$FAKE_GH_STATE/issue-41/body" || fail 'adopted approval migration changed more than its stamp'
+  sed 's/\*\*Risks:\*\* malformed input/**Risks:** updated risks/' "$doc" > "$TMP/adopt-revised"
+  cat "$TMP/adopt-revised" > "$doc"
+  git add -- "$doc"
+  git -c commit.gpgsign=false commit -qm 'Revise the adopted plan'
+  revised=$(git rev-parse HEAD)
+  sed "s/rev=$STANDARD_REV/rev=$revised/" "$TMP/adopt-revised" > "$doc"
+  git add -- "$doc"
+  git -c commit.gpgsign=false commit -qm 'Approve the revised plan'
+  "$PLAN_DRIVER" --doc "$doc" --apply > "$TMP/adopt-out" || fail 'revised adopted plan did not apply'
+  grep -Fxq -- '- updated risks' "$FAKE_GH_STATE/issue-41/body" || fail 'revised adopted plan did not update its packet'
+  for file in "$TMP/adopt-edited" "$FAKE_GH_STATE/issue-41/body"; do
+    sed '/^<!-- agentic-flow:adopted -->$/q' "$file" > "$TMP/prefix-${file##*/}"
+  done
+  cmp -s "$TMP/prefix-adopt-edited" "$TMP/prefix-body" || fail 'revised adopted plan changed the preserved prefix'
+
+  # A partial Strict apply leaves an adopted tracker and step. Retry the same
+  # mapping, create only the unmapped step and complete the tracker's checklist.
+  export FAKE_GH_STATE="$TMP/adopt-strict-gh"
+  seed_adoption 51 OPEN
+  seed_adoption 52 OPEN
+  : > "$FAKE_GH_CALLS"
+  if FAKE_GH_FAIL_CREATE_NUMBER=1 "$PLAN_DRIVER" --doc "$strict_doc" --adopt tracker=51 --adopt alpha=52 --apply > "$TMP/adopt-out" 2>&1; then
+    fail 'Strict adoption fixture did not stop at the injected failure'
+  fi
+  grep -Fq 'injected create failure' "$TMP/adopt-out" || fail 'Strict adoption did not reach the unmapped step'
+  : > "$FAKE_GH_CALLS"
+  "$PLAN_DRIVER" --doc "$strict_doc" --adopt tracker=51 --adopt alpha=52 --apply > "$TMP/adopt-out" || fail 'Strict adoption retry failed'
+  [ "$(grep -c '^issue create ' "$FAKE_GH_CALLS")" = 1 ] || fail 'Strict adoption did not create exactly the unmapped step'
+  for number in 51 52; do
+    [ "$(cat "$FAKE_GH_STATE/issue-$number/title")" = "Handwritten issue $number" ] || fail 'Strict adoption changed a title'
+    grep -Fq "Original café for #$number" "$FAKE_GH_STATE/issue-$number/body" || fail 'Strict adoption lost original prose'
+  done
+  if grep -q -- '--add-label' "$FAKE_GH_CALLS"; then fail 'Strict retry reset live labels'; fi
+  grep -Fxq plan "$FAKE_GH_STATE/issue-51/labels" || fail 'adopted tracker lacks the plan label'
+  grep -Fxq needs-execution "$FAKE_GH_STATE/issue-52/labels" || fail 'adopted Strict step lacks its creation labels'
+  grep -Fq -- '- [ ] #52 [alpha]' "$FAKE_GH_STATE/issue-51/body" || fail 'adopted tracker lost its adopted step link'
+  grep -Fq -- '- [ ] #1 [beta]' "$FAKE_GH_STATE/issue-51/body" || fail 'adopted tracker lost its created step link'
+  grep -Fq 'https://github.com/owner/repo/issues/51' "$strict_doc" || fail 'Strict adoption omitted tracker URL from the doc'
+  git add -- "$strict_doc"
+  git -c commit.gpgsign=false commit -qm 'Record adopted tracker URL'
+  for number in 51 52; do
+    { printf 'Later edit to #%s\n' "$number"; cat "$FAKE_GH_STATE/issue-$number/body"; } > "$TMP/adopt-later-$number"
+    cat "$TMP/adopt-later-$number" > "$FAKE_GH_STATE/issue-$number/body"
+  done
+  "$PLAN_DRIVER" --doc "$strict_doc" --apply > "$TMP/adopt-out" || fail 'Strict adopted reapply failed'
+  for number in 51 52; do
+    cmp -s "$TMP/adopt-later-$number" "$FAKE_GH_STATE/issue-$number/body" || fail 'Strict reapply changed preserved issue text'
+  done
+)
