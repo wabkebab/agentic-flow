@@ -65,7 +65,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--ship-gate|--fast|--full [--jobs N] [--all-groups]|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario TAG[,TAG] (controller: launch,ledger,recovery,ship,andon; stations: launch,packet,verify,handoff)]" >&2
+      echo "usage: $0 [--ship-gate|--fast|--full [--jobs N] [--all-groups]|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario TAG[,TAG] (controller: launch,ledger,recovery,ship,andon,status; stations: launch,packet,verify,handoff)]" >&2
       exit 0
       ;;
     *)
@@ -123,8 +123,8 @@ case " $SELF_TEST_GROUPS " in
 esac
 # SCENARIO DISPATCH BEGIN: validate before fixtures or group checks run.
 # Order tags by the first block that uses each tag in the serial runner.
-CONTROLLER_SCENARIOS="launch ship andon ledger recovery"
-CONTROLLER_BLOCKS="timing:launch ship:ship andon:andon launch:launch ledger:ledger recovery:recovery"
+CONTROLLER_SCENARIOS="launch ship andon ledger recovery status"
+CONTROLLER_BLOCKS="timing:launch ship:ship andon:andon launch:launch ledger:ledger recovery:recovery status:status"
 STATIONS_SCENARIOS="launch verify handoff packet"
 STATIONS_BLOCKS="watchdogs:launch cache:verify slice:launch journal:handoff cli:handoff interrupt:verify red-first:verify packet:packet closeout:handoff settings:launch"
 SCENARIO_BLOCKS_RAN=" "
@@ -350,7 +350,9 @@ assert_cost_budget() { # <event-file> <fast|full>
     # The snapshot is counted once above; retain the one-tree and fast limits.
     # Raised to 194 on 2026-11-21 (owner-approved): the first source-layout run of flow-ergonomics
     # measured 194 copies in CI (run 44872894369).
-    [ "$file_copies" -le 194 ] || fail "full mode made $file_copies fixture file copies; limit 194"
+    # Raised to 198 on 2026-11-25: process-status ships five new scripts/lib files, each copied
+    # once into the fixtures that copy the checkout (the exported budget moved 117 to 121).
+    [ "$file_copies" -le 198 ] || fail "full mode made $file_copies fixture file copies; limit 198"
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
@@ -587,7 +589,7 @@ if [ "$SHIP_GATE" = 1 ]; then
     ' "$gate_events")
     fail "exported full suite failed (group: $gate_group)"
   fi
-  exported_copy_limit=117
+  exported_copy_limit=121
   exported_copies=$(cost_count "$gate_events" fixture_file_copy)
   [ "$exported_copies" -le "$exported_copy_limit" ] \
     || fail "exported full mode made $exported_copies fixture file copies; limit $exported_copy_limit"
