@@ -191,7 +191,12 @@ to reconcile the plan without launching stations.</p>
   <li>A station's <code>ask</code> or a second review bounce escalates a step.
   The approver records the resolution with
   <code>agentic-flow handoff &lt;issue&gt; resume --as approver --body-file &lt;note&gt;</code>
-  to return the step to its prior station.</li>
+  to return the step to its prior station. After an <code>ask</code>, the asking station's
+  next packet carries the question and the approver's note under <em>Owner decision</em>,
+  so the station acts on the answer instead of asking again. Only that station's latest
+  ask since the last submit is carried, so a reviewer's question never reaches the executor.
+  A long exchange is clipped in the packet, and the full text is delivered as
+  <code>decision.md</code> in the station's scratch directory.</li>
   <li>A plan hold, such as unexplained worktree changes, blocks further launches until
   cleared. Inspect the cause and any salvage reference. Use
   <code>agentic-flow hold clear &lt;doc&gt; &lt;hold-id&gt; --note &lt;text&gt;</code>
@@ -205,7 +210,9 @@ to reconcile the plan without launching stations.</p>
 <ol>
   <li>Once the steps are approved, complete the Tracker and Status fields and run
   <code>agentic-flow close-out prep &lt;doc&gt;</code>. Commit the staged move to
-  <code>docs/done/</code> or <code>docs/done/security/</code> and the updated index.</li>
+  <code>docs/done/</code> or <code>docs/done/security/</code> and the updated index.
+  Do this before the first push: merging the PR without <code>ship</code> leaves the plan
+  in <code>docs/inprogress/</code> and needs a follow-up close-out PR.</li>
   <li>Run <code>agentic-flow ship &lt;moved-doc&gt; --wait-review</code>. It runs
   <code>make ship-gate</code> when defined, pushes the prepared head and opens or adopts
   the PR. A retry can reuse a passing gate for the same inputs and skips the push when
