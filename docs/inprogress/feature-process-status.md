@@ -651,7 +651,7 @@ make test                                 # end of brief
 
 ## Status / Implementation status
 - **Evidence schema:** v2
-- **Tracking issue:** pending
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/206
 - **Approval:** status=approved; by=wabkebab; at=2026-11-25; rev=f93645f45f4f52a548fe71b734b12fb642bcd20b
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
