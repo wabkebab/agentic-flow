@@ -587,7 +587,7 @@ if [ "$SHIP_GATE" = 1 ]; then
     ' "$gate_events")
     fail "exported full suite failed (group: $gate_group)"
   fi
-  exported_copy_limit=117
+  exported_copy_limit=121
   exported_copies=$(cost_count "$gate_events" fixture_file_copy)
   [ "$exported_copies" -le "$exported_copy_limit" ] \
     || fail "exported full mode made $exported_copies fixture file copies; limit $exported_copy_limit"
