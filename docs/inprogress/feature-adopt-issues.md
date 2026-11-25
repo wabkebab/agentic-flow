@@ -133,7 +133,7 @@ asserting that no mutating call was made.
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-25; rev=148c0df74416e80c191a4d506c479dee17ee8c33
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
