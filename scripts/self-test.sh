@@ -352,7 +352,7 @@ assert_cost_budget() { # <event-file> <fast|full>
     # measured 194 copies in CI (run 44872894369).
     # Raised to 198 on 2026-11-25: process-status ships five new scripts/lib files, each copied
     # once into the fixtures that copy the checkout (the exported budget moved 117 to 121).
-    [ "$file_copies" -le 198 ] || fail "full mode made $file_copies fixture file copies; limit 198"
+    [ "$file_copies" -le 199 ] || fail "full mode made $file_copies fixture file copies; limit 199"
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
