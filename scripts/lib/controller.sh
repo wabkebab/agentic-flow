@@ -121,14 +121,15 @@ controller_acknowledge() {
   rm -f "$tmp"
   return "$status"
 }
-controller_heartbeat() { # phase [intent | exit]
+controller_heartbeat() { # phase [intent | waiting | exit]
   { [ "${CT_LOCK_OWNED:-false}" = true ] || [ "${CT_RECOVER_CLAIM:-false}" = true ]; } || return 0
   # Ownership flags also cover cleanup of partially published locks.
   [ -n "$CT_START" ] || return 0
-  local phase=$1 ownership=owner intent=null timeout=null exit_code=null dir target tmp=''
+  local phase=$1 ownership=owner intent=null timeout=null waiting=null exit_code=null dir target tmp=''
   [ "$CT_LOCK_OWNED" = true ] || ownership=recovering
   case "$phase" in
     station) intent=$2; timeout=$LAUNCH_TIMEOUT ;;
+    waiting-human) waiting=$2 ;;
     stopped) exit_code=$2 ;;
   esac
   dir="$CT_COMMON/agentic-flow/state"
@@ -139,11 +140,11 @@ controller_heartbeat() { # phase [intent | exit]
     jq -nc --arg plan "$CT_PLAN" --arg doc "$CT_DOC" --argjson pid "$CT_PID" --arg start "$CT_START" \
       --arg host "$CT_HOST" --arg run "$CT_RUN" --arg ownership "$ownership" --arg phase "$phase" \
       --argjson turn "$CT_TURNS" --argjson turn_cap "$CT_TURN_CAP" --argjson intent "$intent" \
-      --argjson timeout "$timeout" --argjson exit "$exit_code" '
+      --argjson timeout "$timeout" --argjson waiting "$waiting" --argjson exit "$exit_code" '
       {v:1,plan:$plan,doc:$doc,pid:$pid,start:$start,host:$host,run:$run,ownership:$ownership,
        phase:$phase,turn:$turn,turn_cap:$turn_cap,
        station:($intent|if .==null then null else {issue,step,station,cli,run,started,timeout_s:$timeout} end),
-       waiting:null,exit:$exit,updated_at:(now|floor)}' > "$tmp" &&
+       waiting:$waiting,exit:$exit,updated_at:(now|floor)}' > "$tmp" &&
     [ "$(wc -c < "$tmp")" -le 4096 ] &&
     [ ! -d "$target" ] && mv -f "$tmp" "$target"
   } 2>/dev/null; then
@@ -161,11 +162,16 @@ controller_exit() {
   controller_heartbeat stopped "$1"
   controller_unlock
 }
+controller_foreign_rows() { # fresh foreign hosts, excluding those accepted at startup
+  printf '%s' "$CT_REPORT" | jq -c --arg host "$CT_HOST" --argjson lease "$CT_LEASE" \
+    --argjson started "$CT_STARTED" --argjson allowed "$CT_FOREIGN_ALLOWED" '
+    .issues[]|select(.host!=null and .host!=$host and .latest_at!=null)|
+    select((.latest_at|fromdateiso8601)>(now-$lease))|
+    select(($started|not) or (. as $row | $allowed|index("\($row.number)/\($row.replay.seq)/\($row.host)")==null))'
+}
 controller_foreign() {
   local foreign number host seq row
-  foreign=$(printf '%s' "$CT_REPORT" | jq -c --arg host "$CT_HOST" --argjson lease "$CT_LEASE" '
-    .issues[]|select(.host!=null and .host!=$host and .latest_at!=null)|
-    select((.latest_at|fromdateiso8601)>(now-$lease))') || return 5
+  foreign=$(controller_foreign_rows) || return 5
   [ -n "$foreign" ] || return 0
   while IFS= read -r row; do
     number=$(printf '%s' "$row" | jq .number); host=$(printf '%s' "$row" | jq -r .host); seq=$(printf '%s' "$row" | jq .replay.seq)
@@ -173,7 +179,7 @@ controller_foreign() {
       if [ "$CT_TAKE_OVER" = false ]; then controller_error "foreign controller host $host on #$number; use --take-over"; return 9; fi
       CT_FOREIGN_ALLOWED=$(printf '%s' "$CT_FOREIGN_ALLOWED" | jq --arg key "$number/$seq/$host" '.+[$key]')
       CT_PREVIOUS_HOST=$host
-    elif ! printf '%s' "$CT_FOREIGN_ALLOWED" | jq -e --arg key "$number/$seq/$host" 'index($key)!=null' >/dev/null; then
+    else
       CT_FOREIGN_SEEN=true
       controller_hold "$number" foreign-controller-host "Controller host changed to $host during reconciliation." || return $?
       return 10
@@ -234,6 +240,86 @@ controller_holds() { # import authorized remote clears, including a crash before
     CT_RECORDS=$(ledger_read "$CT_PLAN") || return 5
   fi
   CT_HOLDS=$(hold_snapshot "$HANDOFF_ISSUE") || return 5
+}
+controller_wait_snapshot() {
+  jq -nc --argjson holds "$CT_HOLDS" --slurpfile report "$CT_TMP/report" '
+    {holds:([$holds[].id]|unique), reasons:([$holds[].reason]|unique),
+     issues:([$report[0].issues[]|select(.state=="escalated")|.number]|unique),
+     seqs:($report[0].issues|map({key:(.number|tostring),value:.replay.seq})|from_entries)}'
+}
+controller_wait_poll() { # called in a command substitution, with separate scratch files
+  local baseline=$1 CT_TMP="$CT_TMP/wait-observation" foreign observed
+  local HANDOFF_TMP=$CT_TMP
+  controller_check || return $?
+  controller_holds || return $?
+  handoff_write_cache "$CT_COMMON" "$HANDOFF_ISSUES" || return 5
+  foreign=$(controller_foreign_rows) || return 5
+  observed=$(controller_wait_snapshot) || return 5
+  jq -nc --argjson before "$baseline" --argjson after "$observed" --arg foreign "$foreign" '
+    ($foreign!="") or ($before.seqs!=$after.seqs) or (($after.holds-$before.holds)|length>0) or
+    (($after.holds|length)==0 and (($before.issues-$after.issues)==$before.issues))' || return 5
+}
+controller_wait_loop() { # initial observation; 0 requests a normal turn
+  local baseline=$1 since until now next backoff=60 failed=0 waiting changed rc=0
+  if [ "${AGENTIC_CONTROLLER_TESTING:-}" = 1 ] && [ -n "${AGENTIC_CONTROLLER_WAIT_BACKOFF_S:-}" ]; then
+    backoff=$AGENTIC_CONTROLLER_WAIT_BACKOFF_S
+    [[ "$backoff" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$backoff" -le 900 ] || return 2
+  fi
+  mkdir -p "$CT_TMP/wait-observation" || return 5
+  since=$(date +%s) || return 5
+  until=$((since + CT_WAIT_S))
+  while :; do
+    now=$(date +%s) || return 5
+    [ "$now" -lt "$until" ] || return 10
+    next=$((now + backoff))
+    [ "$next" -le "$until" ] || next=$until
+    waiting=$(printf '%s' "$baseline" | jq -c --argjson since "$since" --argjson next "$next" \
+      --argjson until "$until" --argjson failed "$failed" '. + {
+        stop:(if (.holds|length)>0 then "hold" else "escalated" end),
+        since:$since,next_poll_at:$next,until:$until,failed_polls:$failed}') || return 5
+    controller_heartbeat waiting-human "$waiting"
+    CT_CHILD_KIND='sleep'
+    sleep "$((next - now))" &
+    CT_CHILD=$!
+    rc=0
+    wait "$CT_CHILD" || rc=$?
+    CT_CHILD=''
+    [ "$rc" -eq 0 ] || return 5
+    now=$(date +%s) || return 5
+    [ "$now" -lt "$until" ] || return 10
+    changed=$(controller_wait_poll "$baseline") || rc=$?
+    case "$rc" in
+      0) [ "$changed" != true ] || return 0; failed=0 ;;
+      5) failed=$((failed + 1)); [ "$failed" -lt 3 ] || return 5 ;;
+      *) return "$rc" ;;
+    esac
+    backoff=$((backoff * 2))
+    [ "$backoff" -le 900 ] || backoff=900
+  done
+}
+controller_wait_human() {
+  [ "$CT_SALVAGE_ONLY" = false ] || return 10
+  [ "$CT_TURNS" -lt "$CT_TURN_CAP" ] || return 10
+  local resumable='["station-escalation","station-infrastructure","findings-incomplete","plan-effect-pending"]'
+  local baseline rc=0
+  # A non-resumable reason raised this turn already rules out a wait.
+  printf '%s' "$CT_HOLD_REASONS" | jq -e --argjson allowed "$resumable" \
+    'all(.[].reason; . as $reason | $allowed|index($reason)!=null)' >/dev/null || return 10
+  controller_holds || return $?
+  printf '%s' "$CT_HOLDS" | jq -e --argjson allowed "$resumable" --argjson raised "$CT_HOLD_REASONS" '
+    . as $holds | all(.[].reason; . as $reason | $allowed|index($reason)!=null) and
+    all($raised[]; . as $r | any($holds[]; .issue==$r.issue and .reason==$r.reason))' >/dev/null || return 10
+  baseline=$(controller_wait_snapshot) || return 5
+  printf '%s' "$baseline" | jq -e '(.holds|length)>0 or (.issues|length)>0' >/dev/null || return 10
+  controller_wait_loop "$baseline" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    controller_heartbeat reconciling
+    return "$rc"
+  fi
+  # Reconcile the state that woke the controller. Pending work is rebuilt by the turn.
+  mv "$CT_TMP/wait-observation/report" "$CT_TMP/report" || return 5
+  CT_REPORT=$(cat "$CT_TMP/report") || return 5
+  CT_TRACKER=$(jq -r '.tracker//.issues[0].number' "$CT_TMP/report") || return 5
 }
 controller_repair() { # issue projection flag description
   local rc=0
@@ -674,7 +760,7 @@ launch_session_record() {
 }
 controller_interrupt() {
   if [ -n "$CT_CHILD" ]; then
-    if [ "$CT_CHILD_KIND" = verify ] || [ "$CT_CHILD_KIND" = probe ]; then
+    if [ "$CT_CHILD_KIND" = verify ] || [ "$CT_CHILD_KIND" = probe ] || [ "$CT_CHILD_KIND" = sleep ]; then
       kill -TERM "$CT_CHILD" 2>/dev/null || true
       wait "$CT_CHILD" 2>/dev/null || true
     else launch_abort "$CT_CHILD" "$CT_TMP/station-pgid"; fi
@@ -894,7 +980,7 @@ controller_dispatch() {
 controller_cmd() (
   set +x
   local entry=$1; shift
-  local doc=${1:-} reconcile=false once=false detach=false CT_TAKE_OVER=false CT_JSON=false
+  local doc=${1:-} reconcile=false once=false detach=false CT_TAKE_OVER=false CT_JSON=false CT_WAIT_S=0
   local CT_DETACH_NONCE=${AGENTIC_DETACH_NONCE-}
   [ "$#" -ge 1 ] || return 2; shift
   local forward=("$doc")
@@ -905,11 +991,23 @@ controller_cmd() (
       --take-over) CT_TAKE_OVER=true ;;
       --json) CT_JSON=true ;;
       --detach) detach=true; shift; continue ;;
+      --wait-human)
+        [ "$CT_WAIT_S" -eq 0 ] || return 2
+        CT_WAIT_S=86400
+        forward+=("$1")
+        shift
+        case "${1:-}" in
+          ''|-*) continue ;;
+          *)
+            [[ "$1" =~ ^[1-9][0-9]{0,5}$ ]] && [ "$1" -le 604800 ] || return 2
+            CT_WAIT_S=$1 ;;
+        esac ;;
       *) return 2 ;;
     esac
     forward+=("$1")
     shift
   done
+  if [ "$CT_WAIT_S" -ne 0 ] && { [ "$once" = true ] || [ "$reconcile" = true ]; }; then return 2; fi
   case "$doc" in docs/inprogress/*.md) ;; *) return 2 ;; esac
   case "$doc" in *'/../'*|*'/./'*|*[!A-Za-z0-9_./-]*) return 2 ;; esac
   if [ "${AGENTIC_DETACH_NONCE+x}" ]; then
@@ -991,68 +1089,81 @@ controller_cmd() (
     CT_ASSIGNMENTS=$ROLES_JSON
     if [ "$once" = false ]; then controller_gate || return 6; fi
   fi
+  local resumed_turn=false
   while :; do
-  controller_heartbeat reconciling
-  CT_RAISED=false CT_HOLD_REASONS='[]' CT_REVIEWER_ESCALATE='' CT_REVIEWER_RELAUNCH=''
-  if ! CT_RECORDS=$(ledger_read "$CT_PLAN" 2> "$CT_TMP/ledger-error"); then
-    HANDOFF_LEDGER_UNAVAILABLE=true
-    CT_RECORDS='[]' CT_CHAINS='[]' CT_SALVAGE_ONLY=true
-    controller_worktree || return $?
-    local reason=ledger-invalid
-    if grep -q 'ledger too large' "$CT_TMP/ledger-error"; then reason=ledger-too-large; fi
-    controller_hold "$CT_TRACKER" "$reason" "$(cat "$CT_TMP/ledger-error"); salvage: $(printf '%s' "$CT_OWNERSHIP" | jq -r '.ref//"none"')" || return $?
-    result=10
-  else
-    controller_holds || return $?
-    CT_CHAINS=$(ledger_chains "$CT_PLAN") || return 5
-    controller_worktree || return $?
-    if [ "$reconcile" = false ] && [ -n "$CT_REVIEWER_ESCALATE" ]; then
-      # Preserve the second reviewer violation in salvage, then remove its edits
-      # before escalating so a human resume can return to a clean review tree.
-      git -C "$CT_WORKTREE" reset --hard HEAD >&2 && git -C "$CT_WORKTREE" clean -fd >&2 || return 9
-      CT_OWNERSHIP=$(printf '%s' "$CT_OWNERSHIP" | jq '.restore_required=false')
-    fi
-    controller_labels || return $?
-    controller_open_state || return $?
-    controller_plan_effect || return $?
-    controller_unjournaled || return $?
-    controller_check || return $?
-    controller_foreign || { status=$?; [ "$status" -eq 10 ] || return "$status"; }
-    if [ "$CT_FOREIGN_SEEN" = false ]; then
-      controller_completed_effects || return $?
-      # Holds stop launches; reconciliation still safely replays recorded decisions.
-      controller_pending || return $?
-    fi
-    controller_check || return $?
-    controller_foreign || { status=$?; [ "$status" -eq 10 ] || return "$status"; }
-    controller_holds || return $?
-    controller_repair "$CT_TRACKER" --labels-only hold-projection || return $?
-    mkdir -p "$CT_COMMON/agentic-flow/state" || return 5
-    handoff_write_cache "$CT_COMMON" "$HANDOFF_ISSUES" || return 5
-    if [ "$CT_RAISED" = true ] || [ "$(printf '%s' "$CT_HOLDS" | jq length)" -gt 0 ] || printf '%s' "$CT_REPORT" | jq -e 'any(.issues[];.state=="escalated")' >/dev/null; then result=10; fi
-    if [ "$result" -eq 0 ] && [ "$CT_RECOVER_CLAIM" = true ]; then
-      controller_lock_publish || return 9
-      CT_LOCK_OWNED=true CT_RECOVER_CLAIM=false
+    while :; do
       controller_heartbeat reconciling
-    fi
-    if [ "$CT_PREVIOUS_HOST" != '' ] && [ "$result" -eq 0 ]; then
-      jq -n --arg plan "$CT_PLAN" --arg host "$CT_HOST" --arg previous "$CT_PREVIOUS_HOST" --arg run "$CT_RUN" '{v:1,kind:"takeover",plan:$plan,host:$host,previous_host:$previous,run:$run,at:(now|floor)}' > "$CT_TMP/record"
-      controller_record takeover || return 5
-      CT_PREVIOUS_HOST=''
-    fi
-  fi
-  [ "$result" -eq 0 ] && [ "$reconcile" = false ] || break
-  if [ "$once" = true ] && [ "$CT_STATIONS" -ge 1 ]; then
-    # Finish deterministic result processing, including verification, before exit.
-    if ! printf '%s' "$CT_PENDING" | jq -e 'any(.[];.pending=="verify")' >/dev/null; then break; fi
-  fi
-  if controller_finished; then break; fi
-  if [ "$CT_TURNS" -ge "$CT_TURN_CAP" ]; then
-    controller_hold "$CT_TRACKER" turn-cap "Controller reached the $CT_TURN_CAP-turn cap." || return $?
-    result=10; break
-  fi
-  CT_TURNS=$((CT_TURNS+1))
-  controller_dispatch || { result=$?; break; }
+      CT_RAISED=false CT_HOLD_REASONS='[]' CT_REVIEWER_ESCALATE='' CT_REVIEWER_RELAUNCH=''
+      if ! CT_RECORDS=$(ledger_read "$CT_PLAN" 2> "$CT_TMP/ledger-error"); then
+        HANDOFF_LEDGER_UNAVAILABLE=true
+        CT_RECORDS='[]' CT_CHAINS='[]' CT_SALVAGE_ONLY=true
+        controller_worktree || return $?
+        local reason=ledger-invalid
+        if grep -q 'ledger too large' "$CT_TMP/ledger-error"; then reason=ledger-too-large; fi
+        controller_hold "$CT_TRACKER" "$reason" "$(cat "$CT_TMP/ledger-error"); salvage: $(printf '%s' "$CT_OWNERSHIP" | jq -r '.ref//"none"')" || return $?
+        result=10
+      else
+        controller_holds || return $?
+        CT_CHAINS=$(ledger_chains "$CT_PLAN") || return 5
+        controller_worktree || return $?
+        if [ "$reconcile" = false ] && [ -n "$CT_REVIEWER_ESCALATE" ]; then
+          # Preserve the second reviewer violation in salvage, then remove its edits
+          # before escalating so a human resume can return to a clean review tree.
+          git -C "$CT_WORKTREE" reset --hard HEAD >&2 && git -C "$CT_WORKTREE" clean -fd >&2 || return 9
+          CT_OWNERSHIP=$(printf '%s' "$CT_OWNERSHIP" | jq '.restore_required=false')
+        fi
+        controller_labels || return $?
+        controller_open_state || return $?
+        controller_plan_effect || return $?
+        controller_unjournaled || return $?
+        controller_check || return $?
+        controller_foreign || { status=$?; [ "$status" -eq 10 ] || return "$status"; }
+        if [ "$CT_FOREIGN_SEEN" = false ]; then
+          controller_completed_effects || return $?
+          # Holds stop launches; reconciliation still safely replays recorded decisions.
+          controller_pending || return $?
+        fi
+        controller_check || return $?
+        controller_foreign || { status=$?; [ "$status" -eq 10 ] || return "$status"; }
+        controller_holds || return $?
+        controller_repair "$CT_TRACKER" --labels-only hold-projection || return $?
+        mkdir -p "$CT_COMMON/agentic-flow/state" || return 5
+        handoff_write_cache "$CT_COMMON" "$HANDOFF_ISSUES" || return 5
+        if [ "$CT_RAISED" = true ] || [ "$(printf '%s' "$CT_HOLDS" | jq length)" -gt 0 ] || printf '%s' "$CT_REPORT" | jq -e 'any(.issues[];.state=="escalated")' >/dev/null; then result=10; fi
+        if [ "$result" -eq 0 ] && [ "$CT_RECOVER_CLAIM" = true ]; then
+          controller_lock_publish || return 9
+          CT_LOCK_OWNED=true CT_RECOVER_CLAIM=false
+          controller_heartbeat reconciling
+        fi
+        if [ "$CT_PREVIOUS_HOST" != '' ] && [ "$result" -eq 0 ]; then
+          jq -n --arg plan "$CT_PLAN" --arg host "$CT_HOST" --arg previous "$CT_PREVIOUS_HOST" --arg run "$CT_RUN" '{v:1,kind:"takeover",plan:$plan,host:$host,previous_host:$previous,run:$run,at:(now|floor)}' > "$CT_TMP/record"
+          controller_record takeover || return 5
+          CT_PREVIOUS_HOST=''
+        fi
+      fi
+      [ "$result" -eq 0 ] && [ "$reconcile" = false ] || break
+      if [ "$once" = true ] && [ "$CT_STATIONS" -ge 1 ]; then
+        # Finish deterministic result processing, including verification, before exit.
+        if ! printf '%s' "$CT_PENDING" | jq -e 'any(.[];.pending=="verify")' >/dev/null; then break; fi
+      fi
+      if controller_finished; then break; fi
+      if [ "$resumed_turn" = true ]; then
+        resumed_turn=false
+      else
+        if [ "$CT_TURNS" -ge "$CT_TURN_CAP" ]; then
+          controller_hold "$CT_TRACKER" turn-cap "Controller reached the $CT_TURN_CAP-turn cap." || return $?
+          result=10; break
+        fi
+        CT_TURNS=$((CT_TURNS+1))
+      fi
+      controller_dispatch || { result=$?; break; }
+    done
+    [ "$result" -eq 10 ] && [ "$CT_WAIT_S" -ne 0 ] || break
+    result=0
+    controller_wait_human || { result=$?; break; }
+    # A resumed reconcile consumes a turn even when it stops before dispatch.
+    CT_TURNS=$((CT_TURNS+1))
+    resumed_turn=true
   done
   local output
   printf '%s\n' "$CT_PENDING" > "$CT_TMP/pending"

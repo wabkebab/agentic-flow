@@ -607,7 +607,6 @@ fail	"could not send $signal to controller"
 fail	"detach did not report the acknowledged pid and completed exit ($mode)"
 fail	"detach fixture timed out waiting for $*"
 fail	"detach returned $actual, expected $2: $(cat "$3")"
-fail	"heartbeat controller returned $rc, expected $expected: $(cat "$fixture/err")"
 fail	"heartbeat signal fixture did not pause: $(cat "$fixture/signal-err")"
 fail	"losing detach changed the winner's state"
 fail	"missing return state or resume command for $result"
@@ -657,3 +656,37 @@ status_run	5 --detach --reconcile-only
 status_run	5 --reconcile-only
 status_run	9 --detach --reconcile-only
 status_run	9 --reconcile-only
+fail	"controller slept on a non-resumable stop ($mode)"
+fail	"heartbeat controller returned $rc, expected $expected (${WAIT_FIXTURE:-$*}): $(cat "$fixture/err" "$fixture/out")"
+fail	"local-only hold returned $rc ($attempt)"
+fail	"wait heartbeat assertion failed: $1"
+fail	'detached controller did not wait under its lock'
+fail	'detached waiter did not resume and release its lock'
+fail	'dispatch did not resume on the next turn'
+fail	'duplicate local-only hold lacked its open status'
+fail	'existing local-only hold was not published'
+fail	'foreign host did not end the observe-only wait'
+fail	'new integrity hold was missed'
+fail	'poll ran at or after the deadline'
+fail	'poll ran reconcile effects or skipped the read cache'
+fail	'published hold did not replace the local snapshot entry'
+fail	'publishing a local hold changed its id or repeated the notification'
+fail	'the escalated station did not resume'
+fail	'three failed polls did not exit 5'
+fail	'unretryable poll was retried'
+fail	'wait-human controller regressions failed'
+fail	'wait-human hold notification regressions failed'
+status_run	0 --detach --wait-human 60 --json
+status_run	0 --wait-human --json
+status_run	0 --wait-human 120 --json
+status_run	0 --wait-human 60 --json
+status_run	10 --wait-human 3 --json
+status_run	10 --wait-human 60 --json
+status_run	2 --detach --reconcile-only --wait-human 10
+status_run	2 --wait-human --once
+status_run	2 --wait-human --wait-human
+status_run	2 --wait-human 0
+status_run	2 --wait-human 604801
+status_run	2 --wait-human invalid
+status_run	3 --wait-human 60 --json
+status_run	5 --wait-human 60 --json

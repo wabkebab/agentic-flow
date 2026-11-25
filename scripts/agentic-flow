@@ -17,7 +17,7 @@ usage:
   agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--force] [--json]
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
-  agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--detach] [--json]
+  agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--detach] [--wait-human [<max-s>]] [--json]
   agentic-flow doctor --stations [--station executor|reviewer] [--interactive] [--json]
   agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]
   agentic-flow approve <doc> --by <login>
@@ -31,6 +31,8 @@ usage:
   agentic-flow --help | --version
 
   run --detach starts a background controller and reports its pid after it takes the lock.
+  run --wait-human waits on resumable holds and escalations (default 86400 seconds, max 604800).
+  --wait-human can be combined with --detach. It conflicts with --once and --reconcile-only.
   --version reports the adopted project's installed harness stamp.
 EOF
 }

@@ -160,6 +160,14 @@ lock. If the controller has already finished, the launch returns its exit code.
 With `--json`, the result contains `pid`, `log`, `status`, and `finished_exit`
 (`null` while running). The log captures both output streams and is capped at 16 MiB.
 
+Add `--wait-human [<max-s>]` to keep the controller running on a resumable hold or
+escalation, in the foreground or with `--detach`. Follow the next action in `status` to
+clear the hold or record a decision. The controller picks up the change and resumes
+in the same process. The resumable hold reasons are `station-escalation`,
+`station-infrastructure`, `findings-incomplete`, and `plan-effect-pending`. The default
+wait is 86,400 seconds per stop, with a maximum of 604,800 seconds. A timeout or a stop
+that needs repair exits 10. `--wait-human` conflicts with `--once` and `--reconcile-only`.
+
 Use `scripts/agentic-flow status <plan-id|doc>` to see the local controller and station
 state, open holds, and the next action. Run it with `--watch` in a terminal to refresh
 every five seconds, or pass an interval from 2 to 300 seconds. Use `--json` for a single

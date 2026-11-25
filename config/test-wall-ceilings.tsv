@@ -17,4 +17,4 @@ controller:ship	30
 controller:andon	10
 controller:ledger	60
 controller:recovery	1750
-controller:status	50
+controller:status	85
