@@ -609,7 +609,7 @@ SHARD_PROBE
     else parallel_probe 1 failure --jobs "$selection"; fi
     grep -q 'injected export shard failure' "$fixture/out" || fail 'parallel dispatcher did not overlap the first two shards within the CPU limit'
     grep -q 'injected hooks shard failure' "$fixture/out" || fail 'parallel dispatcher omitted another failing shard'
-    grep -q 'fixture shard controller/recovery finished' "$fixture/out" || fail 'parallel dispatcher stopped after a failed shard'
+    grep -q 'fixture shard controller/status finished' "$fixture/out" || fail 'parallel dispatcher stopped after a failed shard'
     for shard in export hooks; do
       grep -q "shard $shard exited" "$fixture/out" || fail "parallel dispatcher omitted failed shard status for $shard"
     done
@@ -632,10 +632,10 @@ SHARD_PROBE
   git -C "$fixture" init -q
   : > "$fixture/scripts/export.sh"
   parallel_probe 1 budget --jobs 2
-  grep -q 'full mode made 240 fixture file copies; limit 194' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
+  grep -q 'full mode made 240 fixture file copies; limit 198' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
   [ "$(cost_count "$fixture/events" source_snapshot_copy)" -eq 1 ] || fail 'parallel dispatcher duplicated the source snapshot'
 
-  expected='export contracts upgrade hooks plan-to-issues lifecycle stations/launch stations/verify stations/handoff stations/packet controller/launch controller/ship controller/andon controller/ledger controller/recovery '
+  expected='export contracts upgrade hooks plan-to-issues lifecycle stations/launch stations/verify stations/handoff stations/packet controller/launch controller/ship controller/andon controller/ledger controller/recovery controller/status '
   for selection in 1 default; do
     if [ "$selection" = 1 ]; then parallel_probe 0 pass --jobs 1
     else parallel_probe 0 pass; fi
@@ -1027,7 +1027,7 @@ SH
   [ "$gate_rc" -ne 0 ] || fail 'ship-gate accepted a failing exported suite'
   grep -q 'group: hooks' "$TMP/gate.out" || fail 'ship-gate did not name the failing exported group'
 
-  gate_copy_limit=117
+  gate_copy_limit=121
   gate_copy_over=$((gate_copy_limit+1))
   gate_make "$gate_copy_over" && fail 'ship-gate accepted one fixture copy over the exported limit'
   grep -Fq "exported full mode made $gate_copy_over fixture file copies; limit $gate_copy_limit" "$TMP/gate.out" \
@@ -1644,6 +1644,18 @@ MARKDOWN
   printf '<a href="docs/missing.md#reference">Reference</a>\n' > "$fixture/README.md"
   perl "$checker" "$fixture" || fail 'documentation link check rejected a valid fragment'
 
+  # A plan moved to docs/done/ keeps the sibling links it was approved with.
+  mkdir -p "$fixture/docs/inprogress" "$fixture/docs/done"
+  printf '# Parent\n' > "$fixture/docs/inprogress/parent.md"
+  printf '[Parent](parent.md)\n' > "$fixture/docs/done/child.md"
+  printf '<a href="docs/missing.md#reference">Reference</a>\n' > "$fixture/README.md"
+  perl "$checker" "$fixture" || fail 'documentation link check rejected a moved plan sibling link'
+  printf '[Gone](gone.md)\n' > "$fixture/docs/done/child.md"
+  if perl "$checker" "$fixture" > "$fixture/out" 2>&1; then
+    fail 'documentation link check accepted a missing moved-plan target'
+  fi
+  rm -rf "$fixture/docs/inprogress" "$fixture/docs/done"
+
   perl "$checker" "$ROOT" || fail 'scaffold documentation has broken local links'
   explainer="$ROOT/docs/agentic-flow-explained.html"
   [ -f "$explainer" ] || fail 'missing scaffold workflow explainer'
@@ -1825,13 +1837,18 @@ for token_file in "$ROOT/scripts/init.sh" "$ROOT/scripts/doctor.sh" "$ROOT/scrip
   fi
 done
 [ "$token_seen" -ge 2 ] || fail "not enough TOKEN_RE assignments to guard parity"
-printf '%s\n%s\n' "$(printf '{%sPROJECT_NAME}%s' '{' '}')" \
-  "$(printf '{%sPROJECT_123}%s' '{' '}')" | grep -Eq "$TOKEN_RE" \
+# Feed grep from a here-string, not a live pipe: grep -q exits on its first match, and a
+# printf still writing behind it takes SIGPIPE, which pipefail turns into a pipeline failure
+# even though the match succeeded (a flaky "rejected valid placeholder fixtures" in CI).
+valid_tokens=$(printf '%s\n%s\n' "$(printf '{%sPROJECT_NAME}%s' '{' '}')" \
+  "$(printf '{%sPROJECT_123}%s' '{' '}')")
+grep -Eq "$TOKEN_RE" <<< "$valid_tokens" \
   || fail "TOKEN_RE rejected valid placeholder fixtures"
 # shellcheck disable=SC2016 # literal GitHub Actions expression fixture.
-printf '%s\n%s\n%s\n' '${{ matrix.node }}' '{project_name}' \
-  "$(printf '{%sproject-name}%s' '{' '}')" | grep -Eq "$TOKEN_RE" \
-  && fail "TOKEN_RE accepted invalid placeholder fixtures"
+invalid_tokens=$(printf '%s\n%s\n%s\n' '${{ matrix.node }}' '{project_name}' \
+  "$(printf '{%sproject-name}%s' '{' '}')")
+! grep -Eq "$TOKEN_RE" <<< "$invalid_tokens" \
+  || fail "TOKEN_RE accepted invalid placeholder fixtures"
 
 grep -Eq '^ADOPTION\.md[[:space:]]+ADOPTION\.md[[:space:]]+core[[:space:]]+preserve[[:space:]]+export$' \
   "$ROOT/config/payload.tsv" \
@@ -2277,17 +2294,17 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
     || fail 'fixture budget did not identify repeated tree copying'
   printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
-  for ((copy_i=0; copy_i<195; copy_i++)); do
+  for ((copy_i=0; copy_i<199; copy_i++)); do
     printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   done
   ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
     > "$MEASURE_FIX/full-files.out" 2>&1 \
-    && fail 'full fixture budget accepted 195 copies'
-  grep -q 'full mode made 195 fixture file copies; limit 194' "$MEASURE_FIX/full-files.out" \
+    && fail 'full fixture budget accepted 199 copies'
+  grep -q 'full mode made 199 fixture file copies; limit 198' "$MEASURE_FIX/full-files.out" \
     || fail 'full fixture copy failure did not name the count and approved limit'
   sed '$d' "$MEASURE_FIX/full-files.events" > "$MEASURE_FIX/full-boundary.events"
   assert_cost_budget "$MEASURE_FIX/full-boundary.events" full \
-    || fail 'full fixture budget rejected its approved 194-copy boundary'
+    || fail 'full fixture budget rejected its approved 198-copy boundary'
 fi
 : > "$MEASURE_FIX/fast-files.events"
 for ((copy_i=0; copy_i<34; copy_i++)); do

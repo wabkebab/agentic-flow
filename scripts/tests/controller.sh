@@ -196,7 +196,7 @@ sed 's/^if should_run_scenario ship ship; then$/if should_run_scenario typo ship
 select_run 1 --only controller --scenario ship
 grep -q 'unknown controller scenario block at call site' "$SELECT_FIX/err" || fail 'drifted scenario call site was not rejected'
 cat "$SELECT_FIX/blocks" > "$SELECT_FIX/scripts/tests/controller.sh"
-for selection in launch ledger recovery ship andon; do
+for selection in launch ledger recovery ship andon status; do
   select_run 0 --only controller --scenario "$selection"
   if [ "$selection" = launch ]; then select_markers 'launch:launch launch:timing '
   else select_markers "$selection:$selection "; fi
@@ -206,7 +206,7 @@ select_markers 'ledger:ledger ship:ship '
 select_run 0 --only controller --scenario ship,ship
 select_markers 'ship:ship '
 select_run 0 --only controller
-select_markers 'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship '
+select_markers 'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship status:status '
 # Parent make command-line variables travel through MAKEFLAGS. Fixture invocations
 # need a clean make environment so a no-group case really has no F= or S=.
 select_make() {
@@ -236,7 +236,7 @@ for selection_makefile in "$ROOT/Makefile" "$ROOT/templates/harness/Makefile"; d
   : > "$SELECT_FIX/events"
   AGENTIC_MEASURE_EVENTS="$SELECT_FIX/events" select_make \
     test-one F=controller > "$SELECT_FIX/make.out" || fail 'Makefile did not run the whole group by default'
-  select_markers 'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship '
+  select_markers 'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship status:status '
   select_make -n test S=ship > "$SELECT_FIX/ci"
   grep -q 'self-test.sh --full' "$SELECT_FIX/ci" || fail 'CI lost full self-test invocation'
   if grep -q -- '--scenario' "$SELECT_FIX/ci"; then fail 'scenario selection leaked into CI'; fi
@@ -3752,5 +3752,925 @@ REGRESSION
   done
 )
 recovery_tests || fail 'controller recovery regressions failed'
+test_timing_end
+fi # scenario
+
+if should_run_scenario status status; then
+test_timing_begin block status
+controller_detach_tests() (
+  local flow="${state%/*}" launches logs nonce ack winner loser ready log
+  local mode code found pid
+  launches="$flow/launches"; logs="$flow/logs/heartbeat"
+  detach_wait_for() {
+    local ticks
+    for ((ticks=0; ticks<120; ticks++)); do
+      if "$@"; then return 0; fi
+      sleep 0.05
+    done
+    fail "detach fixture timed out waiting for $*"
+  }
+  detach_exited() { ! kill -0 "$1" 2>/dev/null; }
+  detach_check_exit() {
+    local actual=0
+    wait "$1" || actual=$?
+    [ "$actual" -eq "$2" ] || fail "detach returned $actual, expected $2: $(cat "$3")"
+  }
+  detach_release_and_reap() {
+    printf 'reap\n' > "$1.next"
+    mv "$1.next" "$1.release"
+  }
+  detach_kick() {
+    DETACH_FIXTURE_MODE=$1 bash "$fixture/run" run "$doc" --detach --reconcile-only "${@:2}"
+  }
+  status_run 2 --detach --unknown
+  AGENTIC_DETACH_NONCE=invalid status_run 2 --reconcile-only
+  AGENTIC_DETACH_ACK_S=invalid status_run 2 --detach --reconcile-only
+  [ ! -e "$launches" ] && [ ! -e "$logs" ] || fail 'invalid detach created launch state'
+
+  # Start both children before either can lock, then preserve the winner's ack for inspection.
+  ready="$fixture/race-parent"
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=detach-before-poll AGENTIC_CONTROLLER_PAUSE="$ready" \
+    detach_kick race-a --json > "$fixture/winner.out" 2> "$fixture/winner.err" &
+  winner=$!
+  detach_kick race-b > "$fixture/loser.out" 2> "$fixture/loser.err" &
+  loser=$!
+  detach_wait_for test -s "$fixture/race-a.nonce"
+  detach_wait_for test -s "$fixture/race-b.nonce"
+  detach_wait_for test -s "$ready.ready"
+  nonce=$(cat "$fixture/race-a.nonce")
+  ack="$launches/$nonce.json"
+  : > "$fixture/race-a.start"
+  detach_wait_for test -s "$ack"
+  jq -e --arg nonce "$nonce" --slurpfile owner "$lock/owner.json" '
+    . == ({v:1,nonce:$nonce,plan:"heartbeat",ownership:"owner",at} + $owner[0]) and .at>0' \
+    "$ack" >/dev/null || fail 'detached acknowledgment identity differs from the lock'
+  pid=$(jq -er .pid "$ack")
+  detach_wait_for jq -e --argjson pid "$pid" '.pid==$pid and .phase=="reconciling"' "$heartbeat" >/dev/null
+  cp "$heartbeat" "$fixture/winning-heartbeat"
+  cp "$ack" "$fixture/winning-ack"
+  : > "$fixture/race-b.start"
+  detach_check_exit "$loser" 9 "$fixture/loser.err"
+  cmp -s "$heartbeat" "$fixture/winning-heartbeat" && cmp -s "$ack" "$fixture/winning-ack" &&
+    [ ! -e "$launches/$(cat "$fixture/race-b.nonce").json" ] || fail "losing detach changed the winner's state"
+  found=$(find "$logs" -name '*.log' | wc -l)
+  status_run 9 --detach --reconcile-only
+  [ "$found" = "$(find "$logs" -name '*.log' | wc -l)" ] &&
+    grep -Fq 'controller already owns heartbeat' "$fixture/err" || fail 'live-owner precheck forked a child'
+  : > "$ready.release"
+  detach_check_exit "$winner" 0 "$fixture/winner.err"
+  jq -e --argjson pid "$pid" --arg dir "$logs/" --slurpfile beat "$heartbeat" '
+    keys==["finished_exit","log","pid","status"] and .pid==$pid and
+    .log==($dir+($beat[0].run|split("/")|last)+".log") and
+    .status=="agentic-flow status heartbeat --watch" and .finished_exit==null' \
+    "$fixture/winner.out" >/dev/null || fail 'running detach returned the wrong result'
+  [ ! -e "$ack" ] && kill -0 "$pid" || fail 'the winner did not outlive its detach parent'
+
+  # Retention may remove old logs, but even an old log with a live writer is kept.
+  log=$(jq -er .log "$fixture/winner.out")
+  touch -t 200001010000 "$log"
+  for ((code=1; code<=25; code++)); do : > "$logs/old-$code.log"; done
+  : > "$launches/00000000000000000000000000000000.json"
+  touch -t 200001010000 "$launches/00000000000000000000000000000000.json"
+  # Run the pruning path directly because the live-owner precheck otherwise short-circuits it.
+  code=0
+  perl "$ROOT/scripts/lib/controller-detach.pl" "$flow" heartbeat false /usr/bin/true \
+    > "$fixture/prune.out" 2> "$fixture/prune.err" || code=$?
+  [ "$code" = 5 ] && [ -f "$log" ] && [ "$(find "$logs" -name '*.log' | wc -l)" -eq 21 ] &&
+    [ ! -e "$launches/00000000000000000000000000000000.json" ] || fail 'detach did not prune expired artifacts or keep the live log'
+  : > "$fixture/race-a.finish"
+  detach_wait_for detach_exited "$pid"
+
+  # These pauses fix the order of both reads relative to a real short-lived controller.
+  for mode in quick pause; do
+    ready="$fixture/$mode-parent"
+    local point=detach-before-poll
+    [ "$mode" != pause ] || point='detach-after-read'
+    AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT="$point" AGENTIC_CONTROLLER_PAUSE="$ready" \
+      detach_kick "$mode" > "$fixture/$mode.out" 2> "$fixture/$mode.err" &
+    winner=$!
+    detach_wait_for test -s "$ready.ready"
+    detach_wait_for test -s "$fixture/$mode.nonce"
+    : > "$fixture/$mode.start"
+    detach_release_and_reap "$ready"
+    detach_check_exit "$winner" 0 "$fixture/$mode.err"
+    grep -Fxq "controller pid: $(jq -er .pid "$heartbeat")" "$fixture/$mode.out" &&
+      grep -Fxq 'controller finished: exit 0' "$fixture/$mode.out" ||
+      fail "detach did not report the acknowledged pid and completed exit ($mode)"
+  done
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=detach-before-poll \
+    AGENTIC_CONTROLLER_PAUSE="$fixture/error-parent" detach_kick error --json \
+    > "$fixture/error.out" 2> "$fixture/error.err" &
+  winner=$!
+  detach_wait_for test -s "$fixture/error-parent.ready"
+  detach_release_and_reap "$fixture/error-parent"
+  detach_check_exit "$winner" 10 "$fixture/error.err"
+  jq -e --slurpfile beat "$heartbeat" '.finished_exit==10 and .pid==$beat[0].pid' "$fixture/error.out" >/dev/null ||
+    fail 'detach did not preserve the completed controller error'
+
+  cp "$heartbeat" "$fixture/before-startup-failure"
+  local worktree="$fixture/worktrees/heartbeat"
+  : > "$worktree/detach-dirty"
+  code=0
+  (cd "$worktree" && AGENTIC_WORKTREE_ROOT="$fixture/worktrees" "$cli" run "$doc" --detach --reconcile-only --json) \
+    > "$fixture/out" 2> "$fixture/err" || code=$?
+  [ "$code" = 3 ] && grep -Fq 'plan worktree is dirty:' "$fixture/err" &&
+    grep -Fxq '?? detach-dirty' "$fixture/err" && [ ! -s "$fixture/out" ] ||
+    fail "dirty detached startup returned $code: $(cat "$fixture/err")"
+  rm "$worktree/detach-dirty"
+  DETACH_FIXTURE_MODE=no-ack status_run 5 --detach --reconcile-only
+  grep -Fxq 'fixture error' "$fixture/err" && grep -Fq 'exited without acknowledgment' "$fixture/err" &&
+    [ ! -s "$fixture/out" ] || fail 'zero exit without acknowledgment succeeded or leaked log escapes'
+
+  # Put a structurally valid ack with a different nonce at the path being polled.
+  AGENTIC_DETACH_ACK_S=2 detach_kick timeout --json > "$fixture/timeout.out" 2> "$fixture/timeout.err" &
+  winner=$!
+  detach_wait_for test -s "$fixture/timeout.nonce"
+  nonce=$(cat "$fixture/timeout.nonce")
+  ack="$launches/$nonce.json"
+  jq '.nonce="00000000000000000000000000000000"' "$fixture/winning-ack" > "$ack"
+  detach_check_exit "$winner" 5 "$fixture/timeout.err"
+  detach_wait_for detach_exited "$(cat "$fixture/timeout.pid")"
+  grep -Fq 'startup acknowledgment timed out; log:' "$fixture/timeout.err" &&
+    [ ! -s "$fixture/timeout.out" ] && [ ! -e "$fixture/timeout.start" ] &&
+    [ ! -e "$lock" ] &&
+    cmp -s "$heartbeat" "$fixture/before-startup-failure" ||
+    fail 'detach accepted the stale nonce or left a timed-out controller running'
+
+  detach_kick occupied > "$fixture/occupied.out" 2> "$fixture/occupied.err" &
+  winner=$!
+  detach_wait_for test -s "$fixture/occupied.nonce"
+  ack="$launches/$(cat "$fixture/occupied.nonce").json"
+  cp "$fixture/winning-ack" "$ack"
+  : > "$fixture/occupied.start"
+  detach_check_exit "$winner" 5 "$fixture/occupied.err"
+  cmp -s "$ack" "$fixture/winning-ack" && grep -Fq 'could not publish startup acknowledgment' "$fixture/occupied.err" ||
+    fail 'controller rewrote an existing acknowledgment'
+  rm "$ack"
+
+  : > "$fixture/flood.start"
+  DETACH_FIXTURE_MODE=flood status_run 0 --detach --reconcile-only --json
+  log=$(jq -er .log "$fixture/out")
+  detach_wait_for grep -aqF 'agentic-flow: log truncated;' "$log"
+  [ "$(wc -c < "$log")" -eq 16777216 ] &&
+    head -n 2 "$log" | cmp -s - <(printf 'fixture stdout\nfixture stderr\n') &&
+    [ "$(tail -c 100 "$log" | grep -ac '^agentic-flow: log truncated; [1-9][0-9]* bytes dropped$')" -eq 1 ] ||
+    fail 'bounded log did not capture both streams and end with one marker at the cap'
+  jq -e --slurpfile beat "$heartbeat" 'last | .kind=="takeover" and .run==$beat[0].run' --slurp \
+    "$ledgers/heartbeat.jsonl" >/dev/null && [ -f "$state/heartbeat.tsv" ] &&
+    jq -e '.plan=="heartbeat"' "$state/heartbeat.metrics.json" >/dev/null &&
+    jq -e '.phase=="stopped" and .exit==0' "$heartbeat" >/dev/null ||
+    fail 'capping the log interrupted controller ledger or cache writes'
+)
+
+controller_wait_tests() (
+  local waiting="$fixture/waiting"
+  mkdir -p "$waiting"
+  cat > "$fixture/wait-adapters" <<'WAIT'
+wait_dir="$fixture/waiting"
+date() {
+  if [ "$*" = +%s ]; then cat "$wait_dir/clock"; else command date "$@"; fi
+}
+sleep() {
+  local now tick
+  printf '%s\n' "$1" >> "$wait_dir/sleeps"
+  if [ "$WAIT_FIXTURE" = detached ]; then
+    for ((tick=0; tick<160; tick++)); do
+      [ ! -f "$wait_dir/holds" ] && break
+      command sleep 0.05
+    done
+    [ ! -f "$wait_dir/holds" ] || return 5
+  fi
+  now=$(cat "$wait_dir/clock")
+  printf '%s\n' "$((now + $1))" > "$wait_dir/clock"
+}
+wait_hold() {
+  jq -nc --arg id "heartbeat/hold/$1" --arg reason "$2" '[{id:$id,issue:1,reason:$reason}]'
+}
+controller_check() {
+  local state=approved seq=0 tracker=open tracker_seq=0 poll=0 host=null
+  case "$CT_TMP" in
+    */wait-observation)
+      poll=$(cat "$wait_dir/polls"); poll=$((poll + 1)); printf '%s\n' "$poll" > "$wait_dir/polls"
+      case "$WAIT_FIXTURE:$poll" in
+        reconcile:1) wait_hold 2 findings-incomplete > "$wait_dir/holds" ;;
+        reconcile:2|dispatch:2|retry-reset:6) rm -f "$wait_dir/holds" ;;
+        escalation:2) : > "$wait_dir/resumed" ;;
+        seq-change:1) : > "$wait_dir/seq-changed" ;;
+        seq-change:2) rm -f "$wait_dir/holds" ;;
+        new-integrity:1) jq -s 'add' "$wait_dir/holds" <(wait_hold 2 ledger-invalid) > "$wait_dir/new"
+          mv "$wait_dir/new" "$wait_dir/holds" ;;
+        foreign:1) : > "$wait_dir/foreign" ;;
+        failed:*|retry-reset:1|retry-reset:2|retry-reset:4|retry-reset:5) return 5 ;;
+        poll-error:1) return 3 ;;
+      esac ;;
+  esac
+  case "$WAIT_FIXTURE" in
+    dispatch|missing|cap) [ -f "$wait_dir/done" ] || state=executing ;;
+    escalation)
+      if [ -f "$wait_dir/resumed" ]; then
+        seq=5; [ -f "$wait_dir/done" ] || state=executing
+      else state=escalated; seq=4; fi ;;
+  esac
+  if [ -f "$wait_dir/seq-changed" ]; then seq=1; fi
+  if [ -f "$wait_dir/planned" ]; then tracker=closing; tracker_seq=1; fi
+  [ ! -f "$wait_dir/foreign" ] || host='"121212121212"'
+  CT_TRACKER=2
+  CT_REPORT=$(jq -nc --arg state "$state" --argjson seq "$seq" --argjson host "$host" --argjson poll "$poll" \
+    --arg tracker "$tracker" --argjson tracker_seq "$tracker_seq" '
+    {tracker:2,issues:[{number:1,step:"alpha",topology:"step-strict",state:$state,replay:{seq:$seq},host:$host,latest_at:(now|todateiso8601),
+              drift:(if $poll==1 then ["unjournaled"] else [] end)},
+             {number:2,step:"tracker",topology:"tracker",state:$tracker,replay:{seq:$tracker_seq},drift:["plan-effect"]}]}')
+  printf '%s\n' "$CT_REPORT" > "$CT_TMP/report"
+}
+controller_holds() {
+  CT_HOLDS='[]'
+  if [ -f "$wait_dir/holds" ]; then CT_HOLDS=$(cat "$wait_dir/holds"); fi
+}
+controller_gate() { [ "$WAIT_FIXTURE" != cap ] || CT_TURN_CAP=0; }
+ledger_read() {
+  if [ "$WAIT_FIXTURE" = ledger ]; then printf 'invalid ledger\n' >&2; return 5; fi
+  printf '[]\n'
+}
+controller_hold() {
+  CT_RAISED=true
+  CT_HOLD_REASONS=$(jq -nc --argjson issue "$1" --arg reason "$2" '[{issue:$issue,reason:$reason}]')
+  printf '%s\n' "$2" >> "$wait_dir/raised"
+}
+controller_dispatch() {
+  printf '%s\n' "$CT_TURNS" >> "$wait_dir/dispatch"
+  case "$WAIT_FIXTURE" in
+    dispatch|missing)
+      if [ "$CT_TURNS" -eq 1 ]; then
+        controller_hold 1 station-infrastructure
+        if [ "$WAIT_FIXTURE" = dispatch ]; then wait_hold 1 station-infrastructure > "$wait_dir/holds"; fi
+        return 10
+      fi ;;
+  esac
+  : > "$wait_dir/done"
+}
+wait_effect() {
+  case "$CT_TMP" in
+    */wait-observation) printf '%s\n' "$1" >> "$wait_dir/forbidden" ;;
+    *) printf '%s\n' "$1" >> "$wait_dir/effects" ;;
+  esac
+}
+controller_labels() { wait_effect labels; }
+controller_open_state() { wait_effect open-state; }
+controller_plan_effect() {
+  wait_effect plan-effect
+  if [ "$CT_HOLDS" = '[]' ] && { [ -f "$wait_dir/done" ] || jq -e '.issues[0].state=="approved"' "$CT_TMP/report" >/dev/null; }; then
+    : > "$wait_dir/planned"
+  fi
+}
+controller_unjournaled() { wait_effect unjournaled; }
+controller_completed_effects() { wait_effect completed-effects; }
+controller_pending() { wait_effect pending; }
+controller_repair() { wait_effect repair; }
+handoff_write_cache() {
+  case "$CT_TMP" in
+    */wait-observation) printf 'cache\n' >> "$wait_dir/poll-cache" ;;
+  esac
+}
+WAIT
+  wait_reset() {
+    export WAIT_FIXTURE=$1 AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_WAIT_BACKOFF_S=1
+    rm -f "$waiting/"* "$fixture/trace"
+    printf '1000\n' > "$waiting/clock"
+    printf '0\n' > "$waiting/polls"
+    : > "$waiting/sleeps"
+    case "$1" in
+      integrity) printf '[{"id":"heartbeat/hold/1","issue":1,"reason":"ledger-invalid"}]\n' > "$waiting/holds" ;;
+      reconcile) printf '[{"id":"heartbeat/hold/1","issue":1,"reason":"plan-effect-pending"},{"id":"heartbeat/hold/2","issue":1,"reason":"findings-incomplete"}]\n' > "$waiting/holds" ;;
+      dispatch|missing|escalation|cap|ledger) ;;
+      *) printf '[{"id":"heartbeat/hold/1","issue":1,"reason":"findings-incomplete"}]\n' > "$waiting/holds" ;;
+    esac
+  }
+  wait_assert() {
+    jq -se "$1" "$fixture/trace" >/dev/null || fail "wait heartbeat assertion failed: $1"
+  }
+  status_run 2 --wait-human --once
+  status_run 2 --detach --reconcile-only --wait-human 10
+  status_run 2 --wait-human 604801
+  status_run 2 --wait-human 0
+  status_run 2 --wait-human invalid
+  status_run 2 --wait-human --wait-human
+
+  wait_reset reconcile
+  status_run 0 --wait-human --json
+  wait_assert '[.[]|select(.phase=="waiting-human")]|length==2 and all(.[];.turn==0 and
+    .waiting.holds==["heartbeat/hold/1","heartbeat/hold/2"] and .waiting.issues==[] and .waiting.seqs=={"1":0,"2":0}
+    and (.waiting.until-.waiting.since)==86400)'
+  [ ! -e "$waiting/forbidden" ] && [ "$(wc -l < "$waiting/poll-cache")" -eq 2 ] &&
+    [ "$(grep -c '^plan-effect$' "$waiting/effects")" -eq 2 ] || fail 'poll ran reconcile effects or skipped the read cache'
+
+  wait_reset dispatch
+  status_run 0 --wait-human 60 --json
+  wait_assert '[.[]|select(.phase=="waiting-human")]|length==2 and all(.[];.turn==1 and
+    .waiting.holds==["heartbeat/hold/1"] and .waiting.reasons==["station-infrastructure"])'
+  [ "$(cat "$waiting/dispatch")" = $'1\n2' ] || fail 'dispatch did not resume on the next turn'
+
+  wait_reset escalation
+  status_run 0 --wait-human 60 --json
+  wait_assert '[.[]|select(.phase=="waiting-human")]|length==2 and all(.[];.turn==0 and
+    .waiting.stop=="escalated" and .waiting.issues==[1] and .waiting.seqs=={"1":4,"2":0})'
+  [ "$(cat "$waiting/dispatch")" = 1 ] || fail 'the escalated station did not resume'
+
+  wait_reset seq-change
+  status_run 0 --wait-human 60 --json
+  wait_assert '[.[]|select(.phase=="waiting-human")|[.turn,.waiting.seqs["1"],.waiting.holds]]==
+    [[0,0,["heartbeat/hold/1"]],[1,1,["heartbeat/hold/1"]]]'
+
+  wait_reset new-integrity
+  status_run 10 --wait-human 60 --json
+  wait_assert '([.[]|select(.phase=="waiting-human")]|length)==1 and (last|.turn==1 and .exit==10)'
+  jq -e '.holds|map(.reason)==["findings-incomplete","ledger-invalid"]' "$fixture/out" >/dev/null || fail 'new integrity hold was missed'
+
+  wait_reset foreign
+  status_run 10 --wait-human 60 --json
+  [ "$(cat "$waiting/polls")" = 1 ] && [ ! -e "$waiting/forbidden" ] &&
+    grep -Fxq foreign-controller-host "$waiting/raised" || fail 'foreign host did not end the observe-only wait'
+
+  local mode
+  for mode in cap ledger integrity missing; do
+    wait_reset "$mode"
+    status_run 10 --wait-human 60 --json
+    [ ! -s "$waiting/sleeps" ] || fail "controller slept on a non-resumable stop ($mode)"
+  done
+
+  wait_reset failed
+  status_run 5 --wait-human 60 --json
+  [ "$(cat "$waiting/sleeps")" = $'1\n2\n4' ] && [ "$(cat "$waiting/polls")" = 3 ] || fail 'three failed polls did not exit 5'
+  wait_assert '[.[]|select(.phase=="waiting-human")|.waiting.failed_polls]==[0,1,2]'
+  wait_reset retry-reset
+  status_run 0 --wait-human 120 --json
+  wait_assert '[.[]|select(.phase=="waiting-human")|.waiting.failed_polls]==[0,1,2,0,1,2]'
+  wait_reset poll-error
+  status_run 3 --wait-human 60 --json
+  [ "$(cat "$waiting/polls")" = 1 ] || fail 'unretryable poll was retried'
+  wait_reset deadline
+  status_run 10 --wait-human 3 --json
+  [ "$(cat "$waiting/sleeps")" = $'1\n2' ] && [ "$(cat "$waiting/polls")" = 1 ] || fail 'poll ran at or after the deadline'
+
+  wait_reset detached
+  status_run 0 --detach --wait-human 60 --json
+  local waited pid
+  pid=$(jq -er '.pid' "$fixture/out")
+  for ((waited=0; waited<120; waited++)); do
+    if jq -e --argjson pid "$pid" '.pid==$pid and .phase=="waiting-human"' "$heartbeat" >/dev/null; then break; fi
+    sleep 0.05
+  done
+  [ "$waited" -lt 120 ] && [ -d "$lock" ] || fail 'detached controller did not wait under its lock'
+  rm "$waiting/holds"
+  for ((waited=0; waited<120; waited++)); do
+    [ -d "$lock" ] || break
+    sleep 0.05
+  done
+  wait_assert 'last|.phase=="stopped" and .exit==0 and .turn==1'
+  [ ! -d "$lock" ] && [ "$(cat "$waiting/polls")" = 1 ] || fail 'detached waiter did not resume and release its lock'
+)
+
+controller_wait_andon_tests() (
+  # Use the real ledger and desktop notification path with a local tracker.
+  # shellcheck source=/dev/null
+  . "$ROOT/scripts/lib/handoff.sh"
+  HANDOFF_ROOT=$repo HANDOFF_PLAN=wait-notify HANDOFF_TMP="$fixture/notifications"
+  REVIEW_APPROVERS=' plan ' REVIEW_OWNER=owner
+  export WAIT_NOTIFY_LOG="$HANDOFF_TMP/calls"
+  mkdir -p "$HANDOFF_TMP"
+  printf '#!/usr/bin/env bash\nprintf "notify\\n" >> "$WAIT_NOTIFY_LOG"\n' > "$fixture/bin/osascript"
+  chmod +x "$fixture/bin/osascript"
+  export PATH="$fixture/bin:$PATH"
+  review_bounded() { "$@"; }
+  handoff_plan_read() { HANDOFF_TRACKER=2; }
+  handoff_read() { HANDOFF_ISSUE=$(cat "$HANDOFF_TMP/issue"); JOURNAL_STEP=tracker; }
+  handoff_error() { :; }
+  handoff_identity() { [ -f "$HANDOFF_TMP/approver-available" ]; }
+  handoff_comment() {
+    jq --rawfile body "$2" '.comments.nodes += [{id:"C1",fullDatabaseId:1,body:$body,
+      author:{login:"plan",__typename:"User"},createdAt:(now|todateiso8601),lastEditedAt:null}]' \
+      "$HANDOFF_TMP/issue" > "$HANDOFF_TMP/next" && mv "$HANDOFF_TMP/next" "$HANDOFF_TMP/issue" || return 5
+    HANDOFF_COMMENT_ID=1
+  }
+  printf '{"title":"Wait notifications","comments":{"nodes":[]}}\n' > "$HANDOFF_TMP/issue"
+  local attempt rc id=wait-notify/hold/1
+  for attempt in first repeated; do
+    rc=0
+    hold_transition 1 hold findings-incomplete none '' 'Fixture note' > "$HANDOFF_TMP/$attempt" || rc=$?
+    [ "$rc" -eq 10 ] || fail "local-only hold returned $rc ($attempt)"
+  done
+  grep -Fxq "hold $id already open (local-only)" "$HANDOFF_TMP/repeated" || fail 'duplicate local-only hold lacked its open status'
+  : > "$HANDOFF_TMP/approver-available"
+  hold_transition 1 hold findings-incomplete none '' 'Fixture note' > "$HANDOFF_TMP/published" || fail 'existing local-only hold was not published'
+  grep -Fxq "hold $id" "$HANDOFF_TMP/published" && [ "$(cat "$WAIT_NOTIFY_LOG")" = notify ] || fail 'publishing a local hold changed its id or repeated the notification'
+  hold_snapshot "$(cat "$HANDOFF_TMP/issue")" | jq -e --arg id "$id" 'map({id,comment_id})==[{id:$id,comment_id:1}]' >/dev/null || fail 'published hold did not replace the local snapshot entry'
+)
+
+status_tests() (
+  local fixture="$TMP/controller-status" repo state lock heartbeat doc=docs/inprogress/plan.md
+  local base signal expected launcher owner_pid waited rc
+  mkdir -p "$fixture"
+  fixture=$(cd "$fixture" && pwd -P)
+  repo="$fixture/project with spaces 雪"; state="$repo/.git/agentic-flow/state"
+  lock="$repo/.git/agentic-flow/locks/controller-heartbeat"
+  heartbeat="$state/heartbeat.controller.json"
+  mkdir -p "$repo/docs/inprogress" "$repo/scripts" "$repo/config" "$fixture/bin"
+  ln "$ROOT/config/workflow.tsv" "$repo/config/workflow.tsv"
+  printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=plan owner=owner > "$repo/.agentic-flow-review-policy"
+  cat > "$repo/$doc" <<'PLAN'
+# Feature — Heartbeat
+# Part B — Implementation brief
+```agentic-flow-plan
+id: heartbeat
+profile: strict
+tracking: Heartbeat
+branch: topic
+steps: alpha
+```
+## alpha — First
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** failure
+## Status
+- **Approval:** pending
+PLAN
+  printf '#!/usr/bin/env bash\nprintf "fixture packet\\n"\n' > "$repo/scripts/agentic-flow"
+  chmod +x "$repo/scripts/agentic-flow"
+  git -C "$repo" init -q
+  git -C "$repo" checkout -qb main
+  git -C "$repo" config user.name Fixture
+  git -C "$repo" config user.email fixture@example.invalid
+  git -C "$repo" config commit.gpgsign false
+  git -C "$repo" remote add origin https://github.com/owner/repo.git
+  git -C "$repo" add "$doc" scripts/agentic-flow config/workflow.tsv .agentic-flow-review-policy
+  git -C "$repo" commit -qm 'Heartbeat plan'
+  base=$(git -C "$repo" rev-parse HEAD)
+  sed "s/Approval:\*\* pending/Approval:** status=approved; by=owner; at=2026-01-01; rev=$base/" "$repo/$doc" > "$fixture/approved"
+  cat "$fixture/approved" > "$repo/$doc"
+  git -C "$repo" commit -qam 'Approve heartbeat plan'
+
+  # The process probe checks actual PID liveness. Supply its start string locally.
+  cat > "$fixture/bin/ps" <<'PS'
+#!/usr/bin/env bash
+[ "$#" -eq 4 ] && [ "$1" = -p ] && [ "$3" = -o ] && [ "$4" = lstart= ] || exit 2
+kill -0 "$2" || exit 1
+printf 'fixture-start-%s\n' "$2"
+PS
+  chmod +x "$fixture/bin/ps"
+
+  # Run the controller and dispatch with local adapters for the forge and station.
+  printf '%s\n' "$ROOT" > "$fixture/harness-root"
+  cat > "$fixture/run" <<'RUNNER'
+#!/usr/bin/env bash
+set -euo pipefail
+fixture=${0%/*}
+. "$(cat "$fixture/harness-root")/scripts/lib/controller.sh"
+repo="$fixture/project with spaces 雪"
+heartbeat="$repo/.git/agentic-flow/state/heartbeat.controller.json"
+[ "$1" = run ]; shift
+export AGENTIC_WORKTREE_ROOT="$fixture/worktrees"
+export PATH="$fixture/bin:$PATH"
+cd "$repo"
+fixture_mode=${DETACH_FIXTURE_MODE:-}
+fixture_release() {
+  local gate=$1 waited
+  for ((waited=0; waited<160; waited++)); do
+    [ ! -f "$gate" ] || return 0
+    sleep 0.05
+  done
+  return 5
+}
+case "$fixture_mode" in
+  race-*|quick|pause|timeout|occupied|flood)
+    identity_repository() {
+      printf '%s\n' "$CT_PID" > "$fixture/$fixture_mode.pid"
+      printf '%s\n' "$CT_DETACH_NONCE" > "$fixture/$fixture_mode.nonce"
+      fixture_release "$fixture/$fixture_mode.start" || return 5
+      printf 'owner/repo\n'
+    } ;;
+  no-ack) workflow_load() { printf '\033[31mfixture error\033[0m\r\n' >&2; exit 0; } ;;
+esac
+controller_check() {
+  case "$fixture_mode" in
+    race-*) fixture_release "$fixture/$fixture_mode.finish" || return 5 ;;
+    error) return 10 ;;
+  esac
+  CT_REPORT='{"issues":[{"number":1,"step":"alpha","topology":"step-strict","state":"executing","replay":{"seq":0}}]}'
+  CT_TRACKER=2
+  printf '%s\n' "$CT_REPORT" > "$CT_TMP/report"
+}
+controller_holds() { :; }
+controller_worktree() { :; }
+controller_labels() { :; }
+controller_open_state() { :; }
+controller_plan_effect() { :; }
+controller_unjournaled() { :; }
+controller_completed_effects() { :; }
+controller_pending() {
+  if [ "$fixture_mode" = flood ]; then
+    printf 'fixture stdout\n'
+    printf 'fixture stderr\n' >&2
+    dd if=/dev/zero bs=1048576 count=17 2>/dev/null || return 5
+    jq -n --arg plan "$CT_PLAN" --arg host "$CT_HOST" --arg run "$CT_RUN" '
+      {v:1,kind:"takeover",plan:$plan,host:$host,previous_host:"000000000000",run:$run,at:(now|floor)}' > "$CT_TMP/record"
+    ledger_append takeover "$CT_PLAN" "$CT_TMP/record" >/dev/null || return 5
+  fi
+}
+controller_repair() { :; }
+if [ "$fixture_mode" != flood ]; then handoff_write_cache() { :; }; fi
+HANDOFF_ISSUES=''
+roles_load() { ROLES_JSON='[{"station":"executor","cli":"codex","model":"-","effort":"-","max_turns":"-","budget_usd":"-","timeout_s":"10","profile":"fixture"}]'; }
+controller_probe() { :; }
+launch_fingerprint() { printf '%064d\n' 0; }
+ledger_read() { printf '[]\n'; }
+ledger_chains() { printf '[]\n'; }
+ledger_generation() { printf '1\n'; }
+controller_record() {
+  if [ "$1" = intent ]; then cat "$CT_TMP/record" > "$fixture/intent"; fi
+}
+controller_store_output() { :; }
+launch_station() {
+  jq -e '.phase=="station" and .station.station=="executor"' "$heartbeat" >/dev/null || return 6
+  printf '{"v":1,"station":"executor","outcome":"ask","head":null,"summary":"Fixture","question":"Fixture?","findings":[]}\n' > "$4"
+  printf '{"seconds":1,"usage":{}}\n'
+}
+mv() {
+  local target=${!#} source owner bytes
+  if [ "$target" = "$heartbeat" ]; then
+    source=$2
+    [ "${source%/*}" = "${target%/*}" ] && [ -d "$CT_TMP" ] || return 1
+    owner="$CT_LOCK/owner.json"
+    if [ "$(jq -r .ownership "$source")" = recovering ]; then owner="$CT_LOCK/recover/owner.json"; fi
+    bytes=$(wc -c < "$source")
+    [ "$bytes" -le 4096 ] &&
+      jq -e --slurpfile owner "$owner" '.pid==$owner[0].pid and .start==$owner[0].start and
+        (if .ownership=="owner" then .host==$owner[0].host and .run==$owner[0].run else true end)' "$source" >/dev/null || return 1
+    command mv "$@" || return 1
+    cat "$target" >> "$fixture/trace"
+  else
+    command mv "$@"
+  fi
+}
+if [ "${HEARTBEAT_READ_ONLY:-}" = true ] && [ "$EUID" -eq 0 ]; then
+  # Root can write through chmod. Inject the same temp-file refusal in that case.
+  mktemp() { case "$1" in "${heartbeat%/*}/"*) return 1 ;; *) command mktemp "$@" ;; esac; }
+fi
+if [ -n "${WAIT_FIXTURE:-}" ]; then . "$fixture/wait-adapters"; fi
+controller_cmd "$0" "$@"
+RUNNER
+  status_run() {
+    local expected=$1 rc=0; shift
+    bash "$fixture/run" run "$doc" "$@" > "$fixture/out" 2> "$fixture/err" || rc=$?
+    [ "$rc" = "$expected" ] || fail "heartbeat controller returned $rc, expected $expected (${WAIT_FIXTURE:-$*}): $(cat "$fixture/err" "$fixture/out")"
+  }
+  status_run 0 --once --json
+  jq -se --slurpfile intent "$fixture/intent" '
+    map(.phase)==["reconciling","reconciling","station","reconciling","reconciling","stopped"] and
+    map(.turn)==[0,0,1,1,1,1] and
+    all(.[];
+      keys==["doc","exit","host","ownership","phase","pid","plan","run","start","station","turn","turn_cap","updated_at","v","waiting"] and
+      .v==1 and .plan=="heartbeat" and .doc=="docs/inprogress/plan.md" and
+      .ownership=="owner" and .pid>0 and (.start|type=="string" and length>0) and
+      (.host|test("^[0-9a-f]{12}$")) and (.run|startswith("heartbeat/controller/")) and
+      .turn_cap==50 and .waiting==null and .updated_at>=1 and
+      (if .phase=="station" then .station==($intent[0]|{issue,step,station,cli,run,started,timeout_s:10})
+       else .station==null end) and
+      (if .phase=="stopped" then .exit==0 else .exit==null end))' "$fixture/trace" >/dev/null ||
+    fail 'heartbeat shape or phase sequence differed'
+  cat "$fixture/trace" > "$fixture/station-trace"
+  jq -e '.phase=="stopped" and .exit==0' "$heartbeat" >/dev/null || fail 'normal exit heartbeat missing'
+  cat "$heartbeat" > "$fixture/previous"
+  git -C "$repo" checkout -q --detach "$base"
+  status_run 3 --reconcile-only
+  cmp -s "$heartbeat" "$fixture/previous" || fail 'unapproved document changed heartbeat'
+  git -C "$repo" checkout -q main
+
+  mkdir "$lock"
+  jq '{pid,start:"stale",host,run}' "$heartbeat" > "$lock/owner.json"
+  : > "$fixture/trace"
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-lock status_run 5 --reconcile-only
+  jq -se 'map([.phase,.ownership,.exit])==[["reconciling","recovering",null],["stopped","recovering",5]]' \
+    "$fixture/trace" >/dev/null || fail 'claimant failure heartbeat missing'
+  : > "$fixture/trace"
+  status_run 0 --reconcile-only --json
+  jq -se 'map([.phase,.ownership,.exit])==[
+    ["reconciling","recovering",null],["reconciling","recovering",null],
+    ["reconciling","owner",null],["stopped","owner",0]]' "$fixture/trace" >/dev/null ||
+    fail 'heartbeat did not report claimant promotion'
+  cat "$fixture/out" > "$fixture/normal-out"
+  cat "$heartbeat" > "$fixture/previous"
+  chmod a-w "$state"
+  rc=0
+  HEARTBEAT_READ_ONLY=true bash "$fixture/run" run "$doc" --reconcile-only --json \
+    > "$fixture/out" 2> "$fixture/err" || rc=$?
+  chmod u+w "$state"
+  [ "$rc" = 0 ] && cmp -s "$fixture/out" "$fixture/normal-out" && cmp -s "$heartbeat" "$fixture/previous" &&
+    grep -qF 'warning: could not write heartbeat' "$fixture/err" || fail 'heartbeat write failure changed controller result'
+
+  for signal in TERM INT; do
+    AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-lock AGENTIC_CONTROLLER_PAUSE="$fixture/$signal" \
+      perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' bash "$fixture/run" run "$doc" --reconcile-only \
+      > "$fixture/signal-out" 2> "$fixture/signal-err" &
+    launcher=$!; waited=0
+    while [ ! -f "$fixture/$signal.ready" ] && [ "$waited" -lt 100 ]; do sleep 0.1; waited=$((waited+1)); done
+    [ "$waited" -lt 100 ] || fail "heartbeat signal fixture did not pause: $(cat "$fixture/signal-err")"
+    if [ "$signal" = TERM ]; then
+      cat "$heartbeat" > "$fixture/previous"
+      status_run 9 --reconcile-only
+      cmp -s "$heartbeat" "$fixture/previous" || fail 'lock loser changed heartbeat'
+    fi
+    owner_pid=$(jq -er .pid "$lock/owner.json")
+    kill -"$signal" "$owner_pid" || fail "could not send $signal to controller"
+    rc=0; wait "$launcher" || rc=$?
+    expected=143; [ "$signal" != INT ] || expected=130
+    [ "$rc" = "$expected" ] && [ ! -e "$lock" ] &&
+      jq -e --argjson exit "$expected" '.phase=="stopped" and .exit==$exit' "$heartbeat" >/dev/null ||
+      fail "$signal exit heartbeat missing or controller returned $rc"
+  done
+
+  # Read the writer's real heartbeat shape and a validated ledger in an offline fixture.
+  local cli="$ROOT/scripts/agentic-flow" ledgers="$repo/.git/agentic-flow/ledger" ledger live_pid
+  local latest timestamp=2026-01-01T00:00:00Z
+  local n role escalated_event return_state result
+  status_query() {
+    local expected=$1 rc=0; shift
+    (cd "$repo" && PATH="$fixture/bin:$PATH" "$cli" status "$@") > "$fixture/query" 2> "$fixture/query.err" || rc=$?
+    [ "$rc" = "$expected" ] || fail "status $* returned $rc, expected $expected: $(cat "$fixture/query.err" "$fixture/query")"
+  }
+  status_assert() {
+    jq -e "$1" "$fixture/query" >/dev/null || fail "status assertion failed: $1: $(cat "$fixture/query")"
+  }
+  status_rows() { # tracker state, optional step state and latest event
+    printf '2\ttracker\t%s\tnone\tnone\t%s\n' "$1" "$timestamp"
+    if [ -n "${2:-}" ]; then
+      printf '1\talpha\t%s\t%s\tnone\t%s\n' "$2" "${3:-none}" "$timestamp"
+    fi
+  }
+  cat > "$fixture/bin/gh" <<'GH'
+#!/usr/bin/env bash
+printf 'unexpected forge call\n' > "$STATUS_FORGE_MARKER"
+exit 79
+GH
+  chmod +x "$fixture/bin/gh"
+  export STATUS_FORGE_MARKER="$fixture/forge-called"
+  cp "$ROOT/config/workflow.tsv" "$fixture/workflow"
+  rm "$repo/config/workflow.tsv"
+  mv "$fixture/workflow" "$repo/config/workflow.tsv"
+
+  status_query 3 missing-plan --json
+  status_query 2 heartbeat --watch
+  status_query 2 heartbeat --watch --json
+  status_query 2 heartbeat --watch 301
+  status_query 2 heartbeat --watch 1
+  [ ! -e "$ledgers" ] || fail 'status created a ledger directory'
+  status_rows open executing > "$state/heartbeat.tsv"
+  printf '[]\n' > "$state/heartbeat.holds.json"
+  status_query 10 "$doc" --json
+  status_assert '.plan=="heartbeat" and .snapshot.complete and .controller.state=="stopped"
+    and .controller.exit==130 and .steps[1].bounces==null and .steps[1].bounce_limit==2
+    and .snapshot.ledger=="absent" and .steps[1].interrupted==null and .usage.cost_usd==null
+    and .next=={owner:"human",action:"Run the controller",command:"agentic-flow run docs/inprogress/plan.md"}'
+
+  # Keep the lock/heartbeat identity alive through all controller-reader scenarios.
+  sleep 45 & live_pid=$!
+  # shellcheck disable=SC2064 # Retain the PID after the function's locals leave scope.
+  trap "kill '$live_pid' 2>/dev/null || true" EXIT
+  mkdir "$lock"
+  jq -s --argjson pid "$live_pid" '
+    map(select(.phase=="station")) | first | .pid=$pid | .start="fixture-start-\($pid)"' "$fixture/station-trace" > "$heartbeat"
+  jq '{pid,start,host,run}' "$heartbeat" > "$lock/owner.json"
+  cat "$heartbeat" > "$fixture/live"
+  jq '.start="a different owner"' "$lock/owner.json" > "$fixture/lock-saved"
+  mv "$fixture/lock-saved" "$lock/owner.json"
+  status_query 10 heartbeat --json
+  status_assert '.controller.state=="stopped" and .next.command=="agentic-flow run docs/inprogress/plan.md"'
+  jq '.start="stale process start"' "$fixture/live" > "$heartbeat"
+  jq '{pid,start,host,run}' "$heartbeat" > "$lock/owner.json"
+  status_query 10 heartbeat --json
+  status_assert '.controller.state=="stopped"'
+  jq '.host=(if .host=="ffffffffffff" then "000000000000" else "ffffffffffff" end)' "$fixture/live" > "$heartbeat"
+  status_query 10 heartbeat --json
+  status_assert '.controller.state=="other-host"'
+  printf '{broken\n' > "$heartbeat"
+  status_query 10 "$doc" --json
+  status_assert '.controller.state=="unknown" and .snapshot.complete'
+  head -c 4097 /dev/zero > "$heartbeat"
+  status_query 10 "$doc" --json
+  status_assert '.controller.state=="unknown" and .snapshot.over_limit==["heartbeat"]'
+  jq '.ownership="recovering" | .phase="reconciling" | .station=null' "$fixture/live" > "$heartbeat"
+  mkdir "$lock/recover"
+  jq '{pid,start}' "$heartbeat" > "$lock/recover/owner.json"
+  status_query 0 heartbeat --json
+  status_assert '.controller.state=="recovering" and .next.owner=="controller"'
+
+  . "$ROOT/scripts/lib/ledger.sh"
+  ledger_init "$repo"
+  ledger_intent heartbeat "$fixture/intent" >/dev/null
+  ledger="$ledgers/heartbeat.jsonl"
+  jq '{pid,start,host,run}' "$fixture/live" > "$lock/owner.json"
+  jq '.phase="reconciling" | .station=null' "$fixture/live" > "$heartbeat"
+  status_query 0 heartbeat --json
+  status_assert '.controller.state=="alive" and .next.owner=="controller" and
+    .steps[1].station==null and .steps[1].interrupted==["heartbeat/1/0/executor/1/1"]'
+  cat "$fixture/live" > "$heartbeat"
+  status_query 0 heartbeat --json
+  status_assert '.next.owner=="station" and .steps[1].station.cli=="codex" and
+    .steps[1].station.elapsed_s>=0 and .steps[1].station.timeout_s==10 and .steps[1].interrupted==[]'
+  jq '.replaces=.run | .run = (.run | sub("/1$";"/2")) | .reason="relaunch"' "$fixture/intent" > "$fixture/replacement"
+  ledger_intent heartbeat "$fixture/replacement" >/dev/null
+  status_query 0 heartbeat --json
+  status_assert '.next.owner=="controller" and .steps[1].station==null and (.steps[1].interrupted|length)==2'
+  jq --slurpfile replacement "$fixture/replacement" '.station.run=$replacement[0].run' "$fixture/live" > "$heartbeat"
+  jq -n --slurpfile intent "$fixture/intent" '{v:1,kind:"end",chain:$intent[0].chain,how:"dropped",hold:null,at:(now|floor)}' > "$fixture/end"
+  ledger_end heartbeat "$fixture/end" >/dev/null
+  status_query 0 heartbeat --json
+  status_assert '.next.owner=="controller" and .steps[1].station==null and (.steps[1].interrupted|length)==2'
+
+  jq -n '[{id:"heartbeat/hold/1",issue:2,reason:("\u001b[31mblocked\u001b[0m\u0007 " + ("x"*200))}]' > "$state/heartbeat.holds.json"
+  status_query 10 heartbeat
+  grep -Fq 'Hold heartbeat/hold/1 on #2: blocked ' "$fixture/query" &&
+    grep -Fxq "  agentic-flow hold clear $doc heartbeat/hold/1" "$fixture/query" &&
+    ! LC_ALL=C grep -q '[[:cntrl:]]' "$fixture/query" &&
+    ! grep -q "$(printf '%0121d' 0 | tr 0 x)" "$fixture/query" || fail 'hold did not render safely'
+  status_query 10 heartbeat --json
+  status_assert '.holds[0].reason|startswith("blocked ")'
+  printf '[]\n' > "$state/heartbeat.holds.json"
+
+  # Use the same pure replay as handoff to derive the expected return state.
+  . "$ROOT/scripts/lib/workflow.sh"
+  . "$ROOT/scripts/lib/journal.sh"
+  workflow_load "$repo" || fail 'status journal fixture could not load workflow'
+  local JOURNAL_PLAN=heartbeat JOURNAL_STEP=alpha journal replay resume
+  local REVIEW_EXECUTORS=exec REVIEW_REVIEWERS=review REVIEW_APPROVERS=plan
+  status_marker() { # sequence, event, from, role, author, optional head
+    jq -nc --argjson seq "$1" --arg event "$2" --arg from "$3" --arg role "$4" --arg author "$5" --arg head "${6:-none}" '
+      {id:("fixture-"+($seq|tostring)),author:$author,
+       body:"agentic-flow-transition: v=1; id=heartbeat/alpha/\($seq)/\($event); event=\($event); from=\($from); role=\($role); head=\($head)\nFixture decision"}'
+  }
+  for result in executor:ask:executing reviewer:ask:reviewing reviewer:bounce:executing; do
+    IFS=: read -r role escalated_event return_state <<< "$result"
+    journal=$(
+      {
+        if [ "$role" = executor ]; then
+          status_marker 1 ask executing executor exec
+        else
+          status_marker 1 submit executing executor exec "$(printf 'a%.0s' {1..40})"
+          if [ "$escalated_event" = ask ]; then
+            status_marker 2 ask reviewing reviewer review
+          else
+            status_marker 2 bounce reviewing reviewer review
+            status_marker 3 submit executing executor exec "$(printf 'b%.0s' {1..40})"
+            status_marker 4 bounce reviewing reviewer review
+            status_marker 5 submit executing executor exec "$(printf 'c%.0s' {1..40})"
+            status_marker 6 bounce reviewing reviewer review
+          fi
+        fi
+      } | jq -cs '.'
+    )
+    replay=$(journal_replay "$journal" step-strict) || fail 'status journal fixture did not replay'
+    latest=$(printf '%s\n' "$replay" | jq -r .latest.id)
+    status_rows open escalated "$latest" > "$state/heartbeat.tsv"
+    printf '%s\n' "$replay" | jq --arg at "$timestamp" '
+      {v:1,plan:"heartbeat",refreshed_at:$at,rows:[{issue:1,step:"alpha",state,topology:"step-strict",
+        events:[.accepted[] | {id,event,role,at:$at}]}]}' > "$state/heartbeat.metrics.json"
+    status_query 10 heartbeat
+    grep -Fq "return state: $return_state" "$fixture/query" &&
+      grep -Fxq '  agentic-flow handoff 1 resume --as approver --body-file decision.md' "$fixture/query" ||
+      fail "missing return state or resume command for $result"
+    resume=$(status_marker "$(printf '%s\n' "$replay" | jq '.seq+1')" resume escalated approver plan)
+    journal=$(printf '%s\n' "$journal" "$resume" | jq -cs '.[0] + [.[1]]')
+    journal_replay "$journal" step-strict | jq -e --arg state "$return_state" '.state==$state' >/dev/null ||
+      fail "return-free resume did not match the journal for $result"
+  done
+  status_query 10 heartbeat --json
+  status_assert '.snapshot.complete and .escalations==[{issue:1,step:"alpha",by:"reviewer",
+    command:"agentic-flow handoff 1 resume --as approver --body-file decision.md"}]
+    and .steps[1].bounces==3'
+  jq '.rows[0].events |= .[:-1]' "$state/heartbeat.metrics.json" > "$fixture/stale-metrics"
+  mv "$fixture/stale-metrics" "$state/heartbeat.metrics.json"
+  status_query 10 heartbeat
+  grep -Fq 'return state: see #1' "$fixture/query" || fail 'stale metrics recommended a return state'
+  jq '.rows=[]' "$state/heartbeat.metrics.json" > "$fixture/empty-metrics"
+  mv "$fixture/empty-metrics" "$state/heartbeat.metrics.json"
+  status_query 10 heartbeat
+  grep -Fq 'return state: see #1' "$fixture/query" || fail 'missing metrics recommended a return state'
+
+  status_rows open > "$state/heartbeat.tsv"
+  status_query 0 heartbeat --json
+  status_assert '(.snapshot.complete|not) and .snapshot.missing==["steps"] and .next.owner=="controller"
+    and (.next.action | contains("the controller will refresh it"))'
+  rm -r "$lock"
+  status_query 10 heartbeat --json
+  status_assert '(.snapshot.complete|not) and (.next.command|endswith(" --reconcile-only"))'
+  status_rows open approved > "$state/heartbeat.tsv"
+  head -c 262145 /dev/zero > "$state/heartbeat.holds.json"
+  status_query 10 heartbeat --json
+  status_assert '.snapshot.over_limit==["holds"] and (.next.command|endswith(" --reconcile-only"))'
+  jq -n '[range(101) | {id:("heartbeat/hold/"+((.+1)|tostring)),issue:2,reason:"hold"}]' > "$state/heartbeat.holds.json"
+  status_query 10 heartbeat --json
+  status_assert '.snapshot.over_limit==["holds"] and (.next.command|endswith(" --reconcile-only"))'
+  printf '[]\n' > "$fixture/holds"
+  rm "$state/heartbeat.holds.json"
+  ln -s "$fixture/holds" "$state/heartbeat.holds.json"
+  status_query 10 heartbeat --json
+  status_assert '(.snapshot.complete|not) and (.next.command|endswith(" --reconcile-only"))'
+  rm "$state/heartbeat.holds.json"
+  printf '[]\n' > "$state/heartbeat.holds.json"
+  status_query 10 heartbeat --json
+  status_assert '.snapshot.complete and .steps[1].bounces==null and .next.command=="agentic-flow ship docs/inprogress/plan.md --wait-review"'
+  status_rows closed approved > "$state/heartbeat.tsv"
+  status_query 0 heartbeat --json
+  status_assert '.snapshot.complete and .next.owner=="none" and .next.command==null and (.next.action|contains("agentic-flow clean heartbeat"))'
+
+  perl -MFcntl=:flock -e 'open my $fh,"<",$ARGV[0] or die $!; flock($fh,LOCK_EX) or die $!;
+    open my $ready,">",$ARGV[1] or die $!; close $ready; sleep 15' "$ledger" "$fixture/ledger-locked" &
+  local locker=$! waited=0 lock_result=0
+  while [ ! -f "$fixture/ledger-locked" ] && [ "$waited" -lt 50 ]; do sleep 0.05; waited=$((waited+1)); done
+  status_query 0 heartbeat --json
+  status_assert '.snapshot.ledger=="busy" and .usage.cost_usd==null and all(.steps[]; .station==null and .interrupted==null)'
+  kill "$locker" 2>/dev/null || true
+  wait "$locker" 2>/dev/null || lock_result=$?
+  [ "$lock_result" -eq 143 ] || fail 'busy-ledger fixture did not hold the lock through the read'
+
+  # The install output retains its existing fields and adds only the bounded plan summary.
+  printf 'fixture-version\n' > "$repo/.agentic-flow-version"
+  ln -s "$ROOT/scripts/lib" "$repo/scripts/lib"
+  ln -s "$ROOT/config/payload.tsv" "$repo/config/payload.tsv"
+  for n in $(seq 1 24); do
+    status_rows open executing > "$state/plan-$n.tsv"
+    touch -t 202501010000 "$state/plan-$n.tsv"
+  done
+  touch -t 202601010000 "$state/plan-24.tsv"
+  status_query 0 --json
+  status_assert '(.plans.items|length)==20 and .plans.more==5 and
+    (.plans.items[:2]|map(.plan))==["heartbeat","plan-24"] and .installed=="fixture-version" and .action_needed==false'
+  ln -s "$cli" "$fixture/bin/agentic-flow"
+  cli="$fixture/bin/agentic-flow" status_query 0
+  grep -Fxq '  5 more' "$fixture/query" && grep -Fxq 'installed: fixture-version' "$fixture/query" ||
+    fail 'status from PATH changed the install report or omitted remaining plans'
+  # A real pseudo-terminal permits redraws and delivers an interrupt to status.
+  cat > "$fixture/watch" <<'WATCH'
+#!/usr/bin/env bash
+cd "$STATUS_WATCH_REPO" || exit 1
+rc=0
+"$STATUS_WATCH_CLI" status heartbeat --watch 300 || rc=$?
+printf '%s\n' "$rc" > "$STATUS_WATCH_EXIT"
+WATCH
+  cat > "$fixture/bin/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+[ "$*" = 300 ] || exit 1
+case "$(cat "$STATUS_WATCH_TICK")" in
+  0) printf '1' > "$STATUS_WATCH_TICK" ;;
+  1) printf '2' > "$STATUS_WATCH_TICK"; touch -t 202601010000 "$STATUS_WATCH_LEDGER" ;;
+  # A shell started with SIGINT ignored cannot trap it, so also send TERM, which the
+  # watch traps identically, rather than let the fixture loop forever.
+  *) kill -INT "$PPID"; kill -TERM "$PPID" 2>/dev/null || true ;;
+esac
+SLEEP
+  cat > "$fixture/bin/perl" <<'PERL'
+#!/usr/bin/env bash
+if [[ "$1" == */ledger.pl && "${3:-}" == read ]]; then
+  printf 'read\n' >> "$STATUS_WATCH_READS"
+fi
+exec "$STATUS_REAL_PERL" "$@"
+PERL
+  chmod +x "$fixture/watch" "$fixture/bin/sleep" "$fixture/bin/perl"
+  export STATUS_WATCH_REPO="$repo" STATUS_WATCH_CLI="$cli" STATUS_WATCH_TICK="$fixture/watch-tick"
+  export STATUS_WATCH_LEDGER="$ledger" STATUS_WATCH_READS="$fixture/watch-reads" STATUS_WATCH_EXIT="$fixture/watch-exit"
+  STATUS_REAL_PERL=$(command -v perl); export STATUS_REAL_PERL
+  printf '0' > "$STATUS_WATCH_TICK"
+  case "$(uname -s)" in
+    Darwin|FreeBSD) PATH="$fixture/bin:$PATH" script -q /dev/null "$fixture/watch" </dev/null > "$fixture/watch.out" ;;
+    *) PATH="$fixture/bin:$PATH" script -q -c "$fixture/watch" /dev/null </dev/null > "$fixture/watch.out" ;;
+  esac
+  [ "$(grep -c 'Plan: heartbeat' "$fixture/watch.out")" -eq 3 ] &&
+    [ "$(grep -c '^read$' "$STATUS_WATCH_READS")" -eq 2 ] &&
+    [ "$(cat "$STATUS_WATCH_EXIT")" = 0 ] &&
+    grep -Fq "$(printf '\033[2J\033[H')" "$fixture/watch.out" || fail "watch did not redraw, cache the ledger, and exit 0 on interrupt (tick $(cat "$STATUS_WATCH_TICK"), reads $(cat "$STATUS_WATCH_READS")): $(cat "$fixture/watch.out")"
+
+  local standard_doc=docs/inprogress/work-item.md
+  git -C "$repo" checkout -qb status-standard
+  sed -e 's/id: heartbeat/id: standard-test/' -e 's/profile: strict/profile: standard/' \
+    -e '/^tracking:/d' -e 's/branch: topic/branch: status-standard/' "$repo/$doc" > "$repo/$standard_doc"
+  git -C "$repo" add "$standard_doc"
+  git -C "$repo" commit -qm 'Record Standard plan'
+  git -C "$repo" checkout -q main
+  printf '3\talpha\tclosing\tnone\tnone\t%s\n' "$timestamp" > "$state/standard-test.tsv"
+  printf '[]\n' > "$state/standard-test.holds.json"
+  status_query 10 standard-test --json
+  status_assert '.snapshot.complete and (.steps|length)==1 and .next.command=="agentic-flow ship docs/inprogress/work-item.md --wait-review"'
+  printf '3\talpha\tclosed\tnone\tnone\t%s\n' "$timestamp" > "$state/standard-test.tsv"
+  status_query 0 "$standard_doc" --json
+  status_assert '.snapshot.complete and .next.owner=="none"'
+  printf '3\talpha\tapproved\tnone\tnone\t%s\n' "$timestamp" > "$state/standard-test.tsv"
+  status_query 10 standard-test --json
+  status_assert '(.snapshot.complete|not) and (.next.command|endswith(" --reconcile-only"))'
+  rm "$fixture/bin/sleep" "$fixture/bin/perl"
+  controller_detach_tests || fail 'detached controller regressions failed'
+  controller_wait_tests || fail 'wait-human controller regressions failed'
+  controller_wait_andon_tests || fail 'wait-human hold notification regressions failed'
+  [ ! -e "$STATUS_FORGE_MARKER" ] || fail 'offline status called the forge'
+)
+status_tests || fail 'controller heartbeat regressions failed'
 test_timing_end
 fi # scenario

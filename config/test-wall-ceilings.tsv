@@ -13,7 +13,8 @@ stations:handoff	305
 stations:packet	65
 controller	1950
 controller:launch	150
-controller:ship	30
+controller:ship	45
 controller:andon	10
 controller:ledger	60
 controller:recovery	1750
+controller:status	85

@@ -154,6 +154,26 @@ and harness version. It skips pushing when it confirms the destination branch ha
 exact head. Use `ship <doc> --force-gate` to rerun the optional gate. Merge after the
 shipping checks pass.
 
+Use `scripts/agentic-flow run <doc> --detach` to run in the background. It reports
+the controller's PID, log path, and status command after the controller takes the
+lock. If the controller has already finished, the launch returns its exit code.
+With `--json`, the result contains `pid`, `log`, `status`, and `finished_exit`
+(`null` while running). The log captures both output streams and is capped at 16 MiB.
+
+Add `--wait-human [<max-s>]` to keep the controller running on a resumable hold or
+escalation, in the foreground or with `--detach`. Follow the next action in `status` to
+clear the hold or record a decision. The controller picks up the change and resumes
+in the same process. The resumable hold reasons are `station-escalation`,
+`station-infrastructure`, `findings-incomplete`, and `plan-effect-pending`. The default
+wait is 86,400 seconds per stop, with a maximum of 604,800 seconds. A timeout or a stop
+that needs repair exits 10. `--wait-human` conflicts with `--once` and `--reconcile-only`.
+
+Use `scripts/agentic-flow status <plan-id|doc>` to see the local controller and station
+state, open holds, and the next action. Run it with `--watch` in a terminal to refresh
+every five seconds, or pass an interval from 2 to 300 seconds. Use `--json` for a single
+machine-readable snapshot. The plan view exits 10 when the next action needs a human
+and 0 when a controller or station is working or the plan is closed.
+
 For an identical effective CLI and model on both stations, add and approve this entry
 in the project's `docs/accepted_risks.md` before unattended use:
 
@@ -207,7 +227,7 @@ scripts/agentic-flow upgrade --yes
 
 - `status` is offline and read-only. It reports the installed version, pending candidate
   version, unresolved `.agentic-new` files, stack profile, detected adapters, recorded
-  source, and git-ignored payload paths.
+  source, and git-ignored payload paths, followed by a summary of local plans.
 - `diff` fetches the recorded source/ref into a temporary cache and reports what would
   create, overwrite, or land as a merge candidate. It writes nothing. Use
   `scripts/agentic-flow diff --ref <tag-or-branch>` for a one-off comparison without

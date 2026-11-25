@@ -602,6 +602,96 @@ fail	'start after recovery did not preserve the fresh record and separate locks'
 fail	'stranded dry-run changed the record or hid its salvage'
 fail	'unsupported Git recovery lacked the version hint'
 fail	'worktree lock contention changed plan state'
+fail	"$signal exit heartbeat missing or controller returned $rc"
+fail	"could not send $signal to controller"
+fail	"detach did not report the acknowledged pid and completed exit ($mode)"
+fail	"detach fixture timed out waiting for $*"
+fail	"detach returned $actual, expected $2: $(cat "$3")"
+fail	"heartbeat signal fixture did not pause: $(cat "$fixture/signal-err")"
+fail	"losing detach changed the winner's state"
+fail	"missing return state or resume command for $result"
+fail	"return-free resume did not match the journal for $result"
+fail	"status $* returned $rc, expected $expected: $(cat "$fixture/query.err" "$fixture/query")"
+fail	"status assertion failed: $1: $(cat "$fixture/query")"
+fail	"watch did not redraw, cache the ledger, and exit 0 on interrupt (tick $(cat "$STATUS_WATCH_TICK"), reads $(cat "$STATUS_WATCH_READS")): $(cat "$fixture/watch.out")"
+fail	'bounded log did not capture both streams and end with one marker at the cap'
+fail	'busy-ledger fixture did not hold the lock through the read'
+fail	'capping the log interrupted controller ledger or cache writes'
+fail	'claimant failure heartbeat missing'
+fail	'controller heartbeat regressions failed'
+fail	'controller rewrote an existing acknowledgment'
+fail	'detach accepted the stale nonce or left a timed-out controller running'
+fail	'detach did not preserve the completed controller error'
+fail	'detach did not prune expired artifacts or keep the live log'
+fail	'detached acknowledgment identity differs from the lock'
+fail	'detached controller regressions failed'
+fail	"dirty detached startup returned $code: $(cat "$fixture/err")"
+fail	'heartbeat did not report claimant promotion'
+fail	'heartbeat shape or phase sequence differed'
+fail	'heartbeat write failure changed controller result'
+fail	'hold did not render safely'
+fail	'invalid detach created launch state'
+fail	'live-owner precheck forked a child'
+fail	'lock loser changed heartbeat'
+fail	'missing metrics recommended a return state'
+fail	'normal exit heartbeat missing'
+fail	'offline status called the forge'
+fail	'running detach returned the wrong result'
+fail	'stale metrics recommended a return state'
+fail	'status created a ledger directory'
+fail	'status from PATH changed the install report or omitted remaining plans'
+fail	'status journal fixture could not load workflow'
+fail	'status journal fixture did not replay'
+fail	'the winner did not outlive its detach parent'
+fail	'unapproved document changed heartbeat'
+fail	'zero exit without acknowledgment succeeded or leaked log escapes'
+status_run	0 --detach --reconcile-only --json
+status_run	0 --once --json
+status_run	0 --reconcile-only --json
+status_run	2 --detach --reconcile-only
+status_run	2 --detach --unknown
+status_run	2 --reconcile-only
+status_run	3 --reconcile-only
+status_run	5 --detach --reconcile-only
+status_run	5 --reconcile-only
+status_run	9 --detach --reconcile-only
+status_run	9 --reconcile-only
+fail	"controller slept on a non-resumable stop ($mode)"
+fail	"heartbeat controller returned $rc, expected $expected (${WAIT_FIXTURE:-$*}): $(cat "$fixture/err" "$fixture/out")"
+fail	"local-only hold returned $rc ($attempt)"
+fail	"wait heartbeat assertion failed: $1"
+fail	'detached controller did not wait under its lock'
+fail	'detached waiter did not resume and release its lock'
+fail	'dispatch did not resume on the next turn'
+fail	'duplicate local-only hold lacked its open status'
+fail	'existing local-only hold was not published'
+fail	'foreign host did not end the observe-only wait'
+fail	'new integrity hold was missed'
+fail	'poll ran at or after the deadline'
+fail	'poll ran reconcile effects or skipped the read cache'
+fail	'published hold did not replace the local snapshot entry'
+fail	'publishing a local hold changed its id or repeated the notification'
+fail	'the escalated station did not resume'
+fail	'three failed polls did not exit 5'
+fail	'unretryable poll was retried'
+fail	'wait-human controller regressions failed'
+fail	'wait-human hold notification regressions failed'
+status_run	0 --detach --wait-human 60 --json
+status_run	0 --wait-human --json
+status_run	0 --wait-human 120 --json
+status_run	0 --wait-human 60 --json
+status_run	10 --wait-human 3 --json
+status_run	10 --wait-human 60 --json
+status_run	2 --detach --reconcile-only --wait-human 10
+status_run	2 --wait-human --once
+status_run	2 --wait-human --wait-human
+status_run	2 --wait-human 0
+status_run	2 --wait-human 604801
+status_run	2 --wait-human invalid
+status_run	3 --wait-human 60 --json
+status_run	5 --wait-human 60 --json
+fail	'documentation link check rejected a moved plan sibling link'
+fail	'documentation link check accepted a missing moved-plan target'
 adoption_refused	"$doc" '65,536 characters' --adopt alpha=46
 adoption_refused	"$doc" 'already stamped on issue #47' --adopt alpha=41
 adoption_refused	"$doc" 'could not read issue #41' --adopt alpha=41
