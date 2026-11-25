@@ -2080,7 +2080,7 @@ scope_expect	"$scope_locals" 'first resolving base'
 scope_expect	"$scope_locals" 'source-only destination'
 scope_expect	"$scope_locals" 'untracked application file'
 select_markers	"$selection:$selection "
-select_markers	'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship '
+select_markers	'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship status:status '
 select_markers	'launch:launch launch:timing '
 select_markers	'ledger:ledger ship:ship '
 select_markers	'ship:ship '

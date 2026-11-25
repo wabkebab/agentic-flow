@@ -609,7 +609,7 @@ SHARD_PROBE
     else parallel_probe 1 failure --jobs "$selection"; fi
     grep -q 'injected export shard failure' "$fixture/out" || fail 'parallel dispatcher did not overlap the first two shards within the CPU limit'
     grep -q 'injected hooks shard failure' "$fixture/out" || fail 'parallel dispatcher omitted another failing shard'
-    grep -q 'fixture shard controller/recovery finished' "$fixture/out" || fail 'parallel dispatcher stopped after a failed shard'
+    grep -q 'fixture shard controller/status finished' "$fixture/out" || fail 'parallel dispatcher stopped after a failed shard'
     for shard in export hooks; do
       grep -q "shard $shard exited" "$fixture/out" || fail "parallel dispatcher omitted failed shard status for $shard"
     done
@@ -635,7 +635,7 @@ SHARD_PROBE
   grep -q 'full mode made 240 fixture file copies; limit 194' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
   [ "$(cost_count "$fixture/events" source_snapshot_copy)" -eq 1 ] || fail 'parallel dispatcher duplicated the source snapshot'
 
-  expected='export contracts upgrade hooks plan-to-issues lifecycle stations/launch stations/verify stations/handoff stations/packet controller/launch controller/ship controller/andon controller/ledger controller/recovery '
+  expected='export contracts upgrade hooks plan-to-issues lifecycle stations/launch stations/verify stations/handoff stations/packet controller/launch controller/ship controller/andon controller/ledger controller/recovery controller/status '
   for selection in 1 default; do
     if [ "$selection" = 1 ]; then parallel_probe 0 pass --jobs 1
     else parallel_probe 0 pass; fi

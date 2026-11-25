@@ -154,6 +154,12 @@ and harness version. It skips pushing when it confirms the destination branch ha
 exact head. Use `ship <doc> --force-gate` to rerun the optional gate. Merge after the
 shipping checks pass.
 
+Use `scripts/agentic-flow run <doc> --detach` to run in the background. It reports
+the controller's PID, log path, and status command after the controller takes the
+lock. If the controller has already finished, the launch returns its exit code.
+With `--json`, the result contains `pid`, `log`, `status`, and `finished_exit`
+(`null` while running). The log captures both output streams and is capped at 16 MiB.
+
 Use `scripts/agentic-flow status <plan-id|doc>` to see the local controller and station
 state, open holds, and the next action. Run it with `--watch` in a terminal to refresh
 every five seconds, or pass an interval from 2 to 300 seconds. Use `--json` for a single

@@ -6,7 +6,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/packet.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/probe.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/start.sh"
-CONTROLLER_RECOVERY=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/recovery.pl
+CONTROLLER_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+CONTROLLER_RECOVERY="$CONTROLLER_LIB/recovery.pl"
 
 controller_error() { printf 'controller: %s\n' "$*" >&2; }
 
@@ -45,25 +46,30 @@ controller_check() { # Rule a: same read-only report exposed by handoff reconcil
   CT_TRACKER=$(jq -r '.tracker//.issues[0].number' "$CT_TMP/report")
 }
 
-controller_lock() {
+controller_lock_check() { # Inspect the existing owner without writing to the lock.
   local owner pid start host current
-  CT_LOCK="$CT_COMMON/agentic-flow/locks/controller-$CT_PLAN"
+  [ ! -L "$CT_LOCK" ] || return 5
+  [ -f "$CT_LOCK/owner.json" ] && [ ! -L "$CT_LOCK/owner.json" ] && [ "$(wc -c < "$CT_LOCK/owner.json")" -le 4096 ] || return 5
+  owner=$(cat "$CT_LOCK/owner.json") || return 5
+  printf '%s' "$owner" | jq -e '(.pid|type)=="number" and .pid>0 and (.start|type)=="string" and (.host|test("^[a-f0-9]{12}$")) and (.run|type)=="string"' >/dev/null || return 5
+  pid=$(printf '%s' "$owner" | jq -r .pid)
+  start=$(printf '%s' "$owner" | jq -r .start)
+  host=$(printf '%s' "$owner" | jq -r .host)
+  if [ "$host" = "$CT_HOST" ]; then
+    current=$(perl "$CONTROLLER_RECOVERY" process "$pid") || return 5
+    if [ -n "$current" ] && [ "$current" = "$start" ]; then controller_error "controller already owns $CT_PLAN (pid $pid)"; return 9; fi
+  elif [ "$CT_TAKE_OVER" = false ]; then controller_error "controller lock belongs to host $host"; return 9; fi
+  printf '%s\n' "$owner"
+}
+controller_lock() {
+  local owner
   mkdir -p "$CT_COMMON/agentic-flow/locks" || return 9
   [ ! -L "$CT_LOCK" ] || return 9
   if mkdir "$CT_LOCK" 2>/dev/null; then CT_LOCK_OWNED=true
   else
-    [ -f "$CT_LOCK/owner.json" ] && [ ! -L "$CT_LOCK/owner.json" ] && [ "$(wc -c < "$CT_LOCK/owner.json")" -le 4096 ] || return 9
-    owner=$(cat "$CT_LOCK/owner.json")
-    printf '%s' "$owner" | jq -e '(.pid|type)=="number" and .pid>0 and (.start|type)=="string" and (.host|test("^[a-f0-9]{12}$")) and (.run|type)=="string"' >/dev/null || return 9
-    pid=$(printf '%s' "$owner" | jq -r .pid)
-    start=$(printf '%s' "$owner" | jq -r .start)
-    host=$(printf '%s' "$owner" | jq -r .host)
-    if [ "$host" = "$CT_HOST" ]; then
-      current=$(perl "$CONTROLLER_RECOVERY" process "$pid") || return 9
-      if [ -n "$current" ] && [ "$current" = "$start" ]; then controller_error "controller already owns $CT_PLAN (pid $pid)"; return 9; fi
-    elif [ "$CT_TAKE_OVER" = false ]; then controller_error "controller lock belongs to host $host"; return 9; fi
+    owner=$(controller_lock_check) || return 9
     controller_claim "$owner" || return 9
-    CT_PREVIOUS_HOST=$host
+    CT_PREVIOUS_HOST=$(printf '%s' "$owner" | jq -r .host)
     # Keep the old owner until reconciliation completes cleanly.
     return 0
   fi
@@ -97,6 +103,23 @@ controller_lock_publish() {
     '{pid:$pid,start:$start,host:$host,run:$run}' > "$CT_LOCK/owner.tmp" || return 9
   mv "$CT_LOCK/owner.tmp" "$CT_LOCK/owner.json" || return 9
   CT_START=$start
+}
+controller_acknowledge() {
+  [ -n "$CT_DETACH_NONCE" ] || return 0
+  local dir="$CT_COMMON/agentic-flow/launches" tmp ownership=owner status=0
+  [ "$CT_LOCK_OWNED" = true ] || ownership=recovering
+  tmp=$(mktemp "$dir/.ack.XXXXXX") || return 5
+  if ! { jq -nc --arg nonce "$CT_DETACH_NONCE" --arg plan "$CT_PLAN" --argjson pid "$CT_PID" \
+    --arg start "$CT_START" --arg host "$CT_HOST" --arg run "$CT_RUN" --arg ownership "$ownership" '
+    {v:1,nonce:$nonce,plan:$plan,pid:$pid,start:$start,host:$host,run:$run,ownership:$ownership,at:(now|floor)}' > "$tmp" &&
+    [ "$(wc -c < "$tmp")" -le 1024 ] &&
+    perl -e 'link($ARGV[0], $ARGV[1]) or die "controller acknowledgment: $!\n"' "$tmp" "$dir/$CT_DETACH_NONCE.json"
+  }; then
+    controller_error "could not publish startup acknowledgment for $CT_PLAN"
+    status=5
+  fi
+  rm -f "$tmp"
+  return "$status"
 }
 controller_heartbeat() { # phase [intent | exit]
   { [ "${CT_LOCK_OWNED:-false}" = true ] || [ "${CT_RECOVER_CLAIM:-false}" = true ]; } || return 0
@@ -870,12 +893,30 @@ controller_dispatch() {
 
 controller_cmd() (
   set +x
-  local doc=${1:-} reconcile=false once=false CT_TAKE_OVER=false CT_JSON=false
+  local entry=$1; shift
+  local doc=${1:-} reconcile=false once=false detach=false CT_TAKE_OVER=false CT_JSON=false
+  local CT_DETACH_NONCE=${AGENTIC_DETACH_NONCE-}
   [ "$#" -ge 1 ] || return 2; shift
+  local forward=("$doc")
   while [ "$#" -gt 0 ]; do
-    case "$1" in --once) once=true ;; --reconcile-only) reconcile=true ;; --take-over) CT_TAKE_OVER=true ;; --json) CT_JSON=true ;; *) return 2 ;; esac
+    case "$1" in
+      --once) once=true ;;
+      --reconcile-only) reconcile=true ;;
+      --take-over) CT_TAKE_OVER=true ;;
+      --json) CT_JSON=true ;;
+      --detach) detach=true; shift; continue ;;
+      *) return 2 ;;
+    esac
+    forward+=("$1")
     shift
   done
+  case "$doc" in docs/inprogress/*.md) ;; *) return 2 ;; esac
+  case "$doc" in *'/../'*|*'/./'*|*[!A-Za-z0-9_./-]*) return 2 ;; esac
+  if [ "${AGENTIC_DETACH_NONCE+x}" ]; then
+    [[ "$CT_DETACH_NONCE" =~ ^[a-f0-9]{32}$ ]] && [ "$detach" = false ] || return 2
+    unset AGENTIC_DETACH_NONCE
+  fi
+  case "$entry" in /*) ;; *) entry="$PWD/$entry" ;; esac
   local CT_DOC=$doc CT_ASSIGNMENTS='' CT_STATIONS=0 CT_ACTIVE_RUN='' CT_TURNS=0 CT_TURN_CAP=50 CT_CHILD='' CT_CHILD_KIND=station CT_UNATTENDED=false
   [ "$once" = true ] || CT_UNATTENDED=true
   local CT_ROOT CT_COMMON CT_TMP CT_PLAN CT_BRANCH CT_SPEC CT_REPORT CT_TRACKER CT_RECORDS CT_CHAINS CT_CONTEXT='{}' CT_PENDING='[]'
@@ -885,8 +926,6 @@ controller_cmd() (
   [[ "$CT_LEASE" =~ ^[1-9][0-9]{0,6}$ ]] || return 2
   CT_ROOT=$(git rev-parse --show-toplevel) || return 3
   cd "$CT_ROOT" || return 3
-  case "$doc" in docs/inprogress/*.md) ;; *) return 2 ;; esac
-  case "$doc" in *'/../'*|*'/./'*|*[!A-Za-z0-9_./-]*) return 2 ;; esac
   CT_COMMON=$(git rev-parse --git-common-dir) && CT_COMMON=$(cd "$CT_COMMON" && pwd -P) || return 3
   CT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentic-controller.XXXXXX") || return 5
   trap 'controller_exit "$?"' EXIT
@@ -903,6 +942,18 @@ controller_cmd() (
   CT_SPEC=$(brief_parse "$CT_TMP/doc" "$doc" "$rev") || return 3
   CT_PLAN=$(printf '%s' "$CT_SPEC" | jq -r .id); CT_BRANCH=$(printf '%s' "$CT_SPEC" | jq -r .branch)
   git check-ref-format "refs/heads/$CT_BRANCH" || return 3
+  CT_LOCK="$CT_COMMON/agentic-flow/locks/controller-$CT_PLAN"
+  if [ "$detach" = true ]; then
+    if [ -e "$CT_LOCK" ]; then
+      local precheck=0
+      CT_HOST=$(perl "$CONTROLLER_RECOVERY" host "$CT_COMMON") || return 9
+      controller_lock_check >/dev/null || precheck=$?
+      [ "$precheck" -ne 9 ] || return 9
+    fi
+    rm -rf "$CT_TMP" || return 5
+    exec perl "$CONTROLLER_LIB/controller-detach.pl" "$CT_COMMON/agentic-flow" "$CT_PLAN" "$CT_JSON" \
+      "$BASH" "$entry" run "${forward[@]}"
+  fi
   CT_WORKTREE=$(plan_worktree_path "$CT_COMMON" "$CT_PLAN")
   if [ "$CT_ROOT" -ef "$CT_WORKTREE" ]; then
     [ "$(git symbolic-ref --quiet HEAD)" = "refs/heads/$CT_BRANCH" ] || {
@@ -929,6 +980,7 @@ controller_cmd() (
   HANDOFF_TMP=$CT_TMP HANDOFF_CONTROLLER_RUN=$CT_RUN HANDOFF_CONTROLLER_HOST=$CT_HOST
   HANDOFF_REPO=$(identity_repository "$CT_ROOT") || return 3
   controller_lock || return $?
+  controller_acknowledge || return $?
   controller_heartbeat reconciling
   controller_fault after-lock || return $?
   controller_check || return $?

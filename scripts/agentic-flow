@@ -17,7 +17,7 @@ usage:
   agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--force] [--json]
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
-  agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
+  agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--detach] [--json]
   agentic-flow doctor --stations [--station executor|reviewer] [--interactive] [--json]
   agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]
   agentic-flow approve <doc> --by <login>
@@ -30,6 +30,7 @@ usage:
   agentic-flow upgrade --merged <path>
   agentic-flow --help | --version
 
+  run --detach starts a background controller and reports its pid after it takes the lock.
   --version reports the adopted project's installed harness stamp.
 EOF
 }
@@ -636,7 +637,7 @@ subcommand="${1:-}"
       shift
       # shellcheck disable=SC1091
       . "$(dirname "$0")/lib/controller.sh"
-      controller_cmd "$@" ;;
+      controller_cmd "$0" "$@" ;;
     doctor)
       shift
       # shellcheck disable=SC1091

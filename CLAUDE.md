@@ -31,7 +31,8 @@
 Controller stations return result JSON and never call `handoff`; the controller verifies
 and journals their results. Interactive executors use `brief`, `verify-step`, and
 `handoff submit`; reviewers use `packet`, `verify-step`, and `handoff approve|bounce`.
-Use `status <plan-id|doc>` for offline progress and the next action, or add
+Use `run <doc> --detach` to start a background controller and report its acknowledged
+PID and log. Use `status <plan-id|doc>` for offline progress and the next action, or add
 `--watch` to follow the plan in a terminal. States live in `METHODOLOGY.md` §6.
 Before the first push, run `close-out prep <doc>`
 and commit the staged close-out. The human runs `ship <doc> --wait-review` to push once
