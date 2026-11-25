@@ -62,9 +62,7 @@ controller_lock() {
       current=$(perl "$CONTROLLER_RECOVERY" process "$pid") || return 9
       if [ -n "$current" ] && [ "$current" = "$start" ]; then controller_error "controller already owns $CT_PLAN (pid $pid)"; return 9; fi
     elif [ "$CT_TAKE_OVER" = false ]; then controller_error "controller lock belongs to host $host"; return 9; fi
-    controller_claim || return 9
-    CT_RECOVER_CLAIM=true
-    [ "$(cat "$CT_LOCK/owner.json")" = "$owner" ] || return 9
+    controller_claim "$owner" || return 9
     CT_PREVIOUS_HOST=$host
     # Keep the old owner until reconciliation completes cleanly.
     return 0
@@ -72,7 +70,7 @@ controller_lock() {
   controller_lock_publish
 }
 controller_claim() { # A recovery claimant can itself crash; inspect its process too.
-  local owner pid start current
+  local expected_owner=$1 owner pid start current
   if ! mkdir "$CT_LOCK/recover" 2>/dev/null; then
     [ -f "$CT_LOCK/recover/owner.json" ] && [ ! -L "$CT_LOCK/recover/owner.json" ] && [ "$(wc -c < "$CT_LOCK/recover/owner.json")" -le 4096 ] || return 9
     owner=$(cat "$CT_LOCK/recover/owner.json")
@@ -86,7 +84,10 @@ controller_claim() { # A recovery claimant can itself crash; inspect its process
   fi
   CT_RECOVER_CLAIM=true
   start=$(perl "$CONTROLLER_RECOVERY" process "$CT_PID") || return 9
-  jq -n --argjson pid "$CT_PID" --arg start "$start" '{pid:$pid,start:$start}' > "$CT_LOCK/recover/owner.json"
+  [ -n "$start" ] || return 9
+  jq -n --argjson pid "$CT_PID" --arg start "$start" '{pid:$pid,start:$start}' > "$CT_LOCK/recover/owner.json" || return 9
+  [ "$(cat "$CT_LOCK/owner.json")" = "$expected_owner" ] || return 9
+  CT_START=$start
 }
 controller_lock_publish() {
   local start
@@ -95,11 +96,47 @@ controller_lock_publish() {
   jq -n --argjson pid "$CT_PID" --arg start "$start" --arg host "$CT_HOST" --arg run "$CT_RUN" \
     '{pid:$pid,start:$start,host:$host,run:$run}' > "$CT_LOCK/owner.tmp" || return 9
   mv "$CT_LOCK/owner.tmp" "$CT_LOCK/owner.json" || return 9
+  CT_START=$start
+}
+controller_heartbeat() { # phase [intent | exit]
+  { [ "${CT_LOCK_OWNED:-false}" = true ] || [ "${CT_RECOVER_CLAIM:-false}" = true ]; } || return 0
+  # Ownership flags also cover cleanup of partially published locks.
+  [ -n "$CT_START" ] || return 0
+  local phase=$1 ownership=owner intent=null timeout=null exit_code=null dir target tmp=''
+  [ "$CT_LOCK_OWNED" = true ] || ownership=recovering
+  case "$phase" in
+    station) intent=$2; timeout=$LAUNCH_TIMEOUT ;;
+    stopped) exit_code=$2 ;;
+  esac
+  dir="$CT_COMMON/agentic-flow/state"
+  target="$dir/$CT_PLAN.controller.json"
+  if {
+    mkdir -p "$dir" &&
+    tmp=$(mktemp "$dir/.controller.XXXXXX") &&
+    jq -nc --arg plan "$CT_PLAN" --arg doc "$CT_DOC" --argjson pid "$CT_PID" --arg start "$CT_START" \
+      --arg host "$CT_HOST" --arg run "$CT_RUN" --arg ownership "$ownership" --arg phase "$phase" \
+      --argjson turn "$CT_TURNS" --argjson turn_cap "$CT_TURN_CAP" --argjson intent "$intent" \
+      --argjson timeout "$timeout" --argjson exit "$exit_code" '
+      {v:1,plan:$plan,doc:$doc,pid:$pid,start:$start,host:$host,run:$run,ownership:$ownership,
+       phase:$phase,turn:$turn,turn_cap:$turn_cap,
+       station:($intent|if .==null then null else {issue,step,station,cli,run,started,timeout_s:$timeout} end),
+       waiting:null,exit:$exit,updated_at:(now|floor)}' > "$tmp" &&
+    [ "$(wc -c < "$tmp")" -le 4096 ] &&
+    [ ! -d "$target" ] && mv -f "$tmp" "$target"
+  } 2>/dev/null; then
+    return 0
+  fi
+  [ -z "$tmp" ] || rm -f "$tmp" 2>/dev/null || true
+  controller_error "warning: could not write heartbeat for $CT_PLAN" || true
 }
 controller_unlock() {
   if [ "$CT_LOCK_OWNED" = true ]; then rm -rf "$CT_LOCK"
   elif [ "$CT_RECOVER_CLAIM" = true ]; then rm -rf "$CT_LOCK/recover"; fi
   rm -rf "$CT_TMP"
+}
+controller_exit() {
+  controller_heartbeat stopped "$1"
+  controller_unlock
 }
 controller_foreign() {
   local foreign number host seq row
@@ -773,11 +810,13 @@ controller_dispatch() {
   rm -f "$LAUNCH_PGID_FILE"
   : > "$CT_TMP/result"
   launch_started=$(date +%s)
+  controller_heartbeat station "$intent"
   if [ -n "$resume" ]; then launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" --resume "$resume" > "$CT_TMP/launched" 2> "$CT_TMP/launch-stderr" &
   else launch_station "$station" "$CT_WORKTREE" "$CT_TMP/packet" "$CT_TMP/result" > "$CT_TMP/launched" 2> "$CT_TMP/launch-stderr" & fi
   CT_CHILD=$!
   wait "$CT_CHILD" || rc=$?
   CT_CHILD=''
+  controller_heartbeat reconciling
   cat "$CT_TMP/launch-stderr" >&2
   CT_STATIONS=$((CT_STATIONS+1))
   # A supervised preflight refusal keeps its historical exit 6. An actual
@@ -837,10 +876,10 @@ controller_cmd() (
     case "$1" in --once) once=true ;; --reconcile-only) reconcile=true ;; --take-over) CT_TAKE_OVER=true ;; --json) CT_JSON=true ;; *) return 2 ;; esac
     shift
   done
-  local CT_DOC=$doc CT_ASSIGNMENTS='' CT_STATIONS=0 CT_ACTIVE_RUN='' CT_TURNS=0 CT_CHILD='' CT_CHILD_KIND=station CT_UNATTENDED=false
+  local CT_DOC=$doc CT_ASSIGNMENTS='' CT_STATIONS=0 CT_ACTIVE_RUN='' CT_TURNS=0 CT_TURN_CAP=50 CT_CHILD='' CT_CHILD_KIND=station CT_UNATTENDED=false
   [ "$once" = true ] || CT_UNATTENDED=true
   local CT_ROOT CT_COMMON CT_TMP CT_PLAN CT_BRANCH CT_SPEC CT_REPORT CT_TRACKER CT_RECORDS CT_CHAINS CT_CONTEXT='{}' CT_PENDING='[]'
-  local CT_LOCK='' CT_LOCK_OWNED=false CT_RECOVER_CLAIM=false CT_PREVIOUS_HOST='' CT_STARTED=false CT_FOREIGN_ALLOWED='[]' CT_FOREIGN_SEEN=false
+  local CT_LOCK='' CT_LOCK_OWNED=false CT_RECOVER_CLAIM=false CT_START='' CT_PREVIOUS_HOST='' CT_STARTED=false CT_FOREIGN_ALLOWED='[]' CT_FOREIGN_SEEN=false
   local CT_HOLDS='[]' CT_HOLD_REASONS='[]' CT_REPAIRS='[]' CT_RAISED=false CT_OWNERSHIP=null CT_REVIEWER_ESCALATE='' CT_REVIEWER_RELAUNCH='' CT_SNAPSHOT='{}' CT_SALVAGE_ONLY=false
   local CT_HOST CT_PID CT_RUN CT_WORKTREE CT_LEASE=${AGENTIC_CONTROLLER_LEASE:-21600} approval rev dirty status=0 result=0
   [[ "$CT_LEASE" =~ ^[1-9][0-9]{0,6}$ ]] || return 2
@@ -850,7 +889,7 @@ controller_cmd() (
   case "$doc" in *'/../'*|*'/./'*|*[!A-Za-z0-9_./-]*) return 2 ;; esac
   CT_COMMON=$(git rev-parse --git-common-dir) && CT_COMMON=$(cd "$CT_COMMON" && pwd -P) || return 3
   CT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentic-controller.XXXXXX") || return 5
-  trap controller_unlock EXIT
+  trap 'controller_exit "$?"' EXIT
   trap 'controller_interrupt 130' INT
   trap 'controller_interrupt 143' TERM
   if ! git show "HEAD:$doc" > "$CT_TMP/head-doc"; then
@@ -890,6 +929,7 @@ controller_cmd() (
   HANDOFF_TMP=$CT_TMP HANDOFF_CONTROLLER_RUN=$CT_RUN HANDOFF_CONTROLLER_HOST=$CT_HOST
   HANDOFF_REPO=$(identity_repository "$CT_ROOT") || return 3
   controller_lock || return $?
+  controller_heartbeat reconciling
   controller_fault after-lock || return $?
   controller_check || return $?
   controller_foreign || return $?
@@ -900,6 +940,7 @@ controller_cmd() (
     if [ "$once" = false ]; then controller_gate || return 6; fi
   fi
   while :; do
+  controller_heartbeat reconciling
   CT_RAISED=false CT_HOLD_REASONS='[]' CT_REVIEWER_ESCALATE='' CT_REVIEWER_RELAUNCH=''
   if ! CT_RECORDS=$(ledger_read "$CT_PLAN" 2> "$CT_TMP/ledger-error"); then
     HANDOFF_LEDGER_UNAVAILABLE=true
@@ -937,7 +978,11 @@ controller_cmd() (
     mkdir -p "$CT_COMMON/agentic-flow/state" || return 5
     handoff_write_cache "$CT_COMMON" "$HANDOFF_ISSUES" || return 5
     if [ "$CT_RAISED" = true ] || [ "$(printf '%s' "$CT_HOLDS" | jq length)" -gt 0 ] || printf '%s' "$CT_REPORT" | jq -e 'any(.issues[];.state=="escalated")' >/dev/null; then result=10; fi
-    if [ "$result" -eq 0 ] && [ "$CT_RECOVER_CLAIM" = true ]; then controller_lock_publish || return 9; CT_LOCK_OWNED=true; fi
+    if [ "$result" -eq 0 ] && [ "$CT_RECOVER_CLAIM" = true ]; then
+      controller_lock_publish || return 9
+      CT_LOCK_OWNED=true CT_RECOVER_CLAIM=false
+      controller_heartbeat reconciling
+    fi
     if [ "$CT_PREVIOUS_HOST" != '' ] && [ "$result" -eq 0 ]; then
       jq -n --arg plan "$CT_PLAN" --arg host "$CT_HOST" --arg previous "$CT_PREVIOUS_HOST" --arg run "$CT_RUN" '{v:1,kind:"takeover",plan:$plan,host:$host,previous_host:$previous,run:$run,at:(now|floor)}' > "$CT_TMP/record"
       controller_record takeover || return 5
@@ -950,11 +995,11 @@ controller_cmd() (
     if ! printf '%s' "$CT_PENDING" | jq -e 'any(.[];.pending=="verify")' >/dev/null; then break; fi
   fi
   if controller_finished; then break; fi
-  CT_TURNS=$((CT_TURNS+1))
-  if [ "$CT_TURNS" -gt 50 ]; then
-    controller_hold "$CT_TRACKER" turn-cap 'Controller reached the 50-turn cap.' || return $?
+  if [ "$CT_TURNS" -ge "$CT_TURN_CAP" ]; then
+    controller_hold "$CT_TRACKER" turn-cap "Controller reached the $CT_TURN_CAP-turn cap." || return $?
     result=10; break
   fi
+  CT_TURNS=$((CT_TURNS+1))
   controller_dispatch || { result=$?; break; }
   done
   local output

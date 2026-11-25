@@ -65,7 +65,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--ship-gate|--fast|--full [--jobs N] [--all-groups]|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario TAG[,TAG] (controller: launch,ledger,recovery,ship,andon; stations: launch,packet,verify,handoff)]" >&2
+      echo "usage: $0 [--ship-gate|--fast|--full [--jobs N] [--all-groups]|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario TAG[,TAG] (controller: launch,ledger,recovery,ship,andon,status; stations: launch,packet,verify,handoff)]" >&2
       exit 0
       ;;
     *)
@@ -123,8 +123,8 @@ case " $SELF_TEST_GROUPS " in
 esac
 # SCENARIO DISPATCH BEGIN: validate before fixtures or group checks run.
 # Order tags by the first block that uses each tag in the serial runner.
-CONTROLLER_SCENARIOS="launch ship andon ledger recovery"
-CONTROLLER_BLOCKS="timing:launch ship:ship andon:andon launch:launch ledger:ledger recovery:recovery"
+CONTROLLER_SCENARIOS="launch ship andon ledger recovery status"
+CONTROLLER_BLOCKS="timing:launch ship:ship andon:andon launch:launch ledger:ledger recovery:recovery status:status"
 STATIONS_SCENARIOS="launch verify handoff packet"
 STATIONS_BLOCKS="watchdogs:launch cache:verify slice:launch journal:handoff cli:handoff interrupt:verify red-first:verify packet:packet closeout:handoff settings:launch"
 SCENARIO_BLOCKS_RAN=" "

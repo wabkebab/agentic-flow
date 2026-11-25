@@ -196,7 +196,7 @@ sed 's/^if should_run_scenario ship ship; then$/if should_run_scenario typo ship
 select_run 1 --only controller --scenario ship
 grep -q 'unknown controller scenario block at call site' "$SELECT_FIX/err" || fail 'drifted scenario call site was not rejected'
 cat "$SELECT_FIX/blocks" > "$SELECT_FIX/scripts/tests/controller.sh"
-for selection in launch ledger recovery ship andon; do
+for selection in launch ledger recovery ship andon status; do
   select_run 0 --only controller --scenario "$selection"
   if [ "$selection" = launch ]; then select_markers 'launch:launch launch:timing '
   else select_markers "$selection:$selection "; fi
@@ -206,7 +206,7 @@ select_markers 'ledger:ledger ship:ship '
 select_run 0 --only controller --scenario ship,ship
 select_markers 'ship:ship '
 select_run 0 --only controller
-select_markers 'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship '
+select_markers 'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship status:status '
 # Parent make command-line variables travel through MAKEFLAGS. Fixture invocations
 # need a clean make environment so a no-group case really has no F= or S=.
 select_make() {
@@ -236,7 +236,7 @@ for selection_makefile in "$ROOT/Makefile" "$ROOT/templates/harness/Makefile"; d
   : > "$SELECT_FIX/events"
   AGENTIC_MEASURE_EVENTS="$SELECT_FIX/events" select_make \
     test-one F=controller > "$SELECT_FIX/make.out" || fail 'Makefile did not run the whole group by default'
-  select_markers 'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship '
+  select_markers 'andon:andon launch:launch launch:timing ledger:ledger recovery:recovery ship:ship status:status '
   select_make -n test S=ship > "$SELECT_FIX/ci"
   grep -q 'self-test.sh --full' "$SELECT_FIX/ci" || fail 'CI lost full self-test invocation'
   if grep -q -- '--scenario' "$SELECT_FIX/ci"; then fail 'scenario selection leaked into CI'; fi
@@ -3753,4 +3753,195 @@ REGRESSION
 )
 recovery_tests || fail 'controller recovery regressions failed'
 test_timing_end
+fi # scenario
+
+if should_run_scenario status status; then
+status_tests() (
+  local fixture="$TMP/controller-status" repo state lock heartbeat doc=docs/inprogress/plan.md
+  local base signal expected launcher owner_pid waited rc
+  mkdir -p "$fixture"
+  fixture=$(cd "$fixture" && pwd -P)
+  repo="$fixture/project with spaces"; state="$repo/.git/agentic-flow/state"
+  lock="$repo/.git/agentic-flow/locks/controller-heartbeat"
+  heartbeat="$state/heartbeat.controller.json"
+  mkdir -p "$repo/docs/inprogress" "$repo/scripts" "$repo/config" "$fixture/bin"
+  ln "$ROOT/config/workflow.tsv" "$repo/config/workflow.tsv"
+  printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=plan owner=owner > "$repo/.agentic-flow-review-policy"
+  cat > "$repo/$doc" <<'PLAN'
+# Feature — Heartbeat
+# Part B — Implementation brief
+```agentic-flow-plan
+id: heartbeat
+profile: strict
+tracking: Heartbeat
+branch: topic
+steps: alpha
+```
+## alpha — First
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** failure
+## Status
+- **Approval:** pending
+PLAN
+  printf '#!/usr/bin/env bash\nprintf "fixture packet\\n"\n' > "$repo/scripts/agentic-flow"
+  chmod +x "$repo/scripts/agentic-flow"
+  git -C "$repo" init -q
+  git -C "$repo" checkout -qb main
+  git -C "$repo" config user.name Fixture
+  git -C "$repo" config user.email fixture@example.invalid
+  git -C "$repo" config commit.gpgsign false
+  git -C "$repo" remote add origin https://github.com/owner/repo.git
+  git -C "$repo" add "$doc" scripts/agentic-flow config/workflow.tsv .agentic-flow-review-policy
+  git -C "$repo" commit -qm 'Heartbeat plan'
+  base=$(git -C "$repo" rev-parse HEAD)
+  sed "s/Approval:\*\* pending/Approval:** status=approved; by=owner; at=2026-01-01; rev=$base/" "$repo/$doc" > "$fixture/approved"
+  cat "$fixture/approved" > "$repo/$doc"
+  git -C "$repo" commit -qam 'Approve heartbeat plan'
+
+  # The process probe checks actual PID liveness. Supply its start string locally.
+  cat > "$fixture/bin/ps" <<'PS'
+#!/usr/bin/env bash
+[ "$#" -eq 4 ] && [ "$1" = -p ] && [ "$3" = -o ] && [ "$4" = lstart= ] || exit 2
+kill -0 "$2" || exit 1
+printf 'fixture-start-%s\n' "$2"
+PS
+  chmod +x "$fixture/bin/ps"
+
+  # Run the controller and dispatch with local adapters for the forge and station.
+  cat > "$fixture/run" <<'RUNNER'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$1/scripts/lib/controller.sh"
+fixture=$2 repo=$3 heartbeat=$4
+shift 4
+export AGENTIC_WORKTREE_ROOT="$fixture/worktrees"
+export PATH="$fixture/bin:$PATH"
+cd "$repo"
+controller_check() {
+  CT_REPORT='{"issues":[{"number":1,"step":"alpha","topology":"step-strict","state":"executing","replay":{"seq":0}}]}'
+  CT_TRACKER=2
+  printf '%s\n' "$CT_REPORT" > "$CT_TMP/report"
+}
+controller_foreign() { :; }
+controller_holds() { :; }
+controller_worktree() { :; }
+controller_labels() { :; }
+controller_open_state() { :; }
+controller_plan_effect() { :; }
+controller_unjournaled() { :; }
+controller_completed_effects() { :; }
+controller_pending() { :; }
+controller_repair() { :; }
+handoff_write_cache() { :; }
+HANDOFF_ISSUES='[]'
+roles_load() { ROLES_JSON='[{"station":"executor","cli":"codex","model":"-","effort":"-","max_turns":"-","budget_usd":"-","timeout_s":"10","profile":"fixture"}]'; }
+controller_probe() { :; }
+launch_fingerprint() { printf '%064d\n' 0; }
+ledger_read() { printf '[]\n'; }
+ledger_chains() { printf '[]\n'; }
+ledger_generation() { printf '1\n'; }
+controller_record() {
+  if [ "$1" = intent ]; then cat "$CT_TMP/record" > "$fixture/intent"; fi
+}
+controller_store_output() { :; }
+launch_station() {
+  jq -e '.phase=="station" and .station.station=="executor"' "$heartbeat" >/dev/null || return 6
+  printf '{"v":1,"station":"executor","outcome":"ask","head":null,"summary":"Fixture","question":"Fixture?","findings":[]}\n' > "$4"
+  printf '{"seconds":1,"usage":{}}\n'
+}
+mv() {
+  local target=${!#} source owner bytes
+  if [ "$target" = "$heartbeat" ]; then
+    source=$2
+    [ "${source%/*}" = "${target%/*}" ] && [ -d "$CT_TMP" ] || return 1
+    owner="$CT_LOCK/owner.json"
+    if [ "$(jq -r .ownership "$source")" = recovering ]; then owner="$CT_LOCK/recover/owner.json"; fi
+    bytes=$(wc -c < "$source")
+    [ "$bytes" -le 4096 ] &&
+      jq -e --slurpfile owner "$owner" '.pid==$owner[0].pid and .start==$owner[0].start and
+        (if .ownership=="owner" then .host==$owner[0].host and .run==$owner[0].run else true end)' "$source" >/dev/null || return 1
+    command mv "$@" || return 1
+    cat "$target" >> "$fixture/trace"
+  else
+    command mv "$@"
+  fi
+}
+if [ "${HEARTBEAT_READ_ONLY:-}" = true ] && [ "$EUID" -eq 0 ]; then
+  # Root can write through chmod. Inject the same temp-file refusal in that case.
+  mktemp() { case "$1" in "${heartbeat%/*}/"*) return 1 ;; *) command mktemp "$@" ;; esac; }
+fi
+controller_cmd docs/inprogress/plan.md "$@"
+RUNNER
+  status_run() {
+    local expected=$1 rc=0; shift
+    bash "$fixture/run" "$ROOT" "$fixture" "$repo" "$heartbeat" "$@" > "$fixture/out" 2> "$fixture/err" || rc=$?
+    [ "$rc" = "$expected" ] || fail "heartbeat controller returned $rc, expected $expected: $(cat "$fixture/err")"
+  }
+  status_run 0 --once --json
+  jq -se --slurpfile intent "$fixture/intent" '
+    map(.phase)==["reconciling","reconciling","station","reconciling","reconciling","stopped"] and
+    map(.turn)==[0,0,1,1,1,1] and
+    all(.[];
+      keys==["doc","exit","host","ownership","phase","pid","plan","run","start","station","turn","turn_cap","updated_at","v","waiting"] and
+      .v==1 and .plan=="heartbeat" and .doc=="docs/inprogress/plan.md" and
+      .ownership=="owner" and .pid>0 and (.start|type=="string" and length>0) and
+      (.host|test("^[0-9a-f]{12}$")) and (.run|startswith("heartbeat/controller/")) and
+      .turn_cap==50 and .waiting==null and .updated_at>=1 and
+      (if .phase=="station" then .station==($intent[0]|{issue,step,station,cli,run,started,timeout_s:10})
+       else .station==null end) and
+      (if .phase=="stopped" then .exit==0 else .exit==null end))' "$fixture/trace" >/dev/null ||
+    fail 'heartbeat shape or phase sequence differed'
+  jq -e '.phase=="stopped" and .exit==0' "$heartbeat" >/dev/null || fail 'normal exit heartbeat missing'
+  cat "$heartbeat" > "$fixture/previous"
+  git -C "$repo" checkout -q --detach "$base"
+  status_run 3 --reconcile-only
+  cmp -s "$heartbeat" "$fixture/previous" || fail 'unapproved document changed heartbeat'
+  git -C "$repo" checkout -q main
+
+  mkdir "$lock"
+  jq '{pid,start:"stale",host,run}' "$heartbeat" > "$lock/owner.json"
+  : > "$fixture/trace"
+  AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-lock status_run 5 --reconcile-only
+  jq -se 'map([.phase,.ownership,.exit])==[["reconciling","recovering",null],["stopped","recovering",5]]' \
+    "$fixture/trace" >/dev/null || fail 'claimant failure heartbeat missing'
+  : > "$fixture/trace"
+  status_run 0 --reconcile-only --json
+  jq -se 'map([.phase,.ownership,.exit])==[
+    ["reconciling","recovering",null],["reconciling","recovering",null],
+    ["reconciling","owner",null],["stopped","owner",0]]' "$fixture/trace" >/dev/null ||
+    fail 'heartbeat did not report claimant promotion'
+  cat "$fixture/out" > "$fixture/normal-out"
+  cat "$heartbeat" > "$fixture/previous"
+  chmod a-w "$state"
+  rc=0
+  HEARTBEAT_READ_ONLY=true bash "$fixture/run" "$ROOT" "$fixture" "$repo" "$heartbeat" --reconcile-only --json \
+    > "$fixture/out" 2> "$fixture/err" || rc=$?
+  chmod u+w "$state"
+  [ "$rc" = 0 ] && cmp -s "$fixture/out" "$fixture/normal-out" && cmp -s "$heartbeat" "$fixture/previous" &&
+    grep -qF 'warning: could not write heartbeat' "$fixture/err" || fail 'heartbeat write failure changed controller result'
+
+  for signal in TERM INT; do
+    AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-lock AGENTIC_CONTROLLER_PAUSE="$fixture/$signal" \
+      perl -e '$SIG{INT}="DEFAULT"; exec @ARGV' bash "$fixture/run" "$ROOT" "$fixture" "$repo" "$heartbeat" --reconcile-only \
+      > "$fixture/signal-out" 2> "$fixture/signal-err" &
+    launcher=$!; waited=0
+    while [ ! -f "$fixture/$signal.ready" ] && [ "$waited" -lt 100 ]; do sleep 0.1; waited=$((waited+1)); done
+    [ "$waited" -lt 100 ] || fail "heartbeat signal fixture did not pause: $(cat "$fixture/signal-err")"
+    if [ "$signal" = TERM ]; then
+      cat "$heartbeat" > "$fixture/previous"
+      status_run 9 --reconcile-only
+      cmp -s "$heartbeat" "$fixture/previous" || fail 'lock loser changed heartbeat'
+    fi
+    owner_pid=$(jq -er .pid "$lock/owner.json")
+    kill -"$signal" "$owner_pid" || fail "could not send $signal to controller"
+    rc=0; wait "$launcher" || rc=$?
+    expected=143; [ "$signal" != INT ] || expected=130
+    [ "$rc" = "$expected" ] && [ ! -e "$lock" ] &&
+      jq -e --argjson exit "$expected" '.phase=="stopped" and .exit==$exit' "$heartbeat" >/dev/null ||
+      fail "$signal exit heartbeat missing or controller returned $rc"
+  done
+)
+status_tests || fail 'controller heartbeat regressions failed'
 fi # scenario
