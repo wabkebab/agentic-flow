@@ -1644,6 +1644,18 @@ MARKDOWN
   printf '<a href="docs/missing.md#reference">Reference</a>\n' > "$fixture/README.md"
   perl "$checker" "$fixture" || fail 'documentation link check rejected a valid fragment'
 
+  # A plan moved to docs/done/ keeps the sibling links it was approved with.
+  mkdir -p "$fixture/docs/inprogress" "$fixture/docs/done"
+  printf '# Parent\n' > "$fixture/docs/inprogress/parent.md"
+  printf '[Parent](parent.md)\n' > "$fixture/docs/done/child.md"
+  printf '<a href="docs/missing.md#reference">Reference</a>\n' > "$fixture/README.md"
+  perl "$checker" "$fixture" || fail 'documentation link check rejected a moved plan sibling link'
+  printf '[Gone](gone.md)\n' > "$fixture/docs/done/child.md"
+  if perl "$checker" "$fixture" > "$fixture/out" 2>&1; then
+    fail 'documentation link check accepted a missing moved-plan target'
+  fi
+  rm -rf "$fixture/docs/inprogress" "$fixture/docs/done"
+
   perl "$checker" "$ROOT" || fail 'scaffold documentation has broken local links'
   explainer="$ROOT/docs/agentic-flow-explained.html"
   [ -f "$explainer" ] || fail 'missing scaffold workflow explainer'

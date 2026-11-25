@@ -63,6 +63,14 @@ sub decode_url {
 }
 
 my $failed = 0;
+sub link_resolves {
+    my ($target, $fragment) = @_;
+    my $resolved = abs_path($target);
+    return 0 if !defined($resolved) || index("$resolved/", "$root/") != 0 || !-e $resolved;
+    return 0 if $fragment && $resolved =~ /\.(?:md|html)\z/i && !anchors($resolved)->{decode_url($fragment)};
+    return 1;
+}
+
 sub check_link {
     my ($source, $line, $url) = @_;
     return if $url =~ m{^(?:[a-z][a-z0-9+.-]*:|//)}i;
@@ -71,12 +79,15 @@ sub check_link {
     $path = decode_url($path);
     my $target = !$path ? $source
         : $path =~ s{^/}{} ? "$root/$path" : dirname($source) . "/$path";
-    my $resolved = abs_path($target);
-    if (!defined($resolved) || index("$resolved/", "$root/") != 0 || !-e $resolved
-        || ($fragment && $resolved =~ /\.(?:md|html)\z/i && !anchors($resolved)->{decode_url($fragment)})) {
-        print STDERR "$source:$line: broken local link: $url\n";
-        $failed = 1;
+    return if link_resolves($target, $fragment);
+    # Close-out moves a plan from docs/inprogress/ to docs/done/ without editing it, so a
+    # sibling link written for its old home must still resolve from there.
+    if ($path && $source =~ m{^docs/done/} && $target !~ m{^/}) {
+        (my $origin = $source) =~ s{^docs/done/}{docs/inprogress/};
+        return if link_resolves(dirname($origin) . "/$path", $fragment);
     }
+    print STDERR "$source:$line: broken local link: $url\n";
+    $failed = 1;
 }
 
 for my $source (sort @files) {

@@ -690,3 +690,5 @@ status_run	2 --wait-human 604801
 status_run	2 --wait-human invalid
 status_run	3 --wait-human 60 --json
 status_run	5 --wait-human 60 --json
+fail	'documentation link check rejected a moved plan sibling link'
+fail	'documentation link check accepted a missing moved-plan target'
