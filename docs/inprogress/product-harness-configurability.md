@@ -1,6 +1,6 @@
 <!-- TRIAGE (first pass · 2026-11-25) -->
 > **Type:** Product Analysis · **Status:** 🟦 Proposal
-> How an adopter configures, installs, observes, exposes and removes the harness: agent-agnostic stations, one config surface, setup/upgrade wizards, process status, CLI vs GUI, daemon vs scripts, repository visibility, uninstall, and warn-or-stop test budgets. Phase 1 (observability) is drafted as `feature-process-status.md`. Revision 2 (2026-11-25) answers the roadmap review: aligned Phase 1 interface, plan-pinned workflow policy, per-reason andon responses, policy-aware verification caches, replay-safe redaction, and an ownership-bounded uninstall. Written against `0.20.0` (`c2f7e32`). Owner decisions pending.
+> How an adopter configures, installs, observes, exposes and removes the harness: agent-agnostic stations, one config surface, setup/upgrade wizards, process status, CLI vs GUI, daemon vs scripts, repository visibility, uninstall, and warn-or-stop test budgets. Phase 1 (observability) is drafted as `feature-process-status.md`. Revision 2 (2026-11-25) answers the roadmap review: aligned Phase 1 interface, plan-pinned workflow policy, per-reason andon responses, policy-aware verification caches, replay-safe redaction, and an ownership-bounded uninstall. Revision 3 makes the pin immutable once issues are stamped and requires pristine provenance (the `accepted=` upstream hash) before uninstall deletes a file. Written against `0.20.0` (`c2f7e32`). Owner decisions pending.
 
 # Product Analysis — Harness configurability, visibility and lifecycle
 
@@ -99,8 +99,18 @@ tier, never across tiers:
 - A stamp without a policy field replays with today's rules (`max_bounces=2`, P1–P3
   blocking). That implicit pin keeps every existing journal's behaviour.
 - A config change affects only plans approved after it.
-- Lowering a limit on an active plan means re-approving the plan. Transitions already
-  admitted stay valid under the old pin.
+- **The pin is immutable once issues are stamped.** Replay reads one pin per issue, so a
+  mid-plan change would have no boundary between events judged under the old rule and
+  events judged under the new one.
+  - The controller's existing check that stamped issues match the approved plan
+    (`controller_check`, `controller.sh:30-44`) also compares the pinned policy.
+  - A reapproved plan whose policy differs from its stamped issues is refused, and the
+    controller holds.
+  - To run under a different policy, finish or abandon the plan and start a new one.
+- **Deferred:** an explicit policy transition. That would be an approver-only journal
+  event recording the new pin at a sequence number, with replay applying each event under
+  the pin in force at its seq. Revisit only if mid-plan changes turn out to be a real
+  need.
 - `workflow.tsv` changes its `bounces<2` / `bounces=2` literals into one parameterised
   requirement, `bounces<limit` / `bounces=limit`. The validator still rejects anything else.
 
@@ -266,10 +276,22 @@ Option 3 is rejected.
 `agentic-flow uninstall [--dry-run] [--keep-docs] [--purge-ledger] [--yes]`. The default
 is a dry run.
 
-- **Payload files.** Remove a file only when it is listed in `.agentic-flow-installation`
-  and its current hash equals the recorded installed hash. Changed, merged or unrecorded
-  files are reported and kept. That covers hand-merged `CLAUDE.md`, `AGENTS.md` and
-  `Makefile`.
+- **Payload files: delete only on proof of pristine provenance.**
+  - The installation record's `file=` hash cannot serve as that proof. It hashes the
+    destination as it stood after the last successful apply
+    (`payload-apply.sh:228-243`). A preserved local edit, a `kept` file or a hand-merged
+    contract is recorded too, so matching it would delete adopter work.
+  - A file is removed only when all of these hold:
+    - it is listed in `.agentic-flow-installation`;
+    - `.agentic-flow-upstream` has an `accepted=` hash for it with no pending `offered=`.
+      `accepted=` is the hash of the harness source as shipped
+      (`payload-apply.sh:584-600`);
+    - its current bytes hash to that `accepted=` value.
+  - Optionally, and by default when the recorded source ref is reachable, the bytes are
+    also compared with the pristine file re-exported from `.agentic-flow-source`.
+  - Anything else is reported and kept: no upstream record (older adopters), a pending
+    offer, or a hash mismatch. This keeps hand-merged `CLAUDE.md`, `AGENTS.md` and
+    `Makefile` unless they are byte-identical to the shipped template.
 - **Stamps.** Remove the harness's own stamps: `.agentic-flow-version`, `-source`,
   `-candidate-version`, `-installation`, `-upstream`, `-scopes-excluded`, and the
   project-owned `-assurance`, `-roles`, `-stack` and `-review-policy` after confirmation.
@@ -290,11 +312,19 @@ is a dry run.
   requires the **CI gate** check.
 - **Result.** One removal commit, staged by name, never pushed.
 
-Required test: start from an *upgraded* fixture that has a custom `core.hooksPath` with a
-chained scanner, a locally edited payload file, and an unmerged plan branch with a dirty
-worktree. Uninstall must refuse while the plan exists. After the plan is cleaned, it must
-remove only recorded, unmodified payload and leave the custom hooks, the edited file and
-the ledger in place.
+Required tests:
+
+- **Upgraded fixture.** Start from an *upgraded* fixture that has a custom
+  `core.hooksPath` with a chained scanner, and an unmerged plan branch with a dirty
+  worktree. Uninstall must refuse while the plan exists. After the plan is cleaned, it must
+  leave the custom hooks and the ledger in place.
+- **Edit carried through an upgrade.** Edit a payload file locally, then complete an
+  upgrade in which that path is unchanged upstream, so it is classified `kept`. The
+  upgrade refreshes `.agentic-flow-installation` with the edited file's hash. Uninstall
+  must keep that file.
+- **Hand-merged contract.** Merge `CLAUDE.md` by hand through `upgrade --merged`.
+  Uninstall must keep the merged file.
+- **Pristine file.** A file byte-identical to its `accepted=` upstream content is removed.
 
 ### K. Test and harness budgets: warn or stop
 
@@ -365,8 +395,10 @@ Config changes what replay and gates mean, so it waits for its tier contract.
       this is decided, no andon override from C ships.
 - [ ] **Override tiers (A).** Accept the five tiers and the plan-pinned list, including
       `review.block_at`?
-- [ ] **Plan pinning.** Accept the pin in the plan block and journal stamp, with stampless
-      journals replaying under the implicit legacy pin (2 bounces, P1–P3 blocking)?
+- [ ] **Plan pinning.** Accept the pin in the plan block and journal stamp, immutable once
+      issues are stamped, with stampless journals replaying under the implicit legacy pin
+      (2 bounces, P1–P3 blocking)? An explicit policy transition at a journal sequence
+      boundary is deferred.
 - [ ] **Bounce limit scope.** One project default, or a default per assurance level? Either
       way it is pinned per plan.
 - [ ] **Below-threshold findings default.** `comment` or `follow-up-issue`?
@@ -376,7 +408,8 @@ Config changes what replay and gates mean, so it waits for its tier contract.
       required, pseudonymous field in public mode.
 - [ ] **Budget modes (K).** Accept the defaults and the policy-hash cache rule? Should
       adopters' CI start at `warn` until they calibrate their ceilings?
-- [ ] **Uninstall.** Accept the hash-matched removal and the no-override plan guards?
+- [ ] **Uninstall.** Accept removal only on pristine provenance (the `accepted=` upstream
+      hash, optionally re-exported bytes) and the no-override plan guards?
       Invest in managed-region markers for hand-merged contracts later?
 
 Settled by this revision:
