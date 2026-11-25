@@ -3893,6 +3893,7 @@ RUNNER
        else .station==null end) and
       (if .phase=="stopped" then .exit==0 else .exit==null end))' "$fixture/trace" >/dev/null ||
     fail 'heartbeat shape or phase sequence differed'
+  cat "$fixture/trace" > "$fixture/station-trace"
   jq -e '.phase=="stopped" and .exit==0' "$heartbeat" >/dev/null || fail 'normal exit heartbeat missing'
   cat "$heartbeat" > "$fixture/previous"
   git -C "$repo" checkout -q --detach "$base"
@@ -3942,6 +3943,283 @@ RUNNER
       jq -e --argjson exit "$expected" '.phase=="stopped" and .exit==$exit' "$heartbeat" >/dev/null ||
       fail "$signal exit heartbeat missing or controller returned $rc"
   done
+
+  # Read the writer's real heartbeat shape and a validated ledger in an offline fixture.
+  local cli="$ROOT/scripts/agentic-flow" ledgers="$repo/.git/agentic-flow/ledger" ledger live_pid
+  local latest timestamp=2026-01-01T00:00:00Z
+  local n role escalated_event return_state result
+  status_query() {
+    local expected=$1 rc=0; shift
+    (cd "$repo" && PATH="$fixture/bin:$PATH" "$cli" status "$@") > "$fixture/query" 2> "$fixture/query.err" || rc=$?
+    [ "$rc" = "$expected" ] || fail "status $* returned $rc, expected $expected: $(cat "$fixture/query.err" "$fixture/query")"
+  }
+  status_assert() {
+    jq -e "$1" "$fixture/query" >/dev/null || fail "status assertion failed: $1: $(cat "$fixture/query")"
+  }
+  status_rows() { # tracker state, optional step state and latest event
+    printf '2\ttracker\t%s\tnone\tnone\t%s\n' "$1" "$timestamp"
+    if [ -n "${2:-}" ]; then
+      printf '1\talpha\t%s\t%s\tnone\t%s\n' "$2" "${3:-none}" "$timestamp"
+    fi
+  }
+  cat > "$fixture/bin/gh" <<'GH'
+#!/usr/bin/env bash
+printf 'unexpected forge call\n' > "$STATUS_FORGE_MARKER"
+exit 79
+GH
+  chmod +x "$fixture/bin/gh"
+  export STATUS_FORGE_MARKER="$fixture/forge-called"
+  cp "$ROOT/config/workflow.tsv" "$fixture/workflow"
+  rm "$repo/config/workflow.tsv"
+  mv "$fixture/workflow" "$repo/config/workflow.tsv"
+
+  status_query 3 missing-plan --json
+  status_query 2 heartbeat --watch
+  status_query 2 heartbeat --watch --json
+  status_query 2 heartbeat --watch 301
+  status_query 2 heartbeat --watch 1
+  [ ! -e "$ledgers" ] || fail 'status created a ledger directory'
+  status_rows open executing > "$state/heartbeat.tsv"
+  printf '[]\n' > "$state/heartbeat.holds.json"
+  status_query 10 "$doc" --json
+  status_assert '.plan=="heartbeat" and .snapshot.complete and .controller.state=="stopped"
+    and .controller.exit==130 and .steps[1].bounces==null and .steps[1].bounce_limit==2
+    and .snapshot.ledger=="absent" and .steps[1].interrupted==null and .usage.cost_usd==null
+    and .next=={owner:"human",action:"Run the controller",command:"agentic-flow run docs/inprogress/plan.md"}'
+
+  # Keep the lock/heartbeat identity alive through all controller-reader scenarios.
+  sleep 45 & live_pid=$!
+  # shellcheck disable=SC2064 # Retain the PID after the function's locals leave scope.
+  trap "kill '$live_pid' 2>/dev/null || true" EXIT
+  mkdir "$lock"
+  jq -s --argjson pid "$live_pid" '
+    map(select(.phase=="station")) | first | .pid=$pid | .start="fixture-start-\($pid)"' "$fixture/station-trace" > "$heartbeat"
+  jq '{pid,start,host,run}' "$heartbeat" > "$lock/owner.json"
+  cat "$heartbeat" > "$fixture/live"
+  jq '.start="a different owner"' "$lock/owner.json" > "$fixture/lock-saved"
+  mv "$fixture/lock-saved" "$lock/owner.json"
+  status_query 10 heartbeat --json
+  status_assert '.controller.state=="stopped" and .next.command=="agentic-flow run docs/inprogress/plan.md"'
+  jq '.start="stale process start"' "$fixture/live" > "$heartbeat"
+  jq '{pid,start,host,run}' "$heartbeat" > "$lock/owner.json"
+  status_query 10 heartbeat --json
+  status_assert '.controller.state=="stopped"'
+  jq '.host=(if .host=="ffffffffffff" then "000000000000" else "ffffffffffff" end)' "$fixture/live" > "$heartbeat"
+  status_query 10 heartbeat --json
+  status_assert '.controller.state=="other-host"'
+  printf '{broken\n' > "$heartbeat"
+  status_query 10 "$doc" --json
+  status_assert '.controller.state=="unknown" and .snapshot.complete'
+  head -c 4097 /dev/zero > "$heartbeat"
+  status_query 10 "$doc" --json
+  status_assert '.controller.state=="unknown" and .snapshot.over_limit==["heartbeat"]'
+  jq '.ownership="recovering" | .phase="reconciling" | .station=null' "$fixture/live" > "$heartbeat"
+  mkdir "$lock/recover"
+  jq '{pid,start}' "$heartbeat" > "$lock/recover/owner.json"
+  status_query 0 heartbeat --json
+  status_assert '.controller.state=="recovering" and .next.owner=="controller"'
+
+  . "$ROOT/scripts/lib/ledger.sh"
+  ledger_init "$repo"
+  ledger_intent heartbeat "$fixture/intent" >/dev/null
+  ledger="$ledgers/heartbeat.jsonl"
+  jq '{pid,start,host,run}' "$fixture/live" > "$lock/owner.json"
+  jq '.phase="reconciling" | .station=null' "$fixture/live" > "$heartbeat"
+  status_query 0 heartbeat --json
+  status_assert '.controller.state=="alive" and .next.owner=="controller" and
+    .steps[1].station==null and .steps[1].interrupted==["heartbeat/1/0/executor/1/1"]'
+  cat "$fixture/live" > "$heartbeat"
+  status_query 0 heartbeat --json
+  status_assert '.next.owner=="station" and .steps[1].station.cli=="codex" and
+    .steps[1].station.elapsed_s>=0 and .steps[1].station.timeout_s==10 and .steps[1].interrupted==[]'
+  jq '.replaces=.run | .run = (.run | sub("/1$";"/2")) | .reason="relaunch"' "$fixture/intent" > "$fixture/replacement"
+  ledger_intent heartbeat "$fixture/replacement" >/dev/null
+  status_query 0 heartbeat --json
+  status_assert '.next.owner=="controller" and .steps[1].station==null and (.steps[1].interrupted|length)==2'
+  jq --slurpfile replacement "$fixture/replacement" '.station.run=$replacement[0].run' "$fixture/live" > "$heartbeat"
+  jq -n --slurpfile intent "$fixture/intent" '{v:1,kind:"end",chain:$intent[0].chain,how:"dropped",hold:null,at:(now|floor)}' > "$fixture/end"
+  ledger_end heartbeat "$fixture/end" >/dev/null
+  status_query 0 heartbeat --json
+  status_assert '.next.owner=="controller" and .steps[1].station==null and (.steps[1].interrupted|length)==2'
+
+  jq -n '[{id:"heartbeat/hold/1",issue:2,reason:("\u001b[31mblocked\u001b[0m\u0007 " + ("x"*200))}]' > "$state/heartbeat.holds.json"
+  status_query 10 heartbeat
+  grep -Fq 'Hold heartbeat/hold/1 on #2: blocked ' "$fixture/query" &&
+    grep -Fxq "  agentic-flow hold clear $doc heartbeat/hold/1" "$fixture/query" &&
+    ! LC_ALL=C grep -q '[[:cntrl:]]' "$fixture/query" &&
+    ! grep -q "$(printf '%0121d' 0 | tr 0 x)" "$fixture/query" || fail 'hold did not render safely'
+  status_query 10 heartbeat --json
+  status_assert '.holds[0].reason|startswith("blocked ")'
+  printf '[]\n' > "$state/heartbeat.holds.json"
+
+  # Use the same pure replay as handoff to derive the expected return state.
+  . "$ROOT/scripts/lib/workflow.sh"
+  . "$ROOT/scripts/lib/journal.sh"
+  workflow_load "$repo" || fail 'status journal fixture could not load workflow'
+  local JOURNAL_PLAN=heartbeat JOURNAL_STEP=alpha journal replay resume
+  local REVIEW_EXECUTORS=exec REVIEW_REVIEWERS=review REVIEW_APPROVERS=plan
+  status_marker() { # sequence, event, from, role, author, optional head
+    jq -nc --argjson seq "$1" --arg event "$2" --arg from "$3" --arg role "$4" --arg author "$5" --arg head "${6:-none}" '
+      {id:("fixture-"+($seq|tostring)),author:$author,
+       body:"agentic-flow-transition: v=1; id=heartbeat/alpha/\($seq)/\($event); event=\($event); from=\($from); role=\($role); head=\($head)\nFixture decision"}'
+  }
+  for result in executor:ask:executing reviewer:ask:reviewing reviewer:bounce:executing; do
+    IFS=: read -r role escalated_event return_state <<< "$result"
+    journal=$(
+      {
+        if [ "$role" = executor ]; then
+          status_marker 1 ask executing executor exec
+        else
+          status_marker 1 submit executing executor exec "$(printf 'a%.0s' {1..40})"
+          if [ "$escalated_event" = ask ]; then
+            status_marker 2 ask reviewing reviewer review
+          else
+            status_marker 2 bounce reviewing reviewer review
+            status_marker 3 submit executing executor exec "$(printf 'b%.0s' {1..40})"
+            status_marker 4 bounce reviewing reviewer review
+            status_marker 5 submit executing executor exec "$(printf 'c%.0s' {1..40})"
+            status_marker 6 bounce reviewing reviewer review
+          fi
+        fi
+      } | jq -cs '.'
+    )
+    replay=$(journal_replay "$journal" step-strict) || fail 'status journal fixture did not replay'
+    latest=$(printf '%s\n' "$replay" | jq -r .latest.id)
+    status_rows open escalated "$latest" > "$state/heartbeat.tsv"
+    printf '%s\n' "$replay" | jq --arg at "$timestamp" '
+      {v:1,plan:"heartbeat",refreshed_at:$at,rows:[{issue:1,step:"alpha",state,topology:"step-strict",
+        events:[.accepted[] | {id,event,role,at:$at}]}]}' > "$state/heartbeat.metrics.json"
+    status_query 10 heartbeat
+    grep -Fq "return state: $return_state" "$fixture/query" &&
+      grep -Fxq '  agentic-flow handoff 1 resume --as approver --body-file decision.md' "$fixture/query" ||
+      fail "missing return state or resume command for $result"
+    resume=$(status_marker "$(printf '%s\n' "$replay" | jq '.seq+1')" resume escalated approver plan)
+    journal=$(printf '%s\n' "$journal" "$resume" | jq -cs '.[0] + [.[1]]')
+    journal_replay "$journal" step-strict | jq -e --arg state "$return_state" '.state==$state' >/dev/null ||
+      fail "return-free resume did not match the journal for $result"
+  done
+  status_query 10 heartbeat --json
+  status_assert '.snapshot.complete and .escalations==[{issue:1,step:"alpha",by:"reviewer",
+    command:"agentic-flow handoff 1 resume --as approver --body-file decision.md"}]
+    and .steps[1].bounces==3'
+  jq '.rows[0].events |= .[:-1]' "$state/heartbeat.metrics.json" > "$fixture/stale-metrics"
+  mv "$fixture/stale-metrics" "$state/heartbeat.metrics.json"
+  status_query 10 heartbeat
+  grep -Fq 'return state: see #1' "$fixture/query" || fail 'stale metrics recommended a return state'
+  jq '.rows=[]' "$state/heartbeat.metrics.json" > "$fixture/empty-metrics"
+  mv "$fixture/empty-metrics" "$state/heartbeat.metrics.json"
+  status_query 10 heartbeat
+  grep -Fq 'return state: see #1' "$fixture/query" || fail 'missing metrics recommended a return state'
+
+  status_rows open > "$state/heartbeat.tsv"
+  status_query 0 heartbeat --json
+  status_assert '(.snapshot.complete|not) and .snapshot.missing==["steps"] and .next.owner=="controller"
+    and (.next.action | contains("the controller will refresh it"))'
+  rm -r "$lock"
+  status_query 10 heartbeat --json
+  status_assert '(.snapshot.complete|not) and (.next.command|endswith(" --reconcile-only"))'
+  status_rows open approved > "$state/heartbeat.tsv"
+  head -c 262145 /dev/zero > "$state/heartbeat.holds.json"
+  status_query 10 heartbeat --json
+  status_assert '.snapshot.over_limit==["holds"] and (.next.command|endswith(" --reconcile-only"))'
+  jq -n '[range(101) | {id:("heartbeat/hold/"+((.+1)|tostring)),issue:2,reason:"hold"}]' > "$state/heartbeat.holds.json"
+  status_query 10 heartbeat --json
+  status_assert '.snapshot.over_limit==["holds"] and (.next.command|endswith(" --reconcile-only"))'
+  printf '[]\n' > "$fixture/holds"
+  rm "$state/heartbeat.holds.json"
+  ln -s "$fixture/holds" "$state/heartbeat.holds.json"
+  status_query 10 heartbeat --json
+  status_assert '(.snapshot.complete|not) and (.next.command|endswith(" --reconcile-only"))'
+  rm "$state/heartbeat.holds.json"
+  printf '[]\n' > "$state/heartbeat.holds.json"
+  status_query 10 heartbeat --json
+  status_assert '.snapshot.complete and .steps[1].bounces==null and .next.command=="agentic-flow ship docs/inprogress/plan.md --wait-review"'
+  status_rows closed approved > "$state/heartbeat.tsv"
+  status_query 0 heartbeat --json
+  status_assert '.snapshot.complete and .next.owner=="none" and .next.command==null and (.next.action|contains("agentic-flow clean heartbeat"))'
+
+  perl -MFcntl=:flock -e 'open my $fh,"<",$ARGV[0] or die $!; flock($fh,LOCK_EX) or die $!;
+    open my $ready,">",$ARGV[1] or die $!; close $ready; sleep 15' "$ledger" "$fixture/ledger-locked" &
+  local locker=$! waited=0 lock_result=0
+  while [ ! -f "$fixture/ledger-locked" ] && [ "$waited" -lt 50 ]; do sleep 0.05; waited=$((waited+1)); done
+  status_query 0 heartbeat --json
+  status_assert '.snapshot.ledger=="busy" and .usage.cost_usd==null and all(.steps[]; .station==null and .interrupted==null)'
+  kill "$locker" 2>/dev/null || true
+  wait "$locker" 2>/dev/null || lock_result=$?
+  [ "$lock_result" -eq 143 ] || fail 'busy-ledger fixture did not hold the lock through the read'
+
+  # The install output retains its existing fields and adds only the bounded plan summary.
+  printf 'fixture-version\n' > "$repo/.agentic-flow-version"
+  ln -s "$ROOT/scripts/lib" "$repo/scripts/lib"
+  ln -s "$ROOT/config/payload.tsv" "$repo/config/payload.tsv"
+  for n in $(seq 1 24); do
+    status_rows open executing > "$state/plan-$n.tsv"
+    touch -t 202501010000 "$state/plan-$n.tsv"
+  done
+  touch -t 202601010000 "$state/plan-24.tsv"
+  status_query 0 --json
+  status_assert '(.plans.items|length)==20 and .plans.more==5 and
+    (.plans.items[:2]|map(.plan))==["heartbeat","plan-24"] and .installed=="fixture-version" and .action_needed==false'
+  ln -s "$cli" "$fixture/bin/agentic-flow"
+  cli="$fixture/bin/agentic-flow" status_query 0
+  grep -Fxq '  5 more' "$fixture/query" && grep -Fxq 'installed: fixture-version' "$fixture/query" ||
+    fail 'status from PATH changed the install report or omitted remaining plans'
+  # A real pseudo-terminal permits redraws and delivers an interrupt to status.
+  cat > "$fixture/watch" <<'WATCH'
+#!/usr/bin/env bash
+cd "$STATUS_WATCH_REPO" || exit 1
+rc=0
+"$STATUS_WATCH_CLI" status heartbeat --watch 300 || rc=$?
+printf '%s\n' "$rc" > "$STATUS_WATCH_EXIT"
+WATCH
+  cat > "$fixture/bin/sleep" <<'SLEEP'
+#!/usr/bin/env bash
+[ "$*" = 300 ] || exit 1
+case "$(cat "$STATUS_WATCH_TICK")" in
+  0) printf '1' > "$STATUS_WATCH_TICK" ;;
+  1) printf '2' > "$STATUS_WATCH_TICK"; touch -t 202601010000 "$STATUS_WATCH_LEDGER" ;;
+  *) kill -INT "$PPID" ;;
+esac
+SLEEP
+  cat > "$fixture/bin/perl" <<'PERL'
+#!/usr/bin/env bash
+if [[ "$1" == */ledger.pl && "${3:-}" == read ]]; then
+  printf 'read\n' >> "$STATUS_WATCH_READS"
+fi
+exec "$STATUS_REAL_PERL" "$@"
+PERL
+  chmod +x "$fixture/watch" "$fixture/bin/sleep" "$fixture/bin/perl"
+  export STATUS_WATCH_REPO="$repo" STATUS_WATCH_CLI="$cli" STATUS_WATCH_TICK="$fixture/watch-tick"
+  export STATUS_WATCH_LEDGER="$ledger" STATUS_WATCH_READS="$fixture/watch-reads" STATUS_WATCH_EXIT="$fixture/watch-exit"
+  STATUS_REAL_PERL=$(command -v perl); export STATUS_REAL_PERL
+  printf '0' > "$STATUS_WATCH_TICK"
+  case "$(uname -s)" in
+    Darwin|FreeBSD) PATH="$fixture/bin:$PATH" script -q /dev/null "$fixture/watch" </dev/null > "$fixture/watch.out" ;;
+    *) PATH="$fixture/bin:$PATH" script -q -c "$fixture/watch" /dev/null </dev/null > "$fixture/watch.out" ;;
+  esac
+  [ "$(grep -c 'Plan: heartbeat' "$fixture/watch.out")" -eq 3 ] &&
+    [ "$(grep -c '^read$' "$STATUS_WATCH_READS")" -eq 2 ] &&
+    [ "$(cat "$STATUS_WATCH_EXIT")" = 0 ] &&
+    grep -Fq "$(printf '\033[2J\033[H')" "$fixture/watch.out" || fail "watch did not redraw, cache the ledger, and exit 0 on interrupt (tick $(cat "$STATUS_WATCH_TICK"), reads $(cat "$STATUS_WATCH_READS")): $(cat "$fixture/watch.out")"
+
+  local standard_doc=docs/inprogress/work-item.md
+  git -C "$repo" checkout -qb status-standard
+  sed -e 's/id: heartbeat/id: standard-test/' -e 's/profile: strict/profile: standard/' \
+    -e '/^tracking:/d' -e 's/branch: topic/branch: status-standard/' "$repo/$doc" > "$repo/$standard_doc"
+  git -C "$repo" add "$standard_doc"
+  git -C "$repo" commit -qm 'Record Standard plan'
+  git -C "$repo" checkout -q main
+  printf '3\talpha\tclosing\tnone\tnone\t%s\n' "$timestamp" > "$state/standard-test.tsv"
+  printf '[]\n' > "$state/standard-test.holds.json"
+  status_query 10 standard-test --json
+  status_assert '.snapshot.complete and (.steps|length)==1 and .next.command=="agentic-flow ship docs/inprogress/work-item.md --wait-review"'
+  printf '3\talpha\tclosed\tnone\tnone\t%s\n' "$timestamp" > "$state/standard-test.tsv"
+  status_query 0 "$standard_doc" --json
+  status_assert '.snapshot.complete and .next.owner=="none"'
+  printf '3\talpha\tapproved\tnone\tnone\t%s\n' "$timestamp" > "$state/standard-test.tsv"
+  status_query 10 standard-test --json
+  status_assert '(.snapshot.complete|not) and (.next.command|endswith(" --reconcile-only"))'
+  [ ! -e "$STATUS_FORGE_MARKER" ] || fail 'offline status called the forge'
 )
 status_tests || fail 'controller heartbeat regressions failed'
 fi # scenario

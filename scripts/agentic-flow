@@ -24,6 +24,7 @@ usage:
   agentic-flow hold clear <doc> <hold-id> [--rebaseline] [--note <text>]
   agentic-flow token <executor|reviewer|approver> [--check]
   agentic-flow status [--json]
+  agentic-flow status <plan-id|doc> [--watch [<seconds>]] [--json]
   agentic-flow diff [--ref <ref>] [--json]
   agentic-flow upgrade [--ref <ref>] [--force] [--yes]
   agentic-flow upgrade --merged <path>
@@ -464,14 +465,39 @@ upgrade_cmd() {
 }
 
 status_cmd() {
-  local json=false root version candidate stack origin ref adapters candidates ignored action_needed=false
+  local json=false plan='' interval=0 plans root version candidate stack origin ref adapters candidates ignored action_needed=false
+  local status_entry=$0
+  if [ -L "$status_entry" ]; then
+    status_entry=$(perl -MCwd=abs_path -e 'print abs_path($ARGV[0]) // ""' "$status_entry")
+    [ -n "$status_entry" ] || die 'cannot resolve the status command path'
+  fi
+  # shellcheck disable=SC1091
+  . "$(dirname "$status_entry")/lib/status.sh"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=true; shift ;;
       -h|--help) usage; exit 0 ;;
-      *) die "unknown status flag: $1" ;;
+      --watch)
+        [ "$interval" = 0 ] || die 'status accepts --watch once'
+        interval=5; shift
+        if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+          [[ "$1" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$1" -ge 2 ] && [ "$1" -le 300 ] ||
+            die 'status watch interval must be 2–300 seconds'
+          interval=$1; shift
+        fi ;;
+      -*) die "unknown status flag: $1" ;;
+      *) [ -z "$plan" ] && [ -n "$1" ] || die 'status accepts one plan id or doc'; plan=$1; shift ;;
     esac
   done
+  if [ "$interval" -gt 0 ]; then
+    [ -n "$plan" ] && [ "$json" = false ] && [ -t 1 ] ||
+      die 'status --watch requires a plan, TTY stdout and text output'
+  fi
+  if [ -n "$plan" ]; then
+    plan_id_valid "$plan" || status_doc_valid "$plan" || die 'status requires a plan id or repository-relative plan doc'
+    status_plan_cmd "$plan" "$json" "$interval"
+    return $?
+  fi
   root=$(find_root) || die "not inside an agentic-flow project (no .agentic-flow-version found)"
   version=$(sed -n '1p' "$root/.agentic-flow-version")
   candidate=$(sed -n '1p' "$root/.agentic-flow-candidate-version" 2>/dev/null || true)
@@ -483,6 +509,7 @@ status_cmd() {
   candidates=$(find "$root" -type f -name '*.agentic-new*' -print 2>/dev/null | sed "s|^$root/||" | sort)
   ignored=$(payload_ignored_paths "$root")
   [ -n "$candidate$candidates$ignored" ] && action_needed=true
+  plans=$(status_summary "$root") || plans='{"items":[],"more":0}'
 
   if [ "$json" = true ]; then
     jq -n \
@@ -496,6 +523,7 @@ status_cmd() {
       --arg candidates "$candidates" \
       --arg ignored "$ignored" \
       --argjson action_needed "$action_needed" \
+      --argjson plans "$plans" \
       '{
         root: $root,
         installed: $installed,
@@ -505,7 +533,8 @@ status_cmd() {
         adapters: ($adapters | split(",") | map(select(length > 0))),
         merge_candidates: ($candidates | split("\n") | map(select(length > 0))),
         git_ignored_payload: ($ignored | split("\n") | map(select(length > 0))),
-        action_needed: $action_needed
+        action_needed: $action_needed,
+        plans: $plans
       }'
   else
     echo "agentic-flow status"
@@ -535,6 +564,7 @@ status_cmd() {
     else
       echo "git-ignored payload paths: none"
     fi
+    printf '%s\n' "$plans" | status_jq 'summary_text' -r
   fi
 
   [ "$action_needed" = false ] || exit 1
