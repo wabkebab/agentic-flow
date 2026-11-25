@@ -350,7 +350,9 @@ assert_cost_budget() { # <event-file> <fast|full>
     # The snapshot is counted once above; retain the one-tree and fast limits.
     # Raised to 194 on 2026-11-21 (owner-approved): the first source-layout run of flow-ergonomics
     # measured 194 copies in CI (run 44872894369).
-    [ "$file_copies" -le 194 ] || fail "full mode made $file_copies fixture file copies; limit 194"
+    # Raised to 198 on 2026-11-25: process-status ships five new scripts/lib files, each copied
+    # once into the fixtures that copy the checkout (the exported budget moved 117 to 121).
+    [ "$file_copies" -le 198 ] || fail "full mode made $file_copies fixture file copies; limit 198"
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }

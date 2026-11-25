@@ -632,7 +632,7 @@ SHARD_PROBE
   git -C "$fixture" init -q
   : > "$fixture/scripts/export.sh"
   parallel_probe 1 budget --jobs 2
-  grep -q 'full mode made 240 fixture file copies; limit 194' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
+  grep -q 'full mode made 240 fixture file copies; limit 198' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
   [ "$(cost_count "$fixture/events" source_snapshot_copy)" -eq 1 ] || fail 'parallel dispatcher duplicated the source snapshot'
 
   expected='export contracts upgrade hooks plan-to-issues lifecycle stations/launch stations/verify stations/handoff stations/packet controller/launch controller/ship controller/andon controller/ledger controller/recovery controller/status '
@@ -2289,17 +2289,17 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
     || fail 'fixture budget did not identify repeated tree copying'
   printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
-  for ((copy_i=0; copy_i<195; copy_i++)); do
+  for ((copy_i=0; copy_i<199; copy_i++)); do
     printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   done
   ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
     > "$MEASURE_FIX/full-files.out" 2>&1 \
-    && fail 'full fixture budget accepted 195 copies'
-  grep -q 'full mode made 195 fixture file copies; limit 194' "$MEASURE_FIX/full-files.out" \
+    && fail 'full fixture budget accepted 199 copies'
+  grep -q 'full mode made 199 fixture file copies; limit 198' "$MEASURE_FIX/full-files.out" \
     || fail 'full fixture copy failure did not name the count and approved limit'
   sed '$d' "$MEASURE_FIX/full-files.events" > "$MEASURE_FIX/full-boundary.events"
   assert_cost_budget "$MEASURE_FIX/full-boundary.events" full \
-    || fail 'full fixture budget rejected its approved 194-copy boundary'
+    || fail 'full fixture budget rejected its approved 198-copy boundary'
 fi
 : > "$MEASURE_FIX/fast-files.events"
 for ((copy_i=0; copy_i<34; copy_i++)); do
