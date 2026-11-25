@@ -4622,7 +4622,9 @@ WATCH
 case "$(cat "$STATUS_WATCH_TICK")" in
   0) printf '1' > "$STATUS_WATCH_TICK" ;;
   1) printf '2' > "$STATUS_WATCH_TICK"; touch -t 202601010000 "$STATUS_WATCH_LEDGER" ;;
-  *) kill -INT "$PPID" ;;
+  # A shell started with SIGINT ignored cannot trap it, so also send TERM, which the
+  # watch traps identically, rather than let the fixture loop forever.
+  *) kill -INT "$PPID"; kill -TERM "$PPID" 2>/dev/null || true ;;
 esac
 SLEEP
   cat > "$fixture/bin/perl" <<'PERL'
