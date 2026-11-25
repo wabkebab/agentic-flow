@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-25) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (touches the controller loop; project baseline is Standard)
-> Phase 1 of [harness configurability](product-harness-configurability.md) (areas E and G): an offline, read-only plan view that answers "whose turn is it?", a controller heartbeat, `run --detach` with a startup acknowledgment, and `run --wait-human` for resumable stops. Revision 2 (2026-11-25) answers the first review: resumable stops, launch acknowledgment, log capping, station evidence, executable next actions, read bounds.
+> Phase 1 of [harness configurability](product-harness-configurability.md) (areas E and G): an offline, read-only plan view that answers "whose turn is it?", a controller heartbeat, `run --detach` with a startup acknowledgment, and `run --wait-human` for resumable stops. Revision 2 (2026-11-25) answers the first review: resumable stops, launch acknowledgment, log capping, station evidence, executable next actions, read bounds. Revision 3 answers the second: a write-once acknowledgment file, heartbeat writes only under lock ownership, separate holds completeness, a live controller preferred over a stale cache, the only valid bounce resume, and observe-only polls with deduplicated notifications.
 
 # Feature — Process status and detached runs
 
@@ -57,8 +57,23 @@ lets the controller run in the background and wait for the human, without adding
   - an unreadable ledger (`:911`)
 - **Escalation:** a station `ask`, or a bounce at the limit, moves an issue to `escalated`.
   It leaves that state only through
-  `agentic-flow handoff <N> resume --as approver --return executing|reviewing --body-file <note>`
-  (`config/workflow.tsv`; `handoff.sh:300-316`).
+  `agentic-flow handoff <N> resume --as approver --return <state> --body-file <note>`
+  (`config/workflow.tsv`; `handoff.sh:300-316`). Replay sets `return_to`:
+  - an `ask` sets it to the state the asker was in;
+  - a bounce at the limit sets it to `executing` (`journal.jq:28-29`).
+
+  `--return` must equal `return_to` (`handoff.sh:403`).
+- **Startup order:** `controller_cmd` installs its EXIT trap before validating the doc and
+  before `controller_lock` (`controller.sh:853`), so a rejected invocation still runs its
+  exit path.
+- **Reconcile effects:** a reconcile pass runs these, any of which can raise holds:
+  - `controller_labels`, `controller_open_state`
+  - `controller_plan_effect`, `controller_unjournaled`
+  - `controller_completed_effects`, `controller_pending`
+- **Local-only holds:** when the approver identity is unavailable, `handoff … hold`
+  records a local-only hold and notifies. A later call for the same issue and reason finds
+  the match with `comment_id=null`, records it again and notifies again
+  (`scripts/lib/andon.sh:99-118`).
 - **`agentic-flow status`** reports only the harness install and exits 1 when that needs
   action (`scripts/agentic-flow:466-540`). Its tests are in `scripts/tests/upgrade.sh`.
 - Station captures already run under their own `ulimit -f` inside `launch.sh`.
@@ -101,17 +116,20 @@ agentic-flow status <plan-id|doc> [--watch [<s>]] [--json]
   exit 3  unknown plan (no state, ledger, lock or plan doc)
 
 agentic-flow run <doc> [...existing flags] [--detach] [--wait-human [<max-s>]]
-  --detach      exit 0 only after a startup acknowledgment (C-4); prints controller pid, log, status cmd
+  --detach      success only with a write-once acknowledgment (C-4); prints controller pid, log, status cmd;
+                exit 0 while the controller runs, or the controller's own code if it already finished
   --wait-human  wait on resumable stops (C-5); exit 2 with --once or --reconcile-only
 
 <common>/agentic-flow/state/<plan>.controller.json     (≤ 4 KiB, tmp + mv)
 { v:1, plan, doc, pid, start, host, run, ownership:"owner"|"recovering",
-  launch:null|<nonce>,
   phase:"reconciling"|"station"|"waiting-human"|"stopped",
   turn, turn_cap,
   station:null|{issue, step, station, cli, run, started, timeout_s},
-  waiting:null|{stop, reasons, issues, since, next_poll_at, until, failed_polls},
+  waiting:null|{stop, reasons, issues, holds, seqs, since, next_poll_at, until, failed_polls},
   exit:null|<int>, updated_at }
+
+<common>/agentic-flow/launches/<nonce>.json             (write-once ack, ≤ 1 KiB; read and removed by the detach parent)
+{ v:1, nonce, plan, pid, start, host, run, ownership, at }
 
 <common>/agentic-flow/logs/<plan>/<run-id>.log          (≤ 16 MiB; newest 20 per plan kept)
 
@@ -127,10 +145,14 @@ status JSON (plan view):
 ```
 
 ### C-1 Heartbeat and liveness evidence
-The controller writes the heartbeat:
+**Only the lock holder writes.** Every heartbeat write, including the final one, requires
+`CT_LOCK_OWNED=true` or `CT_RECOVER_CLAIM=true`. An invocation that fails validation or
+loses the lock never touches the heartbeat. Its EXIT trap skips the write. The controller
+writes:
 - right after `controller_lock` succeeds, as owner or as recovery claimant;
 - at every turn start, at station launch and return, at entering and leaving a wait;
-- at exit, on every path including interrupts, before `CT_TMP` cleanup.
+- at exit, on every path including interrupts, while still owning the lock. That is,
+  before `controller_unlock` removes it and before `CT_TMP` cleanup.
 
 A write failure warns and never changes the result.
 
@@ -152,30 +174,43 @@ A step's station is reported as running only when all of these hold:
 Any other intent without a `station` record is listed under `interrupted`, never as running.
 
 ### C-2 Next action and snapshot completeness
-The snapshot is **complete** only when every condition holds:
-- The plan block parses from the plan doc on the local branch ref (`git show`, ≤ 1 MiB,
-  using the plan-block parser without an approval check).
-- The tsv has exactly one row per planned step, plus the tracker for Strict, or exactly
-  one work row for Standard. Every state is valid for its topology.
-- The metrics and holds caches parse within C-3's caps and cover the same issues.
+Each cache source has its own completeness check:
+
+- **Plan:** the plan block parses from the plan doc on the local branch ref (`git show`,
+  ≤ 1 MiB, using the plan-block parser without an approval check).
+- **Steps (tsv):** exactly one row per planned step, plus the tracker for Strict, or
+  exactly one work row for Standard. Every state is valid for its topology.
+- **Metrics:** parses within C-3's caps. Rows are matched to tsv issues, and a missing
+  row only nulls that step's bounce count.
+- **Holds:** the file exists, is within its cap and parses as an array. An empty array is
+  valid and means no open holds. Each entry must name an issue of this plan. There is
+  **no** coverage requirement against the tsv.
+
+The snapshot is complete when the plan, step and holds checks pass. Metrics gaps never
+make it incomplete.
 
 Rules, in order:
 
-1. Open hold → human: `agentic-flow hold clear <doc> <hold-id>`, after reading the hold
-   note on `#N`.
-2. Escalated issue with no open hold → human records the decision:
-   `agentic-flow handoff <N> resume --as approver --return <state> --body-file <decision.md>`.
-   The return state depends on the last admitted event:
+1. Holds data complete and a hold open → human: `agentic-flow hold clear <doc> <hold-id>`,
+   after reading the hold note on `#N`.
+2. Step data complete and an issue escalated with no open hold → human records the
+   decision with the one valid command:
+   `agentic-flow handoff <N> resume --as approver --return <return_to> --body-file <decision.md>`.
+   `return_to` follows replay:
    - executor `ask` → `executing`
    - reviewer `ask` → `reviewing`
-   - bounce at the limit → both commands are shown, and the human chooses
-3. Incomplete snapshot → human: `agentic-flow run <doc> --reconcile-only`. Never `ship`,
-   never "closed".
-4. Plan closed: the Strict tracker or the Standard work issue is `closed` → `none`, exit 0.
-   The action notes that `agentic-flow clean <plan>` follows the merge.
-5. Controller `alive` or `recovering` → `station` when C-1 proves one is running, else
-   `controller`. Exit 0.
-6. Ready to ship → human: `agentic-flow ship <doc> --wait-review`. Ready means:
+   - bounce at the limit → `executing`, never `reviewing`
+3. Controller `alive` or `recovering` → `station` when C-1 proves one is running, else
+   `controller`. Exit 0. This rule runs before any incomplete-snapshot rule, because a live
+   controller refreshes the cache itself and holds the lock that would reject a second
+   `run`. The view adds "cache incomplete; the controller will refresh it".
+4. Snapshot complete and the plan closed (the Strict tracker or the Standard work issue is
+   `closed`) → `none`, exit 0. The action notes that `agentic-flow clean <plan>` follows
+   the merge.
+5. Snapshot incomplete, with no live controller → human:
+   `agentic-flow run <doc> --reconcile-only`. Never `ship`, never "closed".
+6. Snapshot complete and ready to ship → human: `agentic-flow ship <doc> --wait-review`.
+   Ready means:
    - Strict: every step `approved` and the tracker `open` or `closing`
    - Standard: the work issue `closing`
 7. Otherwise → human: `agentic-flow run <doc>`.
@@ -218,16 +253,27 @@ Rendered text fields are cut to 120 characters, and control characters are strip
     `--detach`, with `AGENTIC_DETACH_NONCE` set, stdin from `/dev/null`, and stdout and
     stderr merged into a pipe.
   - The pipe feeds a bounded log writer started in the same session.
-- **Acknowledgment:** the controller writes `launch:<nonce>` into its first post-lock
-  heartbeat. The parent polls every 0.2 s for up to 30 s
-  (`AGENTIC_DETACH_ACK_S` overrides this for tests). It succeeds when the heartbeat
-  carries the nonce and C-1 classifies it `alive` or `recovering`. The parent then prints
-  the heartbeat's `pid`, which is the controller's `CT_PID`, not the fork PID, plus the log
-  path and `agentic-flow status <plan> --watch`, and exits 0.
-- **Child exits first:** the parent reaps it, prints the last 20 stripped log lines and
-  exits with the child's code. A lost lock race is 9.
-- **Timeout:** TERM the child's session, wait up to 10 s, then KILL, and exit 5 with the
-  log path.
+- **Acknowledgment: a write-once file, not the heartbeat.**
+  - The nonce must match `^[0-9a-f]{32}$`.
+  - Right after `controller_lock` succeeds, the controller creates
+    `launches/<nonce>.json` exclusively (`set -o noclobber`), holding its
+    `{pid (CT_PID), start, host, run, ownership}`, and never rewrites it.
+  - The file outlives the controller, so a run that finishes before the parent's first
+    poll still leaves its acknowledgment.
+- **Parent loop:** every 0.2 s for up to 30 s (`AGENTIC_DETACH_ACK_S` overrides this for
+  tests), check the acknowledgment file first, then the child.
+  - **Ack present, child running:** print the ack's `pid`, the log path and
+    `agentic-flow status <plan> --watch`, remove the ack file, and exit 0.
+  - **Ack present, child already exited:** print the same fields plus
+    `controller finished: exit <n>`, remove the ack file, and exit with the child's code.
+    The launch was acknowledged, and the code is the run's real outcome.
+  - **No ack, child exited:** this is a startup failure. Print the last 20 stripped log
+    lines and exit with the child's code (a lost lock race is 9). A child exit of 0 with no
+    ack exits 5 ("exited without acknowledgment").
+  - **Timeout:** TERM the child's session, wait up to 10 s, then KILL, and exit 5 with the
+    log path.
+- **Cleanup:** before forking, remove acknowledgment files older than 24 h. `status` never
+  reads them.
 - **Log writer:**
   - writes the first 16 MiB and then discards while still draining;
   - writes one marker at EOF: `agentic-flow: log truncated; <n> bytes dropped`;
@@ -257,18 +303,43 @@ covers stops from both the reconcile check and dispatch.
   These need repair or a new invocation.
 
 Waiting:
-- Record `waiting-human` with `until = now + max` (default 86,400 s, at most 604,800 s).
+- Record `waiting-human` with `until = now + max` (default 86,400 s, at most 604,800 s),
+  plus the stop's issue set and open hold ids.
 - Sleep `min(backoff, until − now)`; backoff starts at 60 s and doubles to 900 s.
-- Each poll resets the loop's per-turn state through the loop's existing top-of-iteration
-  reset, sets `result=0`, and runs one reconcile pass with dispatch suppressed.
-- Poll results:
-  - result 0 ends the wait, and the loop continues normally;
-  - result 10 with a resumable stop keeps waiting;
-  - result 10 with a non-resumable stop exits 10;
-  - result 5 counts as a failed poll, with the same backoff and deadline; 3 in a row exit 5;
-  - any other code exits with that code.
+- **Polls are observe-only.** A poll is not a reconcile pass.
+  - **Enabled during a poll:**
+    - the read-only report (`handoff_drift` via `controller_check`);
+    - `controller_holds`' import of authorized remote clears into the ledger;
+    - the state-cache write (`handoff_write_cache`).
+  - **Disabled during a poll:** `controller_labels`, `controller_open_state`,
+    `controller_plan_effect`, `controller_unjournaled`, `controller_completed_effects`,
+    `controller_pending`, `controller_foreign`'s hold path, and dispatch.
+
+  So a poll can neither raise a hold nor post a handoff.
+- **The wait ends when the observation changes:**
+  - every hold in the recorded set is cleared and no recorded issue is still escalated,
+    so the stop is resolved;
+  - any plan issue's journal sequence moves for another reason;
+  - a foreign controller host appears.
+
+  The loop then runs one normal, full turn, which counts against `CT_TURNS`. That turn
+  classifies any new stop afresh and may legitimately raise holds.
+- **Poll failures:**
+  - a poll exiting 5 counts as a failed poll, with the same backoff and deadline;
+  - 3 failed polls in a row exit 5;
+  - any other non-zero code from a poll exits with that code.
 - A poll never starts at or after `until`, which exits 10. Polls do not increment
   `CT_TURNS`. The lock stays held.
+
+**Notification deduplication.** A notification fires only when a new hold id is recorded.
+In `scripts/lib/andon.sh`:
+- When a matching local-only hold already exists (same issue and reason,
+  `comment_id=null`) and the approver identity is still unavailable, `handoff … hold`
+  returns "hold already open (local-only)" without a new record or notification.
+- When the approver identity is available, publishing that existing hold id as a comment
+  is not a new hold and does not notify again.
+
+Combined with observe-only polls, a wait never repeats a notification.
 
 ## Threat model (one paragraph)
 
@@ -288,11 +359,11 @@ today, under the Git common dir.
 |---|---|---|---|
 | Heartbeat / lock files | n/a | Controller `unknown`; other sections render | — |
 | Process probe | Controller `unknown` | Controller `unknown` | — |
-| Cache files | n/a | Listed in `over_limit` or `missing`; snapshot incomplete | No partial parse; rule 3 applies |
+| Cache files | n/a | Listed in `over_limit` or `missing`; snapshot incomplete | No partial parse; rule 3 if the controller is live, else rule 5 |
 | `ledger_read` | `ledger: busy`, fields `null` | `ledger: error`, fields `null` | — |
-| Detach acknowledgment | TERM, then KILL the child session; exit 5 | Nonce mismatch = no ack | Child exit before ack → its code |
+| Detach acknowledgment | TERM, then KILL the child session; exit 5 | Unparseable or wrong-nonce ack file = no ack | Child exit with ack → its code with the pid; without ack → its code (0 becomes 5) |
 | Log writer | n/a | n/a | Write error: drain without writing |
-| Forge poll in a wait | Existing `gh` bound; failed poll | Exit 5 from reconcile = failed poll | — |
+| Forge poll in a wait | Existing `gh` bound; failed poll | Exit 5 from the observe-only poll = failed poll | — |
 
 Bounds:
 - read caps as listed in C-3; at most 100 issues rendered
@@ -330,25 +401,33 @@ default.
 - Given a live reconciling controller and an intent without a station record, then the step lists the run under `interrupted`, `next.owner` is `controller`, and the exit is 0.
 - Given a live controller whose heartbeat names the newest open intent, then the step shows the CLI, elapsed time and timeout, and `next.owner` is `station`.
 - Given an open hold whose reason contains ANSI escapes, then the output has no control characters, shows `hold clear` for that hold id, and the exit is 10.
-- Given an escalated issue after an executor `ask`, then `next` is the approver `resume` with `--return executing`. After a bounce at the limit, both returns are shown.
-- Given every step approved, a tracker `open`, and a complete snapshot, then `next` is `ship`. Given a closed tracker, then `next.owner` is `none` and the exit is 0.
-- Given a missing step row or an over-limit metrics cache, then the snapshot is incomplete and `next` is `--reconcile-only`, never `ship`.
+- Given an escalated issue after an executor `ask`, then `next` is the approver `resume` with `--return executing`. After a reviewer `ask`, it is `--return reviewing`. After a bounce at the limit, only `--return executing` is shown. Each emitted command passes `handoff`'s return validation in a fixture.
+- Given every step approved, a tracker `open`, a holds cache of `[]`, and complete step data, then the snapshot is complete and `next` is `ship`. Given a closed tracker, then `next.owner` is `none` and the exit is 0.
+- Given a missing step row or an over-limit holds cache and no live controller, then the snapshot is incomplete and `next` is `--reconcile-only`, never `ship`. With a live controller, `next.owner` is `controller`, the exit is 0, and the view notes that the cache is incomplete.
+- Given a missing metrics row, then only that step's bounce count is null, and the snapshot stays complete.
 - Given a held ledger lock, then `ledger: busy` is reported and the command still exits.
 - Given 25 plans in `state/`, when `status` runs with no argument, then 20 are listed followed by `5 more`. The install lines and JSON keys are byte-identical to before.
 - Given a non-TTY stdout, `status <plan> --watch` exits 2.
-- Given two simultaneous `run --detach` invocations, then exactly one exits 0 with the acknowledged controller's pid, and the other exits 9.
+- Given two simultaneous `run --detach` invocations, then exactly one exits 0 with the acknowledged controller's pid, and the other exits 9. The winner's heartbeat (pid, run) is unchanged after the loser exits.
+- Given an invocation that fails validation or loses the lock, then no heartbeat or acknowledgment file is written or changed.
+- Given `run --detach --reconcile-only` on a fixture that finishes before the parent's first poll, then the parent reports the acknowledged pid and log, prints `controller finished: exit 0`, and exits 0.
 - Given a child that fails before the lock (a dirty plan worktree), then `--detach` exits 3 with the log tail and no acknowledgment.
+- Given a stale acknowledgment file with another nonce, then it is ignored.
 - Given a controller writing past 16 MiB of output, then the log stops at the cap with the truncation marker, and the run and its ledger writes complete.
 - Given `--wait-human` with `--once` or `--reconcile-only`, then `run` exits 2.
 - Given `--wait-human` and an existing hold found at reconcile, when the human clears it, then dispatch resumes in the same process without consuming turns.
 - Given `--wait-human` and a dispatch-raised `station-infrastructure` hold, when the human clears it, then dispatch resumes.
 - Given `--wait-human` and a turn-cap stop, an unreadable ledger, or an integrity hold, then the controller exits 10 immediately.
 - Given `--wait-human` and an approver `resume` on an escalated ask, then the next poll resumes dispatch.
+- Given `--wait-human` and a pending plan effect or unjournaled condition during the wait, then no poll raises a hold or posts a handoff. Only the full turn after the observation changes may raise one.
+- Given `--wait-human`, a local-only hold, and an approver identity that stays unavailable, then the desktop notification fires exactly once across the whole wait.
 - Given `--wait-human`, then 3 failed polls exit 5, and an elapsed deadline exits 10 without another poll.
 
 ## Invariants
 - `status` never writes files, never creates or edits the controller lock, and never runs `gh` or any network command. The only lock it takes is `ledger_read`'s bounded shared lock on an existing ledger file.
 - Nothing in the controller reads the heartbeat for a decision. The lock, ledger and journal stay authoritative.
+- Only the lock owner or recovery claimant writes the heartbeat or an acknowledgment file, and only while it holds that ownership.
+- A `--wait-human` poll never raises a hold, posts a handoff, repairs labels or projects state. A notification fires only for a newly recorded hold id.
 - Without the new flags, `run` behaves exactly as today, apart from writing the heartbeat. Waiting happens only when `--wait-human` is given explicitly (owner decision).
 - No `ulimit -f` is applied to the controller. Station captures keep their own limit.
 - Bash 3.2; no new required tool. Detaching uses Perl, which is already required.
@@ -389,7 +468,9 @@ make test                                 # end of brief
 **Approach:**
 - Implement the writer for Part A's heartbeat shape at every point listed in C-1, through
   tmp + `mv`, never inside the lock directory.
-- Include `ownership`, plus `launch` when `AGENTIC_DETACH_NONCE` is set.
+- The writer is a no-op unless `CT_LOCK_OWNED` or `CT_RECOVER_CLAIM` is true. The EXIT
+  trap's final write runs before `controller_unlock`.
+- Include `ownership`.
 - A write failure warns only.
 - Add the `status` tag to the controller group, its ceiling in
   `config/test-wall-ceilings.tsv`, and the tag in the Makefile usage string.
@@ -399,12 +480,15 @@ make test                                 # end of brief
 - The phase sequence on a fixture run.
 - The `recovering` ownership for a claimant.
 - `stopped` with the exit code on normal, error and 130/143 paths.
+- An invocation rejected at doc validation, and one that loses the lock, leave an existing
+  heartbeat byte-identical.
 - A read-only state dir leaves the result unchanged.
 
 **DoD:** every controller exit leaves a `stopped` heartbeat with its exit code; existing controller tests unchanged.
 **Verify:** `make test-one F=controller S=status`
 **Risks:**
-- The EXIT trap removing `CT_TMP` before the final write.
+- The EXIT trap removing `CT_TMP` or the lock before the final write.
+- A losing invocation's trap overwriting the winner's heartbeat.
 - Writing the claimant's heartbeat before the claim file exists.
 **Red-first:** none
 **Commit:** `Publish a controller heartbeat for status readers`
@@ -446,21 +530,30 @@ make test                                 # end of brief
 **Why third:** a background run is only usable once it is visible.
 
 **Approach:**
-- Implement C-4: validation and pre-check, the nonce, the Perl `setsid` exec, the
-  acknowledgment wait, child-exit and timeout handling, the bounded log writer (a small
-  Perl script under `scripts/lib/`), and pruning.
-- `--json` prints `{pid, log, status}`.
+- Implement C-4:
+  - validation and pre-check;
+  - the nonce;
+  - the controller's exclusive, write-once acknowledgment file, created right after the
+    lock is taken;
+  - the Perl `setsid` exec;
+  - the parent loop with its four outcomes;
+  - the bounded log writer (a small Perl script under `scripts/lib/`);
+  - pruning of logs and old acknowledgment files.
+- `--json` prints `{pid, log, status, finished_exit}`.
 
 **Test:**
-- Two simultaneous detaches: one 0, one 9.
+- Two simultaneous detaches: one 0, one 9. The winner's heartbeat and acknowledgment
+  survive the loser.
+- A `--reconcile-only` run that finishes before the first poll reports the acknowledged
+  pid and its exit.
 - A child failing before the lock exits with its code and the log tail.
 - An acknowledgment timeout terminates the session and exits 5.
-- A stale heartbeat with another nonce is not accepted.
+- A stale acknowledgment file with another nonce is ignored.
 - Output over the cap truncates the log, and the run's ledger and cache writes still
   succeed.
 - The child survives the parent's exit.
 
-**DoD:** `--detach` exits 0 only for an acknowledged controller and reports that controller's pid; logs are capped without limiting the controller.
+**DoD:** `--detach` reports success only for an acknowledged controller, with that controller's pid, even when the run has already finished; logs are capped without limiting the controller.
 **Verify:** `make test-one F=controller S=status`
 **Risks:**
 - The writer exiting early would raise EPIPE in the controller. The writer exits only at
@@ -477,16 +570,23 @@ make test                                 # end of brief
 **Approach:**
 - Implement C-5 at the single point after the loop breaks, so reconcile-time and
   dispatch-time stops share one classification.
-- Polls reuse the loop's top-of-iteration reset and suppress dispatch.
+- Add an observe-only poll function made only of C-5's enabled effects. It is not a
+  reconcile pass with dispatch switched off.
+- When the observation changes, run one normal full turn.
+- Add the local-only hold dedup in `scripts/lib/andon.sh` per C-5.
 - `--wait-human` with `--once` or `--reconcile-only` exits 2.
-- The heartbeat records `waiting` per Part A.
-- Polls raise nothing, so no notification repeats.
+- The heartbeat records `waiting` per Part A, including the hold ids and the journal seqs
+  that define "changed".
 - Tests use a backoff override to stay within the tag ceiling.
 
 **Test:**
 - A reconcile-time hold, a dispatch-raised hold, and an escalated ask each resume after
   the human acts.
 - Turn cap, unreadable ledger and integrity hold each exit 10 at once.
+- A fixture with a pending plan effect and an unjournaled condition: polls raise no hold
+  and post nothing.
+- A local-only hold with the approver unavailable notifies exactly once (count the
+  `osascript`/`notify-send` sentinel calls).
 - `CT_TURNS` is unchanged across polls.
 - Failed polls and the deadline behave as stated in C-5.
 - Flag conflicts exit 2.
@@ -497,6 +597,8 @@ make test                                 # end of brief
 - Per-turn state leaking into a poll.
 - A dispatch-raised hold missing from `CT_HOLDS` until the next reconcile; classify with
   `CT_HOLD_REASONS`.
+- The dedup change must still publish a local-only hold once the approver becomes
+  available, without notifying again.
 **Red-first:** none
 **Commit:** `Add run --wait-human for resumable stops`
 
