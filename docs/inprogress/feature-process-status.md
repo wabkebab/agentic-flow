@@ -310,8 +310,12 @@ Bounds:
 - Denying `run` to agent stations in the command policy.
 
 ## Open questions
-- Should `--wait-human` become the default for unattended `run` after it has proven
-  itself? This brief keeps it opt-in.
+None open.
+
+**Decided by the owner (2026-11-25): waiting is opt-in.** `run` defaults to unattended
+behaviour: a stop exits with its code as today. The controller waits for human
+interaction only when `--wait-human` is passed explicitly. There is no plan to make it the
+default.
 
 ---
 
@@ -345,7 +349,7 @@ Bounds:
 ## Invariants
 - `status` never writes files, never creates or edits the controller lock, and never runs `gh` or any network command. The only lock it takes is `ledger_read`'s bounded shared lock on an existing ledger file.
 - Nothing in the controller reads the heartbeat for a decision. The lock, ledger and journal stay authoritative.
-- Without the new flags, `run` behaves exactly as today, apart from writing the heartbeat.
+- Without the new flags, `run` behaves exactly as today, apart from writing the heartbeat. Waiting happens only when `--wait-human` is given explicitly (owner decision).
 - No `ulimit -f` is applied to the controller. Station captures keep their own limit.
 - Bash 3.2; no new required tool. Detaching uses Perl, which is already required.
 
