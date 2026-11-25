@@ -203,7 +203,7 @@ plan process-status  (controller: alive, pid 4821, turn 12/50; cache as of 14:02
   f-3 reviewing       opencode · 6m12s / 20m · bounce 1/2
   f-4 escalated       executor ask (seq 41) — "Which log cap applies?"
   next → you: write the decision, then
-         agentic-flow handoff 212 resume --as approver --return executing --body-file decision.md
+         agentic-flow handoff 212 resume --as approver --body-file decision.md   (returns to executing)
 ```
 
 A station `ask` is an escalation, not a hold. It is answered by an approver `resume`.

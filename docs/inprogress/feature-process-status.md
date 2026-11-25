@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-25) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (touches the controller loop; project baseline is Standard)
-> Phase 1 of [harness configurability](product-harness-configurability.md) (areas E and G): an offline, read-only plan view that answers "whose turn is it?", a controller heartbeat, `run --detach` with a startup acknowledgment, and `run --wait-human` for resumable stops. Revision 2 (2026-11-25) answers the first review: resumable stops, launch acknowledgment, log capping, station evidence, executable next actions, read bounds. Revision 3 answers the second: a write-once acknowledgment file, heartbeat writes only under lock ownership, separate holds completeness, a live controller preferred over a stale cache, the only valid bounce resume, and observe-only polls with deduplicated notifications.
+> Phase 1 of [harness configurability](product-harness-configurability.md) (areas E and G): an offline, read-only plan view that answers "whose turn is it?", a controller heartbeat, `run --detach` with a startup acknowledgment, and `run --wait-human` for resumable stops. Revision 2 (2026-11-25) answers the first review: resumable stops, launch acknowledgment, log capping, station evidence, executable next actions, read bounds. Revision 3 answers the second: a write-once acknowledgment file, heartbeat writes only under lock ownership, separate holds completeness, a live controller preferred over a stale cache, the only valid bounce resume, and observe-only polls with deduplicated notifications. Revision 4 answers the third: atomic acknowledgment with a final read after reaping, hold-id snapshots before and during waits, and a `--return`-free resume command.
 
 # Feature — Process status and detached runs
 
@@ -57,12 +57,13 @@ lets the controller run in the background and wait for the human, without adding
   - an unreadable ledger (`:911`)
 - **Escalation:** a station `ask`, or a bounce at the limit, moves an issue to `escalated`.
   It leaves that state only through
-  `agentic-flow handoff <N> resume --as approver --return <state> --body-file <note>`
+  `agentic-flow handoff <N> resume --as approver [--return <state>] --body-file <note>`
   (`config/workflow.tsv`; `handoff.sh:300-316`). Replay sets `return_to`:
   - an `ask` sets it to the state the asker was in;
   - a bounce at the limit sets it to `executing` (`journal.jq:28-29`).
 
-  `--return` must equal `return_to` (`handoff.sh:403`).
+  `--return` is optional. When given, it must equal `return_to` (`handoff.sh:402-404`).
+  When omitted, the successor uses `return_to`.
 - **Startup order:** `controller_cmd` installs its EXIT trap before validating the doc and
   before `controller_lock` (`controller.sh:853`), so a rejected invocation still runs its
   exit path.
@@ -194,12 +195,21 @@ Rules, in order:
 1. Holds data complete and a hold open → human: `agentic-flow hold clear <doc> <hold-id>`,
    after reading the hold note on `#N`.
 2. Step data complete and an issue escalated with no open hold → human records the
-   decision with the one valid command:
-   `agentic-flow handoff <N> resume --as approver --return <return_to> --body-file <decision.md>`.
-   `return_to` follows replay:
-   - executor `ask` → `executing`
-   - reviewer `ask` → `reviewing`
-   - bounce at the limit → `executing`, never `reviewing`
+   decision:
+   `agentic-flow handoff <N> resume --as approver --body-file <decision.md>`.
+   - **The command never carries `--return`.** The flag is optional, and without it
+     `handoff` resumes to the journal's own `return_to` (`handoff.sh:402-404, 109`).
+     So the emitted command is valid whatever the cache says.
+   - The expected return state is shown for information only, and only with matching
+     event evidence: the issue's metrics row must have, as its last admitted event, the
+     id in the tsv's `latest id` column, and that event must be an `ask` or `bounce`.
+     The mapping follows replay:
+     - executor `ask` → `executing`
+     - reviewer `ask` → `reviewing`
+     - bounce at the limit → `executing`
+   - If the metrics row is missing, or its last event id differs from the tsv's (the two
+     files are published separately), the view says "return state: see #N" and still
+     emits the same command.
 3. Controller `alive` or `recovering` → `station` when C-1 proves one is running, else
    `controller`. Exit 0. This rule runs before any incomplete-snapshot rule, because a live
    controller refreshes the cache itself and holds the lock that would reject a second
@@ -255,9 +265,11 @@ Rendered text fields are cut to 120 characters, and control characters are strip
   - The pipe feeds a bounded log writer started in the same session.
 - **Acknowledgment: a write-once file, not the heartbeat.**
   - The nonce must match `^[0-9a-f]{32}$`.
-  - Right after `controller_lock` succeeds, the controller creates
-    `launches/<nonce>.json` exclusively (`set -o noclobber`), holding its
-    `{pid (CT_PID), start, host, run, ownership}`, and never rewrites it.
+  - Right after `controller_lock` succeeds, the controller writes the complete
+    acknowledgment `{pid (CT_PID), start, host, run, ownership}` to a temp file in
+    `launches/`. It publishes it atomically and exclusively with `ln <tmp> <nonce>.json`,
+    which fails if the name exists, then removes the temp file. It never rewrites it. A
+    reader therefore sees either no file or the whole file, never a partial one.
   - The file outlives the controller, so a run that finishes before the parent's first
     poll still leaves its acknowledgment.
 - **Parent loop:** every 0.2 s for up to 30 s (`AGENTIC_DETACH_ACK_S` overrides this for
@@ -267,9 +279,13 @@ Rendered text fields are cut to 120 characters, and control characters are strip
   - **Ack present, child already exited:** print the same fields plus
     `controller finished: exit <n>`, remove the ack file, and exit with the child's code.
     The launch was acknowledged, and the code is the run's real outcome.
-  - **No ack, child exited:** this is a startup failure. Print the last 20 stripped log
-    lines and exit with the child's code (a lost lock race is 9). A child exit of 0 with no
-    ack exits 5 ("exited without acknowledgment").
+  - **Child exited with no ack seen:** reap the child first, then **read the
+    acknowledgment file once more**. The child may have published it between the
+    parent's read and its exit check.
+    - If the final read finds it, this is the "ack present, child already exited" case.
+    - Only if the final read also finds nothing is it a startup failure: print the last
+      20 stripped log lines and exit with the child's code (a lost lock race is 9). A child
+      exit of 0 with no ack exits 5 ("exited without acknowledgment").
   - **Timeout:** TERM the child's session, wait up to 10 s, then KILL, and exit 5 with the
     log path.
 - **Cleanup:** before forking, remove acknowledgment files older than 24 h. `status` never
@@ -303,8 +319,21 @@ covers stops from both the reconcile check and dispatch.
   These need repair or a new invocation.
 
 Waiting:
+- **Fresh hold snapshot before waiting.**
+  - `CT_HOLDS` can miss a hold raised during dispatch, and `CT_HOLD_REASONS` has no ids.
+    So before entering a wait the controller re-runs `controller_holds`
+    (`controller.sh:158-176`). It is observe-safe:
+    - it reads the tracker;
+    - it mirrors *existing* remote hold markers and clears into the ledger;
+    - it rebuilds `CT_HOLDS` from those markers plus local-only ledger holds through
+      `hold_snapshot`;
+    - it never notifies, raises a hold or writes to the forge.
+  - It records the full **open hold id set** and the escalated issue set.
+  - The stop is classified from that snapshot. Every raised `{issue, reason}` in
+    `CT_HOLD_REASONS` must appear in it; if one doesn't, the wait is refused and the
+    controller exits 10.
 - Record `waiting-human` with `until = now + max` (default 86,400 s, at most 604,800 s),
-  plus the stop's issue set and open hold ids.
+  plus the escalated issue set, the open hold id set and each plan issue's journal seq.
 - Sleep `min(backoff, until − now)`; backoff starts at 60 s and doubles to 900 s.
 - **Polls are observe-only.** A poll is not a reconcile pass.
   - **Enabled during a poll:**
@@ -316,10 +345,15 @@ Waiting:
     `controller_pending`, `controller_foreign`'s hold path, and dispatch.
 
   So a poll can neither raise a hold nor post a handoff.
-- **The wait ends when the observation changes:**
+- **The wait ends when the observation changes.** Each poll takes the same hold snapshot
+  and compares the whole open hold id set with the recorded one. Hold markers are
+  separate from transition sequences, so seqs alone would miss a new hold. The wait ends
+  when:
   - every hold in the recorded set is cleared and no recorded issue is still escalated,
     so the stop is resolved;
-  - any plan issue's journal sequence moves for another reason;
+  - **any hold id not in the recorded set is open**, including an integrity hold or one
+    raised by an approver;
+  - any plan issue's journal seq moves for another reason;
   - a foreign controller host appears.
 
   The loop then runs one normal, full turn, which counts against `CT_TURNS`. That turn
@@ -401,7 +435,8 @@ default.
 - Given a live reconciling controller and an intent without a station record, then the step lists the run under `interrupted`, `next.owner` is `controller`, and the exit is 0.
 - Given a live controller whose heartbeat names the newest open intent, then the step shows the CLI, elapsed time and timeout, and `next.owner` is `station`.
 - Given an open hold whose reason contains ANSI escapes, then the output has no control characters, shows `hold clear` for that hold id, and the exit is 10.
-- Given an escalated issue after an executor `ask`, then `next` is the approver `resume` with `--return executing`. After a reviewer `ask`, it is `--return reviewing`. After a bounce at the limit, only `--return executing` is shown. Each emitted command passes `handoff`'s return validation in a fixture.
+- Given an escalated issue, then `next` is the approver `resume` with no `--return` flag. With matching event evidence, the view shows `executing` after an executor `ask`, `reviewing` after a reviewer `ask`, and `executing` after a bounce at the limit. In a fixture, the emitted command resumes each case to the journal's `return_to`.
+- Given an escalated issue whose metrics row is missing, or whose last event id differs from the tsv's `latest id`, then the view shows "return state: see #N" and emits the same `--return`-free command.
 - Given every step approved, a tracker `open`, a holds cache of `[]`, and complete step data, then the snapshot is complete and `next` is `ship`. Given a closed tracker, then `next.owner` is `none` and the exit is 0.
 - Given a missing step row or an over-limit holds cache and no live controller, then the snapshot is incomplete and `next` is `--reconcile-only`, never `ship`. With a live controller, `next.owner` is `controller`, the exit is 0, and the view notes that the cache is incomplete.
 - Given a missing metrics row, then only that step's bounce count is null, and the snapshot stays complete.
@@ -411,12 +446,14 @@ default.
 - Given two simultaneous `run --detach` invocations, then exactly one exits 0 with the acknowledged controller's pid, and the other exits 9. The winner's heartbeat (pid, run) is unchanged after the loser exits.
 - Given an invocation that fails validation or loses the lock, then no heartbeat or acknowledgment file is written or changed.
 - Given `run --detach --reconcile-only` on a fixture that finishes before the parent's first poll, then the parent reports the acknowledged pid and log, prints `controller finished: exit 0`, and exits 0.
+- Given the acknowledgment lands after the parent's acknowledgment read but before its child-exit check, forced with a test pause hook between the two, then the final post-reap read finds it, and the launch is reported as acknowledged, not as a startup failure.
 - Given a child that fails before the lock (a dirty plan worktree), then `--detach` exits 3 with the log tail and no acknowledgment.
 - Given a stale acknowledgment file with another nonce, then it is ignored.
 - Given a controller writing past 16 MiB of output, then the log stops at the cap with the truncation marker, and the run and its ledger writes complete.
 - Given `--wait-human` with `--once` or `--reconcile-only`, then `run` exits 2.
 - Given `--wait-human` and an existing hold found at reconcile, when the human clears it, then dispatch resumes in the same process without consuming turns.
-- Given `--wait-human` and a dispatch-raised `station-infrastructure` hold, when the human clears it, then dispatch resumes.
+- Given `--wait-human` and a dispatch-raised `station-infrastructure` hold, then the wait records that hold's id from the fresh snapshot. When the human clears it, dispatch resumes.
+- Given `--wait-human` waiting on a resumable hold, when an integrity hold (or a hand-raised approver hold) opens without any transition seq moving, then the next poll sees the new hold id, the full turn classifies it as non-resumable, and the controller exits 10.
 - Given `--wait-human` and a turn-cap stop, an unreadable ledger, or an integrity hold, then the controller exits 10 immediately.
 - Given `--wait-human` and an approver `resume` on an escalated ask, then the next poll resumes dispatch.
 - Given `--wait-human` and a pending plan effect or unjournaled condition during the wait, then no poll raises a hold or posts a handoff. Only the full turn after the observation changes may raise one.
@@ -533,10 +570,11 @@ make test                                 # end of brief
 - Implement C-4:
   - validation and pre-check;
   - the nonce;
-  - the controller's exclusive, write-once acknowledgment file, created right after the
-    lock is taken;
+  - the controller's write-once acknowledgment file, created right after the lock is
+    taken and published atomically with `ln`;
   - the Perl `setsid` exec;
-  - the parent loop with its four outcomes;
+  - the parent loop with its four outcomes, and the final acknowledgment read after
+    reaping;
   - the bounded log writer (a small Perl script under `scripts/lib/`);
   - pruning of logs and old acknowledgment files.
 - `--json` prints `{pid, log, status, finished_exit}`.
@@ -546,6 +584,8 @@ make test                                 # end of brief
   survive the loser.
 - A `--reconcile-only` run that finishes before the first poll reports the acknowledged
   pid and its exit.
+- A test pause hook lands the acknowledgment between the parent's read and its exit
+  check; the final read after reaping still reports success.
 - A child failing before the lock exits with its code and the log tail.
 - An acknowledgment timeout terminates the session and exits 5.
 - A stale acknowledgment file with another nonce is ignored.
@@ -575,6 +615,9 @@ make test                                 # end of brief
 - When the observation changes, run one normal full turn.
 - Add the local-only hold dedup in `scripts/lib/andon.sh` per C-5.
 - `--wait-human` with `--once` or `--reconcile-only` exits 2.
+- Before waiting, re-run `controller_holds` for a fresh open hold id set. Refuse the wait
+  if a raised `{issue, reason}` is missing from it.
+- Each poll compares the whole open hold id set as well as the seqs.
 - The heartbeat records `waiting` per Part A, including the hold ids and the journal seqs
   that define "changed".
 - Tests use a backoff override to stay within the tag ceiling.
@@ -582,6 +625,8 @@ make test                                 # end of brief
 **Test:**
 - A reconcile-time hold, a dispatch-raised hold, and an escalated ask each resume after
   the human acts.
+- An integrity hold arriving while waiting on a resumable hold ends the wait, and the run
+  exits 10.
 - Turn cap, unreadable ledger and integrity hold each exit 10 at once.
 - A fixture with a pending plan effect and an unjournaled condition: polls raise no hold
   and post nothing.
