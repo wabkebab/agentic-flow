@@ -132,7 +132,7 @@ asserting that no mutating call was made.
 ## Status / Implementation status
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
-- **Tracking issue:** pending
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/211
 - **Approval:** status=approved; by=wabkebab; at=2026-11-25; rev=148c0df74416e80c191a4d506c479dee17ee8c33
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
