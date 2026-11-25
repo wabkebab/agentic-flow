@@ -1,6 +1,6 @@
 <!-- TRIAGE (first pass · 2026-11-25) -->
-> **Type:** Product Analysis · **Status:** 🟦 Proposal
-> How an adopter configures, installs, observes, exposes and removes the harness: agent-agnostic stations, one config surface, setup/upgrade wizards, process status, CLI vs GUI, daemon vs scripts, repository visibility, uninstall, and warn-or-stop test budgets. Phase 1 (observability) is drafted as `feature-process-status.md`. Revision 2 (2026-11-25) answers the roadmap review: aligned Phase 1 interface, plan-pinned workflow policy, per-reason andon responses, policy-aware verification caches, replay-safe redaction, and an ownership-bounded uninstall. Revision 3 makes the pin immutable once issues are stamped and requires pristine provenance (the `accepted=` upstream hash) before uninstall deletes a file. Revision 4 makes `plan-to-issues` reject a changed pin before any issue mutation, and anchors re-export for older installs to the installed revision. Written against `0.20.0` (`c2f7e32`). Owner decisions pending.
+> **Type:** Product Analysis · **Status:** ✅ Decided
+> How an adopter configures, installs, observes, exposes and removes the harness: agent-agnostic stations, one config surface, setup/upgrade wizards, process status, CLI vs GUI, daemon vs scripts, repository visibility, uninstall, and warn-or-stop test budgets. Phase 1 (observability) is drafted as `feature-process-status.md`. Revision 2 (2026-11-25) answers the roadmap review: aligned Phase 1 interface, plan-pinned workflow policy, per-reason andon responses, policy-aware verification caches, replay-safe redaction, and an ownership-bounded uninstall. Revision 3 makes the pin immutable once issues are stamped and requires pristine provenance (the `accepted=` upstream hash) before uninstall deletes a file. Revision 4 makes `plan-to-issues` reject a changed pin before any issue mutation, and anchors re-export for older installs to the installed revision. Written against `0.20.0` (`c2f7e32`). Decided 2026-11-25: recommendation and build order accepted. The up-front decisions stay open until the brief each one gates. Next: Phase 1 (`feature-process-status.md`).
 
 # Product Analysis — Harness configurability, visibility and lifecycle
 
@@ -458,5 +458,10 @@ Settled by this revision:
 
 ## Status
 
-- **Decision:** pending.
-- **Decided by:** —
+- **Decision:** accepted 2026-11-25: the recommendation and build order at revision 4
+  (`83d6cd8`), approved by the human owner after four review rounds with every finding
+  applied or answered with evidence. Phase 1's interface is settled (see *Settled by this
+  revision*). The up-front decisions above stay open. Each must be settled before the
+  feature brief that depends on it is approved. The safety floor, override tiers and plan
+  pinning gate Phase 2 (`feature-config-surface.md`).
+- **Decided by:** wabkebab (human owner).
