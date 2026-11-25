@@ -1,15 +1,15 @@
 <!-- TRIAGE (first pass · 2026-11-25) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (touches the controller loop; project baseline is Standard)
-> Phase 1 of [harness configurability](product-harness-configurability.md) (areas E and G): a local, read-only view of a plan's progress that answers "whose turn is it?", a controller heartbeat, `run --detach`, and `run --wait-human`. Drafted on `configurability-phase-1`; awaiting owner review.
+> Phase 1 of [harness configurability](product-harness-configurability.md) (areas E and G): an offline, read-only plan view that answers "whose turn is it?", a controller heartbeat, `run --detach` with a startup acknowledgment, and `run --wait-human` for resumable stops. Revision 2 (2026-11-25) answers the first review: resumable stops, launch acknowledgment, log capping, station evidence, executable next actions, read bounds.
 
 # Feature — Process status and detached runs
 
 ## Tracker
 - [ ] f-1 Publish a controller heartbeat — open
-- [ ] f-2 Show plan progress in `agentic-flow status` — open
+- [ ] f-2 Show plan progress in `agentic-flow status <plan>` — open
 - [ ] f-3 Run the controller detached — open
-- [ ] f-4 Wait for the human instead of exiting on a hold — open
+- [ ] f-4 Wait for the human on resumable stops — open
 
 ---
 
@@ -23,7 +23,7 @@ runs, the human cannot easily tell:
 - whether a controller is alive,
 - which station is working on which step, and for how long,
 - how many bounces a step has used,
-- whether the line is stopped and, if so, what the human must do next.
+- whether the line is stopped and, if so, the exact command the human must run next.
 
 The controller also needs a terminal that stays open, and it exits as soon as the line
 stops. Nothing resumes it when the human answers. This brief makes progress visible and
@@ -31,145 +31,286 @@ lets the controller run in the background and wait for the human, without adding
 
 ## Current state
 
-The data exists but nothing presents it.
+- **Lock:** `<common>/agentic-flow/locks/controller-<plan>/owner.json` holds
+  `{pid,start,host,run}`. A recovery claimant writes `recover/owner.json` with `{pid,start}`
+  and replaces `owner.json` only after a clean reconcile (`scripts/lib/controller.sh:48-98`).
+  Liveness is a pid plus process-start match through `recovery.pl process`. The host id
+  is `recovery.pl host <common>` (12 hex).
+- **`CT_PID`** is the PID of `controller_cmd`'s subshell, computed through
+  `sh -c 'printf "%s\n" "$PPID"'` (`controller.sh:884`). It is not the PID of the
+  `agentic-flow` process.
+- **State cache:** each reconcile writes three files under `<common>/agentic-flow/state/`:
+  - `<plan>.tsv`: issue, step, state, latest id, submitted head, time
+  - `<plan>.metrics.json`: admitted events per issue with role; writer-capped at 4 MiB
+  - `<plan>.holds.json`: open holds
 
-- **Lock:** `agentic-flow/locks/controller-<plan>/owner.json` under the Git common dir holds
-  `{pid,start,host,run}` (`scripts/lib/controller.sh:48-98`). Liveness is decided by
-  matching the pid's start time through `scripts/lib/recovery.pl process`. Nothing records
-  turn, phase or the running station.
-- **State cache:** every reconcile writes `agentic-flow/state/<plan>.tsv` (issue, step,
-  state, latest id, submitted head, refreshed time), `<plan>.metrics.json` (admitted events
-  per issue, including bounces) and `<plan>.holds.json` (open holds)
-  (`scripts/lib/handoff.sh:267-287`, `scripts/lib/andon.sh:162-174`).
-- **Ledger:** `intent` records carry `started`, `issue`, `step`, `station`, `cli` and
-  `model`. A matching `station` record carries `ended`, `seconds` and `usage`. An intent
-  without a station record is a station in flight. `hold` and `clear` records mirror holds
-  (`scripts/lib/ledger.pl:168-226`).
-- **`agentic-flow status`** reports only the harness install (version, candidates,
-  git-ignored payload). It exits 1 when that needs action (`scripts/agentic-flow:466-540`).
-  Its tests live in `scripts/tests/upgrade.sh`.
-- **`agentic-flow run`** is a foreground loop (`controller.sh:902`). It breaks out with
-  result 10 when a hold, raised andon or escalated issue exists. `--once` stops after one
-  station. The turn cap is 50. `andon_desktop` already notifies on a hold.
-- Station timeouts come from the effective roles (`agentic-flow roles --json`).
+  Sources: `scripts/lib/handoff.sh:267-287`, `scripts/lib/andon.sh:162-174`.
+- **Ledger:** `intent` records carry `started`, `issue`, `step`, `station`, `cli`,
+  `replaces` and `chain`. A `station` record closes a run. `end` records close chains.
+  `ledger_read` takes a bounded `LOCK_SH` with a timeout on the existing file and reads at
+  most 32 MiB (`scripts/lib/ledger.pl:69-71, 343-351`).
+- **Exit 10 has four sources:**
+  - the reconcile check (`controller.sh:939`): open holds, a raised andon, or an escalated issue
+  - holds raised inside `controller_dispatch`: probe, preflight, launch, changed branch
+    (`:651, 656, 724, 735, 754, 793, 798`)
+  - the turn cap (`:956`)
+  - an unreadable ledger (`:911`)
+- **Escalation:** a station `ask`, or a bounce at the limit, moves an issue to `escalated`.
+  It leaves that state only through
+  `agentic-flow handoff <N> resume --as approver --return executing|reviewing --body-file <note>`
+  (`config/workflow.tsv`; `handoff.sh:300-316`).
+- **`agentic-flow status`** reports only the harness install and exits 1 when that needs
+  action (`scripts/agentic-flow:466-540`). Its tests are in `scripts/tests/upgrade.sh`.
+- Station captures already run under their own `ulimit -f` inside `launch.sh`.
 
 ## Proposed approach
 
-### Option A — Local read-only view + heartbeat + detach/wait flags (recommended)
+### Option A — Local read-only view + heartbeat + acknowledged detach + classified waiting (recommended)
+A heartbeat file is written by the controller that holds the lock. `status <plan>` reads
+local files only. `--detach` returns only after the controller acknowledges that it holds
+the lock. `--wait-human` waits only on stops a human answer can resolve within the same
+process.
 
-- The controller atomically writes a small heartbeat file each phase change.
-- `status` reads only local files (heartbeat, lock, state cache, ledger, roles). It never
-  calls `gh`, never takes the lock, and never writes.
-- `run --detach` backgrounds the same controller with a log file.
-- `run --wait-human` turns the "stop on hold" exit into a bounded, backed-off poll.
-
-Pros: no network in the view, so `--watch` is free and safe; additive; no new process model.
-Cons: the view is as fresh as the last reconcile. It shows the cache age rather than hiding it.
+Pros: no network in the view; additive; the lock and the journal stay authoritative.
+Cons: the view is as fresh as the last reconcile. It shows the cache age and refuses to
+recommend `ship` from an incomplete snapshot.
 
 ### Option B — Live view that queries the forge
+Always current, but costs API calls and credentials on every refresh, and `--watch`
+would hit rate limits. Rejected for this pass.
 
-Always current, but every refresh costs API calls and needs credentials. `--watch` would
-hit rate limits. Rejected for this pass. An explicit `--refresh` can come later.
+### Option C — A daemon serving status
+Rejected in the product analysis (area G).
 
-### Option C — A daemon serving status over a socket
+**Recommendation:** Option A.
 
-Rejected in the product analysis (area G). It adds a process model for no new data.
-
-**Recommendation:** Option A. The heartbeat is advisory display data. The lock and the
-journal stay the only authorities. Nothing reads the heartbeat to make a decision.
-
-**`status` naming.** The product analysis left open whether the process view takes over
-`status`. This brief takes the non-breaking path. `agentic-flow status` with no argument
-prints the existing install report unchanged, followed by a one-line summary per local
-plan. `--json` gains a `plans` key, and all existing keys stay identical. Its exit code
-stays tied to the install report. `agentic-flow status <plan-id|doc>` prints the detailed
-plan view alone, with its own exit codes.
+**Command shape.** This is decided and mirrored in the product analysis.
+`agentic-flow status` with no argument keeps the install report byte-identical and adds a
+bounded `plans:` summary. `--json` gains a `plans` key. The exit code stays tied to the
+install report. `agentic-flow status <plan-id|doc>` prints the plan view alone.
+launchd/systemd units are deferred.
 
 ## Interface (before the implementation)
 
 ```
-agentic-flow status [--json]                          # install report + plans summary
+agentic-flow status [--json]                           # install report + bounded plans summary
 agentic-flow status <plan-id|doc> [--watch [<s>]] [--json]
-  exit 0  no human action needed (station working, or controller alive and reconciling)
+  exit 0  nothing for the human (station working, controller reconciling, or plan closed)
   exit 10 human action needed (see "next")
   exit 2  usage (incl. --watch without a TTY, --watch with --json)
-  exit 3  unknown plan (no state, no ledger, no lock)
+  exit 3  unknown plan (no state, ledger, lock or plan doc)
 
-agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--json]
-                       [--detach] [--wait-human [<max-s>]]
-  --detach       start the same invocation in a new session; print pid, run log, status cmd; exit 0
-  --wait-human   on result 10, poll with backoff instead of exiting; not with --once/--reconcile-only
+agentic-flow run <doc> [...existing flags] [--detach] [--wait-human [<max-s>]]
+  --detach      exit 0 only after a startup acknowledgment (C-4); prints controller pid, log, status cmd
+  --wait-human  wait on resumable stops (C-5); exit 2 with --once or --reconcile-only
 
-<common>/agentic-flow/state/<plan>.controller.json     (≤ 4 KiB, atomic tmp+mv)
-{ v:1, plan, pid, start, host, run, doc,
-  phase: "reconciling"|"station"|"waiting-human"|"stopped",
+<common>/agentic-flow/state/<plan>.controller.json     (≤ 4 KiB, tmp + mv)
+{ v:1, plan, doc, pid, start, host, run, ownership:"owner"|"recovering",
+  launch:null|<nonce>,
+  phase:"reconciling"|"station"|"waiting-human"|"stopped",
   turn, turn_cap,
-  station: null | {issue, step, station, cli, run, started, timeout_s},
-  waiting: null | {since, next_poll_at, until},
-  exit: null | <int>, updated_at }
+  station:null|{issue, step, station, cli, run, started, timeout_s},
+  waiting:null|{stop, reasons, issues, since, next_poll_at, until, failed_polls},
+  exit:null|<int>, updated_at }
 
-<common>/agentic-flow/logs/<plan>/<run-id>.log         (detached runs; newest 20 kept per plan)
+<common>/agentic-flow/logs/<plan>/<run-id>.log          (≤ 16 MiB; newest 20 per plan kept)
 
 status JSON (plan view):
-{ v:1, plan, doc, as_of:{cache, ledger},
-  controller:{state:"alive"|"stopped"|"unknown", pid, phase, turn, turn_cap, updated_at, exit},
-  steps:[{issue, step, state, bounces, bounce_limit, station:null|{cli, elapsed_s, timeout_s}}],
-  holds:[{id, issue, reason, clear:"agentic-flow hold clear <doc> <id>"}],
+{ v:1, plan, doc, snapshot:{complete:<bool>, missing:[...], over_limit:[...], cache_at, ledger:"ok"|"busy"|"absent"|"error"},
+  controller:{state:"alive"|"recovering"|"stopped"|"unknown"|"other-host", pid, phase, turn, turn_cap, updated_at, exit},
+  steps:[{issue, step, state, bounces, bounce_limit,
+          station:null|{cli, run, elapsed_s, timeout_s}, interrupted:[<run>...]}],
+  holds:[{id, issue, reason, command}],
+  escalations:[{issue, step, by, command}],
   usage:{cost_usd:null|number},
-  next:{owner:"controller"|"station"|"human", action:<text>, command:null|<text>} }
+  next:{owner:"controller"|"station"|"human"|"none", action, command:null|<text>} }
 ```
 
-The `next` rules, applied in order:
-1. An open hold → human, with the `hold clear` command.
-2. An escalated issue → human, answer on `#N`.
-3. The controller is alive → controller or station.
-4. Every step is approved or closing → human, `agentic-flow ship <doc>`.
-5. Otherwise → human, `agentic-flow run <doc>`.
+### C-1 Heartbeat and liveness evidence
+The controller writes the heartbeat:
+- right after `controller_lock` succeeds, as owner or as recovery claimant;
+- at every turn start, at station launch and return, at entering and leaving a wait;
+- at exit, on every path including interrupts, before `CT_TMP` cleanup.
+
+A write failure warns and never changes the result.
+
+`status` reports `controller.state` as follows:
+- **`other-host`:** the heartbeat `host` differs from the local host id. Nothing is probed.
+- **`alive`:** the local host matches, `{pid,start}` equals `locks/…/owner.json`, and the
+  process probe returns that start.
+- **`recovering`:** the same checks, but against `locks/…/recover/owner.json`.
+- **`stopped`:** there is no lock directory, or the probed process is gone or has a
+  different start.
+- **`unknown`:** anything else, such as a malformed file or a probe failure.
+
+A step's station is reported as running only when all of these hold:
+- the controller is `alive`, and the heartbeat `phase` is `station`;
+- `heartbeat.station.run` names a ledger intent that has no `station` record;
+- that intent is the newest in its chain, with no later intent whose `replaces` is it, and
+  no `end` record for the chain.
+
+Any other intent without a `station` record is listed under `interrupted`, never as running.
+
+### C-2 Next action and snapshot completeness
+The snapshot is **complete** only when every condition holds:
+- The plan block parses from the plan doc on the local branch ref (`git show`, ≤ 1 MiB,
+  using the plan-block parser without an approval check).
+- The tsv has exactly one row per planned step, plus the tracker for Strict, or exactly
+  one work row for Standard. Every state is valid for its topology.
+- The metrics and holds caches parse within C-3's caps and cover the same issues.
+
+Rules, in order:
+
+1. Open hold → human: `agentic-flow hold clear <doc> <hold-id>`, after reading the hold
+   note on `#N`.
+2. Escalated issue with no open hold → human records the decision:
+   `agentic-flow handoff <N> resume --as approver --return <state> --body-file <decision.md>`.
+   The return state depends on the last admitted event:
+   - executor `ask` → `executing`
+   - reviewer `ask` → `reviewing`
+   - bounce at the limit → both commands are shown, and the human chooses
+3. Incomplete snapshot → human: `agentic-flow run <doc> --reconcile-only`. Never `ship`,
+   never "closed".
+4. Plan closed: the Strict tracker or the Standard work issue is `closed` → `none`, exit 0.
+   The action notes that `agentic-flow clean <plan>` follows the merge.
+5. Controller `alive` or `recovering` → `station` when C-1 proves one is running, else
+   `controller`. Exit 0.
+6. Ready to ship → human: `agentic-flow ship <doc> --wait-review`. Ready means:
+   - Strict: every step `approved` and the tracker `open` or `closing`
+   - Standard: the work issue `closing`
+7. Otherwise → human: `agentic-flow run <doc>`.
+
+### C-3 Read bounds
+Every file is opened only when it is a regular file, not a symlink, and passes a
+`wc -c` check:
+
+| File | Byte cap | Entry cap |
+|---|---|---|
+| Heartbeat | 4 KiB | — |
+| Lock owner files | 4 KiB | — |
+| `<plan>.tsv` | 256 KiB | 200 rows |
+| `<plan>.holds.json` | 256 KiB | 100 holds |
+| `<plan>.metrics.json` | 4 MiB | 200 rows |
+| Plan doc | 1 MiB | — |
+
+A file over its cap is not parsed at all. It is listed in `snapshot.over_limit`, which
+makes the snapshot incomplete.
+
+The ledger is read through the existing `ledger_read`, and only when the plan's ledger
+file already exists, so the reader creates nothing. Its bounded shared lock is the one
+lock `status` may take. A lock timeout reports `ledger: busy` and nulls the
+ledger-derived fields. `--watch` re-reads the ledger only when its size or mtime changes.
+
+Plan discovery for the no-argument summary:
+- examines at most 1,000 entries in `state/` and `locks/` and never lists the ledger
+  directory;
+- shows the newest 20 plans by heartbeat or tsv mtime, followed by `N more`;
+- reads only each plan's heartbeat and tsv.
+
+Rendered text fields are cut to 120 characters, and control characters are stripped.
+
+### C-4 Detached launch
+- **Before forking:** validate arguments (usage errors exit 2 in the foreground). Run the
+  lock pre-check (a live owner exits 9) for a friendly early error only.
+- **Fork:**
+  - The parent generates a 32-hex nonce.
+  - It starts `perl -MPOSIX -e 'setsid(); exec @ARGV'` running the same argv without
+    `--detach`, with `AGENTIC_DETACH_NONCE` set, stdin from `/dev/null`, and stdout and
+    stderr merged into a pipe.
+  - The pipe feeds a bounded log writer started in the same session.
+- **Acknowledgment:** the controller writes `launch:<nonce>` into its first post-lock
+  heartbeat. The parent polls every 0.2 s for up to 30 s
+  (`AGENTIC_DETACH_ACK_S` overrides this for tests). It succeeds when the heartbeat
+  carries the nonce and C-1 classifies it `alive` or `recovering`. The parent then prints
+  the heartbeat's `pid`, which is the controller's `CT_PID`, not the fork PID, plus the log
+  path and `agentic-flow status <plan> --watch`, and exits 0.
+- **Child exits first:** the parent reaps it, prints the last 20 stripped log lines and
+  exits with the child's code. A lost lock race is 9.
+- **Timeout:** TERM the child's session, wait up to 10 s, then KILL, and exit 5 with the
+  log path.
+- **Log writer:**
+  - writes the first 16 MiB and then discards while still draining;
+  - writes one marker at EOF: `agentic-flow: log truncated; <n> bytes dropped`;
+  - on a write error such as a full disk, stops writing and keeps draining;
+  - ignores INT, TERM and HUP, and exits only at EOF.
+  - Both streams are captured: the controller's final summary is on stdout, its
+    diagnostics on stderr. The heartbeat's `exit` is the authoritative result.
+  - No `ulimit -f` is applied to the controller.
+- **Pruning:** before the fork, prune the plan's logs to the newest 20, never the log of a
+  live controller.
+
+### C-5 Resumable stops
+When the loop ends with result 10, the stop is classified from the union of open holds
+(`CT_HOLDS`), holds raised this turn (`CT_HOLD_REASONS`) and escalated issues. This
+covers stops from both the reconcile check and dispatch.
+
+- **Resumable:**
+  - escalated issues with no open hold;
+  - open holds whose reasons are all in `{station-escalation, station-infrastructure,
+    findings-incomplete, plan-effect-pending}`.
+- **Not resumable, exit 10 at once as today:**
+  - the turn cap;
+  - an unreadable ledger (`CT_SALVAGE_ONLY`);
+  - any hold with another reason, including integrity holds and holds an approver raised
+    by hand.
+
+  These need repair or a new invocation.
+
+Waiting:
+- Record `waiting-human` with `until = now + max` (default 86,400 s, at most 604,800 s).
+- Sleep `min(backoff, until − now)`; backoff starts at 60 s and doubles to 900 s.
+- Each poll resets the loop's per-turn state through the loop's existing top-of-iteration
+  reset, sets `result=0`, and runs one reconcile pass with dispatch suppressed.
+- Poll results:
+  - result 0 ends the wait, and the loop continues normally;
+  - result 10 with a resumable stop keeps waiting;
+  - result 10 with a non-resumable stop exits 10;
+  - result 5 counts as a failed poll, with the same backoff and deadline; 3 in a row exit 5;
+  - any other code exits with that code.
+- A poll never starts at or after `until`, which exits 10. Polls do not increment
+  `CT_TURNS`. The lock stays held.
 
 ## Threat model (one paragraph)
 
 No new trust boundary or credential path. `status` reads files under the user's own Git
-common dir that the controller, handoff and ledger already write. It treats them as
-untrusted input: size-bounded, schema-checked, and rendered with control characters
-stripped. Hold reasons and ask text can originate in station output, and an escape sequence
-must not reach the terminal. A local process could forge the heartbeat. That only misleads
-the display, because liveness is confirmed by the pid's start time, as the lock does, and
-no decision reads the heartbeat. `--detach` passes the controller exactly the environment
-a foreground `run` gets, and stations keep their `env -i` isolation. The detached log holds
-the controller's stderr only, which is the same content the terminal shows today. It lives
-under the Git common dir, outside the tree.
+common dir that existing code writes. It treats them as untrusted: type-checked,
+size-capped before parsing, schema-checked, and printed with control characters stripped.
+Hold reasons and asks can carry station output, so escape sequences must not reach the
+terminal. A forged heartbeat can only mislead the display. Liveness needs a lock-file and
+process-start match, and no decision reads the heartbeat. `--detach` gives the controller
+the environment a foreground `run` gets, and stations keep `env -i`. The detach nonce only
+proves which launch acknowledged. It is not a secret. Logs hold what the terminal shows
+today, under the Git common dir.
 
 ## Failure behavior
 
 | External call | On timeout | On malformed response | On partial success |
 |---|---|---|---|
-| Heartbeat read | n/a (local) | Controller `unknown`; the rest of the view still renders | — |
-| Process probe (`recovery.pl process`) | Controller `unknown` | Controller `unknown` | — |
-| State cache / holds cache | n/a | Section shows "cache unreadable", cache age `null` | Rows that parse are shown |
-| Ledger read | n/a | Ledger error shown on one line; ledger-derived fields `null` | — |
-| Forge poll during `--wait-human` | Existing bounded `gh` timeout; counts as a failed poll | Same as today's reconcile (exit 5), retried as a failed poll | — |
-| Heartbeat write | n/a | Warning on stderr; the controller continues (display data only) | tmp file removed |
+| Heartbeat / lock files | n/a | Controller `unknown`; other sections render | — |
+| Process probe | Controller `unknown` | Controller `unknown` | — |
+| Cache files | n/a | Listed in `over_limit` or `missing`; snapshot incomplete | No partial parse; rule 3 applies |
+| `ledger_read` | `ledger: busy`, fields `null` | `ledger: error`, fields `null` | — |
+| Detach acknowledgment | TERM, then KILL the child session; exit 5 | Nonce mismatch = no ack | Child exit before ack → its code |
+| Log writer | n/a | n/a | Write error: drain without writing |
+| Forge poll in a wait | Existing `gh` bound; failed poll | Exit 5 from reconcile = failed poll | — |
 
 Bounds:
-- heartbeat ≤ 4 KiB; at most 100 issues rendered; text fields cut to 120 characters
-- `--watch` interval 2–300 s (default 5)
-- `--wait-human` backoff 60 s doubling to 900 s, default maximum 86,400 s, at most 604,800 s
-- at most 3 consecutive failed polls, then the existing exit code
-- logs capped by `ulimit -f` like station captures; newest 20 per plan kept
+- read caps as listed in C-3; at most 100 issues rendered
+- `--watch` interval 2–300 s
+- acknowledgment wait ≤ 30 s plus 10 s for shutdown; log ≤ 16 MiB
+- wait deadline ≤ 604,800 s; ≤ 3 consecutive failed polls
 
 ## Out of scope / What NOT to build in this pass
-- Querying the forge from `status` (`--refresh`), or any network call in the view.
-- launchd/systemd unit templates; a long-running multi-plan daemon.
-- Making notification channels configurable (product area A/C). The existing desktop
-  notification is kept.
-- Changing what counts as a hold, the bounce limit, or the turn cap.
-- A TUI library or GUI. `--watch` is a plain ANSI redraw.
-- Denying `run` to agent stations in the command policy (a separate decision).
+- Network calls from `status` (`--refresh`).
+- launchd/systemd units, deferred. A long-running daemon.
+- Making notification channels, hold policy, the bounce limit or the turn cap configurable
+  (product area A/C).
+- Waiting on non-resumable stops.
+- A TUI or GUI.
+- Denying `run` to agent stations in the command policy.
 
 ## Open questions
-- [BLOCKING] Accept the non-breaking `status` shape above, or let `status` default to the
-  process view in a future breaking release?
-- Should `--wait-human` default to on for unattended `run` (no `--once`) once it has proven
+- Should `--wait-human` become the default for unattended `run` after it has proven
   itself? This brief keeps it opt-in.
 
 ---
@@ -177,28 +318,36 @@ Bounds:
 # Part B — Implementation Brief
 
 ## Acceptance scenarios
-- Given no ledger, state or lock for a plan, when `status <plan>` runs, then it exits 3 and names `agentic-flow run <doc>`.
-- Given a heartbeat whose pid is dead or has a different start time, when `status <plan>` runs, then the controller is `stopped`, `next` is the human with `agentic-flow run <doc>`, and the exit is 10.
-- Given a malformed or oversized heartbeat, when `status <plan>` runs, then the controller is `unknown`, the other sections still render, and the exit is not a crash.
-- Given an open hold whose reason contains ANSI escapes, when `status <plan>` runs, then the output has no control characters, shows the exact `hold clear` command, and the exit is 10.
-- Given a live controller with an executor station in flight, when `status <plan>` runs, then the step shows the CLI, elapsed seconds and timeout, `next.owner` is `station`, and the exit is 0.
-- Given a step with one admitted bounce, when `status <plan>` runs, then it shows `bounce 1/2`, with the limit taken from `config/workflow.tsv`.
-- Given an adopted project, when `status` runs with no argument, then the install report lines and JSON keys are byte-identical to before, plus a `plans` section or key.
-- Given a non-TTY stdout, when `status <plan> --watch` runs, then it exits 2.
-- Given a live controller for a plan, when `run <doc> --detach` runs again, then it exits 9 before forking.
-- Given `run <doc> --detach`, then it returns 0 promptly, prints the pid and log path, the log receives controller stderr, and `status` shows the controller alive.
+- Given no ledger, state, lock or plan doc, when `status <plan>` runs, then it exits 3.
+- Given a heartbeat whose `{pid,start}` matches no lock owner or claimant, or whose process start differs, then the controller is `stopped`, `next` is `agentic-flow run <doc>`, and the exit is 10.
+- Given a heartbeat from another host id, then the controller is `other-host` and is not probed.
+- Given a malformed or oversized heartbeat, then the controller is `unknown` and the other sections render.
+- Given a recovery claimant matching `recover/owner.json`, then the controller is `recovering`.
+- Given a live reconciling controller and an intent without a station record, then the step lists the run under `interrupted`, `next.owner` is `controller`, and the exit is 0.
+- Given a live controller whose heartbeat names the newest open intent, then the step shows the CLI, elapsed time and timeout, and `next.owner` is `station`.
+- Given an open hold whose reason contains ANSI escapes, then the output has no control characters, shows `hold clear` for that hold id, and the exit is 10.
+- Given an escalated issue after an executor `ask`, then `next` is the approver `resume` with `--return executing`. After a bounce at the limit, both returns are shown.
+- Given every step approved, a tracker `open`, and a complete snapshot, then `next` is `ship`. Given a closed tracker, then `next.owner` is `none` and the exit is 0.
+- Given a missing step row or an over-limit metrics cache, then the snapshot is incomplete and `next` is `--reconcile-only`, never `ship`.
+- Given a held ledger lock, then `ledger: busy` is reported and the command still exits.
+- Given 25 plans in `state/`, when `status` runs with no argument, then 20 are listed followed by `5 more`. The install lines and JSON keys are byte-identical to before.
+- Given a non-TTY stdout, `status <plan> --watch` exits 2.
+- Given two simultaneous `run --detach` invocations, then exactly one exits 0 with the acknowledged controller's pid, and the other exits 9.
+- Given a child that fails before the lock (a dirty plan worktree), then `--detach` exits 3 with the log tail and no acknowledgment.
+- Given a controller writing past 16 MiB of output, then the log stops at the cap with the truncation marker, and the run and its ledger writes complete.
 - Given `--wait-human` with `--once` or `--reconcile-only`, then `run` exits 2.
-- Given `--wait-human` and a hold, when the human clears it, then the controller resumes dispatch without a restart, and the polls did not consume the turn cap.
-- Given `--wait-human` and an integrity failure (exit 9, 3 or 5 outside a poll), then the controller exits immediately as today.
-- Given `--wait-human` and no human action before the maximum wait, then the controller exits 10.
+- Given `--wait-human` and an existing hold found at reconcile, when the human clears it, then dispatch resumes in the same process without consuming turns.
+- Given `--wait-human` and a dispatch-raised `station-infrastructure` hold, when the human clears it, then dispatch resumes.
+- Given `--wait-human` and a turn-cap stop, an unreadable ledger, or an integrity hold, then the controller exits 10 immediately.
+- Given `--wait-human` and an approver `resume` on an escalated ask, then the next poll resumes dispatch.
+- Given `--wait-human`, then 3 failed polls exit 5, and an elapsed deadline exits 10 without another poll.
 
 ## Invariants
-- `status` never writes, never takes or edits the lock, and never runs `gh` or any network command.
+- `status` never writes files, never creates or edits the controller lock, and never runs `gh` or any network command. The only lock it takes is `ledger_read`'s bounded shared lock on an existing ledger file.
 - Nothing in the controller reads the heartbeat for a decision. The lock, ledger and journal stay authoritative.
-- Foreground `run` without the new flags behaves exactly as today, apart from writing the heartbeat.
-- Stations launched by a detached or waiting controller get the same environment and isolation as today.
-- Bash 3.2 compatible; no new required tool. Detaching uses Perl's `POSIX::setsid`; Perl is already required by the ledger.
-- Every rendered string is bounded and stripped of control characters.
+- Without the new flags, `run` behaves exactly as today, apart from writing the heartbeat.
+- No `ulimit -f` is applied to the controller. Station captures keep their own limit.
+- Bash 3.2; no new required tool. Detaching uses Perl, which is already required.
 
 ```agentic-flow-plan
 format: 2
@@ -210,17 +359,15 @@ steps: f-1 f-2 f-3 f-4
 ```
 
 ## Branch
-Base: `main`. One branch and one PR for the whole brief:
-`configurability-phase-1`. Each step lands as its own commit on that branch, closing its
-issue via `Fixes #N`.
+Base: `main`. One branch and one PR for the whole brief: `configurability-phase-1`. Each
+step lands as its own commit, closing its issue via `Fixes #N`.
 
 ## Definition of done (whole brief)
-Every step's DoD met; `make check` and `make test` green. Manually: start
-`agentic-flow run <doc> --detach --wait-human` on a fixture or real plan, watch it with
-`agentic-flow status <plan> --watch`, clear a hold, and see the line resume. Help text,
-`ADOPTION.md`'s run section, and the station-commands paragraph in both `CLAUDE.md` and
-`templates/harness/CLAUDE.md` (and the matching `AGENTS.md` pair if it names `run`) describe
-the new commands.
+Every step's DoD met; `make check` and `make test` green. Manually: run
+`agentic-flow run <doc> --detach --wait-human`, watch `agentic-flow status <plan> --watch`,
+clear a hold, and see the line resume. Help text, `ADOPTION.md`'s run section, and the
+station-commands paragraph in `CLAUDE.md` and `templates/harness/CLAUDE.md` (plus the
+`AGENTS.md` pair if it names `run`) describe the new commands.
 
 ## Verification commands
 ```bash
@@ -233,145 +380,121 @@ make test                                 # end of brief
 ---
 
 ## F-1 — Publish a controller heartbeat
-**Why first:** every other step reads it. It is also the only change inside the controller
-loop that runs on every turn, so it should land and be reviewed alone.
+**Why first:** the other steps read it, and it is the only per-turn change to the loop.
 
 **Approach:**
-- Write `<common>/agentic-flow/state/<plan>.controller.json` (shape in Part A) through a
-  tmp file + `mv`:
-  - after the lock is taken,
-  - at each turn start (`reconciling`),
-  - when a station is launched (`station`, with the intent's run, issue, step, station,
-    CLI, start time and effective timeout),
-  - when it returns,
-  - at exit (`stopped` plus the exit code, from the existing EXIT trap path).
-- A write failure only warns. It never changes the controller's result.
-- Add the `status` selector tag to the controller test group, with a ceiling in
-  `config/test-wall-ceilings.tsv` and the tag in the Makefile usage string.
+- Implement the writer for Part A's heartbeat shape at every point listed in C-1, through
+  tmp + `mv`, never inside the lock directory.
+- Include `ownership`, plus `launch` when `AGENTIC_DETACH_NONCE` is set.
+- A write failure warns only.
+- Add the `status` tag to the controller group, its ceiling in
+  `config/test-wall-ceilings.tsv`, and the tag in the Makefile usage string.
 
 **Test:**
-- Fixture controller run: the heartbeat exists, validates against the shape, and is ≤ 4 KiB.
-- Phase moves `reconciling` → `station` → `stopped` with the exit code.
-- A read-only state dir produces a warning and an unchanged result.
-- The interrupt path (130/143) records `stopped`.
+- The shape validates and is ≤ 4 KiB.
+- The phase sequence on a fixture run.
+- The `recovering` ownership for a claimant.
+- `stopped` with the exit code on normal, error and 130/143 paths.
+- A read-only state dir leaves the result unchanged.
 
 **DoD:** every controller exit leaves a `stopped` heartbeat with its exit code; existing controller tests unchanged.
 **Verify:** `make test-one F=controller S=status`
 **Risks:**
-- Writing from the EXIT trap after `CT_TMP` is removed. Order the write before cleanup.
-- A heartbeat must never be written into the lock directory, which `controller_unlock` deletes.
+- The EXIT trap removing `CT_TMP` before the final write.
+- Writing the claimant's heartbeat before the claim file exists.
 **Red-first:** none
 **Commit:** `Publish a controller heartbeat for status readers`
 
 ---
 
-## F-2 — Show plan progress in `agentic-flow status`
-**Why second:** it delivers the user-visible goal, using f-1's heartbeat and existing caches.
+## F-2 — Show plan progress in `agentic-flow status <plan>`
+**Why second:** it delivers the user-visible goal on f-1's evidence.
 
 **Approach:**
-- Add a status library (e.g. `scripts/lib/status.sh`) that `status_cmd` sources. Add the
-  library to `config/payload.tsv` only if `scripts/lib` is not already exported as a whole
-  (it is today).
-- **Plan resolution:** a plan id, or a `docs/inprogress|done/*.md` doc whose plan block
-  gives the id.
-- **Sources:** heartbeat plus the process probe for liveness; `<plan>.tsv` for step states;
-  `<plan>.metrics.json` for bounce counts (admitted `bounce` events per issue);
-  `<plan>.holds.json` plus ledger `hold`/`clear` for open holds; ledger `intent` without
-  `station` for the in-flight station; ledger station usage for cost; effective roles for
-  timeouts; `config/workflow.tsv` for the bounce limit.
-- **Rendering:** text as sketched in the product analysis, area E, with cache age shown
-  as `as of`.
-- Apply the `next` rules in the stated order.
-- `--watch [<s>]` redraws on a TTY only and exits 0 on interrupt.
-- The no-argument form appends a `plans:` section, one line per plan found under
-  `state/`, `locks/` or the ledger. Install output and exit code are unchanged.
-- Strip control characters with one helper used for every rendered field.
+- Add `scripts/lib/status.sh`. `scripts/lib` is already exported whole.
+- Resolve a plan id or doc.
+- Apply C-1 for the controller and station, C-2 for the snapshot and `next`, and C-3 for
+  every read and for plan discovery.
+- Bounces are admitted `bounce` events from the metrics cache. The limit comes from
+  `config/workflow.tsv`.
+- Render text and the JSON shape in Part A.
+- `--watch` redraws on a TTY only and exits 0 on interrupt.
+- The no-argument summary is appended after the unchanged install report.
+- Use one control-character stripping helper for every rendered field.
 
-**Test:** the first eight acceptance scenarios, plus:
-- JSON plan view validates (`jq -e` on the shape).
-- No-argument JSON keeps every existing key.
-- The upgrade group's status tests still pass untouched.
+**Test:**
+- The status, interrupted, hold, escalation, ship, closed, incomplete, busy-ledger,
+  discovery and TTY scenarios.
 - A `gh` sentinel on `PATH` proves no network call.
+- The upgrade group's status tests pass unchanged.
 
-**DoD:** `status <plan>` answers "whose turn is it?" offline with correct exit codes; the install report is unchanged.
+**DoD:** `status <plan>` names the next owner and an executable command offline, with the stated exit codes; the install report is unchanged.
 **Verify:** `make test-one F=controller S=status` and `make test-one F=upgrade`
 **Risks:**
-- Two plans with the same id in different worktrees. The Git common dir is shared, so the id is unique. Assert it.
-- Stale cache read as live state. Always print the cache age; never infer "alive" from the cache.
+- Recommending `ship` from partial rows. C-2 rule 3 must run before rule 6.
+- Treating an orphaned intent as running.
 **Red-first:** none
 **Commit:** `Show plan progress and the next owner in agentic-flow status`
 
 ---
 
 ## F-3 — Run the controller detached
-**Why third:** it is only useful once the human can see a background run (f-2).
+**Why third:** a background run is only usable once it is visible.
 
 **Approach:**
-- `run <doc> --detach` validates the remaining arguments first, so usage errors still
-  exit 2 in the foreground.
-- It pre-checks the lock owner the way `controller_lock` does, and exits 9 with the same
-  message if a live controller owns the plan.
-- It then re-invokes the same `agentic-flow run` argv, without `--detach`, in a new
-  session via `perl -MPOSIX -e 'POSIX::setsid()…'`:
-  - stdin from `/dev/null`,
-  - stdout and stderr to `logs/<plan>/<run-id>.log` under `ulimit -f`.
-- It prints the child pid, the log path and `agentic-flow status <plan> --watch`, then
-  exits 0.
-- It prunes the plan's logs to the newest 20 before starting.
-- `--json` prints those three fields as JSON.
+- Implement C-4: validation and pre-check, the nonce, the Perl `setsid` exec, the
+  acknowledgment wait, child-exit and timeout handling, the bounded log writer (a small
+  Perl script under `scripts/lib/`), and pruning.
+- `--json` prints `{pid, log, status}`.
 
 **Test:**
-- The detached fixture run returns within a few seconds while the fixture station sleeps.
-- The log receives controller stderr.
-- The heartbeat shows `alive` with the child's pid.
-- A second `--detach` exits 9 without forking.
-- A usage error exits 2 without forking.
-- The child survives the parent shell exiting (checked by pid and start time).
+- Two simultaneous detaches: one 0, one 9.
+- A child failing before the lock exits with its code and the log tail.
+- An acknowledgment timeout terminates the session and exits 5.
+- A stale heartbeat with another nonce is not accepted.
+- Output over the cap truncates the log, and the run's ledger and cache writes still
+  succeed.
+- The child survives the parent's exit.
 
-**DoD:** a detached run is observable through `status` and its log, and refuses to double-start.
+**DoD:** `--detach` exits 0 only for an acknowledged controller and reports that controller's pid; logs are capped without limiting the controller.
 **Verify:** `make test-one F=controller S=status`
 **Risks:**
-- A pre-check race with a starting controller. The child's own `controller_lock` stays authoritative; the pre-check is only for a friendly error.
-- macOS has no `setsid` binary. Use Perl, not `nohup`, which the command policy denies for agents and which does not create a new session.
+- The writer exiting early would raise EPIPE in the controller. The writer exits only at
+  EOF.
+- macOS has no `setsid` binary. Use Perl, not `nohup`.
 **Red-first:** none
-**Commit:** `Add run --detach with a per-plan run log`
+**Commit:** `Add run --detach with a startup acknowledgment and bounded log`
 
 ---
 
-## F-4 — Wait for the human instead of exiting on a hold
-**Why last:** it changes loop control flow on the stop path, the riskiest edit. It builds
-on f-1's `waiting-human` phase.
+## F-4 — Wait for the human on resumable stops
+**Why last:** it changes loop control flow on the stop path, the riskiest edit.
 
 **Approach:**
-- With `--wait-human [<max-s>]`, a loop iteration that would `break` with result 10
-  instead records `waiting-human` (since, next poll, until) in the heartbeat and sleeps.
-  Backoff starts at 60 s and doubles to 900 s. Then the iteration re-enters the
-  reconcile, which already re-reads holds and journal.
-- Poll iterations do not increment `CT_TURNS`.
-- A poll that fails with exit 5 counts as a failed poll. Three in a row end the run with 5.
-- Any other non-10 result exits immediately, unchanged.
-- The run exits 10 when `until` passes.
+- Implement C-5 at the single point after the loop breaks, so reconcile-time and
+  dispatch-time stops share one classification.
+- Polls reuse the loop's top-of-iteration reset and suppress dispatch.
 - `--wait-human` with `--once` or `--reconcile-only` exits 2.
-- The lock stays held throughout.
-- The existing desktop notification fires once per new hold, not once per poll.
+- The heartbeat records `waiting` per Part A.
+- Polls raise nothing, so no notification repeats.
+- Tests use a backoff override to stay within the tag ceiling.
 
 **Test:**
-- Hold raised → waiting heartbeat; clear recorded in the fixture → the next poll resumes
-  dispatch.
+- A reconcile-time hold, a dispatch-raised hold, and an escalated ask each resume after
+  the human acts.
+- Turn cap, unreadable ledger and integrity hold each exit 10 at once.
 - `CT_TURNS` is unchanged across polls.
-- Exit 9 and 3 paths are unaffected.
-- Three failed polls → exit 5.
-- A maximum wait elapses → exit 10.
-- Flag conflicts → exit 2.
-- Use a test-only backoff override so the tag stays within its ceiling.
+- Failed polls and the deadline behave as stated in C-5.
+- Flag conflicts exit 2.
 
-**DoD:** an unattended run with `--wait-human` survives a hold and resumes on its own; every other exit path is unchanged.
+**DoD:** resumable stops resume in-process after the human acts; every other exit path is unchanged.
 **Verify:** `make test-one F=controller S=status`
 **Risks:**
-- Re-entering the loop with per-turn state left over (`CT_RAISED`, `CT_HOLD_REASONS`). Reuse the loop's existing reset at the top of each iteration rather than a second path.
-- Sleeping while holding the lock past the lease. The lease governs foreign hosts' journal age, not local pid ownership. State this in the help text.
+- Per-turn state leaking into a poll.
+- A dispatch-raised hold missing from `CT_HOLDS` until the next reconcile; classify with
+  `CT_HOLD_REASONS`.
 **Red-first:** none
-**Commit:** `Add run --wait-human to resume after the human answers`
+**Commit:** `Add run --wait-human for resumable stops`
 
 ---
 
