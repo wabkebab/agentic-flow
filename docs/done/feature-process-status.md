@@ -1,16 +1,15 @@
 <!-- TRIAGE (first pass · 2026-11-25) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict (touches the controller loop; project baseline is Standard)
 > Phase 1 of [harness configurability](product-harness-configurability.md) (areas E and G): an offline, read-only plan view that answers "whose turn is it?", a controller heartbeat, `run --detach` with a startup acknowledgment, and `run --wait-human` for resumable stops. Revision 2 (2026-11-25) answers the first review: resumable stops, launch acknowledgment, log capping, station evidence, executable next actions, read bounds. Revision 3 answers the second: a write-once acknowledgment file, heartbeat writes only under lock ownership, separate holds completeness, a live controller preferred over a stale cache, the only valid bounce resume, and observe-only polls with deduplicated notifications. Revision 4 answers the third: atomic acknowledgment with a final read after reaping, hold-id snapshots before and during waits, and a `--return`-free resume command.
 
 # Feature — Process status and detached runs
 
 ## Tracker
-- [ ] f-1 Publish a controller heartbeat — open
-- [ ] f-2 Show plan progress in `agentic-flow status <plan>` — open
-- [ ] f-3 Run the controller detached — open
-- [ ] f-4 Wait for the human on resumable stops — open
-
+- [x] f-1 — #207; approved=0cd99503f91a1d21f37885c3cb07eeea2a967e9b; submissions=0cd99503f91a1d21f37885c3cb07eeea2a967e9b
+- [x] f-2 — #208; approved=f592a130f879d424eb8070644e86021875341a13; submissions=f592a130f879d424eb8070644e86021875341a13
+- [x] f-3 — #209; approved=e4c39b93ffae7e570f30c7578667dc745a2020b1; submissions=e4c39b93ffae7e570f30c7578667dc745a2020b1
+- [x] f-4 — #210; approved=9364e0bb032a22a5cd17482b21fd5eb529ada085; submissions=9364e0bb032a22a5cd17482b21fd5eb529ada085
 ---
 
 # Part A — Analysis
@@ -654,10 +653,10 @@ make test                                 # end of brief
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/206
 - **Approval:** status=approved; by=wabkebab; at=2026-11-25; rev=f93645f45f4f52a548fe71b734b12fb642bcd20b
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** source=final-approval
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: `ship` finalizes Status and Tracker, sets TRIAGE to Done, and commits this
   document's move and the updated index before the first push. It opens the PR and
   waits for CI. The reviewer runs `final-approve` to record the PR, head, and run attempt
