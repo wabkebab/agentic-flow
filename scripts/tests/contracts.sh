@@ -1837,13 +1837,18 @@ for token_file in "$ROOT/scripts/init.sh" "$ROOT/scripts/doctor.sh" "$ROOT/scrip
   fi
 done
 [ "$token_seen" -ge 2 ] || fail "not enough TOKEN_RE assignments to guard parity"
-printf '%s\n%s\n' "$(printf '{%sPROJECT_NAME}%s' '{' '}')" \
-  "$(printf '{%sPROJECT_123}%s' '{' '}')" | grep -Eq "$TOKEN_RE" \
+# Feed grep from a here-string, not a live pipe: grep -q exits on its first match, and a
+# printf still writing behind it takes SIGPIPE, which pipefail turns into a pipeline failure
+# even though the match succeeded (a flaky "rejected valid placeholder fixtures" in CI).
+valid_tokens=$(printf '%s\n%s\n' "$(printf '{%sPROJECT_NAME}%s' '{' '}')" \
+  "$(printf '{%sPROJECT_123}%s' '{' '}')")
+grep -Eq "$TOKEN_RE" <<< "$valid_tokens" \
   || fail "TOKEN_RE rejected valid placeholder fixtures"
 # shellcheck disable=SC2016 # literal GitHub Actions expression fixture.
-printf '%s\n%s\n%s\n' '${{ matrix.node }}' '{project_name}' \
-  "$(printf '{%sproject-name}%s' '{' '}')" | grep -Eq "$TOKEN_RE" \
-  && fail "TOKEN_RE accepted invalid placeholder fixtures"
+invalid_tokens=$(printf '%s\n%s\n%s\n' '${{ matrix.node }}' '{project_name}' \
+  "$(printf '{%sproject-name}%s' '{' '}')")
+! grep -Eq "$TOKEN_RE" <<< "$invalid_tokens" \
+  || fail "TOKEN_RE accepted invalid placeholder fixtures"
 
 grep -Eq '^ADOPTION\.md[[:space:]]+ADOPTION\.md[[:space:]]+core[[:space:]]+preserve[[:space:]]+export$' \
   "$ROOT/config/payload.tsv" \
