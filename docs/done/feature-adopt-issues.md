@@ -1,13 +1,12 @@
 <!-- TRIAGE (first pass · 2026-11-25) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Standard
 > Let `plan-to-issues` adopt an existing GitHub issue for a plan step instead of creating a duplicate.
 
 # Feature — Adopt existing issues
 
 ## Tracker
-- [ ] F-1 Adopt existing issues in plan-to-issues — open
-
+- [x] f-1 — #211; approved=10b1ec9ead7669164c59e345a0362926281ad73d; submissions=10b1ec9ead7669164c59e345a0362926281ad73d
 ---
 
 # Part A — Analysis
@@ -135,10 +134,10 @@ asserting that no mutating call was made.
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/211
 - **Approval:** status=approved; by=wabkebab; at=2026-11-25; rev=148c0df74416e80c191a4d506c479dee17ee8c33
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** source=final-approval
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: `ship` finalizes Status and Tracker, sets TRIAGE to Done, and commits this
   document's move and the updated index before the first push. It opens the PR and
   waits for CI. The reviewer runs `final-approve` to record the PR, head, and run attempt

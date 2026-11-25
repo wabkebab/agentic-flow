@@ -109,6 +109,7 @@ TRIAGE header. Don't edit between the markers by hand.
 |-----|------|--------|-------|
 | context_optimization | Feature | ✅ Done | done |
 | feature-adaptative-assurance-opus | Feature | 🕰️ Superseded | done |
+| feature-adopt-issues | Feature | ✅ Done | done |
 | feature-ask-answer-packet | Feature | ✅ Done | done |
 | feature-ci-as-authority | Feature | ✅ Done | done |
 | feature-deterministic-stations | Feature | ✅ Done | done |
@@ -128,7 +129,6 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-test-streamlining | Feature | ✅ Done | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
 | product-roadmap-history | Product Analysis | ✅ Decided | done |
-| feature-adopt-issues | Feature | 🟦 Proposal | inprogress |
 | feature-role-signing | Feature | 🟦 Proposal | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |
 <!-- END: generated index -->
