@@ -23,3 +23,9 @@ journal_context() { # body; caller retains globals for replay
 }
 TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
 STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
+
+frozen_issue_index_rows() { # Whole-line discovery from the 0.21.0 JSON-spec path.
+  jq -r --arg prefix "<!-- agentic-flow:plan:$1 " '
+    .[] | .number as $number | .body | split("\n")[]
+    | select(contains($prefix)) | [$number, .] | @tsv'
+}

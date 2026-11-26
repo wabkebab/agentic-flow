@@ -10,6 +10,10 @@ journal_jq() { # jq with the shared journal marker module on its search path
   jq -L "$JOURNAL_LIB_DIR" "$@"
 }
 
+journal_default_policy() {
+  journal_jq -nr 'include "journal-marker"; journal_legacy_pin'
+}
+
 JOURNAL_STAMP_PREFIX='<!-- agentic-flow:plan:'
 # shellcheck disable=SC2016 # The quoted expressions are jq programs.
 journal_stamp_lines() { # body|discover|index [plan]; index accepts a bounded issue array
@@ -20,7 +24,7 @@ journal_stamp_lines() { # body|discover|index [plan]; index accepts a bounded is
         .[] | .number as $number | .body |
         select(any(split("\n")[]; startswith($prefix+$plan+" "))) |
         (try journal_stamp_lines($prefix) catch error("malformed identity stamp on issue #\($number): \(.)")) |
-        [$number, .line] | @tsv' ;;
+        [$number, .line, .policy, (.policy_line != null)] | @tsv' ;;
     discover)
       journal_jq -Rsc --arg prefix "$JOURNAL_STAMP_PREFIX" --arg plan "$2" '
         include "journal-marker";

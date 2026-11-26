@@ -4267,6 +4267,23 @@ case "$fixture_mode" in
     } ;;
   no-ack) workflow_load() { printf '\033[31mfixture error\033[0m\r\n' >&2; exit 0; } ;;
 esac
+if [ "${PIN_FIXTURE:-false}" = true ]; then
+  handoff_gh() {
+    case "$1 $2" in
+      'issue list')
+        jq -s 'map({number,body,author:{login:"plan"}})' "$fixture"/pin-issue-*.json ;;
+      'api graphql')
+        local arg
+        for arg in "$@"; do
+          case "$arg" in number=1|number=2) break ;; esac
+        done
+        jq '{data:{repository:{issue:.}}}' "$fixture/pin-issue-${arg#number=}.json" ;;
+      *)
+        printf '%s\n' "$*" >> "$fixture/pin-forge-mutations"
+        return 79 ;;
+    esac
+  }
+else
 controller_check() {
   case "$fixture_mode" in
     race-*) fixture_release "$fixture/$fixture_mode.finish" || return 5 ;;
@@ -4276,6 +4293,7 @@ controller_check() {
   CT_TRACKER=2
   printf '%s\n' "$CT_REPORT" > "$CT_TMP/report"
 }
+fi
 controller_holds() { :; }
 controller_worktree() { :; }
 controller_labels() { :; }
@@ -4346,6 +4364,23 @@ RUNNER
   grep -Fq '.agentic-flow/config:1: unknown key' "$fixture/err" &&
     [ ! -e "$lock" ] && [ ! -e "$heartbeat" ] || fail 'invalid config reached controller lock acquisition'
   rm "$repo/.agentic-flow/config"
+  for number in 1 2; do
+    local stamp_identity=tracker
+    if [ "$number" = 1 ]; then stamp_identity=step:alpha; fi
+    jq -n --argjson n "$number" --arg id "$stamp_identity" --arg rev "$base" '
+      {number:$n,state:"OPEN",labels:{nodes:[],pageInfo:{hasNextPage:false}},
+       comments:{nodes:[],pageInfo:{hasNextPage:false}},
+       body:("<!-- agentic-flow:plan:heartbeat "+$id+" spec:"+$rev+" journal=v2 -->\n"+
+             "<!-- agentic-flow:plan:heartbeat policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->\n"+
+             "<!-- agentic-flow:topology:strict -->")}' > "$fixture/pin-issue-$number.json"
+  done
+  PIN_FIXTURE=true status_run 0 --reconcile-only
+  sed 's/review.block_at=medium/review.block_at=high/' "$fixture/pin-issue-1.json" > "$fixture/edited-pin"
+  mv "$fixture/edited-pin" "$fixture/pin-issue-1.json"
+  PIN_FIXTURE=true status_run 3 --reconcile-only
+  grep -Fq 'stamped issues differ from the approved plan' "$fixture/err" &&
+    [ ! -e "$fixture/pin-forge-mutations" ] || fail 'hand-edited pin lacked a read-only stamp drift refusal'
+  : > "$fixture/trace"
   status_run 0 --once --json
   jq -se --slurpfile intent "$fixture/intent" '
     map(.phase)==["reconciling","reconciling","station","reconciling","reconciling","stopped"] and

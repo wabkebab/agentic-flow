@@ -75,7 +75,7 @@ sub range_text {
 }
 
 sub load_registry {
-    my $bytes = file_bytes($registry);
+    my ($bytes, $registry) = @_;
     defined $bytes or error(5, "$registry: missing registry");
     my ($header, @rows) = lines($bytes, $registry);
     defined $header && $header eq "key\ttier\ttype\tdefault\tsummary\n" && @rows
@@ -181,6 +181,15 @@ sub git_bytes {
     return $bytes;
 }
 
+sub revision_file_bytes {
+    my ($oid, $path, $source) = @_;
+    my $row = git_bytes($source, 'ls-tree', '--full-tree', $oid, '--', $path);
+    return undef if $row eq '';
+    $row =~ /\A100(?:644|755) blob ([a-f0-9]{40,64})\t\Q$path\E\n\z/
+        or error(5, "$source: expected a regular file");
+    return git_bytes($source, 'cat-file', 'blob', $1);
+}
+
 sub pin {
     my ($rev) = @_;
     my ($bytes, $source);
@@ -188,14 +197,18 @@ sub pin {
         $source = "$rev:.agentic-flow/config";
         my $oid = git_bytes($source, 'rev-parse', '--verify', '--end-of-options', "$rev^{commit}");
         chomp $oid;
-        my $row = git_bytes($source, 'ls-tree', '--full-tree', $oid, '--', '.agentic-flow/config');
-        if ($row ne '') {
-            $row =~ /\A100(?:644|755) blob ([a-f0-9]{40,64})\t\.agentic-flow\/config\n\z/
-                or error(5, "$source: expected a regular file");
-            $bytes = git_bytes($source, 'cat-file', 'blob', $1);
+        $bytes = revision_file_bytes($oid, '.agentic-flow/config', $source);
+        my $registry_at_rev = "$rev:config/config-keys.tsv";
+        my $registry_bytes = revision_file_bytes($oid, 'config/config-keys.tsv', $registry_at_rev);
+        # A base from before the config registry uses the running harness's defaults.
+        if (defined $registry_bytes) {
+            load_registry($registry_bytes, $registry_at_rev);
+        } else {
+            load_registry(file_bytes($registry), $registry);
         }
     } else {
         $source = $project;
+        load_registry(file_bytes($registry), $registry);
         $bytes = project_bytes();
     }
     my ($values) = read_layer($bytes // '', $source, 'project', 0);
@@ -328,11 +341,13 @@ if ($action eq '--json') {
     unshift @args, $action;
     $action = 'list';
 }
-load_registry();
 if ($action eq 'pin') {
     @args <= 1 or usage();
     pin(@args);
-} elsif ($action eq 'init') {
+    exit 0;
+}
+load_registry(file_bytes($registry), $registry);
+if ($action eq 'init') {
     init_config(@args);
 } elsif ($action eq 'set' || $action eq 'unset') {
     change($action, @args);

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
+# shellcheck disable=SC2030,SC2031 # Forge state and mock PATH are isolated per subshell fixture.
 [ -f "$ROOT/scripts/lib/brief.sh" ] || fail 'strict brief parser is missing'
 INVALID_SPEC="$TMP/invalid-spec.json"
 printf '%s\n' '{"tracking":{"title":"Plan: bad"},"steps":[]}' > "$INVALID_SPEC"
@@ -18,6 +19,14 @@ PLAN_DRIVER="$ROOT/scripts/plan-to-issues.sh"
 GHFIX="$TMP/gh-fixture"
 GHSTATE="$TMP/gh-state"
 mkdir -p "$GHFIX" "$GHSTATE"
+legacy_policy='review.max_bounces=2 review.block_at=judgment andon.station-infrastructure=hold'
+medium_policy='review.max_bounces=2 review.block_at=medium andon.station-infrastructure=hold'
+
+assert_read_only_calls() {
+  if grep -Ev '^(auth status|repo view |issue (list|view) )' "$1"; then
+    fail 'policy refusal attempted a forge mutation'
+  fi
+}
 cat > "$GHFIX/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -107,6 +116,10 @@ case "${1:-} ${2:-}" in
     ;;
   "issue edit")
     num=$3
+    if [ "${FAKE_GH_FAIL_EDIT_BODY_NUMBER:-}" = "$num" ] && [ "${6:-}" = --body-file ]; then
+      echo "injected body edit failure" >&2
+      exit 1
+    fi
     shift 3
     dir="$state/issue-$num"
     while [ "$#" -gt 0 ]; do
@@ -242,12 +255,14 @@ MD
   cap_driver > "$TMP/cap-out" || fail 'legacy approved brief failed dry run in a fresh adopter repository'
 
   if active_scope docs; then
-    mkdir -p docs/templates
+    mkdir -p docs/templates config .agentic-flow
     cp "$ROOT/docs/README.md" docs/README.md
     cp "$ROOT/docs/templates/feature-analysis.md" docs/templates/feature-analysis.md
     # Adopters may still have an older preserved template without the format key.
     sed '/^format: 2$/d' "$ROOT/docs/templates/security-review.md" > docs/templates/security-review.md
-    git add -- docs/README.md docs/templates/feature-analysis.md docs/templates/security-review.md
+    ln "$ROOT/config/config-keys.tsv" config/config-keys.tsv
+    printf '%s\n' review.max_bounces=4 > .agentic-flow/config
+    git add -- docs/README.md docs/templates/feature-analysis.md docs/templates/security-review.md config/config-keys.tsv .agentic-flow/config
     git commit -qm 'Seed current and legacy plan templates'
     for type in feature security; do
       case "$type" in feature) template=feature-analysis ;; security) template=security-review ;; esac
@@ -634,7 +649,9 @@ grep -q '^### Definition of done$' "$STRICT_STATE/issue-2/body" \
 
 # Document-derived specs: real commits, fake GitHub, no ambient working-tree input.
 BRIEF_FIX="$TMP/brief-repo"
-mkdir -p "$BRIEF_FIX/docs"
+mkdir -p "$BRIEF_FIX/docs" "$BRIEF_FIX/config" "$BRIEF_FIX/.agentic-flow"
+ln "$ROOT/config/config-keys.tsv" "$BRIEF_FIX/config/config-keys.tsv"
+printf '%s\n' review.block_at=judgment > "$BRIEF_FIX/.agentic-flow/config"
 git -C "$BRIEF_FIX" init -q
 git -C "$BRIEF_FIX" config user.name Tester
 git -C "$BRIEF_FIX" config user.email tester@example.invalid
@@ -688,7 +705,7 @@ cat >> "$BRIEF_FIX/docs/plan.md" <<'MD'
 - **Review verdict:** source=pr-head-approval
 - **Memory:** pending
 MD
-git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" add docs/plan.md config/config-keys.tsv .agentic-flow/config
 git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record approved plan'
 BRIEF_REV=$(git -C "$BRIEF_FIX" rev-parse HEAD)
 sed "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=Tester; at=2026-11-12; rev=$BRIEF_REV/" \
@@ -742,13 +759,41 @@ for mutation in duplicate duplicate-section missing orphan extra-section malform
   fi
   grep -Eq 'fixture.md:[0-9]+:' "$TMP/parse.err" || fail 'parse error omitted line'
 done
+# A first apply is the pin boundary. Discovery runs even when the doc has no pin.
+: > "$TMP/brief-calls"
+if brief_run --apply > "$TMP/pinless-out" 2>&1; then fail 'pinless first apply was accepted'; fi
+grep -Fq 'new plans need a policy: line' "$TMP/pinless-out" || fail 'pinless refusal omitted the required field'
+grep -q '^issue list ' "$TMP/brief-calls" || fail 'pinless refusal skipped discovery'
+assert_read_only_calls "$TMP/brief-calls"
+if active_scope docs; then
+  for type in feature security; do
+    generated="$TMP/cap-worktrees/cap-$type/docs/inprogress/$type-cap-$type.md"
+    grep -Fxq 'policy: review.max_bounces=4 review.block_at=medium andon.station-infrastructure=hold' "$generated" ||
+      fail "start omitted the base policy for $type"
+  done
+fi
+
+pinless_rev=$BRIEF_REV
+pinless_approval=$(git -C "$BRIEF_FIX" rev-parse HEAD)
+pinless_hash=$(jq -cS . "$TMP/brief-spec.json" | git hash-object --stdin)
+sed "/^id: deterministic-stations$/a\\
+policy: $legacy_policy
+" "$TMP/approved-plan.md" > "$BRIEF_FIX/docs/plan.md"
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Pin Strict policy'
+BRIEF_REV=$(git -C "$BRIEF_FIX" rev-parse HEAD)
+sed "s/rev=$pinless_rev/rev=$BRIEF_REV/" "$BRIEF_FIX/docs/plan.md" > "$TMP/strict-pinned-approved"
+cat "$TMP/strict-pinned-approved" > "$BRIEF_FIX/docs/plan.md"
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Approve Strict pin'
+brief_parse "$BRIEF_FIX/docs/plan.md" docs/plan.md "$BRIEF_REV" > "$TMP/brief-spec.json"
 FAKE_GH_FAIL_CREATE_NUMBER=2 brief_run --apply > /dev/null 2>&1 && fail 'approved creation unexpectedly succeeded'
 [ -e "$TMP/brief-gh/issue-1/body" ] || fail 'interrupted apply did not retain its tracker'
 brief_run --apply > /dev/null || fail 'approved document apply did not resume'
 git -C "$BRIEF_FIX" add docs/plan.md
 git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Record tracking issue'
 brief_hash=$(jq -cS . "$TMP/brief-spec.json" | git hash-object --stdin)
-grep -Fq "tracker spec:$brief_hash journal=v1 approved=$BRIEF_REV" "$TMP/brief-gh/issue-1/body" \
+grep -Fq "tracker spec:$brief_hash journal=v2 approved=$BRIEF_REV" "$TMP/brief-gh/issue-1/body" \
   || fail 'issue layout changed the approved spec hash'
 normalize_issue_body() {
   sed -E 's/spec:[a-f0-9]{40}/spec:<hash>/; s/approved=[a-f0-9]{40}/approved=<revision>/; s@/blob/[a-f0-9]{40}/@/blob/<revision>/@; s/approved-at:[^ ]+/approved-at:<time>/' "$1"
@@ -771,7 +816,8 @@ cat > "$TMP/tracker-golden" <<'MD'
 - [ ] #9 [s-8] Fixture step 8
 - [ ] #10 [s-9] Fixture step 9
 
-<!-- agentic-flow:plan:deterministic-stations tracker spec:<hash> journal=v1 approved=<revision> approved-by:Tester approved-at:<time> -->
+<!-- agentic-flow:plan:deterministic-stations tracker spec:<hash> journal=v2 approved=<revision> approved-by:Tester approved-at:<time> -->
+<!-- agentic-flow:plan:deterministic-stations policy:v1 review.max_bounces=2 review.block_at=judgment andon.station-infrastructure=hold -->
 <!-- agentic-flow:topology:strict -->
 MD
 diff -u "$TMP/tracker-golden" "$TMP/tracker-rendered" || fail 'Strict tracker Markdown changed'
@@ -802,25 +848,62 @@ make test
 - Preserve `a | b`.
 
 <!-- agentic-flow:brief:docs/plan.md -->
-<!-- agentic-flow:plan:deterministic-stations step:s-2 spec:<hash> journal=v1 approved=<revision> -->
+<!-- agentic-flow:plan:deterministic-stations step:s-2 spec:<hash> journal=v2 approved=<revision> -->
+<!-- agentic-flow:plan:deterministic-stations policy:v1 review.max_bounces=2 review.block_at=judgment andon.station-infrastructure=hold -->
 <!-- agentic-flow:topology:strict -->
 MD
 diff -u "$TMP/strict-golden" "$TMP/strict-rendered" || fail 'Strict step issue Markdown changed'
 brief_run --diff > "$TMP/new-brief-diff.out" || fail 'new-layout tracker discovery failed'
 grep -q '^Tracker: current$' "$TMP/new-brief-diff.out" || fail 'new tracker was not recognized'
+grep -Fq "policy:v1 $legacy_policy" "$TMP/new-brief-diff.out" || fail 'diff omitted the proposed policy marker'
+# Run the JSON-spec path with the frozen selector and stamp regexes from 0.21.0.
+(
+  cd "$BRIEF_FIX"
+  export PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/brief-gh" FAKE_GH_CALLS="$TMP/frozen-calls"
+  export FROZEN_STAMPS="$ROOT/scripts/tests/fixtures/stations/journal-0.21.0.sh"
+  mkdir "$TMP/frozen-driver"
+  ln -s "$ROOT/scripts/lib" "$ROOT/scripts/assurance.sh" "$TMP/frozen-driver/"
+  # shellcheck disable=SC2016 # Preserve the shell expressions in the generated driver.
+  sed -e 's|source "$SCRIPT_DIR/lib/journal.sh"|source "$FROZEN_STAMPS"|' \
+    -e '/^  TRACK_STAMP_RE=/d' -e '/^  STEP_STAMP_RE=/d' \
+    -e 's/journal_stamp_lines index "\$PLAN_KEY"/frozen_issue_index_rows "$PLAN_KEY"/' \
+    "$PLAN_DRIVER" > "$TMP/frozen-driver/driver"
+  for n in 1 2; do
+    git hash-object "$FAKE_GH_STATE/issue-$n/body" > "$TMP/frozen-before-$n"
+    jq -n --argjson n "$n" --rawfile body "$FAKE_GH_STATE/issue-$n/body" '
+      [{number:$n,body:$body,state:"OPEN",url:"https://github.com/owner/repo/issues/\($n)"}]' > "$TMP/frozen-search"
+    : > "$FAKE_GH_CALLS"
+    if FAKE_GH_LIST_OVERRIDE="$TMP/frozen-search" bash "$TMP/frozen-driver/driver" \
+         --apply "$TMP/brief-spec.json" > "$TMP/frozen-out" 2>&1; then
+      fail '0.21.0 JSON-spec path accepted a pinned issue'
+    fi
+    grep -Fq "malformed identity stamp on issue #$n" "$TMP/frozen-out" ||
+      fail "0.21.0 did not reject the policy line for issue #$n: $(cat "$TMP/frozen-out")"
+    assert_read_only_calls "$FAKE_GH_CALLS"
+    [ "$(git hash-object "$FAKE_GH_STATE/issue-$n/body")" = "$(cat "$TMP/frozen-before-$n")" ] ||
+      fail '0.21.0 modified a pinned issue'
+  done
+)
 # Use an actual old-layout tracker in the approval-only migration below.
 {
   printf '%s\n' 'Handwritten tracker' '' '## Steps' '- [ ] #2 [s-1] S-1 — Fixture step 1' ''
-  tail -n 2 "$TMP/brief-gh/issue-1/body"
+  tail -n 3 "$TMP/brief-gh/issue-1/body"
 } > "$TMP/old-layout-tracker"
 cp "$TMP/old-layout-tracker" "$TMP/brief-gh/issue-1/body"
 for n in 1 2 3 4 5 6 7 8 9 10; do
   grep -q "approved=$BRIEF_REV" "$TMP/brief-gh/issue-$n/body" || fail 'issue lacks approved revision'
   # Simulate legacy creation without journal=v1. Migration must preserve eligibility.
-  sed -E 's/ journal=v1//; s/ approved=[a-f0-9]{40}//' "$TMP/brief-gh/issue-$n/body" > "$TMP/legacy-body"
+  sed -E "/ policy:v1 /d; s/spec:[a-f0-9]{40}/spec:$pinless_hash/; s/ journal=v2//; s/ approved=[a-f0-9]{40}//" \
+    "$TMP/brief-gh/issue-$n/body" > "$TMP/legacy-body"
   cp "$TMP/legacy-body" "$TMP/brief-gh/issue-$n/body"
   cp "$TMP/legacy-body" "$TMP/legacy-before-$n"
 done
+BRIEF_REV=$pinless_rev
+git -C "$BRIEF_FIX" checkout -qb legacy-in-flight "$pinless_approval"
+sed 's@^- \*\*Tracking issue:\*\* pending$@- **Tracking issue:** url=https://github.com/owner/repo/issues/1@' \
+  "$TMP/approved-plan.md" > "$BRIEF_FIX/docs/plan.md"
+git -C "$BRIEF_FIX" add docs/plan.md
+git -C "$BRIEF_FIX" -c commit.gpgsign=false commit -qm 'Seed pinless in-flight plan'
 # Replay three distinct legacy states across the actual migration.
 source "$ROOT/scripts/lib/workflow.sh"
 source "$ROOT/scripts/lib/journal.sh"
@@ -849,8 +932,17 @@ for n in 1 2 3 4 5 6 7 8 9 10; do
   cmp -s "$TMP/legacy-before-$n" "$TMP/migrated-body" || fail 'migration changed more than approved stamp'
 done
 if grep -q 'journal=v1' "$TMP/brief-gh"/issue-*/body; then fail 'migration changed legacy eligibility'; fi
-# Same-revision reapply can read hand-written v2 stamps before plan-mode capture ships.
-pinned_policy_line='<!-- agentic-flow:plan:deterministic-stations policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->'
+# Same-revision pinless reapply preserves every legacy issue body and spec hash.
+printf '\n\n' >> "$TMP/brief-gh/issue-2/body"
+for n in {1..10}; do
+  cat "$TMP/brief-gh/issue-$n/body" > "$TMP/pinless-before-$n"
+done
+brief_run --apply > /dev/null || fail 'pinless in-flight reapply failed'
+for n in {1..10}; do
+  cmp -s "$TMP/pinless-before-$n" "$TMP/brief-gh/issue-$n/body" || fail 'pinless reapply changed body or spec hash'
+done
+# Preserve an existing explicit legacy pin even when it follows the topology line.
+pinned_policy_line="<!-- agentic-flow:plan:deterministic-stations policy:v1 $legacy_policy -->"
 for n in 1 2; do
   sed 's/ approved=/ journal=v2 approved=/' "$TMP/brief-gh/issue-$n/body" > "$TMP/pinned-body-$n"
   printf '\n%s\n' "$pinned_policy_line" >> "$TMP/pinned-body-$n"
@@ -916,7 +1008,8 @@ git -C "$STANDARD_REPO" config user.name Tester
 git -C "$STANDARD_REPO" config user.email fixture@example.invalid
 git -C "$STANDARD_REPO" -c commit.gpgsign=false commit --allow-empty -qm 'Standard base'
 git -C "$STANDARD_REPO" worktree add -qb topic "$STANDARD_BRIEF"
-mkdir -p "$STANDARD_BRIEF/docs/inprogress"
+mkdir -p "$STANDARD_BRIEF/docs/inprogress" "$STANDARD_BRIEF/config"
+ln "$ROOT/config/config-keys.tsv" "$STANDARD_BRIEF/config/config-keys.tsv"
 cat > "$STANDARD_BRIEF/docs/inprogress/plan.md" <<'MD'
 # Feature — Standard fixture
 ## Tracker
@@ -924,6 +1017,7 @@ cat > "$STANDARD_BRIEF/docs/inprogress/plan.md" <<'MD'
 # Part B — Implementation Brief
 ```agentic-flow-plan
 id: standard-doc
+policy: review.max_bounces=2 review.block_at=medium andon.station-infrastructure=hold
 profile: standard
 branch: topic
 steps: alpha
@@ -954,7 +1048,7 @@ Keep this line after the separator.
 - **Review verdict:** source=close-out-attestation
 - **Memory:** pending
 MD
-git -C "$STANDARD_BRIEF" add docs/inprogress/plan.md
+git -C "$STANDARD_BRIEF" add docs/inprogress/plan.md config/config-keys.tsv
 git -C "$STANDARD_BRIEF" -c commit.gpgsign=false commit -qm 'Standard approved revision'
 STANDARD_REV=$(git -C "$STANDARD_BRIEF" rev-parse HEAD)
 sed "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=Tester; at=2026-01-01; rev=$STANDARD_REV/" "$STANDARD_BRIEF/docs/inprogress/plan.md" > "$TMP/std-plan"
@@ -968,7 +1062,7 @@ standard_brief_apply() {
 standard_brief_apply || fail "Standard document creation failed: $(cat "$TMP/std.out")"
 [ "$(find "$TMP/standard-brief-gh" -type d -name 'issue-*' | wc -l | tr -d ' ')" = 1 ] || fail 'Standard document created a tracker'
 grep -q "approved=$STANDARD_REV" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard creation missing revision stamp'
-grep -q "journal=v1" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard creation missing journal stamp'
+grep -q "journal=v2" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard creation missing journal stamp'
 normalize_issue_body "$TMP/standard-brief-gh/issue-1/body" > "$TMP/standard-rendered"
 cat > "$TMP/standard-golden" <<'MD'
 ## alpha — First
@@ -998,7 +1092,8 @@ printf '%s\n' '---' 'a | b' '`ticks`'
 - malformed input
 
 <!-- agentic-flow:brief:docs/inprogress/plan.md -->
-<!-- agentic-flow:plan:standard-doc step:alpha spec:<hash> journal=v1 approved=<revision> approved-by:Tester approved-at:<time> -->
+<!-- agentic-flow:plan:standard-doc step:alpha spec:<hash> journal=v2 approved=<revision> approved-by:Tester approved-at:<time> -->
+<!-- agentic-flow:plan:standard-doc policy:v1 review.max_bounces=2 review.block_at=medium andon.station-infrastructure=hold -->
 <!-- agentic-flow:topology:standard -->
 MD
 diff -u "$TMP/standard-golden" "$TMP/standard-rendered" || fail 'Standard work issue Markdown changed'
@@ -1009,7 +1104,7 @@ cp "$TMP/standard-brief-gh/issue-1/body" "$TMP/std-before"
 standard_brief_apply || fail "Standard document reapply failed: $(cat "$TMP/std.out")"
 cmp -s "$TMP/std-before" "$TMP/standard-brief-gh/issue-1/body" || fail 'Standard reapply changed the body or journal eligibility'
 if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Standard reapply changed live labels'; fi
-# The Standard migration path changes only approved=, preserving journal=v1.
+# The Standard migration path restores approved= and preserves the policy line.
 sed -E 's/ approved=[a-f0-9]{40}//' "$TMP/std-before" > "$TMP/standard-brief-gh/issue-1/body"
 : > "$TMP/std-calls"
 standard_brief_apply || fail "Standard revision migration failed: $(cat "$TMP/std.out")"
@@ -1026,6 +1121,7 @@ if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Sta
   strict_doc=docs/inprogress/strict.md
   awk '
     /^id: / { $0="id: strict-adoption" }
+    /^policy: / { sub(/max_bounces=2/, "max_bounces=3") }
     /^profile: / { print "profile: strict"; $0="tracking: Plan: Strict adoption" }
     /^steps: / { $0="steps: alpha beta" }
     /^## Status / {
@@ -1038,7 +1134,9 @@ if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Sta
     /^- \*\*Approval:\*\*/ { $0="- **Approval:** pending" }
     {print}
   ' "$doc" > "$strict_doc"
-  git add -- "$strict_doc"
+  mkdir -p .agentic-flow
+  printf '%s\n' review.max_bounces=3 > .agentic-flow/config
+  git add -- "$strict_doc" .agentic-flow/config
   git -c commit.gpgsign=false commit -qm 'Record Strict adoption fixture'
   strict_rev=$(git rev-parse HEAD)
   sed "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=Tester; at=2026-01-01; rev=$strict_rev/" \
@@ -1132,7 +1230,7 @@ if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Sta
   cmp -s "$TMP/adoption-prefix" "$TMP/adoption-prefix-after" || fail 'Standard adoption changed the original body bytes'
   grep -Fxq '<!-- agentic-flow:adopted -->' "$FAKE_GH_STATE/issue-41/body" || fail 'Standard adoption omitted marker'
   grep -Fq "step:alpha spec:" "$FAKE_GH_STATE/issue-41/body" || fail 'Standard adoption omitted identity stamp'
-  grep -Fq "journal=v1 approved=$STANDARD_REV approved-by:Tester" "$FAKE_GH_STATE/issue-41/body" \
+  grep -Fq "journal=v2 approved=$STANDARD_REV approved-by:Tester" "$FAKE_GH_STATE/issue-41/body" \
     || fail 'Standard adoption omitted journal or approval metadata'
   grep -Fq 'https://github.com/owner/repo/issues/41' "$doc" || fail 'Standard adoption omitted the work URL from the doc'
   if grep -q '^issue create ' "$FAKE_GH_CALLS"; then fail 'Standard adoption created a duplicate issue'; fi
@@ -1169,12 +1267,35 @@ if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Sta
   done
   cmp -s "$TMP/prefix-adopt-edited" "$TMP/prefix-body" || fail 'revised adopted plan changed the preserved prefix'
 
-  # A partial Strict apply leaves an adopted tracker and step. Retry the same
-  # mapping, create only the unmapped step and complete the tracker's checklist.
+  # A partial Strict apply stamps the tracker, leaving the adopted step unstamped.
   export FAKE_GH_STATE="$TMP/adopt-strict-gh"
   seed_adoption 51 OPEN
   seed_adoption 52 OPEN
   : > "$FAKE_GH_CALLS"
+  if FAKE_GH_FAIL_EDIT_BODY_NUMBER=52 "$PLAN_DRIVER" --doc "$strict_doc" --adopt tracker=51 --adopt alpha=52 --apply > "$TMP/adopt-out" 2>&1; then
+    fail 'Strict adoption fixture did not stop at the injected failure'
+  fi
+  grep -Fq 'injected body edit failure' "$TMP/adopt-out" || fail 'Strict adoption did not reach the unstamped step'
+  grep -Fq 'policy:v1 review.max_bounces=3 review.block_at=medium' "$FAKE_GH_STATE/issue-51/body" ||
+    fail 'partial adoption tracker did not bind the plan pin'
+  if grep -Fq 'policy:v1 ' "$FAKE_GH_STATE/issue-52/body"; then fail 'interrupted step already carries a pin'; fi
+  original_strict=$(git rev-parse HEAD)
+  check_changed_pin() {
+    local new_rev
+    git checkout -q --detach "$original_strict"
+    sed 's/max_bounces=3/max_bounces=4/' "$strict_doc" > "$TMP/changed-strict"
+    cat "$TMP/changed-strict" > "$strict_doc"
+    git add -- "$strict_doc"
+    git -c commit.gpgsign=false commit -qm 'Change frozen pin'
+    new_rev=$(git rev-parse HEAD)
+    sed "s/rev=$strict_rev/rev=$new_rev/" "$TMP/changed-strict" > "$strict_doc"
+    git add -- "$strict_doc"
+    git -c commit.gpgsign=false commit -qm 'Record modified approval'
+    adoption_refused "$strict_doc" 'requires a new plan' "$@"
+    assert_read_only_calls "$FAKE_GH_CALLS"
+    git checkout -q topic
+  }
+  check_changed_pin --adopt tracker=51 --adopt alpha=52
   if FAKE_GH_FAIL_CREATE_NUMBER=1 "$PLAN_DRIVER" --doc "$strict_doc" --adopt tracker=51 --adopt alpha=52 --apply > "$TMP/adopt-out" 2>&1; then
     fail 'Strict adoption fixture did not stop at the injected failure'
   fi
@@ -1192,8 +1313,15 @@ if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Sta
   grep -Fq -- '- [ ] #52 [alpha]' "$FAKE_GH_STATE/issue-51/body" || fail 'adopted tracker lost its adopted step link'
   grep -Fq -- '- [ ] #1 [beta]' "$FAKE_GH_STATE/issue-51/body" || fail 'adopted tracker lost its created step link'
   grep -Fq 'https://github.com/owner/repo/issues/51' "$strict_doc" || fail 'Strict adoption omitted tracker URL from the doc'
+  for number in 51 52 1; do
+    if ! grep -Fq 'journal=v2' "$FAKE_GH_STATE/issue-$number/body" ||
+       ! grep -Fq 'policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold' "$FAKE_GH_STATE/issue-$number/body"; then
+      fail "issue #$number did not inherit the tracker policy"
+    fi
+  done
   git add -- "$strict_doc"
   git -c commit.gpgsign=false commit -qm 'Record adopted tracker URL'
+  check_changed_pin
   for number in 51 52; do
     { printf 'Later edit to #%s\n' "$number"; cat "$FAKE_GH_STATE/issue-$number/body"; } > "$TMP/adopt-later-$number"
     cat "$TMP/adopt-later-$number" > "$FAKE_GH_STATE/issue-$number/body"
@@ -1202,4 +1330,149 @@ if grep -Eq 'issue edit .*--(add|remove)-label' "$TMP/std-calls"; then fail 'Sta
   for number in 51 52; do
     cmp -s "$TMP/adopt-later-$number" "$FAKE_GH_STATE/issue-$number/body" || fail 'Strict reapply changed preserved issue text'
   done
+)
+
+(
+  cd "$STANDARD_BRIEF"
+  git config commit.gpgsign false
+  export PATH="$GHFIX:$PATH" FAKE_GH_STATE="$TMP/repin-gh" FAKE_GH_CALLS="$TMP/repin-calls"
+  flow="$ROOT/scripts/agentic-flow"
+  doc=docs/inprogress/repin.md
+  out="$TMP/repin-out"
+  printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account \
+    executor=exec reviewer=review approver=owner owner=owner > .agentic-flow-review-policy
+
+  commit_doc() { git add -- "$doc" && git commit -qm "$1"; }
+  edit_doc() {
+    sed "$@" "$doc" > "$TMP/repin-edit"
+    cat "$TMP/repin-edit" > "$doc"
+  }
+  initial_approval() {
+    commit_doc 'Record plan content'
+    local rev
+    rev=$(git rev-parse HEAD)
+    edit_doc "s/^- \*\*Approval:\*\*.*/- **Approval:** status=approved; by=owner; at=2026-01-01; rev=$rev/"
+    commit_doc 'Record initial approval'
+  }
+  policy_refused() { # expected exit, diagnostic, command and arguments
+    local expected=$1 reason=$2 rc=0
+    shift 2
+    : > "$FAKE_GH_CALLS"
+    "$@" > "$out" 2>&1 || rc=$?
+    if [ "$rc" != "$expected" ] || ! grep -Fq -- "$reason" "$out"; then
+      fail "expected refusal ($expected) for $reason: $(cat "$out")"
+    fi
+    assert_read_only_calls "$FAKE_GH_CALLS"
+    if ! git diff --quiet -- "$doc" || ! git diff --cached --quiet; then
+      fail 'policy refusal changed or staged the document'
+    fi
+  }
+  sed 's/^id: standard-doc$/id: repin/' "$TMP/std-plan" > "$doc"
+  git add -- .agentic-flow-review-policy
+  initial_approval
+  policy_refused 1 'plan pin differs from the project config at the approved revision' "$PLAN_DRIVER" --doc "$doc" --apply
+  if ! grep -q '^issue list ' "$FAKE_GH_CALLS" || ! grep -Fq -- ' --repin' "$out" ||
+     ! grep -Fq 'git revert --no-edit <approval-commit> <pin-commit>' "$out"; then
+    fail 'first-apply mismatch omitted discovery or recovery instructions'
+  fi
+
+  edit_doc 's/max_bounces=2/max_bounces=4/'
+  commit_doc 'Choose a non-current policy'
+  policy_refused 3 'changed plan-pinned policy' "$flow" approve "$doc" --by owner
+  [ ! -s "$FAKE_GH_CALLS" ] || fail 'plain approve queried the forge'
+  policy_refused 3 'policy must match project config at HEAD' "$flow" approve "$doc" --by owner --repin
+  grep -q '^issue list ' "$FAKE_GH_CALLS" || fail 'initial reapproval skipped stamp discovery'
+  config_policy=$("$flow" config pin)
+  edit_doc "s/^policy: .*/policy: $config_policy/"
+  commit_doc 'Refresh policy from project config'
+  refreshed=$(git rev-parse HEAD)
+  policy_refused 1 're-approve' "$PLAN_DRIVER" --diff --doc "$doc"
+  [ ! -s "$FAKE_GH_CALLS" ] || fail 'approval drift reached diff discovery'
+  printf '%s\n' '{broken' > "$TMP/broken-stamp-search"
+  FAKE_GH_LIST_OVERRIDE="$TMP/broken-stamp-search" policy_refused 5 'could not verify' "$flow" approve "$doc" --by owner --repin
+  "$flow" approve "$doc" --by owner --repin > "$out" || fail 'repin could not recover first apply'
+  if [ "$(git diff --cached --name-only)" != "$doc" ] || ! grep -Fq "rev=$refreshed" "$doc"; then
+    fail 'repin staged more than the approved refresh'
+  fi
+  grep -Fq 'git revert --no-edit <approval-commit> <pin-commit>' "$out" || fail 'repin omitted race recovery'
+  commit_doc 'Approve refreshed policy'
+
+  # The later config is deliberately different before even the first stamp.
+  printf '%s\n' review.max_bounces=5 > .agentic-flow/config
+  sed $'s/medium\tseverity/high\tseverity/' config/config-keys.tsv > "$TMP/repin-new-registry"
+  rm config/config-keys.tsv
+  mv "$TMP/repin-new-registry" config/config-keys.tsv
+  git add -- .agentic-flow/config config/config-keys.tsv
+  git commit -qm 'Move project policy after approval'
+  "$PLAN_DRIVER" --doc "$doc" --apply > "$out" || fail 'refreshed approved plan did not apply'
+  if ! grep -Fq "policy:v1 $config_policy" "$FAKE_GH_STATE/issue-1/body" || ! grep -Fiq 'upgrade all operators' "$out"; then
+    fail 'first stamp omitted the approved policy or upgrade reminder'
+  fi
+  commit_doc 'Record repin work issue'
+  "$PLAN_DRIVER" --doc "$doc" --apply > "$out" || fail 'changed project config blocked frozen policy reapply'
+  policy_refused 1 '1' "$PLAN_DRIVER" --stamped repin
+  [ "$(cat "$out")" = 1 ] || fail 'stamped discovery did not print only the matching issue number'
+  policy_refused 3 'plan repin already has stamped issues' "$flow" approve "$doc" --by owner --repin
+
+  # A concurrent checkout stamps the old approval after eligibility, before
+  # the approval commit. Reverting both commits restores the runnable plan.
+  original=$(git rev-parse HEAD)
+  sed -n '/^policy: /p; /^- \*\*Approval:\*\*/p' "$doc" > "$TMP/repin-original-lines"
+  new_policy=$("$flow" config pin)
+  edit_doc "s/^policy: .*/policy: $new_policy/"
+  commit_doc 'Prepare racing pin'
+  pin_commit=$(git rev-parse HEAD)
+  policy_refused 3 'already has stamped issues' "$flow" approve "$doc" --by owner --repin
+  export FAKE_GH_STATE="$TMP/repin-race-gh"
+  "$flow" approve "$doc" --by owner --repin > "$out" || fail 'race fixture could not stage initial reapproval'
+  race_checkout="$TMP/repin-race-checkout"
+  git worktree add --quiet --detach "$race_checkout" "$original"
+  (cd "$race_checkout" && "$PLAN_DRIVER" --doc "$doc" --apply) > "$out" ||
+    fail 'concurrent checkout could not stamp the prior approved policy'
+  commit_doc 'Commit racing approval'
+  approval_commit=$(git rev-parse HEAD)
+  policy_refused 1 'requires a new plan' "$PLAN_DRIVER" --doc "$doc" --apply
+  git revert --no-edit "$approval_commit" "$pin_commit" >/dev/null
+  sed -n '/^policy: /p; /^- \*\*Approval:\*\*/p' "$doc" > "$TMP/repin-restored-lines"
+  cmp -s "$TMP/repin-original-lines" "$TMP/repin-restored-lines" ||
+    fail 'revert did not restore the prior policy and approval bytes'
+  "$PLAN_DRIVER" --doc "$doc" --apply > "$out" || fail 'reverted approval could not reapply'
+  git worktree remove "$race_checkout"
+
+  edit_doc 's/malformed input/clarified input failure/'
+  commit_doc 'Clarify prose with project defaults changed'
+  : > "$FAKE_GH_CALLS"
+  "$flow" approve "$doc" --by owner > "$out" || fail 'prose-only clarification was refused'
+  [ ! -s "$FAKE_GH_CALLS" ] || fail 'prose clarification called the forge'
+  commit_doc 'Approve prose clarification'
+  "$PLAN_DRIVER" --doc "$doc" --apply > "$out" || fail 'clarified plan reapply rejected the frozen pin'
+
+  # Adding the implicit legacy pin is a valid offline clarification. Seed a v1
+  # issue to test the same-approval migration without rerendering its packet.
+  doc=docs/inprogress/legacy-add.md
+  export FAKE_GH_STATE="$TMP/legacy-add-gh"
+  sed '/^policy: /d; s/^id: repin$/id: legacy-add/' docs/inprogress/repin.md > "$doc"
+  initial_approval
+  edit_doc "/^id: legacy-add$/a\\
+policy: $legacy_policy
+"
+  commit_doc 'Make the implicit legacy policy explicit'
+  legacy_approved=$(git rev-parse HEAD)
+  : > "$FAKE_GH_CALLS"
+  "$flow" approve "$doc" --by owner > "$out" || fail 'adding a policy to a pinless plan was refused'
+  [ ! -s "$FAKE_GH_CALLS" ] || fail 'pin-added clarification called the forge'
+  commit_doc 'Approve explicit legacy policy'
+  dir="$FAKE_GH_STATE/issue-1"
+  mkdir -p "$dir"
+  printf 'Legacy work\n' > "$dir/title"
+  printf 'OPEN\n' > "$dir/state"
+  printf '%s\n' 'Handwritten work issue' '' \
+    "<!-- agentic-flow:plan:legacy-add step:alpha spec:$legacy_approved journal=v1 approved=$legacy_approved approved-by:owner approved-at:2026-01-01T00:00:00Z -->" \
+    '<!-- agentic-flow:topology:standard -->' > "$TMP/legacy-add-before"
+  cat "$TMP/legacy-add-before" > "$dir/body"
+  "$PLAN_DRIVER" --doc "$doc" --apply > "$out" || fail 'legacy-equal policy migration failed'
+  grep -Fxq "<!-- agentic-flow:plan:legacy-add policy:v1 $legacy_policy -->" "$dir/body" ||
+    fail 'legacy-equal migration omitted the policy line'
+  sed '/ policy:v1 /d; s/journal=v2/journal=v1/' "$dir/body" > "$TMP/legacy-add-compared"
+  cmp -s "$TMP/legacy-add-before" "$TMP/legacy-add-compared" || fail 'legacy-equal migration rewrote the prior body'
 )

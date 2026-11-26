@@ -851,3 +851,57 @@ fail	'wrong file tier did not name its source'
 packet_run	0 --station reviewer
 packet_run	3 --station reviewer --json
 status_run	10 --json
+adoption_refused	"$strict_doc" 'requires a new plan' "$@"
+assert_read_only_calls	"$FAKE_GH_CALLS"
+assert_read_only_calls	"$TMP/brief-calls"
+fail	"0.21.0 did not reject the policy line for issue #$n: $(cat "$TMP/frozen-out")"
+fail	"expected refusal ($expected) for $reason: $(cat "$out")"
+fail	"issue #$number did not inherit the tracker policy"
+fail	"start omitted the base policy for $type"
+fail	'0.21.0 JSON-spec path accepted a pinned issue'
+fail	'0.21.0 modified a pinned issue'
+fail	'Strict adoption did not reach the unstamped step'
+fail	'adding a policy to a pinless plan was refused'
+fail	'approval drift reached diff discovery'
+fail	'changed project config blocked frozen policy reapply'
+fail	'clarified plan reapply rejected the frozen pin'
+fail	'concurrent checkout could not stamp the prior approved policy'
+fail	'diff omitted the proposed policy marker'
+fail	'first stamp omitted the approved policy or upgrade reminder'
+fail	'first-apply mismatch omitted discovery or recovery instructions'
+fail	'hand-edited pin lacked a read-only stamp drift refusal'
+fail	'initial reapproval skipped stamp discovery'
+fail	'interrupted step already carries a pin'
+fail	'legacy-equal migration omitted the policy line'
+fail	'legacy-equal migration rewrote the prior body'
+fail	'legacy-equal policy migration failed'
+fail	'partial adoption tracker did not bind the plan pin'
+fail	'pin-added clarification called the forge'
+fail	'pinless first apply was accepted'
+fail	'pinless in-flight reapply failed'
+fail	'pinless reapply changed body or spec hash'
+fail	'pinless refusal omitted the required field'
+fail	'pinless refusal skipped discovery'
+fail	'plain approve queried the forge'
+fail	'policy refusal attempted a forge mutation'
+fail	'policy refusal changed or staged the document'
+fail	'prose clarification called the forge'
+fail	'prose-only clarification was refused'
+fail	'race fixture could not stage initial reapproval'
+fail	'refreshed approved plan did not apply'
+fail	'repin could not recover first apply'
+fail	'repin omitted race recovery'
+fail	'repin staged more than the approved refresh'
+fail	'revert did not restore the prior policy and approval bytes'
+fail	'reverted approval could not reapply'
+fail	'stamped discovery did not print only the matching issue number'
+policy_refused	1 '1' "$PLAN_DRIVER" --stamped repin
+policy_refused	1 'plan pin differs from the project config at the approved revision' "$PLAN_DRIVER" --doc "$doc" --apply
+policy_refused	1 're-approve' "$PLAN_DRIVER" --diff --doc "$doc"
+policy_refused	1 'requires a new plan' "$PLAN_DRIVER" --doc "$doc" --apply
+policy_refused	3 'already has stamped issues' "$flow" approve "$doc" --by owner --repin
+policy_refused	3 'changed plan-pinned policy' "$flow" approve "$doc" --by owner
+policy_refused	3 'plan repin already has stamped issues' "$flow" approve "$doc" --by owner --repin
+policy_refused	3 'policy must match project config at HEAD' "$flow" approve "$doc" --by owner --repin
+policy_refused	5 'could not verify' "$flow" approve "$doc" --by owner --repin
+status_run	0 --reconcile-only

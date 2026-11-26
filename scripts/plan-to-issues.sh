@@ -5,6 +5,7 @@
 # Usage:
 #   scripts/plan-to-issues.sh <spec.json>                   # offline dry run
 #   scripts/plan-to-issues.sh --diff <spec.json>            # compare with GitHub
+#   scripts/plan-to-issues.sh --stamped <plan-id>           # list stamped issues
 #   scripts/plan-to-issues.sh --doc <path> [--apply|--diff] # approved brief
 #   scripts/plan-to-issues.sh --apply [--doc <path>] <spec> # legacy JSON
 #
@@ -24,6 +25,133 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
+DISCOVERY_ERROR=1
+adoption_map=''
+ADOPTED_MARKER='<!-- agentic-flow:adopted -->'
+
+die() { echo "error: $*" >&2; exit "$DISCOVERY_ERROR"; }
+
+discover_plan_issues() {
+  local issue_count identity number issue remote_number stamp
+  command -v jq >/dev/null || die "jq not found"
+  command -v gh >/dev/null || die "gh not found"
+  # shellcheck source=scripts/lib/review-policy.sh
+  source "$SCRIPT_DIR/lib/review-policy.sh"
+  # shellcheck source=scripts/lib/journal.sh
+  source "$SCRIPT_DIR/lib/journal.sh"
+  review_bounded gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login)"
+  REPO=$(review_bounded gh repo view --json nameWithOwner --jq .nameWithOwner) || die "not in a GitHub repo"
+  HAS_ISSUES=$(review_bounded gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled) || die "could not check issue availability"
+  [ "$HAS_ISSUES" = true ] || die "Issues are not enabled on $REPO"
+
+  TMP=$(mktemp -d "${TMPDIR:-/tmp}/plan-to-issues.XXXXXX") || die "could not create discovery scratch directory"
+  trap 'rm -rf "$TMP"; [ -z "$BRIEF_TMP" ] || rm -rf "$BRIEF_TMP"' EXIT
+  # One bounded query discovers the tracker and every step belonging to this logical plan.
+  ISSUES_JSON=$(review_bounded gh issue list --repo "$REPO" --state all --limit 100 \
+    --search "\"$PLAN_MARKER\" in:body" --json number,title,body,state,url) \
+    || die "failed to query existing plan issues"
+  ISSUES_JSON=$(printf '%s\n' "$ISSUES_JSON" | jq -ces '
+    if length == 1 and (.[0] | type == "array") then .[0] else empty end') \
+    || die "GitHub returned malformed issue data"
+  issue_count=$(printf '%s\n' "$ISSUES_JSON" | jq 'length') || die "could not count discovered issues"
+  [ "$issue_count" -lt 100 ] || die "issue discovery reached 100 results; narrow or repair the stamped plan set before applying"
+  printf '%s\n' "$ISSUES_JSON" | jq -e --arg repo "$REPO" '
+    all(.[]; (.number | type == "number" and . > 0 and . == floor) and
+      (.body | type == "string") and (.state == "OPEN" or .state == "CLOSED") and
+      (.url == ("https://github.com/" + $repo + "/issues/" + (.number | tostring))))' >/dev/null \
+    || die "GitHub returned incomplete issue identity data"
+
+  if [ -n "${adoption_map:-}" ]; then
+    : > "$TMP/adoption-candidates"
+    while IFS=$'\t' read -r identity number; do
+      issue=$(review_bounded gh issue view "$number" --repo "$REPO" --json number,body,state,url) \
+        || die "could not read issue #$number from $REPO"
+      issue=$(printf '%s\n' "$issue" | jq -ces --argjson number "$number" '
+        if length != 1 then null else .[0] end |
+        if .number != $number or (.url | type) != "string" or (.body | type) != "string" or
+           (.state != "OPEN" and .state != "CLOSED") then empty
+        else {number, url, state, body,
+          adopting: (.body | split("<!--")[1:] | all(.[]; split("-->")[0] | contains("agentic-flow:") | not))}
+        end
+      ') || die "malformed response for issue #$number"
+      [ "$(printf '%s\n' "$issue" | jq -r .url)" = "https://github.com/$REPO/issues/$number" ] \
+        || die "issue #$number is not in $REPO or is a pull request"
+      [ "$(printf '%s\n' "$issue" | jq -r .state)" = OPEN ] || die "issue #$number is closed"
+      printf '%s\n' "$issue" >> "$TMP/adoption-candidates"
+    done < "$adoption_map"
+    # Use the direct read for mapped issues, including issues already stamped on a previous run.
+    ISSUES_JSON=$(printf '%s\n' "$ISSUES_JSON" | jq -c --slurpfile candidates "$TMP/adoption-candidates" '
+      ($candidates | map(.number)) as $numbers |
+      (map(.number)) as $discovered |
+      map(select(.number as $n | $numbers | index($n) | not)) +
+      ($candidates | map(.number as $n | .discovered = ($discovered | index($n) != null)))') \
+      || die "could not combine adoption candidates"
+  fi
+
+  # Only the managed suffix supplies identity, topology and approval metadata.
+  # Keep the exact bytes through the marker as an opaque prefix for subsequent edits.
+  if [[ "$ISSUES_JSON" == *"$ADOPTED_MARKER"* ]] || [ -n "${adoption_map:-}" ]; then
+    ISSUES_JSON=$(printf '%s\n' "$ISSUES_JSON" | jq -c --arg marker "$ADOPTED_MARKER" '
+      map(if .adopting then
+        .adopted_prefix = (.body + (if .body == "" then "" else "\n\n" end) + $marker + "\n") | .body = ""
+      else
+        (.body | match("(?:\\A|\n)" + $marker + "\n") // null) as $boundary |
+        if $boundary == null then . else
+          ($boundary.offset + $boundary.length) as $end |
+          .adopted_prefix = .body[:$end] | .body = .body[$end:]
+        end
+      end)') || die "could not read managed issue bodies"
+  fi
+
+  # Read whole stamp lines into a validated exact index before any GitHub mutation.
+  # A malformed matching stamp or two issues with one identity is an ambiguity,
+  # not permission to choose the first search result.
+  INDEX="$TMP/issue-index"
+  : > "$INDEX" || die "could not initialize issue index"
+  TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
+  STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
+  printf '%s\n' "$ISSUES_JSON" | journal_stamp_lines index "$PLAN_KEY" > "$TMP/stamp-lines" \
+    || die "could not parse issue stamps"
+  while IFS=$'\t' read -r remote_number stamp _; do
+    [ -n "$remote_number" ] || continue
+    if [[ "$stamp" =~ $TRACK_STAMP_RE ]]; then
+      [ "${BASH_REMATCH[1]}" = "$PLAN_KEY" ] || die "issue #$remote_number has a mismatched plan stamp"
+      identity=tracker
+    elif [[ "$stamp" =~ $STEP_STAMP_RE ]]; then
+      [ "${BASH_REMATCH[1]}" = "$PLAN_KEY" ] || die "issue #$remote_number has a mismatched plan stamp"
+      identity="step:${BASH_REMATCH[2]}"
+    else
+      die "malformed identity stamp on issue #$remote_number"
+    fi
+    index_identity "$identity" "$remote_number"
+  done < "$TMP/stamp-lines"
+}
+
+number_for_identity() {
+  awk -F '\t' -v key="$1" '$1 == key {print $2; exit}' "$INDEX"
+}
+
+index_identity() { # identity, number
+  local previous_number previous_identity
+  previous_number=$(number_for_identity "$1")
+  [ -z "$previous_number" ] || die "duplicate $1 stamps on issues #$previous_number and #$2"
+  previous_identity=$(awk -F '\t' -v number="$2" '$2 == number {print $1; exit}' "$INDEX")
+  [ -z "$previous_identity" ] || die "issue #$2 has multiple identity stamps: $previous_identity and $1"
+  printf '%s\t%s\n' "$1" "$2" >> "$INDEX" || die "could not write issue index"
+}
+
+# Discovery for initial reapproval is independent of the doc and its approval.
+if [ "${1:-}" = --stamped ]; then
+  [ "$#" -eq 2 ] && [[ "$2" =~ ^[a-z0-9][a-z0-9._-]{0,79}$ ]] || die "expected --stamped <plan-id>"
+  PLAN_KEY=$2
+  PLAN_MARKER="agentic-flow:plan:$PLAN_KEY"
+  BRIEF_TMP=""
+  DISCOVERY_ERROR=5
+  discover_plan_issues
+  [ -s "$INDEX" ] || exit 0
+  cut -f2 "$INDEX" || exit 5
+  exit 1
+fi
 
 MODE=dry
 SPEC=""
@@ -55,8 +183,6 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-
-die() { echo "error: $*" >&2; exit 1; }
 
 if [ "${#ADOPT[@]}" -gt 0 ] && { [ -z "$DOC" ] || [ -n "$SPEC" ]; }; then
   die "--adopt requires an approved --doc without a legacy JSON spec"
@@ -167,7 +293,6 @@ PLAN_KEY=$(jq -r '.id // empty' "$SPEC")
 [ -n "$PLAN_KEY" ] || PLAN_KEY=$(printf '%s' "$TRACK_TITLE" | hash_stdin)
 SPEC_HASH=$(jq -cS . "$SPEC" | hash_stdin)
 PLAN_MARKER="agentic-flow:plan:$PLAN_KEY"
-ADOPTED_MARKER='<!-- agentic-flow:adopted -->'
 
 if [ "${#ADOPT[@]}" -gt 0 ]; then
   adoption_map="$BRIEF_TMP/adoptions"
@@ -220,20 +345,9 @@ if [ "$MODE" = dry ]; then
   exit 0
 fi
 
-command -v gh >/dev/null || die "gh not found"
-# shellcheck source=scripts/lib/review-policy.sh
-source "$SCRIPT_DIR/lib/review-policy.sh"
-# shellcheck source=scripts/lib/journal.sh
-source "$SCRIPT_DIR/lib/journal.sh"
-gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login)"
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) || die "not in a GitHub repo"
-HAS_ISSUES=$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)
-[ "$HAS_ISSUES" = true ] || die "Issues are not enabled on $REPO"
+discover_plan_issues
 echo "Repo:            $REPO"
 [ -z "$APPROVED_REV" ] || echo "Approved stamp:  approved=$APPROVED_REV (journal and live labels preserved)"
-
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/plan-to-issues.XXXXXX")
-trap 'rm -rf "$TMP"; [ -z "$BRIEF_TMP" ] || rm -rf "$BRIEF_TMP"' EXIT
 
 BRIEF_LINK=""
 BRIEF_STAMP=""
@@ -297,97 +411,6 @@ render_tracker_intro() {
   ' "$SPEC"
 }
 
-# One bounded query discovers the tracker and every step belonging to this logical plan.
-ISSUES_JSON=$(gh issue list --repo "$REPO" --state all --limit 100 \
-  --search "\"$PLAN_MARKER\" in:body" --json number,title,body,state,url) \
-  || die "failed to query existing plan issues"
-printf '%s\n' "$ISSUES_JSON" | jq -e 'type == "array"' >/dev/null \
-  || die "GitHub returned malformed issue data"
-issue_count=$(printf '%s\n' "$ISSUES_JSON" | jq 'length')
-[ "$issue_count" -lt 100 ] || die "issue discovery reached 100 results; narrow or repair the stamped plan set before applying"
-printf '%s\n' "$ISSUES_JSON" | jq -e --arg repo "$REPO" '
-  all(.[]; (.number | type == "number" and . > 0 and . == floor) and
-    (.body | type == "string") and (.state == "OPEN" or .state == "CLOSED") and
-    (.url == ("https://github.com/" + $repo + "/issues/" + (.number | tostring))))' >/dev/null \
-  || die "GitHub returned incomplete issue identity data"
-
-if [ -n "${adoption_map:-}" ]; then
-  : > "$TMP/adoption-candidates"
-  while IFS=$'\t' read -r identity number; do
-    issue=$(review_bounded gh issue view "$number" --repo "$REPO" --json number,body,state,url) \
-      || die "could not read issue #$number from $REPO"
-    issue=$(printf '%s\n' "$issue" | jq -ces --argjson number "$number" '
-      if length != 1 then null else .[0] end |
-      if .number != $number or (.url | type) != "string" or (.body | type) != "string" or
-         (.state != "OPEN" and .state != "CLOSED") then empty
-      else {number, url, state, body,
-        adopting: (.body | split("<!--")[1:] | all(.[]; split("-->")[0] | contains("agentic-flow:") | not))}
-      end
-    ') || die "malformed response for issue #$number"
-    [ "$(printf '%s\n' "$issue" | jq -r .url)" = "https://github.com/$REPO/issues/$number" ] \
-      || die "issue #$number is not in $REPO or is a pull request"
-    [ "$(printf '%s\n' "$issue" | jq -r .state)" = OPEN ] || die "issue #$number is closed"
-    printf '%s\n' "$issue" >> "$TMP/adoption-candidates"
-  done < "$adoption_map"
-  # Use the direct read for mapped issues, including issues already stamped on a previous run.
-  ISSUES_JSON=$(printf '%s\n' "$ISSUES_JSON" | jq -c --slurpfile candidates "$TMP/adoption-candidates" '
-    ($candidates | map(.number)) as $numbers |
-    (map(.number)) as $discovered |
-    map(select(.number as $n | $numbers | index($n) | not)) +
-    ($candidates | map(.number as $n | .discovered = ($discovered | index($n) != null)))')
-fi
-
-# Only the managed suffix supplies identity, topology and approval metadata.
-# Keep the exact bytes through the marker as an opaque prefix for subsequent edits.
-if [[ "$ISSUES_JSON" == *"$ADOPTED_MARKER"* ]] || [ -n "${adoption_map:-}" ]; then
-  ISSUES_JSON=$(printf '%s\n' "$ISSUES_JSON" | jq -c --arg marker "$ADOPTED_MARKER" '
-    map(if .adopting then
-      .adopted_prefix = (.body + (if .body == "" then "" else "\n\n" end) + $marker + "\n") | .body = ""
-    else
-      (.body | match("(?:\\A|\n)" + $marker + "\n") // null) as $boundary |
-      if $boundary == null then . else
-        ($boundary.offset + $boundary.length) as $end |
-        .adopted_prefix = .body[:$end] | .body = .body[$end:]
-      end
-    end)')
-fi
-
-# Read whole stamp lines into a validated exact index before any GitHub mutation.
-# A malformed matching stamp or two issues with one identity is an ambiguity,
-# not permission to choose the first search result.
-INDEX="$TMP/issue-index"
-: > "$INDEX"
-TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
-STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
-number_for_identity() {
-  awk -F '\t' -v key="$1" '$1 == key {print $2; exit}' "$INDEX"
-}
-
-index_identity() { # identity, number
-  local previous_number previous_identity
-  previous_number=$(number_for_identity "$1")
-  [ -z "$previous_number" ] || die "duplicate $1 stamps on issues #$previous_number and #$2"
-  previous_identity=$(awk -F '\t' -v number="$2" '$2 == number {print $1; exit}' "$INDEX")
-  [ -z "$previous_identity" ] || die "issue #$2 has multiple identity stamps: $previous_identity and $1"
-  printf '%s\t%s\n' "$1" "$2" >> "$INDEX"
-}
-
-printf '%s\n' "$ISSUES_JSON" | journal_stamp_lines index "$PLAN_KEY" > "$TMP/stamp-lines" \
-  || die "could not parse issue stamps"
-while IFS="$(printf '\t')" read -r remote_number stamp; do
-  [ -n "$remote_number" ] || continue
-  if [[ "$stamp" =~ $TRACK_STAMP_RE ]]; then
-    [ "${BASH_REMATCH[1]}" = "$PLAN_KEY" ] || die "issue #$remote_number has a mismatched plan stamp"
-    identity=tracker
-  elif [[ "$stamp" =~ $STEP_STAMP_RE ]]; then
-    [ "${BASH_REMATCH[1]}" = "$PLAN_KEY" ] || die "issue #$remote_number has a mismatched plan stamp"
-    identity="step:${BASH_REMATCH[2]}"
-  else
-    die "malformed identity stamp on issue #$remote_number"
-  fi
-  index_identity "$identity" "$remote_number"
-done < "$TMP/stamp-lines"
-
 issue_for_number() {
   printf '%s\n' "$ISSUES_JSON" | jq -c --argjson number "$1" '.[] | select(.number == $number)'
 }
@@ -414,20 +437,30 @@ if [ -n "${adoption_map:-}" ]; then
   done < "$adoption_map"
 fi
 
-# First document-mode reapply migrates legacy bodies in place. Preserve the old
-# spec hash and handwritten packets: bootstrap must change only approved=.
+# First document-mode reapply migrates legacy bodies in place, preserving their
+# spec hash and packet. An explicit legacy-equal policy can also be added here.
 migrate_approval_body() { # existing managed body, proposed body
-  local old=$1 stamp stamped_rev line
+  local old=$1 stamp stamped_rev line policy_to_add=''
   if [ -n "$APPROVED_REV" ] && [ -n "$1" ]; then
     stamp=$(printf '%s\n' "$old" | journal_stamp_lines body) || return 1
     stamped_rev=$(printf '%s\n' "$stamp" | jq -r '.approved // empty')
     if [ -z "$stamped_rev" ] || [ "$stamped_rev" = "$APPROVED_REV" ]; then
       line=$(printf '%s\n' "$stamp" | jq -r .line)
-      printf '%s\n' "$old" | STAMP_LINE="$line" awk -v rev="$APPROVED_REV" '
+      if [ -n "$DOC_POLICY_LINE" ] && [ "$(printf '%s\n' "$stamp" | jq -r '.policy_line // empty')" = "" ]; then
+        policy_to_add=$DOC_POLICY_LINE
+      fi
+      printf '%s\n' "$old" | STAMP_LINE="$line" POLICY_LINE="$policy_to_add" awk -v rev="$APPROVED_REV" '
         $0 == ENVIRON["STAMP_LINE"] {
+          if (ENVIRON["POLICY_LINE"] != "") {
+            if (index($0," journal=")>0) sub(/ journal=[a-z0-9._-]+/," journal=v2")
+            else sub(/( approved=| approved-by:| -->$)/," journal=v2&")
+          }
           if (index($0," approved=")>0) sub(/ approved=[a-f0-9]+/," approved=" rev)
           else if (index($0," approved-by:")>0) sub(/ approved-by:/," approved=" rev " approved-by:")
           else sub(/ -->$/," approved=" rev " -->")
+          print
+          if (ENVIRON["POLICY_LINE"] != "") print ENVIRON["POLICY_LINE"]
+          next
         }
         {print}'
       return
@@ -443,11 +476,15 @@ issue_body() {
 issue_stamp_fields() { # parsed existing stamp, or empty for a new issue
   journal_value=journal=v1
   approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
-  policy_line=''
-  [ -n "$1" ] || return 0
-  approved_value=${approved_value:-$(printf '%s\n' "$1" | jq -r '.approved | values | "approved="+.')}
-  journal_value=$(printf '%s\n' "$1" | jq -r '.journal | values | "journal="+.')
-  policy_line=$(printf '%s\n' "$1" | jq -r '.policy_line // empty')
+  if [ -z "$1" ]; then
+    policy_line=$NEW_POLICY_LINE
+  else
+    approved_value=${approved_value:-$(printf '%s\n' "$1" | jq -r '.approved | values | "approved="+.')}
+    journal_value=$(printf '%s\n' "$1" | jq -r '.journal | values | "journal="+.')
+    policy_line=$(printf '%s\n' "$1" | jq -r '.policy_line // empty')
+    policy_line=${policy_line:-$DOC_POLICY_LINE}
+  fi
+  if [ -n "$policy_line" ]; then journal_value=journal=v2; fi
 }
 
 has_adopted_prefix() {
@@ -465,6 +502,16 @@ prepare_adopted_body() { # issue JSON, managed body
 }
 
 edit_plan_issue() { # existing issue JSON, number, title, managed body, creation labels
+  local old_title
+  if [ -n "$1" ] && [ "$(issue_body "$1")" = "$4" ]; then
+    # A no-op body edit can strip trailing newlines from an existing packet.
+    if has_adopted_prefix "$1"; then return 0; fi
+    old_title=$(printf '%s\n' "$1" | jq -r .title)
+    if [ "$old_title" != "$3" ]; then
+      gh issue edit "$2" --repo "$REPO" --title "$3" >/dev/null
+    fi
+    return 0
+  fi
   if has_adopted_prefix "$1"; then
     prepare_adopted_body "$1" "$4"
     # Add labels before stamping, so an interrupted adoption can safely retry.
@@ -499,6 +546,51 @@ while IFS="$(printf '\t')" read -r identity number; do
 done < "$INDEX"
 [ -z "$existing_topology" ] || [ "$existing_topology" = "$PROFILE" ] \
   || die "changing plan $PLAN_KEY topology from $existing_topology to $PROFILE requires migration"
+
+# Only the validated stamp rows carry policy. Unstamped adoptions join INDEX
+# separately and receive the plan's pin on their first write.
+stamped_policy='' stamped_marker=false
+while IFS=$'\t' read -r number _ policy has_marker; do
+  [ -z "$stamped_policy" ] || [ "$stamped_policy" = "$policy" ] \
+    || die "changing plan $PLAN_KEY policy from $stamped_policy to $policy requires a new plan (issue #$number)"
+  stamped_policy=$policy
+  if [ "$has_marker" = true ]; then stamped_marker=true; fi
+done < "$TMP/stamp-lines"
+
+DOC_POLICY_LINE='' NEW_POLICY_LINE=''
+if [ -n "$APPROVED_REV" ]; then
+  doc_policy=$(jq -r '.policy // empty' "$SPEC")
+  if [ -n "$stamped_policy" ]; then
+    effective_policy=${doc_policy:-$(journal_default_policy)}
+    [ "$stamped_policy" = "$effective_policy" ] \
+      || die "changing plan $PLAN_KEY policy from $stamped_policy to $effective_policy requires a new plan"
+  elif [ "$MODE" = apply ] || [ -n "$doc_policy" ]; then
+    [ -n "$doc_policy" ] || die "new plans need a policy: line"
+    # shellcheck source=scripts/lib/config.sh
+    source "$SCRIPT_DIR/lib/config.sh"
+    approved_policy=$(config_pin "$repo_root" "$APPROVED_REV") || die "could not read config at approved revision"
+    if [ "$doc_policy" != "$approved_policy" ]; then
+      echo "After a concurrent stamp, restore the previous policy and approval with:" >&2
+      echo "  git revert --no-edit <approval-commit> <pin-commit>" >&2
+      die "plan pin differs from the project config at the approved revision; run \`agentic-flow config pin\`, update \`policy:\`, commit, then \`agentic-flow approve $DOC --by <login> --repin\`"
+    fi
+  fi
+  if [ -n "$doc_policy" ]; then
+    DOC_POLICY_LINE="<!-- $PLAN_MARKER policy:v1 $doc_policy -->"
+  fi
+fi
+NEW_POLICY_LINE=$DOC_POLICY_LINE
+if [ "$stamped_marker" = true ]; then
+  NEW_POLICY_LINE="<!-- $PLAN_MARKER policy:v1 $stamped_policy -->"
+fi
+
+report_policy_stamp() {
+  [ -n "$NEW_POLICY_LINE" ] || return 0
+  printf 'Policy stamp:    %s\n' "$NEW_POLICY_LINE"
+  if [ "$MODE" = apply ]; then
+    echo 'Upgrade all operators past agentic-flow 0.21.0 before working on this pinned plan.'
+  fi
+}
 
 if [ "$PROFILE" = standard ]; then
   [ ! -s "$INDEX" ] || [ "$(wc -l < "$INDEX" | tr -d ' ')" -eq 1 ] \
@@ -541,6 +633,7 @@ if [ "$PROFILE" = standard ]; then
   if has_adopted_prefix "$existing"; then
     prepare_adopted_body "$existing" "$desired_body"
   fi
+  report_policy_stamp
   if [ "$MODE" = diff ]; then
     if [ -n "$existing_body" ]; then
       echo 'Work issue: exists'
@@ -717,6 +810,7 @@ if [[ "$ISSUES_JSON" == *'"adopted_prefix":'* ]]; then
   fi
 fi
 
+report_policy_stamp
 if [ "$MODE" = diff ]; then
   if [ -z "$existing_tracker" ]; then
     echo
@@ -802,7 +896,9 @@ if [ -z "$existing_tracker" ]; then
 else
   track_num=$(printf '%s\n' "$existing_tracker" | jq -r .number)
   track_url=$(printf '%s\n' "$existing_tracker" | jq -r .url)
-  if [ "$tracker_adopted" = false ] || [ -z "$existing_tracker_body" ]; then
+  # Only an unstamped adoption needs a stub before the steps. Keep a stamped
+  # tracker's checklist intact until the final body is ready.
+  if [ -z "$existing_tracker_body" ]; then
     edit_plan_issue "$existing_tracker" "$track_num" "$TRACK_TITLE" "$TRACK_DESIRED" "$TRACK_LABELS"
   fi
   echo "updated track #$track_num  $TRACK_TITLE"

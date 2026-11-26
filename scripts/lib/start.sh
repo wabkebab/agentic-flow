@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Local plan worktree creation and post-merge cleanup.
+# shellcheck source=scripts/lib/config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
 plan_worktree_path() { # <absolute git-common-dir> <plan-id>
   local root=${AGENTIC_WORKTREE_ROOT:-$1/agentic-flow/worktrees}
@@ -26,10 +28,10 @@ plan_doc_paths() { # conventional launch and close-out paths, in either project 
     "docs/done/feature-$1.md" "docs/done/security-$1.md" "docs/done/security/security-$1.md"
 }
 
-plan_fill_template() {
+plan_fill_template() { # template, canonical base policy
   local today
   today=$(date +%F) || return 1
-  awk -v id="$id" -v branch="$branch" -v base="$base" -v today="$today" '
+  awk -v id="$id" -v branch="$branch" -v base="$base" -v today="$today" -v policy="$2" '
     /^<!-- TRIAGE \(first pass · YYYY-MM-DD\) -->$/ {
       $0="<!-- TRIAGE (first pass · " today ") -->"; dates++
     }
@@ -39,14 +41,18 @@ plan_fill_template() {
     }
     /^```agentic-flow-plan$/ {block=1; blocks++}
     /^```$/ {
-      if (block && !formats) print "format: 2"
+      if (block) {
+        if (!formats) print "format: 2"
+        if (!policies) print "policy: " policy
+      }
       block=0
     }
     block && /^format:/ {formats++; if ($0!="format: 2") invalid_format=1}
+    block && /^policy:/ {$0="policy: " policy; policies++}
     block && $0=="id: <stable-plan-id>" {$0="id: " id; ids++}
     block && $0=="branch: <branch>" {$0="branch: " branch; branches++}
     {print}
-    END {if (dates!=1 || bases!=1 || blocks!=1 || block || ids!=1 || branches!=1 || formats>1 || invalid_format) exit 1}
+    END {if (dates!=1 || bases!=1 || blocks!=1 || block || ids!=1 || branches!=1 || formats>1 || policies>1 || invalid_format) exit 1}
   ' "$1"
 }
 
@@ -104,7 +110,7 @@ plan_start_rollback() {
 plan_start() {
   local remote_branch="refs/remotes/origin/$branch"
   local base_ref="refs/heads/$base" remote_base="refs/remotes/origin/$base"
-  local listing path paths template doc interrupted=false
+  local listing path paths template doc policy interrupted=false
   branch_ref="refs/heads/$branch"
   plan_branch_valid "$branch" || { plan_error "invalid branch name $branch"; return 3; }
   plan_branch_valid "$base" || { plan_error "invalid base name $base"; return 3; }
@@ -145,6 +151,8 @@ plan_start() {
     if git cat-file -e "$tip:$path" 2>/dev/null; then plan_error "plan doc already exists on $base: $path"; return 3; fi
   done <<< "$paths"
 
+  policy=$(config_pin "$root" "$tip") || { plan_error "could not read plan policy at $base"; return 3; }
+
   # Record ownership before interrupt handling can roll back either creation.
   trap 'interrupted=true' INT TERM
   if ! (trap '' INT TERM; exec git update-ref "$branch_ref" "$tip" ""); then
@@ -173,7 +181,7 @@ plan_start() {
     [ -d docs/inprogress ] && [ ! -L docs/inprogress ] &&
     [ -f "$template" ] && [ ! -L "$template" ] &&
     [ -f docs/README.md ] && [ ! -L docs/README.md ] &&
-    (set -o noclobber; plan_fill_template "$template" > "$doc") &&
+    (set -o noclobber; plan_fill_template "$template" "$policy" > "$doc") &&
     AGENTIC_PROJECT_ROOT="$worktree" "$cli_dir/docs-index.sh" >/dev/null &&
     git add -- "$doc" docs/README.md
   ); then

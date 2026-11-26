@@ -31,13 +31,16 @@ controller_worktree_hint() { # An absent HEAD doc is a routing hint, not authori
 }
 
 controller_check() { # Rule a: same read-only report exposed by handoff reconcile --check.
-  local json=true
+  local json=true policy
   handoff_drift > "$CT_TMP/report" || return $?
   CT_REPORT=$(cat "$CT_TMP/report")
   printf '%s\n' "$CT_SPEC" > "$CT_TMP/spec"
-  jq -e --slurpfile spec "$CT_TMP/spec" '
+  policy=$(jq -r '.policy // empty' "$CT_TMP/spec") || return 3
+  policy=${policy:-$(journal_default_policy)}
+  jq -e --slurpfile spec "$CT_TMP/spec" --arg policy "$policy" '
     $spec[0] as $spec |
     (.issues|length)>0 and (.issues|length)<=100 and
+    all(.issues[]; .policy==$policy) and
     ([.issues[].step]|unique|length)==(.issues|length) and
     ([.issues[]|select(.topology!="tracker")|.step]|sort)==([$spec.steps[].id]|sort) and
     (if $spec.profile=="strict" then ([.issues[]|select(.topology=="tracker")]|length)==1
