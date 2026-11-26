@@ -39,6 +39,7 @@ discover_plan_issues() {
   source "$SCRIPT_DIR/lib/review-policy.sh"
   # shellcheck source=scripts/lib/journal.sh
   source "$SCRIPT_DIR/lib/journal.sh"
+  PLAN_MARKER="${JOURNAL_STAMP_PREFIX#'<!-- '}$PLAN_KEY"
   review_bounded gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login)"
   REPO=$(review_bounded gh repo view --json nameWithOwner --jq .nameWithOwner) || die "not in a GitHub repo"
   HAS_ISSUES=$(review_bounded gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled) || die "could not check issue availability"
@@ -108,8 +109,8 @@ discover_plan_issues() {
   # not permission to choose the first search result.
   INDEX="$TMP/issue-index"
   : > "$INDEX" || die "could not initialize issue index"
-  TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
-  STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
+  TRACK_STAMP_RE="^$JOURNAL_STAMP_PREFIX"'([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
+  STEP_STAMP_RE="^$JOURNAL_STAMP_PREFIX"'([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
   printf '%s\n' "$ISSUES_JSON" | journal_stamp_lines index "$PLAN_KEY" > "$TMP/stamp-lines" \
     || die "could not parse issue stamps"
   while IFS=$'\t' read -r remote_number stamp _; do
@@ -144,7 +145,6 @@ index_identity() { # identity, number
 if [ "${1:-}" = --stamped ]; then
   [ "$#" -eq 2 ] && [[ "$2" =~ ^[a-z0-9][a-z0-9._-]{0,79}$ ]] || die "expected --stamped <plan-id>"
   PLAN_KEY=$2
-  PLAN_MARKER="agentic-flow:plan:$PLAN_KEY"
   BRIEF_TMP=""
   DISCOVERY_ERROR=5
   discover_plan_issues
@@ -292,7 +292,6 @@ STEP_COUNT=$(jq '.steps | length' "$SPEC")
 PLAN_KEY=$(jq -r '.id // empty' "$SPEC")
 [ -n "$PLAN_KEY" ] || PLAN_KEY=$(printf '%s' "$TRACK_TITLE" | hash_stdin)
 SPEC_HASH=$(jq -cS . "$SPEC" | hash_stdin)
-PLAN_MARKER="agentic-flow:plan:$PLAN_KEY"
 
 if [ "${#ADOPT[@]}" -gt 0 ]; then
   adoption_map="$BRIEF_TMP/adoptions"

@@ -864,7 +864,9 @@ grep -Fq "policy:v1 $legacy_policy" "$TMP/new-brief-diff.out" || fail 'diff omit
   mkdir "$TMP/frozen-driver"
   ln -s "$ROOT/scripts/lib" "$ROOT/scripts/assurance.sh" "$TMP/frozen-driver/"
   # shellcheck disable=SC2016 # Preserve the shell expressions in the generated driver.
-  sed -e 's|source "$SCRIPT_DIR/lib/journal.sh"|source "$FROZEN_STAMPS"|' \
+  sed -e '/source "\$SCRIPT_DIR\/lib\/journal.sh"/a\
+  source "$FROZEN_STAMPS"
+' \
     -e '/^  TRACK_STAMP_RE=/d' -e '/^  STEP_STAMP_RE=/d' \
     -e 's/journal_stamp_lines index "\$PLAN_KEY"/frozen_issue_index_rows "$PLAN_KEY"/' \
     "$PLAN_DRIVER" > "$TMP/frozen-driver/driver"
