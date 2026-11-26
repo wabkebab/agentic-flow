@@ -9,6 +9,11 @@ def journal_pin:
   [capture("\\Areview\\.max_bounces=(?<max_bounces>[1-5]) review\\.block_at=(?<block_at>judgment|high|medium|low) andon\\.station-infrastructure=(?<infra>hold|retry:[1-3])\\z")] |
   if length==1 then .[0] | .max_bounces |= tonumber else error("invalid policy pin") end;
 
+def review_severities: ["high","medium","low","nit"];
+
+def review_severity:
+  if type=="string" then . as $token | {P1:"high",P2:"medium",P3:"low"}[$token] // $token else . end;
+
 def journal_identity($prefix):
   select(startswith($prefix)) | . as $line | ltrimstr($prefix) |
   capture("\\A(?<plan>[a-z0-9][a-z0-9._-]*) (?<identity>tracker|step:[a-z0-9][a-z0-9._-]*) spec:(?<spec>[^ ]+)(?<extra>[^\\n]*) -->\\z") |

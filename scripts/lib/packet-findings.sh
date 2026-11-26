@@ -41,9 +41,12 @@ packet_findings_source() { # plan issue admitted bounce comment JSON-file output
         select(length==1)|.[0].result.findings|select(length==($m.total|tonumber))' "$output.ledger" > "$output" || return 1 ;;
     *) return 1 ;;
   esac
-  jq -e 'type=="array" and length>0 and length<=100 and all(.[];
+  # shellcheck disable=SC2016 # jq variables
+  journal_jq -e 'include "journal-marker";
+    review_severities as $scale |
+    type=="array" and length>0 and length<=100 and all(.[];
     (.body|type)=="string" or (keys==["file","line","severity","text"] and
-    (.severity|IN("P1","P2","P3")) and (.file|type)=="string" and (.text|type)=="string" and
+    (.severity|review_severity|IN($scale[])) and (.file|type)=="string" and (.text|type)=="string" and
     (.line==null or (.line|type)=="number")))' "$output" >/dev/null
 }
 
@@ -77,12 +80,14 @@ packet_findings_publish() { # source-file destination-file [station-scratch]
 }
 
 packet_findings_index() { # full source, words remaining in packet -> bounded lines
-  jq -c --argjson available "$2" '
+  # shellcheck disable=SC2016 # jq variables
+  journal_jq -c --argjson available "$2" '
+    include "journal-marker";
     def words: [scan("\\S+")];
     def flat: gsub("\\s+";" ");
     length as $n | ([$available,1200]|min) as $cap |
     map(if has("body") then "Review note — "+(.body|words|.[0:25]|join(" "))
-        else "\(.severity) \((.file+":"+(.line//"?"|tostring))|flat|.[0:120]) — \(.text|words|.[0:25]|join(" "))" end) |
+        else "\(.severity|review_severity) \((.file+":"+(.line//"?"|tostring))|flat|.[0:120]) — \(.text|words|.[0:25]|join(" "))" end) |
     reduce .[] as $row ({index:[],words:0,cut:false};
       ($row|words|length) as $cost |
       if .cut or .words+$cost>($cap-12) then .cut=true

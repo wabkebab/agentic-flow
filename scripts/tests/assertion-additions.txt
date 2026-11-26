@@ -905,3 +905,24 @@ policy_refused	3 'plan repin already has stamped issues' "$flow" approve "$doc" 
 policy_refused	3 'policy must match project config at HEAD' "$flow" approve "$doc" --by owner --repin
 policy_refused	5 'could not verify' "$flow" approve "$doc" --by owner --repin
 status_run	0 --reconcile-only
+fail	"$threshold $outcome with $severity recorded $action, expected $expected"
+fail	"valid $severity result refused"
+fail	"valid severity refused: $severity"
+fail	'approval dropped its finding'
+fail	'drift report did not carry the pinned threshold'
+fail	'executor packet included a reviewer threshold'
+fail	'findings index did not render canonical severity'
+fail	'inline finding did not render canonical severity'
+fail	'judgment packet showed a checked threshold'
+fail	'missing expected threshold diagnostic'
+fail	'pinned review threshold regressions failed'
+fail	'reviewer JSON omitted the checked threshold'
+fail	'reviewer prompt omitted the checked threshold'
+fail	'threshold ask lost its diagnostic'
+fail	'threshold decision did not journal the expected event'
+fail	'threshold decision failed'
+fail	'threshold issue stamp refused'
+fail	'threshold submit replay failed'
+fail	'threshold verdict replay failed'
+fail	'unknown severity accepted'
+fail	'unpinned packet showed a checked threshold'

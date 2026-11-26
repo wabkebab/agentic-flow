@@ -772,9 +772,19 @@ MARKDOWN
   jq -eRs 'length<=60000 and contains("findings-complete=false") and contains("Showing 0 of 20 evidence items") and
     contains("Summary shortened") and contains("Finding locations or text shortened") and
     test("Showing [0-9]+ of 100 findings")' huge.md >/dev/null || fail 'oversize bounce omitted a reduction or exceeded the cap'
-  grep -q '^| P1 | `0-' huge.md || fail 'findings sort did not preserve severity order'
-  awk -F '|' '/^\| P[123] \|/ {if ($2<last) exit 1; last=$2}' huge.md || fail 'findings are out of severity order'
-  if grep -q '^| P3 | `97-' huge.md; then fail 'reduced comment kept the final lower-priority row'; fi
+  grep -q '^| high | `0-' huge.md || fail 'findings sort did not preserve severity order'
+  awk -F '|' 'BEGIN {rank[" high "]=1; rank[" medium "]=2; rank[" low "]=3; rank[" nit "]=4}
+    $2 in rank {if (rank[$2]<last) exit 1; last=rank[$2]}' huge.md || fail 'findings are out of severity order'
+  if grep -q '^| low | `97-' huge.md; then fail 'reduced comment kept the final lower-priority row'; fi
+  for severity in high medium low nit P1 P2 P3; do
+    jq --arg severity "$severity" --arg head "$STATION_A" \
+      '. + {station:"reviewer",outcome:"bounce",head:$head,question:null} | .findings[0].severity=$severity' bounce.json > severity.json
+    perl "$LEDGER_HELPER" - result-check reviewer severity.json | jq -e '.invalid_reason==null' >/dev/null ||
+      fail "valid severity refused: $severity"
+  done
+  jq '.findings[0].severity="critical"' severity.json > invalid-severity.json
+  perl "$LEDGER_HELPER" - result-check reviewer invalid-severity.json |
+    jq -e '.invalid_reason|startswith("findings[0].severity is invalid")' >/dev/null || fail 'unknown severity accepted'
   jq -n --arg head "$STATION_A" '{v:1,station:"executor",outcome:"submitted",head:$head,summary:"Evidence",findings:[],question:null,evidence:[range(21)|"entry"]}' > evidence.json
   perl "$LEDGER_HELPER" - result-check executor evidence.json | jq -e '.invalid_reason=="evidence 21 > 20"' >/dev/null || fail 'over-limit evidence accepted'
   jq '.evidence=["e"*301]' evidence.json > long-evidence.json
@@ -782,7 +792,9 @@ MARKDOWN
   jq '.evidence=null' evidence.json > no-evidence.json
   perl "$LEDGER_HELPER" - result-check executor no-evidence.json | jq -e '.invalid_reason==null' >/dev/null || fail 'strict-schema null evidence refused'
   jq -e '. as $schema | ($schema.required|sort)==($schema.properties|keys) and
-    .properties.evidence.type==["array","null"]' "$ROOT/config/stations/result.schema.json" >/dev/null || fail 'station schema is incompatible with strict modes'
+    .properties.evidence.type==["array","null"] and
+    (.properties.findings.items.properties.severity.enum|sort)==["P1","P2","P3","high","low","medium","nit"]' \
+    "$ROOT/config/stations/result.schema.json" >/dev/null || fail 'station schema is incompatible with strict modes'
 ) || fail 'journal Markdown scenario failed'
 fi # scenario
 
@@ -874,6 +886,8 @@ STATION_LOGIN='exec' station_run 3 1 submit --as executor --head "$STATION_C"
 station_run 0 1 reconcile --check --json
 jq -e '.issues[]|select(.number==1)|.state=="escalated" and .max_bounces==1 and .replay.bounces==2 and .drift==[]' \
   "$TMP/station.out" >/dev/null || fail 'handoff did not escalate at the pinned limit'
+jq -e '.issues[]|select(.number==1)|.block_at=="medium"' "$TMP/station.out" >/dev/null ||
+  fail 'drift report did not carry the pinned threshold'
 jq -e '.comments.nodes[-1].body|contains("@owner needs a decision: bounce cap reached")' \
   "$STATION_STATE/1.json" >/dev/null || fail 'pinned escalation omitted owner notification'
 jq --arg pin "$pinned_policy" '.body |= sub("\n"+$pin; "")' "$STATION_STATE/1.json" > "$STATION_STATE/next"
@@ -1280,6 +1294,19 @@ jq '.body += "\n<!-- agentic-flow:plan:fixture policy:v1 review.max_bounces=3 re
   "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 packet_run 0 --station executor --json
 jq -e '.journal.state=="executing" and .journal.seq==0' "$TMP/packet.json" >/dev/null || fail 'packet did not read a pinned journal'
+jq -e 'has("blocking_threshold")|not' "$TMP/packet.json" >/dev/null || fail 'executor packet included a reviewer threshold'
+packet_run 0 --station reviewer --json
+jq -e '.blocking_threshold=="medium"' "$TMP/packet.json" >/dev/null || fail 'reviewer JSON omitted the checked threshold'
+packet_run 0 --station reviewer
+grep -Fxq 'Blocking threshold: medium. Bounce only for findings at or above it; report the rest in an approve.' "$TMP/packet.json" ||
+  fail 'reviewer prompt omitted the checked threshold'
+jq '.body|=sub("review.block_at=medium";"review.block_at=judgment")' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+packet_run 0 --station reviewer
+if grep -q '^Blocking threshold:' "$TMP/packet.json"; then fail 'judgment packet showed a checked threshold'; fi
+packet_issue
+packet_run 0 --station reviewer
+if grep -q '^Blocking threshold:' "$TMP/packet.json"; then fail 'unpinned packet showed a checked threshold'; fi
 packet_issue
 PACKET_MISSING=$(printf '%040d' 99)
 jq --arg rev "$PACKET_MISSING" '.body|=sub("approved=[a-f0-9]{40}";"approved="+$rev)' "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
@@ -1401,7 +1428,7 @@ Submitted."
         (if $mode=="dropped" then [range(100)|row("P2";("x"*4096);("z"*1200))]
         elif $mode=="shortened" then [range(15)|row("P3";("x"*4096);("z"*1200))]
         elif $mode=="indexed" then [range(80)|row("P1";"src/a|b.sh";(("word "*45)+"original\nline | ends"))]
-        else [row("P2";"src/path|part.sh";"Fix issue.")] end)}' > "$TMP/findings-verdict"
+        else ["P2","P1","P3","high","medium","low","nit"] | map(row(.;"src/path|part.sh";"Fix issue.")) end)}' > "$TMP/findings-verdict"
     journal_render bounce 'alpha — Fixture title' \
       "agentic-flow-transition: v=1; id=fixture/alpha/2/bounce; event=bounce; from=reviewing; role=reviewer; head=$PACKET_REV
 agentic-flow-review: status=changes-requested; step=alpha; head=$PACKET_REV; role=reviewer" \
@@ -1459,9 +1486,12 @@ agentic-flow-review: status=changes-requested; step=alpha; head=$PACKET_REV; rol
       [ "$(jq -r '.findings_index[]' "$TMP/packet.json" | wc -w)" -le 1200 ] || fail 'findings index exceeded 1200 words'
       packet_run 0 --station executor
       [ "$(wc -w < "$TMP/packet.json")" -le 3000 ] || fail 'plaintext packet exceeded 3000 words'
+      grep -Fq 'high src/a|b.sh:4' "$TMP/packet.json" || fail 'findings index did not render canonical severity'
     elif [ "$mode" = fits ]; then
       jq -e '.findings[0].text=="Fix issue." and .findings_index==null' "$TMP/packet.json" >/dev/null ||
         fail 'small findings were not inlined'
+      packet_run 0 --station executor
+      grep -Fxq 'medium src/path|part.sh:4 Fix issue.' "$TMP/packet.json" || fail 'inline finding did not render canonical severity'
       # Keep the payload and terminator intact but remove the hidden opener.
       jq '.comments.nodes[-1].body |= ltrimstr("<!-- ")' "$STATION_STATE/1.json" > "$STATION_STATE/next"
       mv "$STATION_STATE/next" "$STATION_STATE/1.json"

@@ -518,6 +518,7 @@ controller_worktree() { # Salvage before any repair; reconciliation never restor
 
 controller_decide() { # Rule f: deterministic rendering from durable records only.
   local item=$1 run intent station verify escalation outcome head body action number row reason='' step role subject
+  local threshold blocking
   local HANDOFF_REPLAY JOURNAL_TOPOLOGY JOURNAL_STEP JOURNAL_PLAN=$CT_PLAN JOURNAL_MAX_BOUNCES HANDOFF_CONTROLLER_RUN
   run=$(printf '%s' "$item" | jq -r .head)
   intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
@@ -543,7 +544,25 @@ controller_decide() { # Rule f: deterministic rendering from durable records onl
           action=ask; head=none; reason='bad claimed head'
         fi ;;
       approve|bounce) action=$outcome
-        if [ "$head" != "$(printf '%s' "$row" | jq -r .replay.submitted_head)" ]; then action=ask; head=none; reason='bad claimed head'; fi ;;
+        if [ "$head" != "$(printf '%s' "$row" | jq -r .replay.submitted_head)" ]; then
+          action=ask; head=none; reason='bad claimed head'
+        else
+          threshold=$(printf '%s' "$row" | jq -er .block_at) || return 3
+          if [ "$threshold" != judgment ]; then
+            # shellcheck disable=SC2016 # jq variables
+            blocking=$(printf '%s' "$station" | journal_jq -r --arg threshold "$threshold" '
+              include "journal-marker";
+              [.result.findings[].severity | review_severity] as $findings |
+              review_severities as $scale |
+              $scale[:(($scale|index($threshold))+1)] |
+              map(select(IN($findings[]))) | .[0] // "none"') || return 3
+            case "$outcome:$blocking" in
+              approve:none) ;;
+              approve:*) action=ask; head=none; reason="reviewer approved with a blocking $blocking finding" ;;
+              bounce:none) action=ask; head=none; reason='reviewer bounced with no blocking finding' ;;
+            esac
+          fi
+        fi ;;
       ask) action=ask; head=none ;;
       *) return 3 ;;
     esac

@@ -10,6 +10,13 @@ matched verification record, preserving its provenance, or a request to regenera
 The policy-files section lists net changes from the approved revision (or the
 merge-base with the submitted head) to the submitted head.
 
+Structured findings use `high`, `medium`, `low` and `nit`. Results still accept
+`P1`, `P2` and `P3` as aliases for the first three levels. Comments and packet
+text render the canonical names. A reviewer packet shows the pinned
+`review.block_at` threshold when it is `high`, `medium` or `low`. The controller
+escalates an approval with a blocking finding or a bounce without one as an
+`ask`. The default is `medium`, and `judgment` leaves the verdict to the reviewer.
+
 `agentic-flow roles [--json]` shows each effective assignment and its layer.
 Defaults in `config/roles.tsv` are overridden by a whole project row in
 `.agentic-flow-roles`, then by the operator file under

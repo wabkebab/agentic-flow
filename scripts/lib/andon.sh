@@ -210,11 +210,11 @@ handoff_drift() { # read-only, bounded plan snapshot; structured report for the 
     fi
     row=$(printf '%s' "$HANDOFF_ISSUE" | jq -c --argjson replay "$HANDOFF_REPLAY" --argjson drift "$drift" \
       --arg topology "$JOURNAL_TOPOLOGY" --arg step "$JOURNAL_STEP" --arg status "$status" \
-      --argjson max_bounces "$JOURNAL_MAX_BOUNCES" --arg policy "$JOURNAL_POLICY" '
+      --argjson max_bounces "$JOURNAL_MAX_BOUNCES" --arg block_at "$JOURNAL_BLOCK_AT" --arg policy "$JOURNAL_POLICY" '
       ([.comments.nodes[]|select(.id==$replay.latest.comment_id)]|first//null) as $latest |
       ([($latest.body//""|split("\n")[])|try capture("^agentic-flow-run: run=(?<run>[a-zA-Z0-9/._-]+); host=(?<host>[a-f0-9]{12})$")]|last//{}) as $host |
       {number,step:$step,topology:$topology,state:$replay.state,observed_status:(.state|ascii_downcase),
-       expected_status:$status,max_bounces:$max_bounces,policy:$policy,replay:$replay,drift:$drift,
+       expected_status:$status,max_bounces:$max_bounces,block_at:$block_at,policy:$policy,replay:$replay,drift:$drift,
        latest_at:($latest.createdAt//null),host:($host.host//null),run:($host.run//null)}') || return 5
     rows=$(printf '%s' "$rows" | jq --argjson row "$row" '.+[$row]') || return 5
   done

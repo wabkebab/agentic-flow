@@ -52,16 +52,19 @@ packet_decision() { # station journal-json normalized-comments-json
 }
 
 packet_format() { # packet JSON file -> station prompt
-  jq -r '
+  journal_jq -r '
+    include "journal-marker";
     "Station: "+.station+" · issue #"+(.issue|tostring)+" · approved "+.approved,
     .brief,
+    (.blocking_threshold | select(.!=null) |
+      "Blocking threshold: \(.). Bounce only for findings at or above it; report the rest in an approve."),
     (.decision|select(.!=null)|
       "Owner decision:", "Question (seq \(.ask.seq)):", .ask.body,
       (if .answer==null then "Answer: none yet" else "Answer (seq \(.answer.seq)):", .answer.body end),
       (.file|select(.!=null)|"Full text: \(.path) (sha256 \(.sha256))")),
     "Journal:",(.journal|tojson),"Findings:",
     (.findings_file|select(.!=null)|"Findings file: "+.path+" (count "+(.count|tostring)+", sha256 "+.sha256+")"),
-    (.findings[]?|if has("body") then .body else "\(.severity) \(.file):\(.line//"?") \(.text)" end),
+    (.findings[]?|if has("body") then .body else "\(.severity|review_severity) \(.file):\(.line//"?") \(.text)" end),
     .findings_index[]?,
     "Latest submit:",(.submit.body//"none"),
     (if has("policy_files_changed") then
@@ -207,7 +210,7 @@ packet_policy_files() { # approved SHA submitted SHA
 
 packet_cmd() (
   local number=${1:-} station='' json=false root tmp initial body author stamp approved doc step plan query comments accepted submit_id submit_index findings submit dropped brief journal decision verification common head selected red_base key command_plan record words part
-  local bounce bounce_id bounce_seq findings_file=null word_cap word_limit suffix=0 policy_files='[]'
+  local bounce bounce_id bounce_seq findings_file=null word_cap word_limit suffix=0 policy_files='[]' threshold=judgment
   [[ "$number" =~ ^[1-9][0-9]{0,9}$ ]] || return 2
   shift
   while [ "$#" -gt 0 ]; do
@@ -307,6 +310,7 @@ packet_cmd() (
         select(.body|journal_marker_line|(startswith("agentic-flow-hold:") or startswith("agentic-flow-hold-clear:") or
           startswith("agentic-flow-transition:"))|not)]') || return 3
   else
+    threshold=$(printf '%s' "$stamp" | jq -er .pin.block_at) || return 3
     submit=$(printf '%s' "$comments" | jq --arg id "$submit_id" '[.[]|select(.id==$id)]|first // null')
     verification='"no record; run verify-step"'
     head=$(printf '%s' "$accepted" | jq -r '.head // "none"')
@@ -336,11 +340,13 @@ packet_cmd() (
   printf '%s\n' "$submit" > "$tmp/submit" && printf '%s\n' "$verification" > "$tmp/verification" || return 3
   jq -n --argjson number "$number" --arg station "$station" --arg approved "$approved" --arg plan "$plan" --arg step "$step" --arg brief "$brief" \
     --argjson journal "$journal" --slurpfile other "$tmp/findings-other" --slurpfile source "$tmp/findings-source" \
-    --argjson findings_file "$findings_file" --argjson policy_files "$policy_files" --slurpfile submit "$tmp/submit" --slurpfile verification "$tmp/verification" --argjson dropped "$dropped" \
+    --argjson findings_file "$findings_file" --argjson policy_files "$policy_files" --arg threshold "$threshold" \
+    --slurpfile submit "$tmp/submit" --slurpfile verification "$tmp/verification" --argjson dropped "$dropped" \
     '{v:1,issue:$number,station:$station,approved:$approved,plan:$plan,step:$step,brief:$brief,journal:$journal,
       findings:($source[0]+$other[0]),findings_file:$findings_file,submit:$submit[0],verification:$verification[0],
       decision:null,dropped:$dropped,notice:("dropped "+($dropped|tostring)+" comment(s) from authors outside the policy")} |
-      if $station=="reviewer" then .policy_files_changed=$policy_files else . end' > "$tmp/packet" || return 3
+      if $station=="reviewer" then .policy_files_changed=$policy_files else . end |
+      if $threshold!="judgment" then .blocking_threshold=$threshold else . end' > "$tmp/packet" || return 3
   words=$(packet_render_words "$tmp/packet" "$tmp/output") || return 3
   if [ "$decision" != null ]; then
     words=$(packet_fit_decision "$tmp" "$word_cap" "$suffix" "$words" "$findings_file" "$plan" "$number") || return 3

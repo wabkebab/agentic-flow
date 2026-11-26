@@ -44,6 +44,10 @@
           "severity": {
             "type": "string",
             "enum": [
+              "high",
+              "medium",
+              "low",
+              "nit",
               "P1",
               "P2",
               "P3"

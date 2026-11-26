@@ -143,7 +143,7 @@ sub result_valid {
   for my $i (0..$count-1) {
     my $f=$r->{findings}[$i]; my $label="findings[$i]";
     result_keys($f,$label,qw(severity file line text));
-    member($f->{severity},qw(P1 P2 P3)) or fail("$label.severity is invalid: ".result_value($f->{severity}));
+    member($f->{severity},qw(high medium low nit P1 P2 P3)) or fail("$label.severity is invalid: ".result_value($f->{severity}));
     result_text($f->{file},"$label.file",4096,4096,\@warnings);
     result_text($f->{text},"$label.text",4000,1200,\@warnings);
     !defined($f->{line}) || integer($f->{line},1) or fail("$label.line is not a positive integer or null: ".result_value($f->{line}));

@@ -981,6 +981,66 @@ c3_holds=$(jq -nc '[
 ]')
 printf '%s' "$c3_holds" | hold_replay questions | jq -e 'length==1 and .[0].id=="questions/hold/2"' >/dev/null || fail 'hold author boundary failed'
 
+(
+  . "$ROOT/scripts/lib/controller.sh"
+  CT_TMP="$TMP/review-threshold"; mkdir -p "$CT_TMP"
+  CT_PLAN=threshold CT_REVIEWER_ESCALATE='' CT_HOST=fixture
+  CT_SPEC='{"steps":[{"id":"alpha","title":"Review fixture"}]}'
+  controller_record() { :; }
+  controller_fault() { :; }
+  controller_diagnostic() { cat "$3"; }
+  head=$(printf '%040d' 1)
+  submitted=$(jq -nc --arg head "$head" '[{id:"submit",dbid:"1",author:"exec",last_edited_at:null,
+    body:("agentic-flow-transition: v=1; id=threshold/alpha/1/submit; event=submit; from=executing; role=executor; head="+$head)}]')
+  while read -r threshold outcome severity expected; do
+    policy="review.max_bounces=2 review.block_at=$threshold andon.station-infrastructure=hold"
+    journal_context "<!-- agentic-flow:plan:threshold step:alpha spec:fixture journal=v2 -->
+<!-- agentic-flow:plan:threshold policy:v1 $policy -->" || fail 'threshold issue stamp refused'
+    replay=$(journal_replay "$submitted" step-strict) || fail 'threshold submit replay failed'
+    CT_REPORT=$(jq -nc --arg block_at "$JOURNAL_BLOCK_AT" --argjson replay "$replay" '{issues:[{number:1,topology:"step-strict",state:"reviewing",
+      max_bounces:2,block_at:$block_at,replay:$replay}]}')
+    jq -n --arg head "$head" --arg outcome "$outcome" --arg severity "$severity" '{
+      v:1,station:"reviewer",outcome:$outcome,head:$head,summary:"Review fixture",question:null,evidence:null,
+      findings:[{severity:$severity,file:"fixture",line:1,text:"Fixture finding"}]}' > "$CT_TMP/verdict"
+    CT_RECORDS=$(jq -nc --slurpfile result "$CT_TMP/verdict" '
+      [{kind:"intent",run:"fixture",issue:1,station:"reviewer",step:"alpha"},
+       {kind:"station",run:"fixture",result:$result[0],invalid_reason:null}]')
+    controller_decide '{"head":"fixture"}' || fail 'threshold decision failed'
+    action=$(jq -r .action "$CT_TMP/record")
+    [ "$action" = "$expected" ] || fail "$threshold $outcome with $severity recorded $action, expected $expected"
+    controller_result_valid reviewer "$CT_TMP/verdict" || fail "valid $severity result refused"
+    comments=$(jq -nc --argjson submitted "$submitted" --rawfile body "$CT_TMP/body" '
+      $submitted+[{id:"review",dbid:"2",author:"review",last_edited_at:null,body:$body}]')
+    replay=$(journal_replay "$comments" step-strict) || fail 'threshold verdict replay failed'
+    printf '%s' "$replay" | jq -e --arg event "$expected" '.seq==2 and .latest.event==$event and
+      (if $event=="ask" then .state=="escalated" and .return_to=="reviewing" and .bounces==0 else true end)' >/dev/null ||
+      fail 'threshold decision did not journal the expected event'
+    if [ "$expected" = ask ]; then
+      case "$outcome:$severity" in
+        approve:medium|approve:P2) reason='reviewer approved with a blocking medium finding' ;;
+        bounce:low) reason='reviewer bounced with no blocking finding' ;;
+        *) fail 'missing expected threshold diagnostic' ;;
+      esac
+      grep -Fxq "$reason" "$CT_TMP/diagnostic-body" || fail 'threshold ask lost its diagnostic'
+    elif [ "$expected" = approve ]; then
+      canonical=$severity
+      [ "$severity" != P2 ] || canonical=medium
+      grep -Fq "| $canonical | " "$CT_TMP/body" || fail 'approval dropped its finding'
+    fi
+  done <<'THRESHOLDS'
+medium approve medium ask
+medium approve P2 ask
+medium approve nit approve
+medium bounce low ask
+medium bounce P1 bounce
+high approve P2 approve
+low bounce P3 bounce
+judgment approve medium approve
+judgment approve nit approve
+judgment bounce low bounce
+THRESHOLDS
+) || fail 'pinned review threshold regressions failed'
+
 # Clarification approval uses committed content and stages only the document.
 C3="$TMP/clarification"
 mkdir -p "$C3/docs/inprogress"
@@ -1502,6 +1562,7 @@ PLAN
     [{kind:"intent",run:"fixture",issue:1,station:"reviewer",step:"alpha"},
      {kind:"station",run:"fixture",result:$result[0],warnings:$warnings,invalid_reason:null}]')
   CT_REPORT=$(jq -nc '{issues:[{number:1,topology:"step-strict",max_bounces:1,
+    block_at:"judgment",
     replay:{seq:1,state:"reviewing",return_to:"executing",submitted_head:("a"*40),bounces:0}}]}')
   controller_record() { :; }; controller_fault() { :; }
   controller_diagnostic() { cat "$3"; }
