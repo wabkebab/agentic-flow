@@ -2400,11 +2400,13 @@ config_contract_tests() (
   unset CI AGENTIC_FLOW_PACKET_WORD_LIMIT AGENTIC_FLOW_CONTROLLER_TURN_CAP AGENTIC_FLOW_BUDGET_WALL_SCALE
   unset AGENTIC_FLOW_REVIEW_MAX_BOUNCES AGENTIC_FLOW_REVIEW_BLOCK_AT AGENTIC_FLOW_ANDON_STATION_INFRASTRUCTURE
   unset AGENTIC_FLOW_BUDGET_FIXTURES_MODE AGENTIC_FLOW_BUDGET_WALL_MODE_CI AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL
-  cd "$fixture/project"
+  # Exercise project discovery from a logical path, as with a symlinked TMPDIR.
+  ln -s project "$fixture/project-link"
+  cd "$fixture/project-link"
   git init -q
   git remote add origin git@github.com:owner/config-fixture.git
   ln "$ROOT/config/config-keys.tsv" config/config-keys.tsv
-  project="$PWD/.agentic-flow/config"
+  project="$(pwd -P)/.agentic-flow/config"
   operator="$XDG_CONFIG_HOME/agentic-flow/config/owner/config-fixture.conf"
 
   config_expect() {
