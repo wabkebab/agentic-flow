@@ -1216,7 +1216,7 @@ It is last so it can be dropped without renumbering the other steps.
 ## Status / Implementation status
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-26; rev=f0ad0ff1b2d8cbcfd050b2b6c49c8f6f6001696c
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
