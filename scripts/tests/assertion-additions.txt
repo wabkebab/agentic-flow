@@ -692,3 +692,63 @@ status_run	3 --wait-human 60 --json
 status_run	5 --wait-human 60 --json
 fail	'documentation link check rejected a moved plan sibling link'
 fail	'documentation link check accepted a missing moved-plan target'
+adoption_refused	"$doc" '65,536 characters' --adopt alpha=46
+adoption_refused	"$doc" 'already stamped on issue #47' --adopt alpha=41
+adoption_refused	"$doc" 'could not read issue #41' --adopt alpha=41
+adoption_refused	"$doc" 'could not read issue #48' --adopt alpha=48
+adoption_refused	"$doc" 'duplicate adoption for alpha' --adopt alpha=41 --adopt alpha=42
+adoption_refused	"$doc" 'expected --adopt' --adopt alpha=041
+adoption_refused	"$doc" 'issue #42 is closed' --adopt alpha=42
+adoption_refused	"$doc" 'issue #43 is not in owner/repo' --adopt alpha=43
+adoption_refused	"$doc" 'issue #44 is not in owner/repo' --adopt alpha=44
+adoption_refused	"$doc" 'issue #45 already contains an agentic-flow comment' --adopt alpha=45
+adoption_refused	"$doc" 'malformed response for issue #41' --adopt alpha=41
+adoption_refused	"$doc" 'tracker requires a Strict plan' --adopt tracker=41
+adoption_refused	"$doc" 'unknown step' --adopt missing=41
+adoption_refused	"$strict_doc" '65,536 characters' --adopt tracker=41 --adopt alpha=46
+adoption_refused	"$strict_doc" 'duplicate adoption issue #41' --adopt tracker=41 --adopt alpha=41
+adoption_refused	"$strict_doc" 'issue #42 is closed' --adopt tracker=41 --adopt alpha=42
+fail	"adoption accepted invalid input ($expected)"
+fail	"adoption omitted diagnostic ($expected): $(cat "$TMP/adopt-out")"
+fail	'Standard adopted reapply failed'
+fail	'Standard adoption changed the original body bytes'
+fail	'Standard adoption changed the title'
+fail	'Standard adoption created a duplicate issue'
+fail	'Standard adoption did not add creation labels alongside existing labels'
+fail	'Standard adoption failed'
+fail	'Standard adoption omitted identity stamp'
+fail	'Standard adoption omitted journal or approval metadata'
+fail	'Standard adoption omitted marker'
+fail	'Standard adoption omitted the work URL from the doc'
+fail	'Standard reapply changed preserved issue text'
+fail	'Standard reapply reset adopted metadata'
+fail	'Strict adopted reapply failed'
+fail	'Strict adoption changed a title'
+fail	'Strict adoption did not create exactly the unmapped step'
+fail	'Strict adoption did not reach the unmapped step'
+fail	'Strict adoption fixture did not stop at the injected failure'
+fail	'Strict adoption lost original prose'
+fail	'Strict adoption omitted tracker URL from the doc'
+fail	'Strict adoption retry failed'
+fail	'Strict reapply changed preserved issue text'
+fail	'Strict retry reset live labels'
+fail	'adopted Strict step lacks its creation labels'
+fail	'adopted approval migration changed more than its stamp'
+fail	'adopted approval migration failed'
+fail	'adopted tracker lacks the plan label'
+fail	'adopted tracker lost its adopted step link'
+fail	'adopted tracker lost its created step link'
+fail	'adoption diff failed'
+fail	'adoption diff omitted mapping'
+fail	'adoption dry run failed'
+fail	'adoption dry run omitted mapping'
+fail	'adoption preflight mutated GitHub'
+fail	'adoption skipped direct issue lookup'
+fail	'legacy adoption reached GitHub'
+fail	'legacy adoption refusal omitted reason'
+fail	'legacy spec accepted issue adoption'
+fail	'offline adoption dry run reached GitHub'
+adoption_refused	"$doc" 'issue #47 already contains an agentic-flow comment' --adopt alpha=47
+fail	'revised adopted plan changed the preserved prefix'
+fail	'revised adopted plan did not apply'
+fail	'revised adopted plan did not update its packet'

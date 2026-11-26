@@ -8,6 +8,12 @@
 #   scripts/plan-to-issues.sh --doc <path> [--apply|--diff] # approved brief
 #   scripts/plan-to-issues.sh --apply [--doc <path>] <spec> # legacy JSON
 #
+# With an approved --doc, repeat --adopt <step-id>=<issue-number> to reuse open
+# issues in this repository. Strict plans also accept --adopt tracker=<number>.
+# Apply appends the packet and adds creation labels while retaining the original
+# title, description, and labels. Keep handwritten edits above the adopted marker.
+# Dry run prints the mappings; --diff also checks the issues on GitHub.
+#
 # Stable identity:
 #   spec.id, or a hash of tracking.title when id is omitted
 #   steps[].id, or step-N when id is omitted
@@ -23,6 +29,7 @@ MODE=dry
 SPEC=""
 DOC=""
 APPROVED_BY=""
+ADOPT=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --apply) MODE=apply; shift ;;
@@ -33,6 +40,10 @@ while [ "$#" -gt 0 ]; do
     --approved-by)
       [ "$#" -ge 2 ] || { echo "error: --approved-by requires a name" >&2; exit 2; }
       APPROVED_BY="$2"; shift 2 ;;
+    --adopt)
+      [ "$#" -ge 2 ] || { echo "error: --adopt requires <step-id>=<issue-number>" >&2; exit 2; }
+      [ "${#ADOPT[@]}" -lt 101 ] || { echo "error: too many --adopt mappings" >&2; exit 2; }
+      ADOPT+=("$2"); shift 2 ;;
     -h|--help) awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"; exit 0 ;;
     -*)
       echo "error: unknown flag: $1" >&2
@@ -46,6 +57,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 die() { echo "error: $*" >&2; exit 1; }
+
+if [ "${#ADOPT[@]}" -gt 0 ] && { [ -z "$DOC" ] || [ -n "$SPEC" ]; }; then
+  die "--adopt requires an approved --doc without a legacy JSON spec"
+fi
 
 APPROVED_REV=""
 BRIEF_TMP=""
@@ -152,6 +167,31 @@ PLAN_KEY=$(jq -r '.id // empty' "$SPEC")
 [ -n "$PLAN_KEY" ] || PLAN_KEY=$(printf '%s' "$TRACK_TITLE" | hash_stdin)
 SPEC_HASH=$(jq -cS . "$SPEC" | hash_stdin)
 PLAN_MARKER="agentic-flow:plan:$PLAN_KEY"
+ADOPTED_MARKER='<!-- agentic-flow:adopted -->'
+
+if [ "${#ADOPT[@]}" -gt 0 ]; then
+  adoption_map="$BRIEF_TMP/adoptions"
+  : > "$adoption_map"
+  step_ids=$(jq -r '.steps[].id' "$SPEC")
+  for mapping in "${ADOPT[@]}"; do
+    [[ "$mapping" =~ ^([a-z0-9][a-z0-9._-]{0,79})=([1-9][0-9]{0,9})$ ]] \
+      || die "expected --adopt <step-id>=<issue-number>: $mapping"
+    key=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]}
+    identity="step:$key"
+    if [ "$key" = tracker ]; then
+      [ "$PROFILE" = strict ] || die "--adopt tracker requires a Strict plan"
+      identity=tracker
+    else
+      printf '%s\n' "$step_ids" | grep -Fxq "$key" || die "unknown step in --adopt: $key"
+    fi
+    conflict=$(awk -F '\t' -v key="$identity" -v number="$number" '
+      $1 == key { print "duplicate adoption for " (key == "tracker" ? key : substr(key, 6)); exit }
+      $2 == number { print "duplicate adoption issue #" number; exit }
+    ' "$adoption_map")
+    [ -z "$conflict" ] || die "$conflict"
+    printf '%s\t%s\n' "$identity" "$number" >> "$adoption_map"
+  done
+fi
 
 echo "Mode:            $MODE"
 echo "Profile:         $PROFILE"
@@ -167,6 +207,11 @@ while [ "$i" -lt "$STEP_COUNT" ]; do
   echo "  $((i + 1)). [$step_id] $title   [labels: $labels]"
   i=$((i + 1))
 done
+if [ -n "${adoption_map:-}" ]; then
+  while IFS=$'\t' read -r identity number; do
+    echo "Adopt ${identity#step:}: #$number"
+  done < "$adoption_map"
+fi
 
 if [ "$MODE" = dry ]; then
   echo
@@ -176,6 +221,8 @@ if [ "$MODE" = dry ]; then
 fi
 
 command -v gh >/dev/null || die "gh not found"
+# shellcheck source=scripts/lib/review-policy.sh
+source "$SCRIPT_DIR/lib/review-policy.sh"
 gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login)"
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) || die "not in a GitHub repo"
 HAS_ISSUES=$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)
@@ -262,6 +309,47 @@ printf '%s\n' "$ISSUES_JSON" | jq -e --arg repo "$REPO" '
     (.url == ("https://github.com/" + $repo + "/issues/" + (.number | tostring))))' >/dev/null \
   || die "GitHub returned incomplete issue identity data"
 
+if [ -n "${adoption_map:-}" ]; then
+  : > "$TMP/adoption-candidates"
+  while IFS=$'\t' read -r identity number; do
+    issue=$(review_bounded gh issue view "$number" --repo "$REPO" --json number,body,state,url) \
+      || die "could not read issue #$number from $REPO"
+    issue=$(printf '%s\n' "$issue" | jq -ces --argjson number "$number" '
+      if length != 1 then null else .[0] end |
+      if .number != $number or (.url | type) != "string" or (.body | type) != "string" or
+         (.state != "OPEN" and .state != "CLOSED") then empty
+      else {number, url, state, body,
+        adopting: (.body | split("<!--")[1:] | all(.[]; split("-->")[0] | contains("agentic-flow:") | not))}
+      end
+    ') || die "malformed response for issue #$number"
+    [ "$(printf '%s\n' "$issue" | jq -r .url)" = "https://github.com/$REPO/issues/$number" ] \
+      || die "issue #$number is not in $REPO or is a pull request"
+    [ "$(printf '%s\n' "$issue" | jq -r .state)" = OPEN ] || die "issue #$number is closed"
+    printf '%s\n' "$issue" >> "$TMP/adoption-candidates"
+  done < "$adoption_map"
+  # Use the direct read for mapped issues, including issues already stamped on a previous run.
+  ISSUES_JSON=$(printf '%s\n' "$ISSUES_JSON" | jq -c --slurpfile candidates "$TMP/adoption-candidates" '
+    ($candidates | map(.number)) as $numbers |
+    (map(.number)) as $discovered |
+    map(select(.number as $n | $numbers | index($n) | not)) +
+    ($candidates | map(.number as $n | .discovered = ($discovered | index($n) != null)))')
+fi
+
+# Only the managed suffix supplies identity, topology and approval metadata.
+# Keep the exact bytes through the marker as an opaque prefix for subsequent edits.
+if [[ "$ISSUES_JSON" == *"$ADOPTED_MARKER"* ]] || [ -n "${adoption_map:-}" ]; then
+  ISSUES_JSON=$(printf '%s\n' "$ISSUES_JSON" | jq -c --arg marker "$ADOPTED_MARKER" '
+    map(if .adopting then
+      .adopted_prefix = (.body + (if .body == "" then "" else "\n\n" end) + $marker + "\n") | .body = ""
+    else
+      (.body | match("(?:\\A|\n)" + $marker + "\n") // null) as $boundary |
+      if $boundary == null then . else
+        ($boundary.offset + $boundary.length) as $end |
+        .adopted_prefix = .body[:$end] | .body = .body[$end:]
+      end
+    end)')
+fi
+
 # Read whole stamp lines into a validated exact index before any GitHub mutation.
 # A malformed matching stamp or two issues with one identity is an ambiguity,
 # not permission to choose the first search result.
@@ -269,6 +357,19 @@ INDEX="$TMP/issue-index"
 : > "$INDEX"
 TRACK_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) tracker spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
 STEP_STAMP_RE='^<!-- agentic-flow:plan:([a-z0-9][a-z0-9._-]*) step:([a-z0-9][a-z0-9._-]*) spec:([a-f0-9]{40}|[a-f0-9]{64}|[0-9]{1,10})( journal=[a-z0-9][a-z0-9._-]*)?( approved=[a-f0-9]{40})?( approved-by:.+ approved-at:[^ ]+)? -->$'
+number_for_identity() {
+  awk -F '\t' -v key="$1" '$1 == key {print $2; exit}' "$INDEX"
+}
+
+index_identity() { # identity, number
+  local previous_number previous_identity
+  previous_number=$(number_for_identity "$1")
+  [ -z "$previous_number" ] || die "duplicate $1 stamps on issues #$previous_number and #$2"
+  previous_identity=$(awk -F '\t' -v number="$2" '$2 == number {print $1; exit}' "$INDEX")
+  [ -z "$previous_identity" ] || die "issue #$2 has multiple identity stamps: $previous_identity and $1"
+  printf '%s\t%s\n' "$1" "$2" >> "$INDEX"
+}
+
 printf '%s\n' "$ISSUES_JSON" | jq -r --arg prefix "<!-- $PLAN_MARKER " '
   .[] | .number as $number | .body | split("\n")[]
   | select(contains($prefix)) | [$number, .] | @tsv
@@ -284,27 +385,40 @@ while IFS="$(printf '\t')" read -r remote_number stamp; do
   else
     die "malformed identity stamp on issue #$remote_number"
   fi
-  previous_number=$(awk -F '\t' -v key="$identity" '$1 == key {print $2; exit}' "$INDEX")
-  [ -z "$previous_number" ] || die "duplicate $identity stamps on issues #$previous_number and #$remote_number"
-  previous_identity=$(awk -F '\t' -v number="$remote_number" '$2 == number {print $1; exit}' "$INDEX")
-  [ -z "$previous_identity" ] || die "issue #$remote_number has multiple identity stamps: $previous_identity and $identity"
-  printf '%s\t%s\n' "$identity" "$remote_number" >> "$INDEX"
+  index_identity "$identity" "$remote_number"
 done < "$TMP/stamp-lines"
+
+issue_for_number() {
+  printf '%s\n' "$ISSUES_JSON" | jq -c --argjson number "$1" '.[] | select(.number == $number)'
+}
 
 issue_for_identity() { # <tracker | step:id>
   local number
-  number=$(awk -F '\t' -v key="$1" '$1 == key {print $2; exit}' "$INDEX")
+  number=$(number_for_identity "$1")
   [ -n "$number" ] || return 0
-  printf '%s\n' "$ISSUES_JSON" | jq -c --arg number "$number" \
-    '.[] | select((.number | tostring) == $number)'
+  issue_for_number "$number"
 }
+
+if [ -n "${adoption_map:-}" ]; then
+  while IFS=$'\t' read -r identity number; do
+    previous_number=$(number_for_identity "$identity")
+    [ -z "$previous_number" ] || [ "$previous_number" = "$number" ] \
+      || die "${identity#step:} is already stamped on issue #$previous_number"
+    issue=$(issue_for_number "$number")
+    if printf '%s\n' "$issue" | jq -e .adopting >/dev/null; then
+      index_identity "$identity" "$number"
+    elif [ "$previous_number" != "$number" ] ||
+      ! printf '%s\n' "$issue" | jq -e '.discovered and has("adopted_prefix")' >/dev/null; then
+      die "issue #$number already contains an agentic-flow comment"
+    fi
+  done < "$adoption_map"
+fi
 
 # First document-mode reapply migrates legacy bodies in place. Preserve the old
 # spec hash and handwritten packets: bootstrap must change only approved=.
-migrate_approval_body() { # existing issue JSON, proposed body
-  local old stamped_rev
+migrate_approval_body() { # existing managed body, proposed body
+  local old=$1 stamped_rev
   if [ -n "$APPROVED_REV" ] && [ -n "$1" ]; then
-    old=$(printf '%s' "$1" | jq -r .body)
     stamped_rev=$(printf '%s\n' "$old" | sed -nE 's/^<!-- .* approved=([a-f0-9]{40}).* -->$/\1/p')
     if [ -z "$stamped_rev" ] || [ "$stamped_rev" = "$APPROVED_REV" ]; then
       printf '%s\n' "$old" | awk -v rev="$APPROVED_REV" '
@@ -320,13 +434,47 @@ migrate_approval_body() { # existing issue JSON, proposed body
   printf '%s\n' "$2"
 }
 
+issue_body() {
+  printf '%s\n' "$1" | jq -r .body
+}
+
+has_adopted_prefix() {
+  printf '%s\n' "$1" | jq -e .adopted_prefix >/dev/null
+}
+
+prepare_adopted_body() { # issue JSON, managed body
+  local number
+  printf '%s\n' "$1" | jq -rj .adopted_prefix > "$TMP/adopted-body"
+  printf '%s' "$2" >> "$TMP/adopted-body"
+  if ! jq -eRs 'length <= 65536' "$TMP/adopted-body" >/dev/null; then
+    number=$(printf '%s\n' "$1" | jq -r .number)
+    die "adopted issue #$number body would exceed 65,536 characters"
+  fi
+}
+
+edit_plan_issue() { # existing issue JSON, number, title, managed body, creation labels
+  if has_adopted_prefix "$1"; then
+    prepare_adopted_body "$1" "$4"
+    # Add labels before stamping, so an interrupted adoption can safely retry.
+    # Once the stamp is present the live workflow labels take precedence.
+    if [ -n "$5" ] && printf '%s\n' "$1" | jq -e .adopting >/dev/null; then
+      review_bounded gh issue edit "$2" --repo "$REPO" --add-label "$5" >/dev/null
+    fi
+    review_bounded gh issue edit "$2" --repo "$REPO" --body-file "$TMP/adopted-body" >/dev/null
+  else
+    gh issue edit "$2" --repo "$REPO" --title "$3" --body "$4" >/dev/null
+  fi
+}
+
 # Topology is immutable for a plan identity. Check every discovered issue before
 # label creation, edits, or closes; a partial conversion would be unrecoverable.
 existing_topology=""
 while IFS="$(printf '\t')" read -r identity number; do
   [ -n "$identity" ] || continue
-  body=$(printf '%s\n' "$ISSUES_JSON" | jq -r --argjson number "$number" '.[] | select(.number == $number) | .body')
-  if printf '%s\n' "$body" | grep -Fxq '<!-- agentic-flow:topology:standard -->'; then
+  body=$(issue_body "$(issue_for_number "$number")")
+  if [ -z "$body" ]; then  # A validated, unstamped adoption takes the approved profile.
+    found_topology=$PROFILE
+  elif printf '%s\n' "$body" | grep -Fxq '<!-- agentic-flow:topology:standard -->'; then
     found_topology=standard
   elif printf '%s\n' "$body" | grep -Fxq '<!-- agentic-flow:topology:strict -->'; then
     found_topology=strict
@@ -349,9 +497,9 @@ if [ "$PROFILE" = standard ]; then
   existing=$(issue_for_identity "step:$step_id")
   [ ! -s "$INDEX" ] || [ -n "$existing" ] \
     || die "changing a standard work issue identity requires migration"
+  existing_body=$(issue_body "$existing")
   approval_by="" approval_at=""
-  if [ -n "$existing" ]; then
-    existing_body=$(printf '%s\n' "$existing" | jq -r .body)
+  if [ -n "$existing_body" ]; then
     approval_by=$(printf '%s\n' "$existing_body" | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)
     approval_at=$(printf '%s\n' "$existing_body" | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
     if [ -n "$approval_by" ]; then
@@ -371,18 +519,27 @@ if [ "$PROFILE" = standard ]; then
   fi
   journal_value='journal=v1'
   approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
-  if [ -n "$existing" ]; then
-    approved_value=${approved_value:-$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
-    journal_value=$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+  if [ -n "$existing_body" ]; then
+    approved_value=${approved_value:-$(printf '%s\n' "$existing_body" | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
+    journal_value=$(printf '%s\n' "$existing_body" | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
   fi
   stamp="<!-- $PLAN_MARKER step:$step_id spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value}"
   [ -z "$approval_by" ] || stamp="$stamp approved-by:$approval_by approved-at:$approval_at"
   stamp="$stamp -->"
   desired_body=$(render_step_body 0 "$step_id" "" "$stamp
 <!-- agentic-flow:topology:standard -->")
-  desired_body=$(migrate_approval_body "$existing" "$desired_body")
+  desired_body=$(migrate_approval_body "$existing_body" "$desired_body")
+  if has_adopted_prefix "$existing"; then
+    prepare_adopted_body "$existing" "$desired_body"
+  fi
   if [ "$MODE" = diff ]; then
-    [ -n "$existing" ] && echo 'Work issue: exists' || echo 'Work issue: missing (would create)'
+    if [ -n "$existing_body" ]; then
+      echo 'Work issue: exists'
+    elif [ -n "$existing" ]; then
+      echo 'Work issue: would adopt'
+    else
+      echo 'Work issue: missing (would create)'
+    fi
     exit 0
   fi
   labels=$(jq -r '(.steps[0].labels // []) | join(",")' "$SPEC")
@@ -406,7 +563,7 @@ if [ "$PROFILE" = standard ]; then
   else
     number=$(printf '%s\n' "$existing" | jq -r .number)
     url=$(printf '%s\n' "$existing" | jq -r .url)
-    gh issue edit "$number" --repo "$REPO" --title "$TRACK_TITLE" --body "$desired_body" >/dev/null
+    edit_plan_issue "$existing" "$number" "$TRACK_TITLE" "$desired_body" "$labels"
     echo "updated work issue $url"
   fi
   if [ -n "$DOC" ]; then
@@ -428,13 +585,13 @@ fi
 
 TRACK_ID_MARKER="$PLAN_MARKER tracker"
 existing_tracker=$(issue_for_identity tracker)
+existing_tracker_body=$(issue_body "$existing_tracker")
 APPROVAL_BY=""
 APPROVAL_AT=""
-if [ -n "$existing_tracker" ]; then
-  existing_body=$(printf '%s\n' "$existing_tracker" | jq -r '.body // ""')
-  APPROVAL_BY=$(printf '%s\n' "$existing_body" \
+if [ -n "$existing_tracker_body" ]; then
+  APPROVAL_BY=$(printf '%s\n' "$existing_tracker_body" \
     | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)
-  APPROVAL_AT=$(printf '%s\n' "$existing_body" \
+  APPROVAL_AT=$(printf '%s\n' "$existing_tracker_body" \
     | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
   if [ -n "$APPROVAL_BY" ]; then
     [[ "$APPROVAL_BY" =~ ^[A-Za-z0-9]([A-Za-z0-9._\ -]*[A-Za-z0-9])?$ ]] \
@@ -454,9 +611,9 @@ if [ -n "$APPROVED_BY" ]; then
 fi
 journal_value='journal=v1'
 approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
-if [ -n "$existing_tracker" ]; then
-  approved_value=${approved_value:-$(printf '%s' "$existing_tracker" | jq -r .body | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
-  journal_value=$(printf '%s' "$existing_tracker" | jq -r .body | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+if [ -n "$existing_tracker_body" ]; then
+  approved_value=${approved_value:-$(printf '%s\n' "$existing_tracker_body" | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
+  journal_value=$(printf '%s\n' "$existing_tracker_body" | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
 fi
 TRACK_STAMP="<!-- $TRACK_ID_MARKER spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value}"
 if [ -n "$APPROVAL_BY" ]; then
@@ -473,12 +630,94 @@ TRACK_DESIRED="${TRACK_BODY}
 ${TRACK_STAMP}"
 TRACK_STUB=$TRACK_DESIRED
 
-TRACK_DESIRED=$(migrate_approval_body "$existing_tracker" "$TRACK_DESIRED")
+TRACK_DESIRED=$(migrate_approval_body "$existing_tracker_body" "$TRACK_DESIRED")
+
+desired_step_body() { # index, step id, tracker URL, existing managed body
+  local stamp body journal_value=journal=v1 approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
+  if [ -n "$4" ]; then
+    approved_value=${approved_value:-$(printf '%s\n' "$4" | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
+    journal_value=$(printf '%s\n' "$4" | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+  fi
+  stamp="<!-- $PLAN_MARKER step:$2 spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value} -->"
+  if [ "$PROFILE" = strict ]; then
+    stamp="$stamp
+<!-- agentic-flow:topology:strict -->"
+    body=$(render_step_body "$1" "$2" "$3" "$stamp") || return 1
+  else
+    body=$(jq -r ".steps[$1].body // \"\"" "$SPEC") || return 1
+    body="${body}
+
+${stamp}"
+  fi
+  migrate_approval_body "$4" "$body"
+}
+
+strict_task_title() {
+  jq -nr --arg title "$1" --arg id "$2" "$ISSUE_MARKDOWN_JQ"'
+    $title | short_title($id) | gsub("[\r\n\t]+"; " ") | issue_markdown'
+}
+
+tracker_checklist_body() {
+  local tasklist
+  if [ "$PROFILE" = strict ]; then
+    tasklist=$'\n\n### Steps\n\n'
+  else
+    tasklist=$'\n\n## Steps\n'
+  fi
+  while IFS=$'\t' read -r num step_id title; do
+    tasklist="${tasklist}- [ ] #${num} [${step_id}] ${title}"$'\n'
+  done < "$1"
+  local final="${TRACK_BODY}${tasklist}"$'\n'"${TRACK_STAMP}"
+  # Finish a tracker stub after a partial apply, and preserve a completed
+  # tracker during approval-only migration.
+  if [ "$TRACK_DESIRED" != "$TRACK_STUB" ] || [ -z "$APPROVED_REV" ]; then
+    migrate_approval_body "$existing_tracker_body" "$final"
+  else
+    printf '%s\n' "$final"
+  fi
+}
+
+tracker_adopted=false
+if has_adopted_prefix "$existing_tracker"; then
+  tracker_adopted=true
+fi
+
+# Check all adopted body sizes before label creation or any issue edit. Reserve
+# space for issue numbers that GitHub will assign during this apply.
+if [[ "$ISSUES_JSON" == *'"adopted_prefix":'* ]]; then
+  unassigned_number=9999999999
+  preflight_track_url=$(printf '%s\n' "$existing_tracker" | jq -r .url)
+  preflight_track_url=${preflight_track_url:-https://github.com/$REPO/issues/$unassigned_number}
+  : > "$TMP/adoption-step-rows"
+  i=0
+  while [ "$i" -lt "$STEP_COUNT" ]; do
+    step_id=$(jq -r ".steps[$i].id" "$SPEC")
+    existing=$(issue_for_identity "step:$step_id")
+    if has_adopted_prefix "$existing"; then
+      desired_body=$(desired_step_body "$i" "$step_id" "$preflight_track_url" "$(issue_body "$existing")")
+      prepare_adopted_body "$existing" "$desired_body"
+    fi
+    if [ "$tracker_adopted" = true ]; then
+      num=$(printf '%s\n' "$existing" | jq -r .number)
+      title=$(jq -r ".steps[$i].title" "$SPEC")
+      task_title=$(strict_task_title "$title" "$step_id")
+      printf '%s\t%s\t%s\n' "${num:-$unassigned_number}" "$step_id" "$task_title" >> "$TMP/adoption-step-rows"
+    fi
+    i=$((i + 1))
+  done
+  if [ "$tracker_adopted" = true ]; then
+    desired_body=$(tracker_checklist_body "$TMP/adoption-step-rows")
+    prepare_adopted_body "$existing_tracker" "$desired_body"
+  fi
+fi
 
 if [ "$MODE" = diff ]; then
   if [ -z "$existing_tracker" ]; then
     echo
     echo "Tracker: missing (would create)"
+  elif [ -z "$existing_tracker_body" ]; then
+    echo
+    echo "Tracker: would adopt"
   else
     existing_spec=$(printf '%s\n' "$existing_tracker" | jq -r '.body' \
       | sed -n 's/^<!-- agentic-flow:plan:[^ ]* tracker spec:\([^ ]*\).* -->$/\1/p' | head -1)
@@ -501,7 +740,11 @@ if [ "$MODE" = diff ]; then
   while [ "$i" -lt "$STEP_COUNT" ]; do
     step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
     existing=$(issue_for_identity "step:$step_id")
-    if [ -n "$existing" ]; then
+    if [ -z "$existing" ]; then
+      echo "Step $step_id: missing (would create)"
+    elif [ -z "$(issue_body "$existing")" ]; then
+      echo "Step $step_id: would adopt"
+    else
       if [ -n "$APPROVED_REV" ]; then
         existing_approved=$(printf '%s\n' "$existing" | jq -r .body | sed -nE 's/^<!-- .* approved=([a-f0-9]{40}).* -->$/\1/p')
         if [ -z "$existing_approved" ]; then
@@ -514,8 +757,6 @@ if [ "$MODE" = diff ]; then
       else
         echo "Step $step_id: exists"
       fi
-    else
-      echo "Step $step_id: missing (would create)"
     fi
     i=$((i + 1))
   done
@@ -556,8 +797,9 @@ if [ -z "$existing_tracker" ]; then
 else
   track_num=$(printf '%s\n' "$existing_tracker" | jq -r .number)
   track_url=$(printf '%s\n' "$existing_tracker" | jq -r .url)
-  gh issue edit "$track_num" --repo "$REPO" --title "$TRACK_TITLE" \
-    --body "$TRACK_DESIRED" >/dev/null
+  if [ "$tracker_adopted" = false ] || [ -z "$existing_tracker_body" ]; then
+    edit_plan_issue "$existing_tracker" "$track_num" "$TRACK_TITLE" "$TRACK_DESIRED" "$TRACK_LABELS"
+  fi
   echo "updated track #$track_num  $TRACK_TITLE"
 fi
 
@@ -566,30 +808,11 @@ fi
 i=0
 while [ "$i" -lt "$STEP_COUNT" ]; do
   title=$(jq -r ".steps[$i].title" "$SPEC")
-  body=$(jq -r ".steps[$i].body // \"\"" "$SPEC")
   labels=$(jq -r ".steps[$i].labels // [] | join(\",\")" "$SPEC")
   step_id=$(jq -r ".steps[$i].id // \"step-$((i + 1))\"" "$SPEC")
-  marker="$PLAN_MARKER step:$step_id"
   existing=$(issue_for_identity "step:$step_id")
-  journal_value='journal=v1'
-  approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
-  if [ -n "$existing" ]; then
-    approved_value=${approved_value:-$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
-    journal_value=$(printf '%s' "$existing" | jq -r .body | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
-  fi
-  stamp="<!-- $marker spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value} -->"
-  if [ "$PROFILE" = strict ]; then
-    stamp="$stamp
-<!-- agentic-flow:topology:strict -->"
-    desired_body=$(render_step_body "$i" "$step_id" "$track_url" "$stamp")
-  else
-    desired_body="${body}
-
-${stamp}"
-  fi
-  desired_body=$(migrate_approval_body "$existing" "$desired_body")
+  desired_body=$(desired_step_body "$i" "$step_id" "$track_url" "$(issue_body "$existing")")
   printf '%s\n' "$step_id" >> "$TMP/current-step-ids"
-  existing=$(issue_for_identity "step:$step_id")
 
   if [ -z "$existing" ]; then
     if [ -n "$labels" ]; then
@@ -603,13 +826,12 @@ ${stamp}"
   else
     num=$(printf '%s\n' "$existing" | jq -r .number)
     url=$(printf '%s\n' "$existing" | jq -r .url)
-    gh issue edit "$num" --repo "$REPO" --title "$title" --body "$desired_body" >/dev/null
+    edit_plan_issue "$existing" "$num" "$title" "$desired_body" "$labels"
     echo "updated step  #$num  $title"
   fi
   task_title=$title
   if [ "$PROFILE" = strict ]; then
-    task_title=$(jq -nr --arg title "$title" --arg id "$step_id" "$ISSUE_MARKDOWN_JQ"'
-      $title | short_title($id) | gsub("[\r\n\t]+"; " ") | issue_markdown')
+    task_title=$(strict_task_title "$title" "$step_id")
   fi
   printf '%s\t%s\t%s\n' "$num" "$step_id" "$task_title" >> "$TMP/step-rows"
   i=$((i + 1))
@@ -631,30 +853,8 @@ while IFS="$(printf '\t')" read -r old_identity old_num; do
   echo "closed removed step #$old_num [$old_id]"
 done < "$INDEX"
 
-tasklist='
-
-## Steps
-'
-if [ "$PROFILE" = strict ]; then
-  tasklist='
-
-### Steps
-
-'
-fi
-while IFS="$(printf '\t')" read -r num step_id title; do
-  tasklist="${tasklist}- [ ] #${num} [${step_id}] ${title}
-"
-done < "$TMP/step-rows"
-TRACK_FINAL="${TRACK_BODY}${tasklist}
-${TRACK_STAMP}"
-# An interrupted creation leaves the generated stub. Finish its task list on
-# retry. The approval-only path still preserves every completed tracker body.
-if [ "$TRACK_DESIRED" != "$TRACK_STUB" ] || [ -z "$APPROVED_REV" ]; then
-  TRACK_FINAL=$(migrate_approval_body "$existing_tracker" "$TRACK_FINAL")
-fi
-gh issue edit "$track_num" --repo "$REPO" --title "$TRACK_TITLE" \
-  --body "$TRACK_FINAL" >/dev/null
+TRACK_FINAL=$(tracker_checklist_body "$TMP/step-rows")
+edit_plan_issue "$existing_tracker" "$track_num" "$TRACK_TITLE" "$TRACK_FINAL" ""
 
 # Native linking remains best-effort; the stamped task list is the durable fallback.
 linked=0

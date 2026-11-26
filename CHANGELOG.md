@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.21.0
+
+- `plan-to-issues --doc` accepts repeatable `--adopt <step-id>=<number>` mappings
+  for existing open issues, including `tracker` on Strict plans. It checks all mappings
+  before applying and retains adopted titles, handwritten text, and live labels across
+  reapply.
+
 ## 0.20.0
 
 Harness simplification, Phase 4.

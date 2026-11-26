@@ -109,6 +109,7 @@ TRIAGE header. Don't edit between the markers by hand.
 |-----|------|--------|-------|
 | context_optimization | Feature | ✅ Done | done |
 | feature-adaptative-assurance-opus | Feature | 🕰️ Superseded | done |
+| feature-adopt-issues | Feature | ✅ Done | done |
 | feature-ask-answer-packet | Feature | ✅ Done | done |
 | feature-ci-as-authority | Feature | ✅ Done | done |
 | feature-deterministic-stations | Feature | ✅ Done | done |

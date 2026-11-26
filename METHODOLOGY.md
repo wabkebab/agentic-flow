@@ -319,6 +319,21 @@ the plan is **approved**. Standard creates one work issue from its one-step brie
 one tracker plus one sub-issue per independently shippable step. Existing specs without
 a profile keep the legacy tracker and steps.
 
+To reuse open issues in the current repository, pass one `--adopt <step-id>=<number>`
+per existing issue to the approved document command. Strict plans also accept
+`--adopt tracker=<number>` and create issues for any unmapped steps.
+
+```bash
+scripts/plan-to-issues.sh --doc docs/inprogress/<doc>.md --adopt f-1=123 --apply
+```
+
+Omit `--apply` to preview the mappings offline, or use `--diff` to validate them
+against GitHub without writing. Apply checks all mappings before changing any issue
+or label. It keeps each adopted issue's title and existing labels, adds the creation
+labels, and appends the generated content below `<!-- agentic-flow:adopted -->`.
+Keep handwritten edits above that marker. Reapply finds adopted issues by stamp and
+preserves their live labels.
+
 <!-- BEGIN SHARED WORKFLOW -->
 Generated from `config/workflow.tsv`; edit the data, then run `scripts/render-shared.sh`.
 
