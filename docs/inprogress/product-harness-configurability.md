@@ -420,11 +420,15 @@ Config changes what replay and gates mean, so it waits for its tier contract.
 
 ## Decisions to make up front
 
-- [ ] **Safety floor.** Accept that config can tighten but never loosen the floor? Until
+- [x] **Safety floor.** Accept that config can tighten but never loosen the floor? Until
       this is decided, no andon override from C ships.
-- [ ] **Override tiers (A).** Accept the five tiers and the plan-pinned list, including
+      *Decided 2026-11-26: yes, with a split floor; agent push to the plan branch is
+      reserved for a later opt-in brief. See `feature-config-surface.md` C-1.*
+- [x] **Override tiers (A).** Accept the five tiers and the plan-pinned list, including
       `review.block_at`?
-- [ ] **Plan pinning.** Accept the pin in the plan block and journal stamp, immutable once
+      *Decided 2026-11-26: yes, as `feature-config-surface.md` C-1.*
+- [x] **Plan pinning.** *Decided 2026-11-26: yes, immutable once stamped
+      (`feature-config-surface.md` C-2, C-3).* Accept the pin in the plan block and journal stamp, immutable once
       issues are stamped and enforced first by `plan-to-issues` before any mutation, with
       stampless journals replaying under the implicit legacy pin
       (2 bounces, P1–P3 blocking)? An explicit policy transition at a journal sequence

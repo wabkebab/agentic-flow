@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-26) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (changes journal replay and the controller; project baseline is Standard)
-> Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures. Draft 1, written against `0.21.0` (`97c6ebe`). The safety floor is decided (option A with a split floor: merge, ship and hold-clear stay human-only; agent push to the plan branch is reserved for a later brief). Approval waits on the two [BLOCKING] decisions under *Open questions*.
+> Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures. Draft 1, written against `0.21.0` (`97c6ebe`). All three gating decisions are settled (2026-11-26): the split safety floor, C-1's override tiers, and pins immutable once issues are stamped. No [BLOCKING] question remains; the rest under *Open questions* carry recommendations. Next: owner review and approval.
 
 # Feature — Config surface, plan-pinned policy and budget modes
 
@@ -392,12 +392,25 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
     future, separately approved opt-in, and stays denied until that brief ships.
   - The bounded pre-launch retry (C-6) does not loosen the floor: no station has started
     and the same hold follows after N attempts. f-6 stays in the brief.
-- **[BLOCKING] Override tiers.** Accept C-1's tiers. Recommended: accept, with the
-  analysis's five tiers reduced to the keys this brief ships. Invocation flags stay run
-  shaping only.
-- **[BLOCKING] Plan pinning.** Accept C-2 and C-3: a pin in the plan block and an issue
-  marker, immutable once stamped, enforced first by `plan-to-issues` before any mutation,
-  with stampless journals under the legacy pin. Recommended: accept.
+- **Override tiers — decided by the owner (2026-11-26): C-1 as drafted.**
+  - Plan tier: `review.max_bounces`, `review.block_at` and
+    `andon.station-infrastructure`, frozen at approval.
+  - Project tier: packet word limit, fixture budget mode and CI wall-time mode, changed
+    only by a reviewed commit.
+  - Operator tier: turn cap, local wall-time mode and scale, on the operator's machine
+    only.
+  - Invocation flags shape a run and never set policy.
+  - Rejected: moving `review.block_at` to the project tier (a step could be reviewed under
+    different rules between bounces); dropping the plan tier; wider operator overrides.
+- **Plan pinning — decided by the owner (2026-11-26): immutable once issues are stamped
+  (C-2, C-3).**
+  - The pin lives in the plan block and in an issue marker.
+  - `plan-to-issues` refuses a changed pin before any mutation, and the controller checks
+    it as a backstop.
+  - Issues without a marker replay under the legacy pin.
+  - Changing policy requires finishing or abandoning the plan and starting a new one.
+  - Rejected: changeable until the first journal event (more API reads and another state
+    to test); an explicit mid-plan transition (stays deferred); no pinning.
 - **Severity names (deviation from the analysis).** Use `high|medium|low|nit` instead of
   `critical|major|minor|nit`. The review contract and `sev:` labels already use these
   names, so this adds no third vocabulary. Recommended: accept.
