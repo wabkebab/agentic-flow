@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-26) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (changes journal replay and the controller; project baseline is Standard)
-> Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures. Draft 1, written against `0.21.0` (`97c6ebe`). Approval waits on the three [BLOCKING] decisions under *Open questions*; f-6 alone waits on the safety-floor decision.
+> Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures. Draft 1, written against `0.21.0` (`97c6ebe`). The safety floor is decided (option A with a split floor: merge, ship and hold-clear stay human-only; agent push to the plan branch is reserved for a later brief). Approval waits on the two [BLOCKING] decisions under *Open questions*.
 
 # Feature — Config surface, plan-pinned policy and budget modes
 
@@ -186,9 +186,19 @@ Resolution, per tier:
   ignored value is reported once. `budget.wall.scale` is 1.0. This makes CI's budget
   policy a function of tracked files only.
 
-The safety floor (human push, merge, ship and hold-clear; command-policy denies; secret
-scanning; integrity holds; replay rules for existing journals) has no keys. `explain`
-names the tier and says who may override it.
+**The safety floor has no keys.** Owner decision, 2026-11-26: it is split into fixed items
+and one future opt-in.
+
+| Item | Status |
+|---|---|
+| Merge to the default branch, `ship`, hold-clear | Human only. Fixed; no key, ever |
+| Command-policy denies | Additions only. No key removes a deny |
+| Secret scanning, integrity holds, replay rules for existing journals | Fixed; no key, ever |
+| Push to the default branch, force-push, workflow-file writes | Denied to agents. Fixed; no key, ever |
+| Push to the plan branch | Human only by default. Reserved for a future project-tier opt-in; **not built in this brief** (see *Out of scope*) |
+
+A config file that names a floor item fails as an unknown key. `explain` names the tier
+and says who may override it.
 
 ### C-2 Policy pin
 
@@ -358,6 +368,14 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
   comment.
 - `fallback-agent` (needs adapter capabilities, area B), `finish-step`, and the
   `budget-exceeded` reason (no cost budget exists yet).
+- **Agent push to the plan branch.** The split floor reserves it (C-1). It needs its own
+  brief because it touches three things:
+  - the command policy: an opt-in narrows the push deny to the plan branch, while pushes to
+    the default branch, force-pushes and workflow-file writes stay denied;
+  - `ship` and close-out, which assume one human push after the close-out commit;
+  - `doctor`, which must refuse the opt-in unless a server-side ruleset on the default
+    branch requires a PR and review and blocks direct pushes. A pushed same-repo branch
+    can also run workflows with repo secrets, which is why workflow writes stay denied.
 - An explicit mid-plan policy transition (deferred by the analysis).
 - Per-assurance bounce defaults.
 - Modes for the role-bundle word ceilings. They are deterministic, scaffold-facing, and
@@ -366,9 +384,14 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
   output stays plan-focused.
 
 ## Open questions
-- **[BLOCKING] Safety floor.** Config can tighten but never loosen the floor: no key for
-  any floor item, and no override for integrity holds. Recommended: accept. It gates f-6.
-  If it is not accepted, drop f-6 before approval. f-1 to f-5 do not depend on it.
+- **Safety floor — decided by the owner (2026-11-26): option A with a split floor.**
+  - Config can tighten but never loosen the floor. There is no key for any floor item and
+    no override for integrity holds (C-1's table).
+  - Merge to the default branch, `ship` and hold-clear stay human-only, permanently.
+  - Agent push to the plan branch is moved off the fixed floor. It is reserved for a
+    future, separately approved opt-in, and stays denied until that brief ships.
+  - The bounded pre-launch retry (C-6) does not loosen the floor: no station has started
+    and the same hold follows after N attempts. f-6 stays in the brief.
 - **[BLOCKING] Override tiers.** Accept C-1's tiers. Recommended: accept, with the
   analysis's five tiers reduced to the keys this brief ships. Invocation flags stay run
   shaping only.
