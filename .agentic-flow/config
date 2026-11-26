@@ -1,0 +1,41 @@
+# agentic-flow project config. Commented keys use their defaults.
+# Change one with: agentic-flow config set <key> <value>   then review and commit.
+# Tiers: plan = frozen into each plan at approval · project = this file only ·
+#        operator = may be overridden per machine (~/.config, AGENTIC_FLOW_*).
+# Not configurable: merge, ship and hold-clear stay human-only; see C-1's floor table.
+
+# review.max_bounces — bounces before a step escalates to a human
+# tier: plan · range: 1-5 · default: 2
+#review.max_bounces=2
+
+# review.block_at — severity at which a review finding blocks
+# tier: plan · range: judgment|high|medium|low · default: medium
+#review.block_at=medium
+
+# andon.station-infrastructure — response to a pre-launch station infrastructure failure
+# tier: plan · range: hold|retry:1|retry:2|retry:3 · default: hold
+#andon.station-infrastructure=hold
+
+# packet.word_limit — maximum words in a station packet
+# tier: project · range: 1500-6000 · default: 3000
+#packet.word_limit=3000
+
+# budget.fixtures.mode — response to exceeding the fixture copy budget
+# tier: project · range: stop|warn · default: stop
+#budget.fixtures.mode=stop
+
+# budget.wall.mode.ci — response to exceeding the wall-time budget in CI
+# tier: project · range: stop|warn · default: warn
+#budget.wall.mode.ci=warn
+
+# budget.wall.mode.local — response to exceeding the local wall-time budget
+# tier: operator · range: stop|warn · default: warn
+#budget.wall.mode.local=warn
+
+# budget.wall.scale — multiplier for local wall-time ceilings
+# tier: operator · range: 1.0-5.0 · default: 1.0
+#budget.wall.scale=1.0
+
+# controller.turn_cap — maximum turns in a controller run
+# tier: operator · range: 10-200 · default: 50
+#controller.turn_cap=50

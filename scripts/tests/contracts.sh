@@ -2392,3 +2392,136 @@ printf 'packet_words:801\n' > "$MEASURE_FIX/events/full.events"
 
 # The final negative case returns nonzero when it passes; sourcing must succeed.
 :
+
+config_contract_tests() (
+  local fixture="$TMP/config-contract" cli="$ROOT/scripts/agentic-flow" project operator key message rev bytes
+  mkdir -p "$fixture/project/config" "$fixture/home"
+  export HOME="$fixture/home" XDG_CONFIG_HOME="$fixture/operator"
+  unset CI AGENTIC_FLOW_PACKET_WORD_LIMIT AGENTIC_FLOW_CONTROLLER_TURN_CAP AGENTIC_FLOW_BUDGET_WALL_SCALE
+  unset AGENTIC_FLOW_REVIEW_MAX_BOUNCES AGENTIC_FLOW_REVIEW_BLOCK_AT AGENTIC_FLOW_ANDON_STATION_INFRASTRUCTURE
+  unset AGENTIC_FLOW_BUDGET_FIXTURES_MODE AGENTIC_FLOW_BUDGET_WALL_MODE_CI AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL
+  cd "$fixture/project"
+  git init -q
+  git remote add origin git@github.com:owner/config-fixture.git
+  ln "$ROOT/config/config-keys.tsv" config/config-keys.tsv
+  project="$PWD/.agentic-flow/config"
+  operator="$XDG_CONFIG_HOME/agentic-flow/config/owner/config-fixture.conf"
+
+  config_expect() {
+    local expected=$1 status=0
+    shift
+    "$cli" config "$@" > "$fixture/out" 2> "$fixture/err" || status=$?
+    [ "$status" -eq "$expected" ] || fail "config $* returned $status, expected $expected: $(cat "$fixture/err")"
+  }
+
+  mkdir -p "${project%/*}"
+  for message in unknown duplicate 'invalid value'; do
+    case "$message" in
+      unknown) printf 'unknown.key=2\n' ;;
+      duplicate) printf 'packet.word_limit=3000\npacket.word_limit=4000\n' ;;
+      *) printf 'review.max_bounces=6\n' ;;
+    esac > "$project"
+    config_expect 2 list
+    grep -E ":([12]): $message" "$fixture/err" >/dev/null || fail "config failed to locate $message"
+  done
+  perl -e 'print "#", "a" x 65536' > "$project"
+  config_expect 2 list
+  grep -Fq 'file exceeds 64 KiB' "$fixture/err" || fail 'config omitted oversize diagnostic'
+  perl -e 'print "#\n" x 257' > "$project"
+  config_expect 2 list
+  grep -Fq ':257: file exceeds 256 lines' "$fixture/err" || fail 'config omitted line-bound diagnostic'
+  printf 'packet.word_limit=3000\000\n' > "$project"
+  config_expect 2 list
+  rm "$project"
+
+  config_expect 0 init --print
+  mv "$fixture/out" "$fixture/template"
+  [ ! -e "$project" ] || fail 'config init --print wrote a file'
+  config_expect 0 init
+  cmp -s "$project" "$fixture/template" || fail 'config init differs from printed template'
+  cmp -s "$project" "$ROOT/.agentic-flow/config" || [ ! -f "$ROOT/scripts/export.sh" ] ||
+    fail 'scaffold config differs from generated template'
+  awk -F '\t' 'NR>1 {print "#" $1 "=" $4}' config/config-keys.tsv > "$fixture/expected"
+  awk '/^#[a-z][a-z_.-]*=/' "$project" > "$fixture/entries"
+  cmp -s "$fixture/expected" "$fixture/entries" || fail 'template entries do not match the registry'
+  config_expect 2 init
+  cmp -s "$project" "$fixture/template" || fail 'config init overwrote the project file'
+  env -i PATH="$PATH" "$cli" config list --json > "$fixture/out"
+  jq -e 'length==9 and all(.[];.source=="default")' "$fixture/out" >/dev/null ||
+    fail 'config did not load defaults without HOME'
+
+  # A linked observer keeps the old bytes after the new file is published.
+  ln "$project" "$fixture/old-inode"
+  config_expect 0 set controller.turn_cap 11
+  sed 's/^#controller.turn_cap=50$/controller.turn_cap=11/' "$fixture/template" > "$fixture/expected"
+  { cmp -s "$project" "$fixture/expected" && cmp -s "$fixture/old-inode" "$fixture/template"; } ||
+    fail 'config set did not atomically replace the template line'
+  [ -z "$(git diff --cached --name-only)" ] || fail 'config set staged the project file'
+  config_expect 0 explain controller.turn_cap
+  { grep -Fxq 'controller.turn_cap=11' "$fixture/out" &&
+    grep -Fxq "source: $project" "$fixture/out" &&
+    grep -Fxq 'tier: operator' "$fixture/out" &&
+    grep -Fxq 'range: 10-200' "$fixture/out"; } || fail 'config explain omitted the project source or metadata'
+
+  config_expect 0 set controller.turn_cap 12 --scope operator
+  config_expect 0 --json
+  jq -e --arg source "$operator" '."controller.turn_cap" | .value=="12" and .source==$source' "$fixture/out" >/dev/null ||
+    fail 'config --json omitted the operator layer'
+  config_expect 0 explain controller.turn_cap
+  { grep -Fxq 'controller.turn_cap=12' "$fixture/out" &&
+    grep -Fxq "source: $operator" "$fixture/out"; } || fail 'config explain omitted the operator source'
+  AGENTIC_FLOW_CONTROLLER_TURN_CAP=13 config_expect 0 explain controller.turn_cap
+  { grep -Fxq 'controller.turn_cap=13' "$fixture/out" &&
+    grep -Fxq 'source: AGENTIC_FLOW_CONTROLLER_TURN_CAP' "$fixture/out"; } || fail 'config explain omitted the environment source'
+  config_expect 0 explain review.max_bounces
+  { grep -Fxq 'source: default' "$fixture/out" &&
+    grep -Fxq 'tier: plan' "$fixture/out"; } || fail 'config explain omitted the default source or plan tier'
+  config_expect 3 set packet.word_limit 6000 --scope operator
+  printf 'packet.word_limit=6000\n' >> "$operator"
+  config_expect 2 list
+  grep -Fq "$operator:2: packet.word_limit has tier project" "$fixture/err" || fail 'wrong file tier did not name its source'
+  printf 'controller.turn_cap=12\n' > "$operator"
+  AGENTIC_FLOW_PACKET_WORD_LIMIT=6000 config_expect 2 list
+  grep -Fq 'AGENTIC_FLOW_PACKET_WORD_LIMIT' "$fixture/err" || fail 'wrong environment tier did not name its source'
+
+  config_expect 0 set budget.wall.scale 2.5
+  config_expect 0 set budget.wall.scale 3.5 --scope operator
+  CI=true AGENTIC_FLOW_BUDGET_WALL_SCALE=4.5 config_expect 0 list --json
+  jq -e '."budget.wall.scale"=={value:"1.0",source:"default",tier:"operator"} and
+    ."controller.turn_cap".value=="12"' "$fixture/out" >/dev/null || fail 'CI did not resolve its budget independently of machine overrides'
+  [ "$(grep -cF "ignores budget.wall.scale from $operator:2" "$fixture/err")" -eq 1 ] &&
+    [ "$(grep -cF 'ignores budget.wall.scale from AGENTIC_FLOW_BUDGET_WALL_SCALE' "$fixture/err")" -eq 1 ] ||
+    fail 'CI did not report each ignored override exactly once'
+  config_expect 0 unset budget.wall.scale
+  config_expect 0 unset controller.turn_cap
+  cmp -s "$project" "$fixture/template" || fail 'config set and unset did not round-trip the template'
+
+  printf '# Retain this comment\r\npacket.word_limit=1800\n#review.max_bounces=2' > "$project"
+  cat "$project" > "$fixture/original"
+  bytes=$(wc -c < "$project" | tr -d ' ')
+  config_expect 0 init --missing
+  head -c "$bytes" "$project" | cmp -s "$fixture/original" - || fail 'config init --missing rewrote existing bytes'
+  for key in packet.word_limit review.max_bounces; do
+    [ "$(grep -Ec "^(#)?$key=" "$project")" -eq 1 ] || fail 'config init --missing duplicated a listed key'
+  done
+  [ "$(grep -Ec '^#?[a-z][a-z_.-]*=' "$project")" -eq 9 ] || fail 'config init --missing omitted keys'
+
+  git add .agentic-flow/config
+  git -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit -qm 'Config fixture'
+  rev=$(git rev-parse HEAD)
+  config_expect 0 set review.max_bounces 4
+  config_expect 0 pin
+  grep -Fxq 'review.max_bounces=4 review.block_at=medium andon.station-infrastructure=hold' "$fixture/out" ||
+    fail 'current pin did not use project config in registry order'
+  . "$ROOT/scripts/lib/config.sh"
+  [ "$(config_pin "$PWD" "$rev")" = 'review.max_bounces=2 review.block_at=medium andon.station-infrastructure=hold' ] ||
+    fail 'revision pin used working-tree config'
+
+  for key in set unset; do
+    grep -Fq "prefix_rule(pattern=[\"scripts/agentic-flow\",\"config\",\"$key\"], decision=\"forbidden\")" \
+      "$ROOT/config/stations/command-policy.rules" || fail "native command policy did not deny config $key"
+    grep -Fq "scripts/agentic-flow config $key packet.word_limit" \
+      "$ROOT/config/stations/command-policy-probes.txt" || fail "no station probe for config $key"
+  done
+)
+config_contract_tests

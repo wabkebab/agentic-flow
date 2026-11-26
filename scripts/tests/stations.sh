@@ -136,6 +136,7 @@ stations_red_fixture() {
     esac
   done
   cp "$ROOT/config/workflow.tsv" "$VERIFY_FIX/config/workflow.tsv"
+  ln "$ROOT/config/config-keys.tsv" "$VERIFY_FIX/config/"
   cp "$STATION_FIX/project/.agentic-flow-review-policy" "$VERIFY_FIX/"
   git -C "$VERIFY_FIX" remote add origin https://github.com/owner/repo.git
   cat > "$VERIFY_FIX/docs/plan.md" <<'PLAN'
@@ -1729,6 +1730,55 @@ Please fix the fixture."
     "$TMP/packet.json" >/dev/null || fail 'reviewer packet lost its decision'
 ) || fail 'findings and decision packet scenario failed'
 
+# The packet compares the approval to the submitted commit, including earlier steps.
+packet_policy_tests() (
+  local original="$PACKET_REV" submitted
+  cd "$VERIFY_FIX" || return 1
+  mkdir -p .agentic-flow
+  printf 'packet.word_limit=6000\n' > .agentic-flow/config
+  printf 'temporary budget\n' > config/test-budgets.tsv
+  git add .agentic-flow/config config/test-budgets.tsv
+  git commit -qm 'Change project policy in the first step'
+  printf 'changed ceilings\n' > config/test-wall-ceilings.tsv
+  git add config/test-wall-ceilings.tsv
+  git rm -q config/test-budgets.tsv
+  git commit -qm 'Change ceilings and revert the temporary budget'
+  submitted=$(git rev-parse HEAD)
+  packet_issue
+  packet_comment exec "agentic-flow-transition: v=1; id=fixture/alpha/1/submit; event=submit; from=executing; role=executor; head=$submitted"
+  packet_run 0 --station reviewer --json
+  jq -e '.policy_files_changed==[".agentic-flow/config","config/test-wall-ceilings.tsv"]' "$TMP/packet.json" >/dev/null ||
+    fail 'packet did not list net policy changes across both commits'
+  packet_run 0 --station reviewer
+  { grep -Fxq 'Policy files changed:' "$TMP/packet.json" &&
+    grep -Fxq '.agentic-flow/config' "$TMP/packet.json"; } || fail 'reviewer plaintext lost policy changes'
+  packet_run 0 --station executor --json
+  jq -e 'has("policy_files_changed")|not' "$TMP/packet.json" >/dev/null || fail 'executor packet included reviewer policy section'
+
+  git checkout -q --detach "$original"
+  printf 'approval-side budget\n' > config/test-budgets.tsv
+  git add config/test-budgets.tsv
+  git commit -qm 'Approve on an alternate branch'
+  PACKET_REV=$(git rev-parse HEAD)
+  git checkout -q --detach "$submitted"
+  packet_issue
+  packet_comment exec "agentic-flow-transition: v=1; id=fixture/alpha/1/submit; event=submit; from=executing; role=executor; head=$submitted"
+  packet_run 0 --station reviewer --json
+  jq -e '.policy_files_changed==[".agentic-flow/config","config/test-wall-ceilings.tsv"]' "$TMP/packet.json" >/dev/null ||
+    fail 'packet did not use the merge-base for a non-ancestor approval'
+
+  jq --arg words "$(awk 'BEGIN {for(i=0;i<1750;i++) printf "word "}') " \
+    '.comments.nodes[-1].body += ("\n" + $words)' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+  mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+  printf 'packet.word_limit=1500\n' > .agentic-flow/config
+  packet_run 3 --station reviewer --json
+  { [ ! -s "$TMP/packet.json" ] && grep -Fq 'packet exceeds 1500 words' "$TMP/packet.err"; } ||
+    fail 'packet did not enforce the configured cap'
+  printf 'packet.word_limit=6000\n' > .agentic-flow/config
+  packet_run 0 --station reviewer --json
+)
+packet_policy_tests
+
 fi # scenario
 
 if should_run_scenario handoff closeout; then
@@ -1772,7 +1822,7 @@ for close_profile in standard strict; do
   for close_script in agentic-flow lifecycle-status.sh docs-index.sh; do
     ln "$ROOT/scripts/$close_script" "$STATION_FIX/project/scripts/$close_script"
   done
-  ln "$ROOT/config/workflow.tsv" "$STATION_FIX/project/config/workflow.tsv"
+  ln "$ROOT/config/workflow.tsv" "$ROOT/config/config-keys.tsv" "$STATION_FIX/project/config/"
   ln "$CLOSE_ORIGINAL_FIX/project/.agentic-flow-review-policy" "$STATION_FIX/project/.agentic-flow-review-policy"
   git -C "$STATION_FIX/project" init -q
   git -C "$STATION_FIX/project" checkout -qb main

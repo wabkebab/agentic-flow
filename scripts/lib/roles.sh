@@ -28,7 +28,7 @@ roles_validate() { # root file; absent override files are empty layers
   done < "$file"
 }
 
-roles_operator_path() { # root; never consult an arbitrary URL as a path
+roles_repository_slug() { # root; never consult an arbitrary URL as a path
   local url owner repo
   url=$(git -C "$1" remote get-url origin 2>/dev/null) || { roles_error 'origin remote is required for the operator layer'; return 2; }
   url=${url%.git}
@@ -38,7 +38,13 @@ roles_operator_path() { # root; never consult an arbitrary URL as a path
   printf '%s\n' "$owner/$repo" | LC_ALL=C grep -Eq '^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$' \
     || { roles_error 'invalid origin owner/repository'; return 2; }
   case "$repo" in .|..) roles_error 'invalid origin repository'; return 2 ;; esac
-  printf '%s/agentic-flow/roles/%s/%s.tsv\n' "${XDG_CONFIG_HOME:-$HOME/.config}" "$owner" "$repo"
+  printf '%s/%s\n' "$owner" "$repo"
+}
+
+roles_operator_path() { # root
+  local slug
+  slug=$(roles_repository_slug "$1") || return 2
+  printf '%s/agentic-flow/roles/%s.tsv\n' "${XDG_CONFIG_HOME:-$HOME/.config}" "$slug"
 }
 
 roles_load() { # root [include-operator=true]; JSON in ROLES_JSON

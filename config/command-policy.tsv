@@ -46,6 +46,14 @@ bash -lc	deny	approved wider deny for opaque shell payloads
 bash -c	deny	approved wider deny for opaque shell payloads
 scripts/agentic-flow ship	deny	the human ships
 scripts/agentic-flow approve	deny	the human approves
+scripts/agentic-flow config set	deny	the human sets config values
+scripts/agentic-flow config unset	deny	the human unsets config values
+./scripts/agentic-flow config set	deny	the human sets config values
+./scripts/agentic-flow config unset	deny	the human unsets config values
+agentic-flow config set	deny	the human sets config values
+agentic-flow config unset	deny	the human unsets config values
+rtk proxy scripts/agentic-flow config set	deny	the human sets config values
+rtk proxy scripts/agentic-flow config unset	deny	the human unsets config values
 scripts/agentic-flow hold clear	deny	the human clears holds
 scripts/agentic-flow token	deny	the controller owns workflow credentials
 rtk proxy scripts/agentic-flow ship	deny	the human ships

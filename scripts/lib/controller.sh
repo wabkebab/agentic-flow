@@ -4,6 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/handoff.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/packet.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/probe.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/start.sh"
 CONTROLLER_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -1016,7 +1017,7 @@ controller_cmd() (
     unset AGENTIC_DETACH_NONCE
   fi
   case "$entry" in /*) ;; *) entry="$PWD/$entry" ;; esac
-  local CT_DOC=$doc CT_ASSIGNMENTS='' CT_STATIONS=0 CT_ACTIVE_RUN='' CT_TURNS=0 CT_TURN_CAP=50 CT_CHILD='' CT_CHILD_KIND=station CT_UNATTENDED=false
+  local CT_DOC=$doc CT_ASSIGNMENTS='' CT_STATIONS=0 CT_ACTIVE_RUN='' CT_TURNS=0 CT_TURN_CAP CT_CHILD='' CT_CHILD_KIND=station CT_UNATTENDED=false
   [ "$once" = true ] || CT_UNATTENDED=true
   local CT_ROOT CT_COMMON CT_TMP CT_PLAN CT_BRANCH CT_SPEC CT_REPORT CT_TRACKER CT_RECORDS CT_CHAINS CT_CONTEXT='{}' CT_PENDING='[]'
   local CT_LOCK='' CT_LOCK_OWNED=false CT_RECOVER_CLAIM=false CT_START='' CT_PREVIOUS_HOST='' CT_STARTED=false CT_FOREIGN_ALLOWED='[]' CT_FOREIGN_SEEN=false
@@ -1025,6 +1026,8 @@ controller_cmd() (
   [[ "$CT_LEASE" =~ ^[1-9][0-9]{0,6}$ ]] || return 2
   CT_ROOT=$(git rev-parse --show-toplevel) || return 3
   cd "$CT_ROOT" || return 3
+  config_load "$CT_ROOT" || return $?
+  CT_TURN_CAP=$(config_get controller.turn_cap) || return 2
   CT_COMMON=$(git rev-parse --git-common-dir) && CT_COMMON=$(cd "$CT_COMMON" && pwd -P) || return 3
   CT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/agentic-controller.XXXXXX") || return 5
   trap 'controller_exit "$?"' EXIT

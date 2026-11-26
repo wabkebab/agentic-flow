@@ -10,6 +10,7 @@ It wraps the low-level exporter, fills the project token, preserves existing fil
 - `make`
 - `git`
 - `jq`
+- `perl`
 - `gh`
 - `git-claude`, unless the project opts out of Claude commits
 - `git-codex`, unless the project is Claude-only or otherwise opts out of Codex execution
@@ -103,6 +104,14 @@ make check
 `make test-one F=<group>` runs one focused harness group when the scaffold itself is under
 change: `export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, or `upgrade`.
 `make test` still runs the complete suite plus `shellcheck`.
+
+Adoption creates the commented project config at `.agentic-flow/config`. In an existing
+checkout, run `scripts/agentic-flow config init` to create it or `config init --missing`
+to append newly registered keys. Use `config list` or `config explain <key>` to see
+effective values and their sources. Use `config set <key> <value>` and `config unset <key>`
+to edit the project file, then review and commit the change. Operator-tier keys also
+accept `--scope operator` or an `AGENTIC_FLOW_*` environment override. The operator
+file lives under `${XDG_CONFIG_HOME:-$HOME/.config}/agentic-flow/config/<owner>/<repo>.conf`.
 
 [`config/test-wall-ceilings.tsv`](config/test-wall-ceilings.tsv) sets the
 allowed seconds for each self-test group and each controller and stations tag.

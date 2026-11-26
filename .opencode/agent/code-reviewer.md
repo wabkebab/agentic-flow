@@ -97,6 +97,22 @@ permission:
     "scripts/agentic-flow ship *": deny
     "scripts/agentic-flow approve": deny
     "scripts/agentic-flow approve *": deny
+    "scripts/agentic-flow config set": deny
+    "scripts/agentic-flow config set *": deny
+    "scripts/agentic-flow config unset": deny
+    "scripts/agentic-flow config unset *": deny
+    "./scripts/agentic-flow config set": deny
+    "./scripts/agentic-flow config set *": deny
+    "./scripts/agentic-flow config unset": deny
+    "./scripts/agentic-flow config unset *": deny
+    "agentic-flow config set": deny
+    "agentic-flow config set *": deny
+    "agentic-flow config unset": deny
+    "agentic-flow config unset *": deny
+    "rtk proxy scripts/agentic-flow config set": deny
+    "rtk proxy scripts/agentic-flow config set *": deny
+    "rtk proxy scripts/agentic-flow config unset": deny
+    "rtk proxy scripts/agentic-flow config unset *": deny
     "scripts/agentic-flow hold clear": deny
     "scripts/agentic-flow hold clear *": deny
     "scripts/agentic-flow token": deny

@@ -17,6 +17,10 @@ usage:
   agentic-flow verify-step <sha> [--doc <doc> --step <id>] [--red-base <sha>] [--force] [--json]
   agentic-flow brief <doc> <step-id> [--at <sha>] [--analysis]
   agentic-flow roles [--json] | set <station> <cli> [options] | unset|manual <station> [--scope operator|project]
+  agentic-flow config [list] [--json] | get <key> | explain <key> | pin
+  agentic-flow config set <key> <value> [--scope project|operator]
+  agentic-flow config unset <key> [--scope project|operator]
+  agentic-flow config init [--missing] [--print]
   agentic-flow run <doc> [--once] [--reconcile-only] [--take-over] [--detach] [--wait-human [<max-s>]] [--json]
   agentic-flow doctor --stations [--station executor|reviewer] [--interactive] [--json]
   agentic-flow metrics [--plan <id>] [--since <UTC-date>] [--json]
@@ -635,6 +639,12 @@ subcommand="${1:-}"
       # shellcheck disable=SC1091
       . "$(dirname "$0")/lib/roles.sh"
       roles_cmd "$@" ;;
+    config)
+      shift
+      # shellcheck disable=SC1091
+      . "$(dirname "$0")/lib/config.sh"
+      config_root=$(find_root) || config_root=$(git rev-parse --show-toplevel) || exit 2
+      config_cmd "$config_root" "$@" ;;
     run)
       shift
       # shellcheck disable=SC1091

@@ -791,3 +791,63 @@ station_expect	'.seq==6 and .state=="executing" and .bounces==3'
 station_expect	'.seq==8 and .state=="escalated" and .bounces==4'
 station_run	3 1 resume --as approver --body-file "$TMP/c3-question"
 fail	'status text omitted the pinned bounce limit'
+assert_file	"$INIT_TARGET/.agentic-flow/config"
+config_expect	0 --json
+config_expect	0 explain controller.turn_cap
+config_expect	0 explain review.max_bounces
+config_expect	0 init
+config_expect	0 init --missing
+config_expect	0 init --print
+config_expect	0 list --json
+config_expect	0 pin
+config_expect	0 set budget.wall.scale 2.5
+config_expect	0 set budget.wall.scale 3.5 --scope operator
+config_expect	0 set controller.turn_cap 11
+config_expect	0 set controller.turn_cap 12 --scope operator
+config_expect	0 set review.max_bounces 4
+config_expect	0 unset budget.wall.scale
+config_expect	0 unset controller.turn_cap
+config_expect	2 init
+config_expect	2 list
+config_expect	3 set packet.word_limit 6000 --scope operator
+fail	"config $* returned $status, expected $expected: $(cat "$fixture/err")"
+fail	"config failed to locate $message"
+fail	"native command policy did not deny config $key"
+fail	"no station probe for config $key"
+fail	'CI did not report each ignored override exactly once'
+fail	'CI did not resolve its budget independently of machine overrides'
+fail	'adoption did not generate the project config template'
+fail	'config --json omitted the operator layer'
+fail	'config did not load defaults without HOME'
+fail	'config explain omitted the default source or plan tier'
+fail	'config explain omitted the environment source'
+fail	'config explain omitted the operator source'
+fail	'config explain omitted the project source or metadata'
+fail	'config init --missing duplicated a listed key'
+fail	'config init --missing omitted keys'
+fail	'config init --missing rewrote existing bytes'
+fail	'config init --print wrote a file'
+fail	'config init differs from printed template'
+fail	'config init overwrote the project file'
+fail	'config omitted line-bound diagnostic'
+fail	'config omitted oversize diagnostic'
+fail	'config set and unset did not round-trip the template'
+fail	'config set did not atomically replace the template line'
+fail	'config set staged the project file'
+fail	'controller did not stop after 12 configured turns'
+fail	'current pin did not use project config in registry order'
+fail	'doctor did not report the missing project config as information'
+fail	'executor packet included reviewer policy section'
+fail	'invalid config reached controller lock acquisition'
+fail	'packet did not enforce the configured cap'
+fail	'packet did not list net policy changes across both commits'
+fail	'packet did not use the merge-base for a non-ancestor approval'
+fail	'reviewer plaintext lost policy changes'
+fail	'revision pin used working-tree config'
+fail	'scaffold config differs from generated template'
+fail	'template entries do not match the registry'
+fail	'wrong environment tier did not name its source'
+fail	'wrong file tier did not name its source'
+packet_run	0 --station reviewer
+packet_run	3 --station reviewer --json
+status_run	10 --json

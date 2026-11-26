@@ -3,9 +3,12 @@
 `agentic-flow packet <issue> --station executor|reviewer [--json]` is the controller's
 input builder. Run it outside the isolated station, then pass only its output to the
 station. Rejected admission prints no packet. Comments by outsiders are counted,
-not quoted; policy authors remain trusted. Packets are limited to 3,000 words.
+not quoted; policy authors remain trusted. The project key `packet.word_limit`
+sets the packet limit from 1,500 to 6,000 words and defaults to 3,000.
 Reviewer packets include the latest accepted submit and a SHA/tree/implementation-
 matched verification record, preserving its provenance, or a request to regenerate it.
+The policy-files section lists net changes from the approved revision (or the
+merge-base with the submitted head) to the submitted head.
 
 `agentic-flow roles [--json]` shows each effective assignment and its layer.
 Defaults in `config/roles.tsv` are overridden by a whole project row in

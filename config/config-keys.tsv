@@ -1,0 +1,10 @@
+key	tier	type	default	summary
+review.max_bounces	plan	int:1-5	2	bounces before a step escalates to a human
+review.block_at	plan	judgment|high|medium|low	medium	severity at which a review finding blocks
+andon.station-infrastructure	plan	hold|retry:1|retry:2|retry:3	hold	response to a pre-launch station infrastructure failure
+packet.word_limit	project	int:1500-6000	3000	maximum words in a station packet
+budget.fixtures.mode	project	stop|warn	stop	response to exceeding the fixture copy budget
+budget.wall.mode.ci	project	stop|warn	warn	response to exceeding the wall-time budget in CI
+budget.wall.mode.local	operator	stop|warn	warn	response to exceeding the local wall-time budget
+budget.wall.scale	operator	decimal:1.0-5.0	1.0	multiplier for local wall-time ceilings
+controller.turn_cap	operator	int:10-200	50	maximum turns in a controller run

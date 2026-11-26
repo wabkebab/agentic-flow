@@ -478,6 +478,86 @@
     },
     {
       "action": "shell",
+      "resource": "scripts/agentic-flow config set",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow config set *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow config unset",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow config unset *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "./scripts/agentic-flow config set",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "./scripts/agentic-flow config set *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "./scripts/agentic-flow config unset",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "./scripts/agentic-flow config unset *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "agentic-flow config set",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "agentic-flow config set *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "agentic-flow config unset",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "agentic-flow config unset *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow config set",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow config set *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow config unset",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow config unset *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
       "resource": "scripts/agentic-flow hold clear",
       "effect": "deny"
     },

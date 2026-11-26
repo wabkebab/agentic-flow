@@ -1059,16 +1059,17 @@ test_timing_begin block launch
   set -e
   fixture="$(cd "$TMP" && pwd -P)/plan-launch"
   project="$fixture/project" origin="$fixture/origin"
-  mkdir -p "$project/docs/templates" "$project/docs/inprogress" "$project/scripts" "$fixture/bin"
+  mkdir -p "$project/docs/templates" "$project/docs/inprogress" "$project/scripts" "$project/config" "$fixture/bin"
   cp "$ROOT/docs/templates/feature-analysis.md" "$ROOT/docs/templates/security-review.md" "$project/docs/templates/"
   cp "$ROOT/docs/README.md" "$project/docs/README.md"
   cp "$ROOT/scripts/docs-index.sh" "$project/scripts/"
+  ln "$ROOT/config/config-keys.tsv" "$project/config/"
   git -C "$project" init -qb main
   git -C "$project" config user.name 'Plan fixture'
   git -C "$project" config user.email 'fixture@example.invalid'
   git -C "$project" config commit.gpgsign false
   touch "$project/docs/inprogress/.gitkeep"
-  git -C "$project" add docs scripts
+  git -C "$project" add docs scripts config/config-keys.tsv
   git -C "$project" commit -qm 'Seed plan templates'
   initial=$(git -C "$project" rev-parse HEAD)
   git clone -q --bare --shared "$project" "$origin"
@@ -2813,7 +2814,7 @@ identity_load() {
 identity_token() { if [ "${3:-}" = --check ] && [ -f "$C4_STATE/no-token" ]; then return 5; fi; printf 'fixture-%s\n' "$2"; }
 IDENTITIES
   ln "$ROOT/scripts/agentic-flow" "$project/scripts/agentic-flow"
-  ln "$ROOT/config/workflow.tsv" "$project/config/workflow.tsv"
+  ln "$ROOT/config/workflow.tsv" "$ROOT/config/config-keys.tsv" "$project/config/"
   printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=plan owner=owner > "$project/.agentic-flow-review-policy"
   printf 'ignored\n' > "$project/.gitignore"
   printf 'a\n' > "$project/a"; printf 'b\n' > "$project/b"
@@ -3971,7 +3972,7 @@ controller_check() {
       esac ;;
   esac
   case "$WAIT_FIXTURE" in
-    dispatch|missing|cap) [ -f "$wait_dir/done" ] || state=executing ;;
+    dispatch|missing|cap|configured-cap) [ -f "$wait_dir/done" ] || state=executing ;;
     escalation)
       if [ -f "$wait_dir/resumed" ]; then
         seq=5; [ -f "$wait_dir/done" ] || state=executing
@@ -4012,7 +4013,7 @@ controller_dispatch() {
         return 10
       fi ;;
   esac
-  : > "$wait_dir/done"
+  [ "$WAIT_FIXTURE" = configured-cap ] || : > "$wait_dir/done"
 }
 wait_effect() {
   case "$CT_TMP" in
@@ -4047,7 +4048,7 @@ WAIT
     case "$1" in
       integrity) printf '[{"id":"heartbeat/hold/1","issue":1,"reason":"ledger-invalid"}]\n' > "$waiting/holds" ;;
       reconcile) printf '[{"id":"heartbeat/hold/1","issue":1,"reason":"plan-effect-pending"},{"id":"heartbeat/hold/2","issue":1,"reason":"findings-incomplete"}]\n' > "$waiting/holds" ;;
-      dispatch|missing|escalation|cap|ledger) ;;
+      dispatch|missing|escalation|cap|configured-cap|ledger) ;;
       *) printf '[{"id":"heartbeat/hold/1","issue":1,"reason":"findings-incomplete"}]\n' > "$waiting/holds" ;;
     esac
   }
@@ -4102,6 +4103,15 @@ WAIT
     status_run 10 --wait-human 60 --json
     [ ! -s "$waiting/sleeps" ] || fail "controller slept on a non-resumable stop ($mode)"
   done
+
+  wait_reset configured-cap
+  local config_home="$fixture/config-home"
+  mkdir -p "$config_home/agentic-flow/config/owner"
+  printf 'controller.turn_cap=12\n' > "$config_home/agentic-flow/config/owner/repo.conf"
+  XDG_CONFIG_HOME="$config_home" status_run 10 --json
+  wait_assert 'last | .turn==12 and .turn_cap==12 and .exit==10'
+  [ "$(wc -l < "$waiting/dispatch")" -eq 12 ] &&
+    grep -Fxq turn-cap "$waiting/raised" || fail 'controller did not stop after 12 configured turns'
 
   wait_reset failed
   status_run 5 --wait-human 60 --json
@@ -4180,7 +4190,7 @@ status_tests() (
   lock="$repo/.git/agentic-flow/locks/controller-heartbeat"
   heartbeat="$state/heartbeat.controller.json"
   mkdir -p "$repo/docs/inprogress" "$repo/scripts" "$repo/config" "$fixture/bin"
-  ln "$ROOT/config/workflow.tsv" "$repo/config/workflow.tsv"
+  ln "$ROOT/config/workflow.tsv" "$ROOT/config/config-keys.tsv" "$repo/config/"
   printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=plan owner=owner > "$repo/.agentic-flow-review-policy"
   cat > "$repo/$doc" <<'PLAN'
 # Feature — Heartbeat
@@ -4209,7 +4219,7 @@ PLAN
   git -C "$repo" config user.email fixture@example.invalid
   git -C "$repo" config commit.gpgsign false
   git -C "$repo" remote add origin https://github.com/owner/repo.git
-  git -C "$repo" add "$doc" scripts/agentic-flow config/workflow.tsv .agentic-flow-review-policy
+  git -C "$repo" add "$doc" scripts/agentic-flow config/workflow.tsv config/config-keys.tsv .agentic-flow-review-policy
   git -C "$repo" commit -qm 'Heartbeat plan'
   base=$(git -C "$repo" rev-parse HEAD)
   sed "s/Approval:\*\* pending/Approval:** status=approved; by=owner; at=2026-01-01; rev=$base/" "$repo/$doc" > "$fixture/approved"
@@ -4330,6 +4340,12 @@ RUNNER
     bash "$fixture/run" run "$doc" "$@" > "$fixture/out" 2> "$fixture/err" || rc=$?
     [ "$rc" = "$expected" ] || fail "heartbeat controller returned $rc, expected $expected (${WAIT_FIXTURE:-$*}): $(cat "$fixture/err" "$fixture/out")"
   }
+  mkdir -p "$repo/.agentic-flow"
+  printf 'invalid.key=true\n' > "$repo/.agentic-flow/config"
+  status_run 2 --reconcile-only
+  grep -Fq '.agentic-flow/config:1: unknown key' "$fixture/err" &&
+    [ ! -e "$lock" ] && [ ! -e "$heartbeat" ] || fail 'invalid config reached controller lock acquisition'
+  rm "$repo/.agentic-flow/config"
   status_run 0 --once --json
   jq -se --slurpfile intent "$fixture/intent" '
     map(.phase)==["reconciling","reconciling","station","reconciling","reconciling","stopped"] and

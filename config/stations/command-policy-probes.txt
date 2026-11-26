@@ -63,6 +63,8 @@ scripts/agentic-flow ship docs/inprogress/plan.md
 rtk proxy scripts/agentic-flow ship docs/inprogress/plan.md --wait-review
 bash -lc "scripts/agentic-flow ship docs/inprogress/plan.md"
 scripts/agentic-flow approve docs/inprogress/plan.md --by owner
+scripts/agentic-flow config set packet.word_limit 6000
+scripts/agentic-flow config unset packet.word_limit
 scripts/agentic-flow hold clear docs/inprogress/plan.md fixture/hold/1
 scripts/agentic-flow token reviewer
 rtk proxy scripts/agentic-flow token executor
