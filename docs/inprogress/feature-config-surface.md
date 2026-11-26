@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-26) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (changes journal replay and the controller; project baseline is Standard)
-> Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures. Draft 1, written against `0.21.0` (`97c6ebe`). All three gating decisions are settled (2026-11-26): the split safety floor, C-1's override tiers, and pins immutable once issues are stamped. Every question under *Open questions* is now decided, including CI wall time defaulting to `warn` here and for adopters. Next: owner review and approval.
+> Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures. Draft 2, written against `0.21.0` (`97c6ebe`). Draft 2 (2026-11-26) answers the first review: `v=2` transition markers so older `handoff` writers cannot advance a non-default bounce limit; a verification key derived from the trees actually tested; pin checks that skip unstamped adoptions; a draft, apply and clarification rule for the pin; pin parsing moved into f-1; the policy-files packet section assigned to f-2; and per-attempt retry eligibility with a heartbeat `retry` field. All three gating decisions are settled (2026-11-26): the split safety floor, C-1's override tiers, and pins immutable once issues are stamped. Every question under *Open questions* is now decided, including CI wall time defaulting to `warn` here and for adopters. Next: owner review and approval.
 
 # Feature — Config surface, plan-pinned policy and budget modes
 
@@ -163,7 +163,12 @@ Legacy pin: review.max_bounces=2 review.block_at=judgment andon.station-infrastr
 
 workflow.tsv bounce requirements: findings,bounces<limit · findings,bounces=limit
 workflow_successor <topology> <state> <event> <bounces> [<return>] [<limit>=2]
-verify_record_key: + budget_policy_sha256
+Transition marker: agentic-flow-transition: v=1 (limit 2) | v=2 (limit ≠ 2); replay admits
+  only the issue's own version
+agentic-flow config pin [--rev <rev>]          # canonical pin, for a draft's policy: line
+verify_record_key: + budget_policy {context, green, red[]}, derived from <sha> / <red_base>
+Reviewer packet: + "Policy files changed" (net diff, approved revision → submitted head)
+Heartbeat: + retry:null|{issue, station, attempt, of, until}   (phase values unchanged)
 ```
 
 ### C-1 Registry and tiers
@@ -235,27 +240,51 @@ effective value:
 
 - **Canonical form.** Three `key=value` pairs in the registry's order, all required, values
   validated by the registry. The plan block line and the issue marker carry the same text.
-- **Capture.** `start` fills `policy:` from `config_pin` at the base. `brief_parse`
-  validates it and adds `"policy"` to the spec JSON only when the line is present.
-  Existing docs and their `spec:` hashes are unchanged.
-- **Check at apply.** `plan-to-issues --doc`, before authentication or any mutation:
-  - a plan block pin must equal `config_pin` at `APPROVED_REV`. Otherwise it dies:
-    "plan pin differs from the project config at the approved revision".
-  - a plan block with no pin, while the config at `APPROVED_REV` differs from the legacy
-    pin, warns and proceeds with the legacy pin.
+- **Parsing.** `brief_parse` accepts `policy:`, validates it against the version-1 form,
+  and adds `"policy"` to the spec JSON only when the line is present. Existing docs and
+  their `spec:` hashes are unchanged. This read-only parsing ships in f-1, so `status` and
+  replay tests can read a pin before f-3 writes one.
+- **The pin is a draft field until the first issue is stamped.**
+  - `start` fills `policy:` from `config_pin` at the base.
+  - `agentic-flow config pin` prints the canonical pin from the current project config.
+    After merging `main` into a draft, the planner reruns it and updates the line before
+    approval.
+- **Check at apply.** `plan-to-issues --doc` classifies each indexed issue first:
+  - **stamped:** its managed body carries an identity stamp;
+  - **unstamped adoption:** a validated `--adopt` candidate with an empty managed body
+    (`plan-to-issues.sh:475`). It has no pin yet and is never compared.
+
+  Then, before authentication or any mutation, which pin the doc must match depends on
+  whether anything is stamped:
+  - **First apply (no stamped issue).** The doc's pin must equal `config_pin` at
+    `APPROVED_REV`, or it dies: "plan pin differs from the project config at the approved
+    revision; refresh `policy:` with `agentic-flow config pin` and re-approve". A pinless
+    doc dies too: "new plans need a `policy:` line". There is no silent legacy fallback for
+    a new plan.
+  - **Later applies (any stamped issue).** The doc's pin must equal the stamped pin. The
+    project config is **not** consulted, so a config change committed during a stamped plan
+    never breaks a reapply.
 - **Immutability.** It runs next to the topology check (`plan-to-issues.sh:469-489`) and
-  reads the marker of every indexed issue:
-  - every indexed issue must carry the same pin (a missing marker counts as the legacy
-    pin), and that pin must equal the doc's;
+  covers **stamped issues only**:
+  - every stamped issue must carry the same pin, and that pin must equal the doc's. A
+    stamped issue with no marker carries the legacy pin;
   - otherwise it dies before any label, create, edit or close:
     "changing plan <id> policy from <old> to <new> requires a new plan".
-  - **Partial applies.** The pin of any issue that already exists binds the issues still to
-    be created.
-  - **Legacy issues.** The marker is added to legacy issues only when the doc's pin equals
-    the legacy pin. In every other case a pin on an existing issue is preserved
-    byte-for-byte, like `journal=`.
-- **Reapproval.** `approve` adds `$old.policy==$new.policy` to its unchanged-ids check.
-  A clarification may edit prose, never the pin.
+  - **Partial applies and adoptions.** The stamped pin binds every issue still to be
+    created and every unstamped adoption, which gets it on its first write. With no stamped
+    issue, the doc's checked pin is written.
+  - **Legacy issues.** A pinless doc applies only to a plan whose issues are already
+    stamped (an in-flight legacy plan), and replays under the legacy pin. The marker is
+    added to legacy issues only when the doc's pin equals the legacy pin. In every other
+    case a pin on an existing issue is preserved byte-for-byte, like `journal=`.
+- **Clarification.** `approve` stays offline and compares only the two doc revisions:
+  - `$old.policy==$new.policy` passes;
+  - adding a pin to a pinless approved doc passes, and `plan-to-issues` then applies the
+    legacy-equality rule above;
+  - any other pin edit is refused: "changed plan-pinned policy; re-plan required".
+
+  A prose-only clarification therefore never changes the frozen pin, and its reapply
+  compares against the stamped pin, not the current config.
 - **Controller backstop.** `handoff_drift`'s per-issue report gains `policy`.
   `controller_check` requires every stamped issue's pin to equal `CT_SPEC.policy`, or the
   legacy pin when the spec has none, and exits 3 on a mismatch like any other stamp drift.
@@ -275,6 +304,31 @@ effective value:
 - `controller_decide` escalates a bounce when `bounces >= max_bounces`.
 - `status` takes the limit from the plan block's pin (legacy when absent) instead of
   parsing `workflow.tsv`.
+- **Writer compatibility.** An older harness must not be able to advance a journal whose
+  bounce limit it would compute differently.
+  - **Older doc readers fail closed.** Older `brief_parse` rejects the unknown `policy:`
+    field (`brief.sh:64`). So older `run`, `packet`, `verify-step`, `approve`, `status`,
+    `ship`, `close-out`, `lifecycle-status`, `plan-to-issues` and the session hook all
+    refuse a pinned plan.
+  - **Older `handoff` is the gap.** Its `submit`, `bounce`, `approve`, `ask`, `resume` and
+    `hold` events read only the issue. With `max_bounces=3`, an older writer treats the
+    third bounce as an escalation and posts a `resume` from `escalated`. The new reader
+    derives `executing`, rejects that `resume`, and then rejects every later event, which
+    no longer matches the expected seq.
+  - **Guard: transition marker v2.** An issue whose pin has `review.max_bounces` ≠ 2 is a
+    v2 journal.
+    - New writers put `agentic-flow-transition: v=2; …` on it (`handoff.sh:88, 131,
+      146`).
+    - New replay admits only `v=2` markers on a v2 journal and only `v=1` elsewhere
+      (`journal.jq:34` takes the expected version as an argument). A wrong-version marker
+      is counted in `skipped` and changes nothing.
+    - Older readers match only `v=1`, so they see a v2 journal at its initial state. An
+      older writer can post at most an ignored comment and stale labels, which the
+      controller's label repair corrects. It cannot advance or fork the journal.
+  - **Issues with a bounce limit of 2 stay v1.** Older and newer writers compute the same
+    successors, and `review.block_at` is a controller gate, not replay.
+  - `plan-to-issues` still prints the upgrade reminder for v2 plans, because older clients
+    see them frozen.
 - **Old `workflow.tsv`.** The validator still accepts the literal `bounces<2` /
   `bounces=2` pair as a deprecated fixed-limit form, so a locally modified file kept
   through an upgrade still loads. With that form, an issue whose pin is not
@@ -327,20 +381,47 @@ effective value:
   `$GITHUB_STEP_SUMMARY` when that is set.
 - `doctor` lists every budget whose effective mode is `warn`, with its source, and the
   newest 10 overrun rows.
-- **Reuse.** `verify_record_key` adds `budget_policy_sha256`: the SHA-256 of
-  `config/test-wall-ceilings.tsv`, `config/test-budgets.tsv` and the effective
-  `{context, wall_mode, wall_scale, fixtures_mode}`. A record made under another policy is
-  stale, so a warn-green record never satisfies a stop gate. Every existing record goes
-  stale once.
+- **Reuse: the key describes the policy the tests actually ran under.**
+  - **The problem.** `verify-step` computes its key in the caller's checkout
+    (`verify-step.sh:144`). It runs the green checks in a detached checkout at the
+    submitted SHA (`:165`), and the red-first checks at `red_base` with test paths restored
+    from the SHA (`:184-188`). A digest taken from the caller's files could label a
+    warn-green run as stop-green.
+  - **One derivation.** `verify_record_key` adds
+    `budget_policy:{context, green:<sha256>, red:[<sha256>…]}` and derives it only from its
+    own arguments:
+    - `green` hashes the policy files as they are **in the `<sha>` tree**;
+    - each `red[i]` hashes them as they are in the `<red_base>` tree, with any policy path
+      listed in that red-first entry's `paths` taken from `<sha>`, mirroring the overlay;
+    - each digest also covers the effective `{wall_mode, wall_scale, fixtures_mode}`. Those
+      are resolved from that tree's `.agentic-flow/config` plus this machine's operator
+      file and env, under the C-1 rules for `context`.
+    - The policy files are `.agentic-flow/config`, `config/config-keys.tsv`,
+      `config/test-budgets.tsv` and `config/test-wall-ceilings.tsv`, read with
+      `git show <rev>:<path>`. A missing path counts as defaults.
+    - The caller's checkout is never read.
+  - `verify-step`, `controller_verify` and `packet` all reach freshness through
+    `verify_record_key` and `verify_record_fresh`, so all three share this derivation.
+  - A record made under another policy is stale, so a warn-green record never satisfies a
+    stop gate. Every existing record goes stale once.
   - CI needs no key change. Its policy comes only from tracked files, which the App input
-    key already hashes. A test pins that none of the three policy files matches the
+    key already hashes. A test pins that none of the four policy files matches the
     bookkeeping filter.
 
 ### C-6 Retry for pre-launch infrastructure failures (gated on the safety floor)
 
 - **Scope.** It applies only at the three sites that fail before the intent record
-  (`controller.sh:796, 801, 880`), so no station has started and no ledger chain exists.
-  The post-intent site (`:940`) and every other reason stay `hold`.
+  (`controller.sh:796, 801, 880`). The post-intent site (`:940`) and every other reason
+  stay `hold`.
+- **Eligibility is per launch attempt, not per chain.** The three sites also run during a
+  replacement dispatch (`controller.sh:826-834`), where the chain already has a
+  predecessor intent. That predecessor's run has ended with its own record, so it does not
+  block a retry.
+  - The rule is that **this attempt** has written no intent.
+  - The helper captures the ledger's intent count for `{issue, station}` when dispatch
+    begins, and refuses to retry if it has changed.
+  - A retried replacement writes exactly one intent, with the same `replaces` and the
+    next `nth`.
 - **Behaviour.** Under `andon.station-infrastructure=retry:N`, the controller retries
   instead of holding while all of these hold:
   - this invocation's consecutive pre-launch failures for `{issue, station}` are below N;
@@ -348,7 +429,12 @@ effective value:
 
   A retry logs `station-infrastructure retry k/N: <cause>` to stderr, sleeps
   `min(30·2^(k−1), 300)` seconds (`AGENTIC_CONTROLLER_RETRY_S` overrides this in tests),
-  updates the heartbeat, and ends the turn. The turn counts against the turn cap.
+  and ends the turn. The turn counts against the turn cap.
+- **Heartbeat.** There is no new `phase` value: the status reader allowlists phases
+  (`status.jq:33-43`). The phase stays `reconciling`, and an optional
+  `retry:null|{issue, station, attempt, of, until}` field is added. The f-6 status reader
+  validates the field (a missing one reads as `null`) and renders `retry k/N until
+  <time>`.
 - **After N, or on a dirty worktree,** it raises today's hold, and the note adds
   "after k automatic retries".
 - A station launch that returns metadata resets the count. A new invocation starts at
@@ -362,17 +448,19 @@ committed and reviewed, but an executor could commit a looser `.agentic-flow/con
 higher budget in a step. Plan-pinned keys cannot move after approval: the pin is read from
 the human-approved plan block and checked against the config **at the approved revision**,
 then frozen on the issues. Project-tier keys, the budgets in particular, can move in a step
-commit. So the reviewer packet lists any change to `.agentic-flow/config`,
+commit. So the reviewer packet (built in f-2) lists any change to `.agentic-flow/config`,
 `config/config-keys.tsv`, `config/test-budgets.tsv` or `config/test-wall-ceilings.tsv`
-under "Policy files changed", and CI, the authority, reads only tracked files. Operator
+under "Policy files changed". The range is the net diff from the approved revision, the
+issue stamp's `approved=` (or its merge-base with the head when it is not an ancestor), to
+the submitted head. Changes spread across several step commits are reported together; a
+change reverted within the range is not. CI, the authority, reads only tracked files. Operator
 files and env sit on the operator's machine. They can only relax local wall time and the
 turn cap, which bounds work and is no safety control. Stations run under `env -i`, so env
 overrides never reach them. Agents are denied `config set|unset` by the command policy.
-**Mixed versions:** an older harness ignores the policy marker and replays with 2 bounces.
-Transition markers carry the event and source state, not the destination, so the journal
-itself stays valid and only an older reader's derived view differs. `plan-to-issues`
-prints a reminder that every operator must run this version or later before a non-legacy
-`review.max_bounces` is applied. Config values never hold secrets. The registry has no
+**Mixed versions:** older doc readers refuse a pinned plan. An older `handoff` cannot
+advance an issue with a non-default bounce limit, because that journal uses `v=2`
+transition markers which older readers skip and newer readers require (C-3 *Writer
+compatibility*). Config values never hold secrets. The registry has no
 secret-shaped key, and `config set` refuses a value matching the staged-secret patterns.
 
 ## Failure behavior
@@ -465,7 +553,8 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
   - A project that wants enforcement sets `budget.wall.mode.ci=stop` in a reviewed commit.
 - **This repository's own CI — decided by the owner (2026-11-26): `warn`, the default.**
   This repo's `.agentic-flow/config` (the f-2 template) leaves `budget.wall.mode.ci`
-  commented, so the scaffold runs under the same default its adopters get. Wall-time overruns in this repo's CI are recorded, not enforced.
+  commented, so the scaffold runs under the same default its adopters get. Wall-time
+  overruns in this repo's CI are recorded, not enforced.
 
 ---
 
@@ -476,16 +565,21 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 - Given an issue without a marker, then replay, `handoff` and `controller_decide` escalate on the third bounce exactly as today.
 - Given an issue pinned to `review.max_bounces=3`, then the third bounce returns to `executing` and the fourth escalates. `status` shows `bounces n/3`.
 - Given a locally kept legacy `workflow.tsv`, then legacy-pin issues replay unchanged, and a `review.max_bounces=3` issue exits 3 naming the upgrade candidate.
+- Given a `max_bounces=3` issue at two bounces, when 0.21.0-format `v=1` comments post a bounce and then a `resume` from `escalated`, then the new reader skips both, its state and seq are unchanged, and the next `v=2` handoff is admitted. A frozen copy of 0.21.0's transition regex matches none of the issue's `v=2` markers.
+- Given a doc with `policy:`, then `status` and replay read the pin in f-1, before any writer exists.
 - Given `AGENTIC_FLOW_PACKET_WORD_LIMIT` or an operator-file value for a project key, then `config` and every consumer exit 2 naming the source.
 - Given an unknown key, a duplicate key or an out-of-range value in `.agentic-flow/config`, then `config list` exits 2 with `file:line`, and `run` refuses before taking the lock.
 - Given `controller.turn_cap=12` in the operator file, then `config explain controller.turn_cap` names the operator file, and the controller stops at 12 turns.
 - Given an agent hook context, then `config set` and `config unset` are denied.
 - Given a fresh adoption, then `.agentic-flow/config` lists every registry key commented at its default, and `config list` shows every source as `default`. Given an existing file, `config init` refuses, and `config init --missing` appends only the absent keys.
-- Given a doc whose plan block pin differs from `.agentic-flow/config` at the approved revision, then `plan-to-issues --apply` exits non-zero before any `gh` mutation (a `gh` sentinel records none).
+- Given no stamped issue and a doc pin that differs from `.agentic-flow/config` at the approved revision (for example, after `main` changed policy during drafting), then `plan-to-issues --apply` exits non-zero before any `gh` mutation, naming `agentic-flow config pin`. A `gh` sentinel records no call.
+- Given no stamped issue and a pinless doc, then the first apply refuses.
 - Given stamped issues pinned to `max_bounces=2` and a doc now pinned to `3`, then `plan-to-issues --apply` dies before any label, create, edit or close, including after a partial earlier apply.
+- Given stamped issues and a project config changed after stamping, then a reapply of the unchanged doc succeeds against the stamped pin.
+- Given an interrupted Strict adoption whose tracker is stamped with the doc's `medium` pin and whose remaining step is an unstamped `--adopt` candidate, then the reapply stamps the step with that pin. With the doc's pin changed, it dies before any mutation.
 - Given legacy issues and a doc whose pin equals the legacy pin, then the reapply adds the marker. Given any other pin, it dies.
-- Given an existing doc without `policy:`, then its spec hash and issue bodies are byte-identical to before.
-- Given a clarification that edits the pin, then `approve` refuses. Given one that edits only prose, it succeeds.
+- Given an existing doc without `policy:` and already-stamped issues, then its spec hash and issue bodies are byte-identical to before.
+- Given a clarification that edits the pin, then `approve` refuses. Given one that edits only prose, or adds a pin to a pinless approved doc, it succeeds. In the prose-only case, the reapply passes even though the project config changed after stamping.
 - Given a hand-edited marker that no longer matches the spec, then the controller exits 3 with the stamp-drift error.
 - Given `review.block_at=medium`, then an approve with a `medium` (or `P2`) finding and a bounce with only `low` and `nit` findings each journal an `ask`. An approve with only `nit` findings is journaled as an approve.
 - Given the legacy pin, then those same results journal as they do today.
@@ -494,8 +588,12 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 - Given `CI=true` and no config file, when a wall ceiling is overrun, then `self-test` exits 0, records the overrun, and writes "wall time not enforced" to the step summary. With `budget.wall.mode.ci=stop`, the same overrun fails.
 - Given `CI=true` and `AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL=warn`, then the CI mode applies, and the ignored value is reported once.
 - Given a verify record made under `warn`, then a check under `stop` treats it as stale and reruns.
+- Given a caller checkout with `budget.fixtures.mode=stop` and a submitted SHA that commits `warn`, then the record's `budget_policy.green` equals the digest of the SHA's tree, not the caller's. A red-first entry whose `paths` include a policy file takes that file from the SHA. `verify-step`, `controller_verify` and `packet` compute the same key.
+- Given a step whose submitted commits change `.agentic-flow/config` in one commit and `config/test-budgets.tsv` in another, then the reviewer packet lists both under "Policy files changed". A change reverted within the range is not listed.
 - Given `andon.station-infrastructure=retry:2` and a probe that fails twice and then succeeds, then the station launches with no hold. Given three failures, then one hold whose note says "after 2 automatic retries".
-- Given a retry pin and a dirty worktree, or a failure after the intent record, then the controller holds at once.
+- Given a replacement dispatch whose chain has a predecessor intent, when the probe fails once and then succeeds, then exactly one new intent is written, with the predecessor's `replaces` and the next `nth`.
+- Given a retry backoff, then the heartbeat keeps `phase: reconciling` with a `retry` object, and `status` renders it without marking the heartbeat invalid.
+- Given a retry pin and a dirty worktree, or a failure after this attempt's intent record, then the controller holds at once.
 
 ## Invariants
 - With no effective project value (no `.agentic-flow/config`, or only the commented template) and on legacy-pin issues, the controller, `handoff`, `packet`, `status` and `self-test` behave as today, with two exceptions. `verify` records are recomputed once. A CI wall-time overrun warns instead of failing (owner decision), unless the project sets `budget.wall.mode.ci=stop`.
@@ -542,6 +640,7 @@ step lands as its own commit, closing its issue via `Fixes #N`.
 make check                                  # per step
 make test-one F=contracts                   # f-1, f-2, f-5
 make test-one F=stations S=handoff          # f-1, f-4
+make test-one F=stations S=packet           # f-2 (policy-files section)
 make test-one F=plan-to-issues              # f-3
 make test-one F=controller S=status         # f-1, f-3
 make test-one F=controller S=andon          # f-4, f-6
@@ -563,15 +662,22 @@ must already read.
     validator, keeping the deprecated literal pair;
   - add the `limit` argument to `workflow_successor` and every caller;
   - change `controller_decide:553`;
-  - make `status` read the plan block pin.
-- One marker-line regex is shared by bash and jq. Never match it loosely.
+  - add the read-only `policy:` parsing to `brief_parse`, with version-1 pin validation
+    (C-2 *Parsing*), and make `status` read the plan block pin through it;
+  - add the transition-marker version rule (C-3 *Writer compatibility*): `v=2` on issues
+    whose limit is not 2, written at `handoff.sh:88, 131, 146` and required by
+    `journal.jq:34`.
+- One marker-line regex and one pin validator are shared by bash and jq. Never match
+  either loosely.
 
 **Test:**
 - Replay fixtures for: no marker; `max_bounces` 1 and 3; duplicate and malformed markers;
   a deprecated `workflow.tsv` with legacy and non-legacy pins.
 - Handoff legality at the limit.
 - `controller_decide` escalation at the pinned limit.
-- The `status` limit display.
+- The `status` limit display from a hand-written `policy:` line.
+- The old-writer / new-reader sequence, and the frozen 0.21.0 regex against `v=2`
+  markers.
 - Every existing journal fixture replays byte-identically.
 
 **DoD:** legacy issues derive exactly today's states; pinned issues obey their own limit everywhere a successor is computed.
@@ -580,6 +686,8 @@ must already read.
 - A caller left on the default `limit` of 2 would diverge silently. Grep for every
   `workflow_successor` and `bounces` use.
 - `status.jq`'s `limits` parser must stop reading `workflow.tsv`.
+- A v2 issue's own writers must never emit `v=1`. Derive the version from the issue's pin
+  at every write site, not from a global.
 **Red-first:** `scripts/self-test.sh --only stations --scenario handoff` — scripts/tests/stations.sh
 **Commit:** `Replay each issue under its own bounce-limit pin`
 
@@ -602,6 +710,10 @@ must already read.
   `approve` rows (wider prefix where a row cannot be expressed exactly), and regenerate.
 - Wire the first consumers: `controller.turn_cap` (`controller.sh:1018`) and
   `packet.word_limit` (`packet.sh:85, 190`).
+- Add `config pin` (prints the canonical pin) for f-3's draft refresh.
+- Add the reviewer packet's "Policy files changed" section (Threat model): the net diff of
+  the four policy paths from the stamp's `approved=` revision (or its merge-base with the
+  head) to the submitted head.
 - Add the payload row for the registry.
 
 **Test:**
@@ -620,9 +732,11 @@ must already read.
   existing bytes unchanged.
 - `set` then `unset` round-trips the template line.
 - An exported adoption has the file.
+- Policy changes spread over several step commits are listed. A change reverted within
+  the range is not. A non-ancestor approved revision falls back to the merge-base.
 
-**DoD:** every C-1 key resolves with its source; invalid config fails closed before the controller lock; agents cannot change a value; new adoptions and this repo carry the commented template.
-**Verify:** `make test-one F=contracts` and `make test-one F=controller S=status`
+**DoD:** every C-1 key resolves with its source; invalid config fails closed before the controller lock; agents cannot change a value; new adoptions and this repo carry the commented template; reviewers see every policy-file change since approval.
+**Verify:** `make test-one F=contracts`, `make test-one F=stations S=packet` and `make test-one F=controller S=status`
 **Risks:**
 - The loader must not run `gh` or the network.
 - `env -i` stations must still load defaults without `HOME`.
@@ -635,27 +749,31 @@ must already read.
 **Why third:** with replay and the loader in place, this makes pins real and immutable.
 
 **Approach:**
-- Implement C-2:
+- Implement C-2's capture, apply and clarification rules (f-1 already parses the pin):
   - `start` writes `policy:` from `config_pin`;
-  - `brief_parse` validates it and emits `policy` only when present;
-  - `plan-to-issues` checks the pin against the config at `APPROVED_REV`, then runs the
-    immutability check over the index before any mutation, next to the topology check;
-  - it writes the marker under the identity stamp for new and legacy-equal issues, and
-    preserves existing markers byte-for-byte;
-  - `approve` compares pins;
+  - `plan-to-issues` classifies indexed issues as stamped or unstamped adoptions;
+  - on first apply it checks the doc's pin against the config at `APPROVED_REV`, and on
+    later applies against the stamped pin;
+  - it runs the stamped-only immutability check before any mutation, next to the
+    topology check;
+  - it writes the marker under the identity stamp for new issues, unstamped adoptions and
+    legacy-equal issues, and preserves existing markers byte-for-byte;
+  - `approve` applies the clarification rule;
   - `handoff_drift` and `controller_check` compare pins.
-- Print the mixed-version reminder for a non-legacy `max_bounces`.
+- Print the upgrade reminder for v2 plans.
 
 **Test:**
-- Mismatch at the approved revision.
+- First-apply mismatch after a base policy change, and a pinless first apply.
 - Changed pin over full and partial applies.
+- A config change after stamping, followed by a successful reapply.
+- An interrupted Strict adoption: stamped tracker, unstamped step.
 - Legacy add-only case.
-- Byte-identical bodies and spec hash for a pinless doc.
-- `approve` pin edit refused.
+- Byte-identical bodies and spec hash for a pinless in-flight doc.
+- `approve`: pin edit refused; prose-only and pin-added pass.
 - Hand-edited marker leading to controller exit 3.
 - A `gh` sentinel proving no mutation on every refusal.
 
-**DoD:** a pin is written once, from the approved revision's config, and every later path that would change it refuses before mutating.
+**DoD:** a pin is fixed by the first stamp, from the approved revision's config; every later path compares against the stamped pin and refuses a change before mutating.
 **Verify:** `make test-one F=plan-to-issues` and `make test-one F=controller S=status`
 **Risks:**
 - The adopted-issue prefix path (`plan-to-issues.sh:340-351`) must carry the marker inside
@@ -705,7 +823,9 @@ so it lands after the replay work is stable.
   - add the overrun files and pruning;
   - add the CI step-summary label;
   - add the `doctor` section;
-  - add `budget_policy_sha256` to `verify_record_key`.
+  - add `budget_policy` to `verify_record_key`, derived only from its own arguments (the
+    `<sha>` tree for green, and the overlaid `<red_base>` tree for each red-first entry),
+    never from the caller's checkout.
 - Remove the limit literals from `self-test.sh`.
 - Raise the copy budgets to measured values, in the TSV.
 
@@ -716,7 +836,10 @@ so it lands after the replay work is stable.
 - Concurrent runs both record.
 - Pruning keeps 20 files.
 - A warn-made verify record is stale under `stop`.
-- None of the three policy files matches the bookkeeping filter.
+- A caller checkout and a submitted SHA with deliberately different policies: the key
+  follows the SHA. A red-first entry that overlays a policy file uses the overlaid copy.
+  `verify-step`, `controller_verify` and `packet` agree.
+- None of the policy files matches the bookkeeping filter.
 
 **DoD:** every budget honours its mode, every warn is recorded and reported, and no warn-green result is reused under stop.
 **Verify:** `make test-one F=contracts` and `make test-one F=stations S=verify`
@@ -738,12 +861,17 @@ It is last so it can be dropped without renumbering the other steps.
   a retry or calls `controller_hold` with the "after k automatic retries" note.
 - Keep the per-invocation counter in a `CT_` variable, reset on a launch that returns
   metadata.
-- Record `retry` in the heartbeat's `phase` detail without changing the heartbeat schema
-  version.
+- Eligibility is per launch attempt (C-6). Capture the ledger's intent count for
+  `{issue, station}` at dispatch start, and refuse a retry if it has changed.
+- Heartbeat: keep `phase: reconciling` and add the optional `retry` object. Update the
+  `status.jq` heartbeat validator and renderer in this step.
 
 **Test:**
 - Probe failing twice, then succeeding.
 - Three failures leading to one hold.
+- A replacement dispatch with a predecessor intent: retry, then exactly one new intent
+  with the right `replaces` and `nth`.
+- A heartbeat carrying `retry` that `status` validates and renders.
 - Dirty worktree leading to an immediate hold.
 - A failure at `:940` leading to an immediate hold.
 - Turns consumed and bounded by the cap.
@@ -753,8 +881,9 @@ It is last so it can be dropped without renumbering the other steps.
 **DoD:** transient pre-launch failures recover without a human under `retry:N`; nothing after the intent record is retried.
 **Verify:** `make test-one F=controller S=andon`
 **Risks:**
-- A retry must never run after an intent exists. Assert it from the ledger, not from the
-  call site.
+- A retry must never run after **this attempt's** intent exists. A predecessor intent in
+  a replacement chain is expected. Assert it from the ledger's intent count captured at
+  dispatch start, not from the call site.
 **Red-first:** `scripts/self-test.sh --only controller --scenario andon` — scripts/tests/controller.sh
 **Commit:** `Retry pre-launch station failures under a pinned andon response`
 
