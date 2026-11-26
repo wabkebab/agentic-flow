@@ -1027,7 +1027,7 @@ SH
   [ "$gate_rc" -ne 0 ] || fail 'ship-gate accepted a failing exported suite'
   grep -q 'group: hooks' "$TMP/gate.out" || fail 'ship-gate did not name the failing exported group'
 
-  gate_copy_limit=121
+  gate_copy_limit=122
   gate_copy_over=$((gate_copy_limit+1))
   gate_make "$gate_copy_over" && fail 'ship-gate accepted one fixture copy over the exported limit'
   grep -Fq "exported full mode made $gate_copy_over fixture file copies; limit $gate_copy_limit" "$TMP/gate.out" \
