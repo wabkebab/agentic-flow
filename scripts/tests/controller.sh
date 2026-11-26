@@ -1500,14 +1500,20 @@ PLAN
   CT_RECORDS=$(jq -nc --slurpfile result "$verdict" --argjson warnings "$CONTROLLER_RESULT_WARNINGS" '
     [{kind:"intent",run:"fixture",issue:1,station:"reviewer",step:"alpha"},
      {kind:"station",run:"fixture",result:$result[0],warnings:$warnings,invalid_reason:null}]')
-  CT_REPORT=$(jq -nc '{issues:[{number:1,topology:"step-strict",replay:{seq:1,state:"reviewing",return_to:"executing",submitted_head:("a"*40),bounces:0}}]}')
+  CT_REPORT=$(jq -nc '{issues:[{number:1,topology:"step-strict",max_bounces:1,
+    replay:{seq:1,state:"reviewing",return_to:"executing",submitted_head:("a"*40),bounces:0}}]}')
   controller_record() { :; }; controller_fault() { :; }
+  controller_diagnostic() { cat "$3"; }
   controller_decide '{"head":"fixture"}' || fail 'warning decision failed'
   jq -e '.action=="bounce" and .body_format=="markdown-v1"' "$CT_TMP/record" >/dev/null || fail 'controller did not record the rendered verdict'
   grep -q '^<!-- agentic-flow-transition:' "$CT_TMP/body" || fail 'controller wrote a bare transition'
   jq -n --rawfile body "$CT_TMP/body" --slurpfile verdict "$verdict" '
     ($body|contains($verdict[0].summary)) and ($body|contains($verdict[0].findings[0].text)) and
     ($body|contains("Warnings: summary 2311 > 2000; findings[0].text 1500 > 1200"))' | grep -qx true || fail 'journal lost warning or verdict text'
+  [ ! -s "$CT_TMP/diagnostic-body" ] || fail 'controller escalated below the pinned limit'
+  CT_REPORT=$(printf '%s\n' "$CT_REPORT" | jq '.issues[0].replay.bounces=1')
+  controller_decide '{"head":"fixture"}' || fail 'pinned bounce decision failed'
+  grep -Fxq 'bounce cap reached' "$CT_TMP/diagnostic-body" || fail 'controller did not escalate at the pinned limit'
   CT_RECORDS='[{"kind":"station","run":"fixture","result":null,"invalid_reason":"summary 8001 > 8000"}]'
   controller_retry_context resume-valid fixture > "$CT_TMP/retry"
   grep -Fq 'summary 8001 > 8000' "$CT_TMP/retry" || fail 'retry prompt lost refusal reason'
@@ -4185,6 +4191,7 @@ profile: strict
 tracking: Heartbeat
 branch: topic
 steps: alpha
+policy: review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold
 ```
 ## alpha — First
 **DoD:** done
@@ -4255,7 +4262,7 @@ controller_check() {
     race-*) fixture_release "$fixture/$fixture_mode.finish" || return 5 ;;
     error) return 10 ;;
   esac
-  CT_REPORT='{"issues":[{"number":1,"step":"alpha","topology":"step-strict","state":"executing","replay":{"seq":0}}]}'
+  CT_REPORT='{"issues":[{"number":1,"step":"alpha","topology":"step-strict","state":"executing","max_bounces":3,"replay":{"seq":0}}]}'
   CT_TRACKER=2
   printf '%s\n' "$CT_REPORT" > "$CT_TMP/report"
 }
@@ -4427,9 +4434,11 @@ GH
   printf '[]\n' > "$state/heartbeat.holds.json"
   status_query 10 "$doc" --json
   status_assert '.plan=="heartbeat" and .snapshot.complete and .controller.state=="stopped"
-    and .controller.exit==130 and .steps[1].bounces==null and .steps[1].bounce_limit==2
+    and .controller.exit==130 and .steps[1].bounces==null and .steps[1].bounce_limit==3
     and .snapshot.ledger=="absent" and .steps[1].interrupted==null and .usage.cost_usd==null
     and .next=={owner:"human",action:"Run the controller",command:"agentic-flow run docs/inprogress/plan.md"}'
+  status_query 10 "$doc"
+  grep -Fq 'bounces ?/3' "$fixture/query" || fail 'status text omitted the pinned bounce limit'
 
   # Keep the lock/heartbeat identity alive through all controller-reader scenarios.
   sleep 45 & live_pid=$!

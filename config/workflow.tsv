@@ -13,16 +13,16 @@ state	tracker	closing	plan,agent:claude,needs-closing	open
 state	tracker	closed	plan	closed
 # transition	topology	event	role	from	to	requires
 transition	step-strict	submit	executor	executing	reviewing	head,head≠last-bounced-head
-transition	step-strict	bounce	reviewer	reviewing	executing	findings,bounces<2
-transition	step-strict	bounce	reviewer	reviewing	escalated	findings,bounces=2
+transition	step-strict	bounce	reviewer	reviewing	executing	findings,bounces<limit
+transition	step-strict	bounce	reviewer	reviewing	escalated	findings,bounces=limit
 transition	step-strict	ask	executor	executing	escalated	question
 transition	step-strict	ask	reviewer	reviewing	escalated	question
 transition	step-strict	resume	approver	escalated	executing	note,return=executing
 transition	step-strict	resume	approver	escalated	reviewing	note,return=reviewing
 transition	step-strict	approve	reviewer	reviewing	approved	head=submitted
 transition	work-standard	submit	executor	executing	reviewing	head,head≠last-bounced-head
-transition	work-standard	bounce	reviewer	reviewing	executing	findings,bounces<2
-transition	work-standard	bounce	reviewer	reviewing	escalated	findings,bounces=2
+transition	work-standard	bounce	reviewer	reviewing	executing	findings,bounces<limit
+transition	work-standard	bounce	reviewer	reviewing	escalated	findings,bounces=limit
 transition	work-standard	ask	executor	executing	escalated	question
 transition	work-standard	ask	reviewer	reviewing	escalated	question
 transition	work-standard	resume	approver	escalated	executing	note,return=executing

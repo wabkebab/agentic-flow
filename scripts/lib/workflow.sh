@@ -3,6 +3,7 @@
 workflow_load() {
   local file="$1/config/workflow.tsv" parsed
   WORKFLOW_DATA=''
+  WORKFLOW_DEPRECATED_BOUNCES=false
   [ -f "$file" ] || { echo "$file:1: missing workflow" >&2; return 1; }
   # A small data contract, never executable shell. Bound both input and graph work.
   [ "$(wc -c < "$file")" -le 65536 ] || {
@@ -42,8 +43,13 @@ workflow_load() {
         if (!($3 in roles)) bad(NR,"unknown event")
         if (($3=="ask" && !(($4=="executor" && $5=="executing") || ($4=="reviewer" && $5=="reviewing"))) || $4 != roles[$3]) bad(NR,"invalid role for event")
         if ($5 == $6) bad(NR,"self-loop transition")
-        tokens($7,"|-|head|head≠last-bounced-head|findings|bounces<2|bounces=2|note|head=submitted|all-steps-approved|lifecycle-ready|question|return=executing|return=reviewing|","requirement")
-        if ($3 == "bounce" && $7 != "findings,bounces<2" && $7 != "findings,bounces=2") bad(NR,"invalid bounce requirement")
+        tokens($7,"|-|head|head≠last-bounced-head|findings|bounces<limit|bounces=limit|bounces<2|bounces=2|note|head=submitted|all-steps-approved|lifecycle-ready|question|return=executing|return=reviewing|","requirement")
+        if ($3 == "bounce") {
+          if ($7 !~ /^findings,bounces[<=](limit|2)$/) bad(NR,"invalid bounce requirement")
+          form=($7 ~ /2$/ ? "literal" : "pinned")
+          if (bounce_form != "" && form != bounce_form) bad(NR,"mixed literal and pinned bounce requirements")
+          bounce_form=form
+        }
         expected["submit"]="head,head≠last-bounced-head"; expected["resume"]="note"
         expected["approve"]="head=submitted"; expected["notify"]="all-steps-approved"; expected["close"]="lifecycle-ready"
         expected["ask"]="question"
@@ -80,6 +86,17 @@ workflow_load() {
     }
   ' "$file") || return 1
   WORKFLOW_DATA=$parsed
+  case "$parsed"$'\n' in
+    *$'\tfindings,bounces<2\n'*|*$'\tfindings,bounces=2\n'*) WORKFLOW_DEPRECATED_BOUNCES=true ;;
+  esac
+}
+
+workflow_check_limit() {
+  case "$1" in [1-5]) ;; *) return 3 ;; esac
+  if [ "${WORKFLOW_DEPRECATED_BOUNCES:-false}" = true ] && [ "$1" != 2 ]; then
+    echo 'workflow.tsv predates policy pins; take the upgrade candidate' >&2
+    return 3
+  fi
 }
 
 workflow_state_labels() {
@@ -90,12 +107,14 @@ workflow_state_labels() {
   '
 }
 
-workflow_successor() { # topology state event bounces; caller enforces other requirements
+workflow_successor() { # topology state event bounces [return] [limit]; caller enforces other requirements
   [ -n "${WORKFLOW_DATA:-}" ] || return 1
   case "$4" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' -v t="$1" -v s="$2" -v e="$3" -v b="$4" -v r="${5:-executing}" '
+  workflow_check_limit "${6:-2}" || return $?
+  printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' -v t="$1" -v s="$2" -v e="$3" -v b="$4" -v r="${5:-executing}" -v limit="${6:-2}" '
     $1 == "transition" && $2 == t && $3 == e && $5 == s {
-      if (e == "bounce" && !(($7 == "findings,bounces<2" && b+0 < 2) || ($7 == "findings,bounces=2" && b+0 == 2))) next
+      if (e == "bounce" && !(($7 ~ /^findings,bounces<(limit|2)$/ && b+0 < limit) ||
+                           ($7 ~ /^findings,bounces=(limit|2)$/ && b+0 == limit))) next
       if (e == "resume" && $6 != r) next
       print $6; found=1
     }

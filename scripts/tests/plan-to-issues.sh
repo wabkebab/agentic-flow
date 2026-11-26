@@ -398,13 +398,13 @@ for legacy_issue in 1 2; do
   sed -E 's/ journal=v1//; s/ approved=[a-f0-9]{40}//' "$GHSTATE/issue-$legacy_issue/body" > "$TMP/legacy-body"
   mv "$TMP/legacy-body" "$GHSTATE/issue-$legacy_issue/body"
 done
-sed 's/journal=v1/journal=v2/' "$GHSTATE/issue-3/body" > "$TMP/other-journal-body"
+sed 's/journal=v1/journal=custom/' "$GHSTATE/issue-3/body" > "$TMP/other-journal-body"
 mv "$TMP/other-journal-body" "$GHSTATE/issue-3/body"
 plan_apply "$PLAN_SPEC" || fail 'journal-preserving reapply failed'
 for legacy_issue in 1 2; do
   if grep -q ' journal=' "$GHSTATE/issue-$legacy_issue/body"; then fail 'reapply changed legacy eligibility'; fi
 done
-grep -q ' journal=v2' "$GHSTATE/issue-3/body" || fail 'reapply discarded an existing journal value'
+grep -q ' journal=custom' "$GHSTATE/issue-3/body" || fail 'reapply discarded an existing journal value'
 
 APPROVAL_DOC_ROOT="$TMP/approval-doc-root"
 mkdir -p "$APPROVAL_DOC_ROOT/docs/inprogress"
@@ -849,6 +849,17 @@ for n in 1 2 3 4 5 6 7 8 9 10; do
   cmp -s "$TMP/legacy-before-$n" "$TMP/migrated-body" || fail 'migration changed more than approved stamp'
 done
 if grep -q 'journal=v1' "$TMP/brief-gh"/issue-*/body; then fail 'migration changed legacy eligibility'; fi
+# Same-revision reapply can read hand-written v2 stamps before plan-mode capture ships.
+pinned_policy_line='<!-- agentic-flow:plan:deterministic-stations policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->'
+for n in 1 2; do
+  sed 's/ approved=/ journal=v2 approved=/' "$TMP/brief-gh/issue-$n/body" > "$TMP/pinned-body-$n"
+  printf '\n%s\n' "$pinned_policy_line" >> "$TMP/pinned-body-$n"
+  cat "$TMP/pinned-body-$n" > "$TMP/brief-gh/issue-$n/body"
+done
+brief_run --apply > /dev/null || fail 'same-revision reapply rejected a pinned issue'
+for n in 1 2; do
+  cmp -s "$TMP/pinned-body-$n" "$TMP/brief-gh/issue-$n/body" || fail 'same-revision reapply changed a pinned body'
+done
 # Bookkeeping is exempt from drift; content is not. Refusal precedes GitHub access.
 printf '\n' >> "$BRIEF_FIX/docs/plan.md"
 : > "$TMP/brief-calls"

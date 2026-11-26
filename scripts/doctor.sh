@@ -215,6 +215,13 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
       fail "review policy valid"
     fi
   fi
+  if [ -f "$ROOT/scripts/lib/workflow.sh" ]; then
+    # shellcheck source=scripts/lib/workflow.sh
+    . "$ROOT/scripts/lib/workflow.sh"
+    if workflow_load "$ROOT" 2>/dev/null && [ "$WORKFLOW_DEPRECATED_BOUNCES" = true ]; then
+      warn 'workflow.tsv predates policy pins; take the upgrade candidate'
+    fi
+  fi
 
   if [ -f "$ROOT/config/payload.tsv" ]; then
     manifest_failures=0

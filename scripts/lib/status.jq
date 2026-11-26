@@ -1,3 +1,5 @@
+include "journal-marker";
+
 def one_of($values): . as $v | $values | index($v) != null;
 def uint($max): type == "number" and . >= 0 and . <= $max and floor == .;
 def issue_number: uint(9999999999) and . > 0;
@@ -113,9 +115,7 @@ def status_ledger:
 def workflow_rules:
   split("\n") | map(split("\t")) | {
     states:(map(select(.[0] == "state")) | group_by(.[1]) |
-      map({key:.[0][1], value:map(.[2])}) | from_entries),
-    limits:(map(select(.[0] == "transition" and .[2] == "bounce" and .[5] == "escalated") |
-      {key:.[1], value:(.[6] | split("bounces=")[1] | tonumber)}) | from_entries)
+      map({key:.[0][1], value:map(.[2])}) | from_entries)
   };
 
 def controller_view($heartbeat; $state):
@@ -128,6 +128,7 @@ def plan_view($plan; $doc):
   # The inputs are framed by the reader and already validated at each source.
   if length != 10 then error("incomplete status inputs") else . end |
   . as [$plan_src,$heartbeat,$owner,$claimant,$steps,$holds,$metrics,$workflow,$ledger,$controller] |
+  ($plan_src.value.policy // journal_legacy_pin | journal_pin | .max_bounces) as $limit |
   (if $plan_src.value.profile == "strict" or
     ($plan_src.value == null and any($steps.value[]?; .step == "tracker"))
     then "step-strict" else "work-standard" end) as $topology |
@@ -160,7 +161,7 @@ def plan_view($plan; $doc):
     ([$runs[] | select($controller.state == "alive" and $controller.phase == "station" and
       .eligible and .run == $beat.run and .issue == $beat.issue and .step == $beat.step and
       .station == $beat.station and .cli == $beat.cli and .started == $beat.started)] | first) as $active |
-    {issue, step, state, bounces:$bounces, bounce_limit:($workflow.limits[.topology] // null),
+    {issue, step, state, bounces:$bounces, bounce_limit:(if .topology=="tracker" then null else $limit end),
      station:(if $active == null then null else ($active | {cli, run,
        elapsed_s:(.started | seconds_since), timeout_s:$beat.timeout_s}) end),
      interrupted:(if $ledger.state != "ok" then null else [$runs[] | select(.run != $active.run) | .run] end)}

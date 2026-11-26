@@ -597,6 +597,58 @@ station_append 4 bounce reviewing reviewer none review
 station_append 5 submit executing executor "$STATION_C" exec
 station_append 6 bounce reviewing reviewer none review
 station_replay; station_expect '.seq==6 and .state=="escalated" and .bounces==3'
+(
+  pinned_identity='<!-- agentic-flow:plan:fixture step:alpha spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa journal=v2 -->'
+  pinned_policy='<!-- agentic-flow:plan:fixture policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->'
+  journal_context "$pinned_identity"$'\n'"$pinned_policy" || fail 'policy-pin: intact v2 stamp was refused'
+  # shellcheck disable=SC2031 # journal_context set these values in this subshell.
+  [ "$JOURNAL_MAX_BOUNCES/$JOURNAL_BLOCK_AT/$JOURNAL_INFRA/$JOURNAL_LEGACY" = 3/medium/hold/false ] \
+    || fail 'policy-pin: context did not expose the validated pin'
+  station_replay; station_expect '.seq==6 and .state=="executing" and .bounces==3'
+  station_append 7 submit executing executor "$STATION_A" exec
+  station_append 8 bounce reviewing reviewer none review
+  station_replay; station_expect '.seq==8 and .state=="escalated" and .bounces==4'
+  journal_context "$pinned_identity"$'\n'"${pinned_policy/max_bounces=3/max_bounces=1}" || fail 'policy-pin: limit of one was refused'
+  station_replay; station_expect '.seq==4 and .state=="escalated" and .bounces==2'
+  journal_context "${pinned_identity/journal=v2/journal=v1}" || fail 'policy-pin: unpinned stamp was refused'
+  station_replay; station_expect '.seq==6 and .state=="escalated" and .bounces==3'
+  for invalid in "$pinned_identity" "$pinned_identity"$'\n'"$pinned_policy"$'\n'"$pinned_policy" \
+    "$pinned_identity"$'\n'"${pinned_policy/max_bounces=3/max_bounces=03}" \
+    "$pinned_identity"$'\n'"${pinned_policy/plan:fixture/plan:another}" \
+    "$pinned_identity"$'\n'"${pinned_policy/policy:v1/future:v1}" \
+    "${pinned_identity/journal=v2/journal=v1}"$'\n'"$pinned_policy"; do
+    rc=0
+    (journal_context "$invalid" && journal_replay "$STATION_COMMENTS" step-strict) > "$TMP/invalid-pin.out" 2>&1 || rc=$?
+    [ "$rc" = 3 ] || fail 'policy-pin: invalid issue body did not exit 3'
+  done
+  mkdir -p "$TMP/old-workflow/config"
+  sed 's/bounces<limit/bounces<2/; s/bounces=limit/bounces=2/' "$ROOT/config/workflow.tsv" > "$TMP/old-workflow/config/workflow.tsv"
+  new_replay=$STATION_REPLAY
+  workflow_load "$TMP/old-workflow" || fail 'policy-pin: deprecated workflow was refused'
+  station_replay
+  [ "$STATION_REPLAY" = "$new_replay" ] || fail 'policy-pin: deprecated workflow changed legacy replay'
+  journal_context "$pinned_identity"$'\n'"${pinned_policy/max_bounces=3/max_bounces=2}" || fail 'policy-pin: explicit limit of two was refused'
+  station_replay
+  [ "$STATION_REPLAY" = "$new_replay" ] || fail 'policy-pin: deprecated workflow changed pinned limit of two'
+  journal_context "$pinned_identity"$'\n'"$pinned_policy" || fail 'policy-pin: intact v2 stamp was refused'
+  rc=0
+  journal_replay "$STATION_COMMENTS" step-strict > "$TMP/old-workflow.out" 2>&1 || rc=$?
+  [ "$rc" = 3 ] && grep -Fq 'workflow.tsv predates policy pins; take the upgrade candidate' "$TMP/old-workflow.out" \
+    || fail 'policy-pin: deprecated workflow accepted a non-default limit or omitted the upgrade diagnostic'
+  (
+    . "$ROOT/scripts/tests/fixtures/stations/journal-0.21.0.sh"
+    journal_context "${pinned_identity/journal=v2/journal=v1}" && [ "$JOURNAL_LEGACY" = false ] \
+      || fail '0.21.0 refused an unpinned journal'
+    journal_context "$pinned_identity" && [ "$JOURNAL_LEGACY" = true ] \
+      || fail '0.21.0 behavior changed for a damaged v2 stamp'
+    ! journal_context "$pinned_identity"$'\n'"$pinned_policy" 2>/dev/null \
+      && ! printf '%s\n' "$pinned_identity" "$pinned_policy" | journal_stamp >/dev/null 2>&1 \
+      || fail '0.21.0 accepted a pinned journal'
+    if [[ "$pinned_policy" =~ $STEP_STAMP_RE || "$pinned_policy" =~ $TRACK_STAMP_RE ]]; then
+      fail '0.21.0 index accepted the policy marker as an identity stamp'
+    fi
+  ) || fail 'frozen parser compatibility failed'
+) || fail 'policy-pin: pinned replay failed'
 station_append 7 resume escalated approver none plan
 station_append 8 submit executing executor "$STATION_A" exec
 station_append 9 bounce reviewing reviewer none review
@@ -808,6 +860,28 @@ STATION_LOGIN=plan station_run 3 1 resume --as approver --return reviewing --bod
 STATION_LOGIN=plan station_run 0 1 resume --as approver --body-file "$TMP/c3-question"
 station_run 0 1 reconcile --json
 jq -e '."1"|.state=="executing" and .bounces==0' "$TMP/station.out" >/dev/null || fail 'executor resume did not reset bounces'
+# The real handoff projects escalation at the pinned limit and refuses the next submit.
+station_issue 1 step:alpha
+pinned_policy='<!-- agentic-flow:plan:fixture policy:v1 review.max_bounces=1 review.block_at=medium andon.station-infrastructure=hold -->'
+jq --arg pin "$pinned_policy" '.body |= (sub("journal=v1";"journal=v2")+ "\n"+$pin)' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+STATION_LOGIN='exec' station_run 0 1 submit --as executor --head "$STATION_A"
+STATION_LOGIN=review station_run 0 1 bounce --as reviewer --body-file "$TMP/c3-question"
+STATION_LOGIN='exec' station_run 0 1 submit --as executor --head "$STATION_B"
+STATION_LOGIN=review station_run 0 1 bounce --as reviewer --body-file "$TMP/c3-question"
+STATION_LOGIN='exec' station_run 3 1 submit --as executor --head "$STATION_C"
+station_run 0 1 reconcile --check --json
+jq -e '.issues[]|select(.number==1)|.state=="escalated" and .max_bounces==1 and .replay.bounces==2 and .drift==[]' \
+  "$TMP/station.out" >/dev/null || fail 'handoff did not escalate at the pinned limit'
+jq -e '.comments.nodes[-1].body|contains("@owner needs a decision: bounce cap reached")' \
+  "$STATION_STATE/1.json" >/dev/null || fail 'pinned escalation omitted owner notification'
+jq --arg pin "$pinned_policy" '.body |= sub("\n"+$pin; "")' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+: > "$STATION_STATE/calls"
+STATION_LOGIN=plan station_run 3 1 resume --as approver --body-file "$TMP/c3-question"
+if grep -Eq '^issue (comment|edit|close|reopen) ' "$STATION_STATE/calls"; then fail 'handoff wrote to a damaged v2 issue'; fi
+station_issue 1 step:alpha
+station_run 0 1 reconcile --json
 # Check reports drift without posting, changing labels, or updating any cache.
 jq '.labels.nodes=[{name:"needs-review"}]' "$STATION_STATE/1.json" > "$STATION_STATE/next"
 mv "$STATION_STATE/next" "$STATION_STATE/1.json"
@@ -1197,6 +1271,14 @@ packet_refused
 packet_issue
 jq '.body|=sub(" approved=[a-f0-9]{40}";"")' "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 packet_refused
+packet_issue
+jq '.body|=sub("journal=v1";"journal=v2")' "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+packet_refused
+grep -Fq 'journal=v2 requires a policy line' "$TMP/packet.err" || fail 'packet did not identify the missing v2 policy'
+jq '.body += "\n<!-- agentic-flow:plan:fixture policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->"' \
+  "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+packet_run 0 --station executor --json
+jq -e '.journal.state=="executing" and .journal.seq==0' "$TMP/packet.json" >/dev/null || fail 'packet did not read a pinned journal'
 packet_issue
 PACKET_MISSING=$(printf '%040d' 99)
 jq --arg rev "$PACKET_MISSING" '.body|=sub("approved=[a-f0-9]{40}";"approved="+$rev)' "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
@@ -1653,9 +1735,17 @@ if should_run_scenario handoff closeout; then
 stations_cli_fixture
 # Close-out end to end: real linear history, policy-authored journals, fake PR/CI.
 CLOSE_ORIGINAL_FIX=$STATION_FIX
+printf 'owner=owner\n' >> "$CLOSE_ORIGINAL_FIX/project/.agentic-flow-review-policy"
 STATION_FIX="$TMP/close-stations"
 mkdir -p "$STATION_FIX/bin" "$STATION_FIX/state/evidence"
 ln "$CLOSE_ORIGINAL_FIX/bin/gh" "$STATION_FIX/bin/gh"
+cat > "$STATION_FIX/bin/ps" <<'PS'
+#!/usr/bin/env bash
+[ "$#" -eq 4 ] && [ "$1" = -p ] && [ "$3" = -o ] && [ "$4" = lstart= ] || exit 2
+kill -0 "$2" || exit 1
+printf 'fixture-start-%s\n' "$2"
+PS
+chmod +x "$STATION_FIX/bin/ps"
 export STATION_STATE="$STATION_FIX/state"
 close_commit() {
   git -C "$STATION_FIX/project" add -- "$@"
@@ -1706,6 +1796,7 @@ profile: $close_profile
 $(if [ "$close_profile" = strict ]; then printf 'tracking: Plan: fixture\n'; fi)
 branch: topic
 steps: $(if [ "$close_profile" = strict ]; then echo 'alpha beta'; else echo alpha; fi)
+$(if [ "$close_profile" = strict ]; then echo 'policy: review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold'; fi)
 \`\`\`
 ## alpha — First
 **Approach:** Keep this instruction.
@@ -1747,6 +1838,14 @@ PLAN
     jq --arg rev "$CLOSE_REV" '.body|=sub(" journal=v1";" approved="+$rev+" journal=v1") | .body += "\n<!-- agentic-flow:approval approved-by:Tester approved-at:2026-01-01 -->"' "$STATION_STATE/$close_n.json" > "$STATION_STATE/next"
     mv "$STATION_STATE/next" "$STATION_STATE/$close_n.json"
   done
+  if [ "$close_profile" = strict ]; then
+    for close_n in 1 2 3; do
+      jq '.body |= (sub("journal=v1";"journal=v2") +
+        "\n<!-- agentic-flow:plan:fixture policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->")' \
+        "$STATION_STATE/$close_n.json" > "$STATION_STATE/next"
+      mv "$STATION_STATE/next" "$STATION_STATE/$close_n.json"
+    done
+  fi
   close_evidence
   close_run prep docs/inprogress/plan.md --pr https://github.com/owner/repo/pull/7 && fail 'prep accepted executing journals'
   close_run prep docs/inprogress/plan.md && fail 'prep accepted missing PR'
@@ -1770,6 +1869,27 @@ PLAN
     station_run 0 2 submit --as executor --head "$CLOSE_HEAD"
     export STATION_LOGIN=review
     station_run 0 2 approve --as reviewer --head "$CLOSE_HEAD"
+    station_run 0 1 reconcile --check --json
+    jq -e '.issues[]|select(.number==1)|.state=="approved" and .observed_status=="closed" and .drift==[]' \
+      "$TMP/station.out" >/dev/null || fail 'controller report would reopen a pinned approved step'
+    (
+      . "$ROOT/scripts/tests/fixtures/stations/journal-0.21.0.sh"
+      ! jq -r .body "$STATION_STATE/1.json" | journal_stamp >/dev/null 2>&1 \
+        || fail '0.21.0 accepted a closed approved pinned step'
+    ) || fail 'old reconcile was not guarded'
+    jq '.body |= sub("\n<!-- agentic-flow:plan:fixture policy:v1 [^\n]+ -->";"")' \
+      "$STATION_STATE/1.json" > "$STATION_STATE/damaged"
+    mv "$STATION_STATE/1.json" "$STATION_STATE/intact"
+    mv "$STATION_STATE/damaged" "$STATION_STATE/1.json"
+    : > "$STATION_STATE/calls"
+    rc=0
+    (cd "$STATION_FIX/project" && PATH="$STATION_FIX/bin:$PATH" scripts/agentic-flow run docs/inprogress/plan.md --reconcile-only) \
+      > "$TMP/damaged-controller.out" 2>&1 || rc=$?
+    if [ "$rc" != 3 ] || ! grep -Fq 'issue #1 has an invalid policy stamp' "$TMP/damaged-controller.out"; then
+      fail "controller did not reject a damaged v2 issue: $(cat "$TMP/damaged-controller.out")"
+    fi
+    if grep -Eq '^issue (comment|edit|close|reopen) ' "$STATION_STATE/calls"; then fail 'controller wrote to a damaged v2 plan'; fi
+    mv "$STATION_STATE/intact" "$STATION_STATE/1.json"
   fi
   CLOSE_APPROVED=$CLOSE_HEAD
   close_evidence

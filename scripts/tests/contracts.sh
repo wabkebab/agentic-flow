@@ -632,7 +632,7 @@ SHARD_PROBE
   git -C "$fixture" init -q
   : > "$fixture/scripts/export.sh"
   parallel_probe 1 budget --jobs 2
-  grep -q 'full mode made 240 fixture file copies; limit 199' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
+  grep -q 'full mode made 240 fixture file copies; limit 200' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
   [ "$(cost_count "$fixture/events" source_snapshot_copy)" -eq 1 ] || fail 'parallel dispatcher duplicated the source snapshot'
 
   expected='export contracts upgrade hooks plan-to-issues lifecycle stations/launch stations/verify stations/handoff stations/packet controller/launch controller/ship controller/andon controller/ledger controller/recovery controller/status '
@@ -1027,7 +1027,7 @@ SH
   [ "$gate_rc" -ne 0 ] || fail 'ship-gate accepted a failing exported suite'
   grep -q 'group: hooks' "$TMP/gate.out" || fail 'ship-gate did not name the failing exported group'
 
-  gate_copy_limit=122
+  gate_copy_limit=123
   gate_copy_over=$((gate_copy_limit+1))
   gate_make "$gate_copy_over" && fail 'ship-gate accepted one fixture copy over the exported limit'
   grep -Fq "exported full mode made $gate_copy_over fixture file copies; limit $gate_copy_limit" "$TMP/gate.out" \
@@ -1312,6 +1312,26 @@ workflow_load "$ROOT" || fail 'valid workflow rejected'
 workflow_successor step-strict executing approve 0 >/dev/null 2>&1 && fail 'illegal successor accepted'
 workflow_successor step-strict reviewing bounce bad >/dev/null 2>&1 && fail 'invalid bounce count accepted'
 workflow_state_labels tracker absent >/dev/null 2>&1 && fail 'unknown state labels accepted'
+
+unexpected_stamp_prefixes() {
+  awk -F : '
+    $1 == "scripts/lib/journal.sh" {next}
+    $1 == "scripts/plan-to-issues.sh" && /:[0-9]+:(PLAN_MARKER=|TRACK_STAMP_RE=.* tracker spec:|STEP_STAMP_RE=.* step:)/ {next}
+    $1 == "scripts/lifecycle-status.sh" && / tracker spec:| step:|--search .* in:body/ {next}
+    $1 ~ /^scripts\/lib\/(handoff|verify-step)\.sh$/ && /--search .* in:body/ {next}
+    $1 == "scripts/hooks/require-step-comment.sh" && /if \[\[ "\$payload" = / {next}
+    {print}
+  '
+}
+stamp_prefix_violations=$(
+  cd "$ROOT" &&
+    find scripts -path scripts/tests -prune -o -type f \( -name '*.sh' -o -name '*.jq' -o -name '*.pl' -o -name agentic-flow \) \
+      -exec grep -nHF 'agentic-flow:plan:' {} + | unexpected_stamp_prefixes
+) || fail 'could not audit plan stamp readers'
+[ -z "$stamp_prefix_violations" ] || fail "plan stamp prefix outside journal.sh: $stamp_prefix_violations"
+printf '%s\n' 'scripts/example.sh:1:grep "^<!-- agentic-flow:plan:"' | unexpected_stamp_prefixes |
+  grep -Fq 'scripts/example.sh' || fail 'plan stamp prefix audit missed bare line selection'
+
 mkdir -p "$WORKFLOW_FIX/scripts/lib" "$WORKFLOW_FIX/scripts/hooks"
 cp "$ROOT/config/workflow.tsv" "$WORKFLOW_FIX/config/workflow.tsv"
 cp "$ROOT/scripts/lib/workflow.sh" "$WORKFLOW_FIX/scripts/lib/workflow.sh"
@@ -2294,17 +2314,17 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
     || fail 'fixture budget did not identify repeated tree copying'
   printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
-  for ((copy_i=0; copy_i<200; copy_i++)); do
+  for ((copy_i=0; copy_i<201; copy_i++)); do
     printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   done
   ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
     > "$MEASURE_FIX/full-files.out" 2>&1 \
-    && fail 'full fixture budget accepted 200 copies'
-  grep -q 'full mode made 200 fixture file copies; limit 199' "$MEASURE_FIX/full-files.out" \
+    && fail 'full fixture budget accepted 201 copies'
+  grep -q 'full mode made 201 fixture file copies; limit 200' "$MEASURE_FIX/full-files.out" \
     || fail 'full fixture copy failure did not name the count and approved limit'
   sed '$d' "$MEASURE_FIX/full-files.events" > "$MEASURE_FIX/full-boundary.events"
   assert_cost_budget "$MEASURE_FIX/full-boundary.events" full \
-    || fail 'full fixture budget rejected its approved 199-copy boundary'
+    || fail 'full fixture budget rejected its approved 200-copy boundary'
 fi
 : > "$MEASURE_FIX/fast-files.events"
 for ((copy_i=0; copy_i<34; copy_i++)); do

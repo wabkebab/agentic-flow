@@ -514,11 +514,12 @@ controller_worktree() { # Salvage before any repair; reconciliation never restor
 
 controller_decide() { # Rule f: deterministic rendering from durable records only.
   local item=$1 run intent station verify escalation outcome head body action number row reason='' step role subject
-  local HANDOFF_REPLAY JOURNAL_TOPOLOGY JOURNAL_STEP JOURNAL_PLAN=$CT_PLAN HANDOFF_CONTROLLER_RUN
+  local HANDOFF_REPLAY JOURNAL_TOPOLOGY JOURNAL_STEP JOURNAL_PLAN=$CT_PLAN JOURNAL_MAX_BOUNCES HANDOFF_CONTROLLER_RUN
   run=$(printf '%s' "$item" | jq -r .head)
   intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
   number=$(printf '%s' "$intent" | jq .issue)
   row=$(printf '%s' "$CT_REPORT" | jq -c --argjson n "$number" '.issues[]|select(.number==$n)')
+  JOURNAL_MAX_BOUNCES=$(printf '%s' "$row" | jq -er .max_bounces) || return 3
   station=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '[.[]|select(.kind=="station" and .run==$run)]|last//null')
   verify=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '[.[]|select(.kind=="verify" and .run==$run)]|last//null')
   escalation=$(printf '%s' "$item" | jq -r '.escalation//""')
@@ -550,7 +551,7 @@ controller_decide() { # Rule f: deterministic rendering from durable records onl
   else
     printf '%s' "$station" | jq '.result' > "$CT_TMP/decision-result" || return 5
   fi
-  if [ "$action" = ask ] || { [ "$action" = bounce ] && [ "$(printf '%s' "$row" | jq .replay.bounces)" -ge 2 ]; }; then
+  if [ "$action" = ask ] || { [ "$action" = bounce ] && [ "$(printf '%s' "$row" | jq .replay.bounces)" -ge "$JOURNAL_MAX_BOUNCES" ]; }; then
     if [ "$action" = bounce ]; then printf 'bounce cap reached\n' > "$CT_TMP/decision-cause"
     else jq -r .question "$CT_TMP/decision-result" > "$CT_TMP/decision-cause" || return 5; fi
     controller_diagnostic "$number" "$run" "$CT_TMP/decision-cause" > "$CT_TMP/diagnostic-body" || return 5

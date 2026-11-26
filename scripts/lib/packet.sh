@@ -224,11 +224,8 @@ packet_cmd() (
   review_valid_login "$author" || { packet_error 'invalid issue author'; return 3; }
   case "$REVIEW_APPROVERS" in *" $author "*) ;; *) packet_error 'issue creator is not an approver'; return 3 ;; esac
   body=$(printf '%s' "$initial" | jq -r .body)
-  stamp=$(printf '%s' "$body" | journal_stamp) || { packet_error 'no valid plan stamp'; return 3; }
-  approved=$(printf '%s' "$body" | jq -Rser '
-    [split("\n")[]|select(startswith("<!-- agentic-flow:plan:"))|
-      [scan("(?:^| )approved=([a-f0-9]{40})(?= |$)")|.[0]]] |
-    if length==1 and (.[0]|length)==1 then .[0][0] else error("missing or ambiguous approved stamp") end') || return 3
+  stamp=$(printf '%s' "$body" | journal_stamp_lines body) || { packet_error 'no valid plan stamp'; return 3; }
+  approved=$(printf '%s' "$stamp" | jq -er .approved) || { packet_error 'missing or ambiguous approved stamp'; return 3; }
   git cat-file -e "$approved^{commit}" 2>/dev/null || {
     packet_error "approved revision $approved missing locally; run: git fetch origin $approved"; return 3;
   }

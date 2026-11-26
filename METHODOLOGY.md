@@ -334,6 +334,10 @@ labels, and appends the generated content below `<!-- agentic-flow:adopted -->`.
 Keep handwritten edits above that marker. Reapply finds adopted issues by stamp and
 preserves their live labels.
 
+Replay uses the issue's pinned bounce limit. A bounce escalates when the journal
+has already recorded that many bounces since the last resume. An unpinned issue has
+a limit of two.
+
 <!-- BEGIN SHARED WORKFLOW -->
 Generated from `config/workflow.tsv`; edit the data, then run `scripts/render-shared.sh`.
 
@@ -355,16 +359,16 @@ Generated from `config/workflow.tsv`; edit the data, then run `scripts/render-sh
 | Topology | Event | Role | From | To | Requires |
 |---|---|---|---|---|---|
 | step-strict | submit | executor | executing | reviewing | head,head≠last-bounced-head |
-| step-strict | bounce | reviewer | reviewing | executing | findings,bounces<2 |
-| step-strict | bounce | reviewer | reviewing | escalated | findings,bounces=2 |
+| step-strict | bounce | reviewer | reviewing | executing | findings,bounces<limit |
+| step-strict | bounce | reviewer | reviewing | escalated | findings,bounces=limit |
 | step-strict | ask | executor | executing | escalated | question |
 | step-strict | ask | reviewer | reviewing | escalated | question |
 | step-strict | resume | approver | escalated | executing | note,return=executing |
 | step-strict | resume | approver | escalated | reviewing | note,return=reviewing |
 | step-strict | approve | reviewer | reviewing | approved | head=submitted |
 | work-standard | submit | executor | executing | reviewing | head,head≠last-bounced-head |
-| work-standard | bounce | reviewer | reviewing | executing | findings,bounces<2 |
-| work-standard | bounce | reviewer | reviewing | escalated | findings,bounces=2 |
+| work-standard | bounce | reviewer | reviewing | executing | findings,bounces<limit |
+| work-standard | bounce | reviewer | reviewing | escalated | findings,bounces=limit |
 | work-standard | ask | executor | executing | escalated | question |
 | work-standard | ask | reviewer | reviewing | escalated | question |
 | work-standard | resume | approver | escalated | executing | note,return=executing |

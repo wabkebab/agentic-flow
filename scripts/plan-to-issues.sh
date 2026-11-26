@@ -223,6 +223,8 @@ fi
 command -v gh >/dev/null || die "gh not found"
 # shellcheck source=scripts/lib/review-policy.sh
 source "$SCRIPT_DIR/lib/review-policy.sh"
+# shellcheck source=scripts/lib/journal.sh
+source "$SCRIPT_DIR/lib/journal.sh"
 gh auth status >/dev/null 2>&1 || die "gh not authenticated (run: gh auth login)"
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) || die "not in a GitHub repo"
 HAS_ISSUES=$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)
@@ -370,10 +372,8 @@ index_identity() { # identity, number
   printf '%s\t%s\n' "$1" "$2" >> "$INDEX"
 }
 
-printf '%s\n' "$ISSUES_JSON" | jq -r --arg prefix "<!-- $PLAN_MARKER " '
-  .[] | .number as $number | .body | split("\n")[]
-  | select(contains($prefix)) | [$number, .] | @tsv
-' > "$TMP/stamp-lines" || die "could not parse issue stamps"
+printf '%s\n' "$ISSUES_JSON" | journal_stamp_lines index "$PLAN_KEY" > "$TMP/stamp-lines" \
+  || die "could not parse issue stamps"
 while IFS="$(printf '\t')" read -r remote_number stamp; do
   [ -n "$remote_number" ] || continue
   if [[ "$stamp" =~ $TRACK_STAMP_RE ]]; then
@@ -417,12 +417,14 @@ fi
 # First document-mode reapply migrates legacy bodies in place. Preserve the old
 # spec hash and handwritten packets: bootstrap must change only approved=.
 migrate_approval_body() { # existing managed body, proposed body
-  local old=$1 stamped_rev
+  local old=$1 stamp stamped_rev line
   if [ -n "$APPROVED_REV" ] && [ -n "$1" ]; then
-    stamped_rev=$(printf '%s\n' "$old" | sed -nE 's/^<!-- .* approved=([a-f0-9]{40}).* -->$/\1/p')
+    stamp=$(printf '%s\n' "$old" | journal_stamp_lines body) || return 1
+    stamped_rev=$(printf '%s\n' "$stamp" | jq -r '.approved // empty')
     if [ -z "$stamped_rev" ] || [ "$stamped_rev" = "$APPROVED_REV" ]; then
-      printf '%s\n' "$old" | awk -v rev="$APPROVED_REV" '
-        /^<!-- agentic-flow:plan:/ {
+      line=$(printf '%s\n' "$stamp" | jq -r .line)
+      printf '%s\n' "$old" | STAMP_LINE="$line" awk -v rev="$APPROVED_REV" '
+        $0 == ENVIRON["STAMP_LINE"] {
           if (index($0," approved=")>0) sub(/ approved=[a-f0-9]+/," approved=" rev)
           else if (index($0," approved-by:")>0) sub(/ approved-by:/," approved=" rev " approved-by:")
           else sub(/ -->$/," approved=" rev " -->")
@@ -436,6 +438,16 @@ migrate_approval_body() { # existing managed body, proposed body
 
 issue_body() {
   printf '%s\n' "$1" | jq -r .body
+}
+
+issue_stamp_fields() { # parsed existing stamp, or empty for a new issue
+  journal_value=journal=v1
+  approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
+  policy_line=''
+  [ -n "$1" ] || return 0
+  approved_value=${approved_value:-$(printf '%s\n' "$1" | jq -r '.approved | values | "approved="+.')}
+  journal_value=$(printf '%s\n' "$1" | jq -r '.journal | values | "journal="+.')
+  policy_line=$(printf '%s\n' "$1" | jq -r '.policy_line // empty')
 }
 
 has_adopted_prefix() {
@@ -498,10 +510,12 @@ if [ "$PROFILE" = standard ]; then
   [ ! -s "$INDEX" ] || [ -n "$existing" ] \
     || die "changing a standard work issue identity requires migration"
   existing_body=$(issue_body "$existing")
+  existing_stamp=''
   approval_by="" approval_at=""
   if [ -n "$existing_body" ]; then
-    approval_by=$(printf '%s\n' "$existing_body" | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)
-    approval_at=$(printf '%s\n' "$existing_body" | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
+    existing_stamp=$(printf '%s\n' "$existing_body" | journal_stamp_lines body)
+    approval_by=$(printf '%s\n' "$existing_stamp" | jq -r .line | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p')
+    approval_at=$(printf '%s\n' "$existing_stamp" | jq -r .line | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p')
     if [ -n "$approval_by" ]; then
       [[ "$approval_by" =~ ^[A-Za-z0-9]([A-Za-z0-9._\ -]*[A-Za-z0-9])?$ ]] \
         && [[ "$approval_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
@@ -517,15 +531,10 @@ if [ "$PROFILE" = standard ]; then
   if [ "$MODE" = apply ] && [ -z "$approval_by" ]; then
     die "standard work issue requires --approved-by to record plan approval"
   fi
-  journal_value='journal=v1'
-  approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
-  if [ -n "$existing_body" ]; then
-    approved_value=${approved_value:-$(printf '%s\n' "$existing_body" | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
-    journal_value=$(printf '%s\n' "$existing_body" | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
-  fi
+  issue_stamp_fields "$existing_stamp"
   stamp="<!-- $PLAN_MARKER step:$step_id spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value}"
   [ -z "$approval_by" ] || stamp="$stamp approved-by:$approval_by approved-at:$approval_at"
-  stamp="$stamp -->"
+  stamp="$stamp -->${policy_line:+$'\n'$policy_line}"
   desired_body=$(render_step_body 0 "$step_id" "" "$stamp
 <!-- agentic-flow:topology:standard -->")
   desired_body=$(migrate_approval_body "$existing_body" "$desired_body")
@@ -586,13 +595,15 @@ fi
 TRACK_ID_MARKER="$PLAN_MARKER tracker"
 existing_tracker=$(issue_for_identity tracker)
 existing_tracker_body=$(issue_body "$existing_tracker")
+existing_tracker_stamp=''
 APPROVAL_BY=""
 APPROVAL_AT=""
 if [ -n "$existing_tracker_body" ]; then
-  APPROVAL_BY=$(printf '%s\n' "$existing_tracker_body" \
-    | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p' | head -1)
-  APPROVAL_AT=$(printf '%s\n' "$existing_tracker_body" \
-    | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p' | head -1)
+  existing_tracker_stamp=$(printf '%s\n' "$existing_tracker_body" | journal_stamp_lines body)
+  APPROVAL_BY=$(printf '%s\n' "$existing_tracker_stamp" | jq -r .line \
+    | sed -n 's/.* approved-by:\(.*\) approved-at:[^ ]* -->.*/\1/p')
+  APPROVAL_AT=$(printf '%s\n' "$existing_tracker_stamp" | jq -r .line \
+    | sed -n 's/.* approved-at:\([^ ]*\) -->.*/\1/p')
   if [ -n "$APPROVAL_BY" ]; then
     [[ "$APPROVAL_BY" =~ ^[A-Za-z0-9]([A-Za-z0-9._\ -]*[A-Za-z0-9])?$ ]] \
       || die "existing approval identity is not v2-safe"
@@ -609,17 +620,12 @@ if [ -n "$APPROVED_BY" ]; then
     APPROVAL_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   fi
 fi
-journal_value='journal=v1'
-approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
-if [ -n "$existing_tracker_body" ]; then
-  approved_value=${approved_value:-$(printf '%s\n' "$existing_tracker_body" | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
-  journal_value=$(printf '%s\n' "$existing_tracker_body" | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
-fi
+issue_stamp_fields "$existing_tracker_stamp"
 TRACK_STAMP="<!-- $TRACK_ID_MARKER spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value}"
 if [ -n "$APPROVAL_BY" ]; then
   TRACK_STAMP="$TRACK_STAMP approved-by:$APPROVAL_BY approved-at:$APPROVAL_AT"
 fi
-TRACK_STAMP="$TRACK_STAMP -->"
+TRACK_STAMP="$TRACK_STAMP -->${policy_line:+$'\n'$policy_line}"
 if [ "$PROFILE" = strict ]; then
   TRACK_STAMP="$TRACK_STAMP
 <!-- agentic-flow:topology:strict -->"
@@ -633,12 +639,12 @@ TRACK_STUB=$TRACK_DESIRED
 TRACK_DESIRED=$(migrate_approval_body "$existing_tracker_body" "$TRACK_DESIRED")
 
 desired_step_body() { # index, step id, tracker URL, existing managed body
-  local stamp body journal_value=journal=v1 approved_value=${APPROVED_REV:+approved=$APPROVED_REV}
+  local stamp body existing_stamp='' journal_value approved_value policy_line
   if [ -n "$4" ]; then
-    approved_value=${approved_value:-$(printf '%s\n' "$4" | sed -nE 's/^<!-- .* (approved=[a-f0-9]{40}).* -->$/\1/p' | head -1)}
-    journal_value=$(printf '%s\n' "$4" | sed -nE 's/^<!-- .* (journal=[a-z0-9][a-z0-9._-]*).* -->$/\1/p' | head -1)
+    existing_stamp=$(printf '%s\n' "$4" | journal_stamp_lines body) || return 1
   fi
-  stamp="<!-- $PLAN_MARKER step:$2 spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value} -->"
+  issue_stamp_fields "$existing_stamp" || return 1
+  stamp="<!-- $PLAN_MARKER step:$2 spec:$SPEC_HASH${journal_value:+ $journal_value}${approved_value:+ $approved_value} -->${policy_line:+$'\n'$policy_line}"
   if [ "$PROFILE" = strict ]; then
     stamp="$stamp
 <!-- agentic-flow:topology:strict -->"
@@ -719,9 +725,8 @@ if [ "$MODE" = diff ]; then
     echo
     echo "Tracker: would adopt"
   else
-    existing_spec=$(printf '%s\n' "$existing_tracker" | jq -r '.body' \
-      | sed -n 's/^<!-- agentic-flow:plan:[^ ]* tracker spec:\([^ ]*\).* -->$/\1/p' | head -1)
-    existing_approved=$(printf '%s\n' "$existing_tracker" | jq -r .body | sed -nE 's/^<!-- .* approved=([a-f0-9]{40}).* -->$/\1/p')
+    existing_spec=$(printf '%s\n' "$existing_tracker_stamp" | jq -r .spec)
+    existing_approved=$(printf '%s\n' "$existing_tracker_stamp" | jq -r '.approved // empty')
     if [ -n "$APPROVED_REV" ] && [ -z "$existing_approved" ]; then
       echo
       echo "Tracker: add approved=$APPROVED_REV only (journal, labels and body preserved)"
@@ -746,7 +751,7 @@ if [ "$MODE" = diff ]; then
       echo "Step $step_id: would adopt"
     else
       if [ -n "$APPROVED_REV" ]; then
-        existing_approved=$(printf '%s\n' "$existing" | jq -r .body | sed -nE 's/^<!-- .* approved=([a-f0-9]{40}).* -->$/\1/p')
+        existing_approved=$(issue_body "$existing" | journal_stamp_lines body | jq -r '.approved // empty')
         if [ -z "$existing_approved" ]; then
           echo "Step $step_id: add approved=$APPROVED_REV only (journal, labels and body preserved)"
         elif [ "$existing_approved" = "$APPROVED_REV" ]; then
