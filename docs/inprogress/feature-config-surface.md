@@ -579,7 +579,14 @@ effective value:
       - On a digest that differs, or a record without the field, `controller_pending`
         does not decide. It appends the item to `CT_PENDING` as `pending=verify` with
         `reverify` set.
-      - `status` reports the step as "pending verification (budget policy changed)".
+      - The controller's own output reports it for that invocation, including
+        `--reconcile-only`, which prints its pending queue: "#N pending verification
+        (budget policy changed)". This is not durable state. `CT_PENDING` lives only as
+        long as the controller process.
+      - `agentic-flow status` gets no new input. With no live controller, it already
+        recommends `agentic-flow run <doc>` for this state (Phase 1 C-2, rule 7), and that
+        run reverifies the step. The record on disk stays green until then, and `status`
+        does not claim otherwise.
       - The next normal dispatch takes that item through the existing `pending=verify`
         branch (`controller.sh:828-831`), which calls `controller_verify` for the same
         run. The new record carries `reverify:{reason:"budget-policy", attempt:n}`.
@@ -764,6 +771,9 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
     inside reconcile, so `--reconcile-only` stays verifier-free.
   - The removed-policy-line guard is narrowed to newer clients, with the 0.21.0
     limitation documented and recorded as an accepted risk.
+  - Follow-up: "pending verification" is reported by the controller's own output,
+    including `--reconcile-only`, not by `status`, which has no durable source for it
+    and already recommends the `run` that reverifies.
 - **Draft 5, fourth review.**
   - One shared stamp splitter that every prefix consumer uses (packet, close-out,
     approval migration), guarded by a contracts test.
@@ -838,7 +848,7 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 - Given `CI=true` and `AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL=warn`, then the CI mode applies, and the ignored value is reported once.
 - Given a verify record made under `warn`, then a check under `stop` treats it as stale and reruns.
 - Given a controller that crashes at `after-verify` with a warn-green record, when the operator switches to `stop` and restarts, then `controller_pending` sees a different digest and queues the run as `pending=verify` with `reverify` set, without deciding. Dispatch then runs `controller_verify`, and the ledger accepts the `reverify` record. With an overrun the rerun is red: the next pass routes `fix`, the ledger has no `submit` decision, and exactly one replacement intent is dispatched (`replaces` = the run). No new chain is started.
-- Given the same stale warn-green record, when `run --reconcile-only` runs, then no `verify-step` is invoked (a sentinel records zero calls), no decision is recorded, and `status` shows the step as pending verification. The next normal `run` reverifies it.
+- Given the same stale warn-green record, when `run --reconcile-only` runs, then a sentinel records zero `verify-step` calls, no decision is recorded, and its output lists "#N pending verification". A later `status` recommends `agentic-flow run <doc>`, and that run reverifies it.
 - Given the same restart where the rerun is green under `stop`, then the refreshed route is `decide` and the submit is journaled from the reverify record.
 - Given a policy that changes before each of three reverifies, then the third mismatch decides as `ask`.
 - Given `verify-step` paused (test hook) between key generation and the first check, when the operator file's `budget.wall.mode.local` is edited, then `make check` prints the snapshot digest from before the edit, and the record's `budget_policy` equals it. A check reporting a different digest makes `verify-step` refuse to publish.
