@@ -1,7 +1,7 @@
 <!-- TRIAGE (first pass · 2026-11-26) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (changes journal replay and the controller; project baseline is Standard)
-> Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures. Draft 1, written against `0.21.0` (`97c6ebe`). All three gating decisions are settled (2026-11-26): the split safety floor, C-1's override tiers, and pins immutable once issues are stamped. No [BLOCKING] question remains; the rest under *Open questions* carry recommendations. Next: owner review and approval.
+> Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures. Draft 1, written against `0.21.0` (`97c6ebe`). All three gating decisions are settled (2026-11-26): the split safety floor, C-1's override tiers, and pins immutable once issues are stamped. Every question under *Open questions* is now decided, including CI wall time defaulting to `warn` here and for adopters. Next: owner review and approval.
 
 # Feature — Config surface, plan-pinned policy and budget modes
 
@@ -432,9 +432,9 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
     not enforced" in the step summary instead of failing the build.
   - This changes today's behaviour: a CI wall-time overrun currently fails.
   - A project that wants enforcement sets `budget.wall.mode.ci=stop` in a reviewed commit.
-- **This repository's own CI** (recommendation, open). Its ceilings are calibrated per
-  tag, so f-5 adds `.agentic-flow/config` with `budget.wall.mode.ci=stop` to keep today's
-  enforcement here. Not adding it lets the scaffold run under the adopter default.
+- **This repository's own CI — decided by the owner (2026-11-26): `warn`, the default.**
+  f-5 adds no `.agentic-flow/config` here; the scaffold runs under the same default its
+  adopters get. Wall-time overruns in this repo's CI are recorded, not enforced.
 
 ---
 
