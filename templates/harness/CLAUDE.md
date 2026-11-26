@@ -73,7 +73,7 @@ A closed Strict step means reviewed clean. The Status block and CI record shippi
 
 | Target | What it does on this project | Notes / gotchas |
 |--------|------------------------------|-----------------|
-| `make check` | harness sanity (prefilled) + <type-check + lint> | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
+| `make check` | harness sanity (prefilled) + <type-check + lint> | the Stop hook runs this fast gate. Budget overruns in warn mode are recorded and allow the gate to pass. |
 | `make test` | <full test suite> | |
 | `make test-one F=…` | <one targeted test> | |
 | `make build` | <production build> | |

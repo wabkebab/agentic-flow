@@ -122,6 +122,19 @@ every group and tag. Set `AGENTIC_MEASURE_EVENTS` to an absolute output file to
 capture group and tag seconds. Raising a ceiling requires review. Include a
 fresh measurement and explain the headroom in the proposed change.
 
+[`config/test-budgets.tsv`](config/test-budgets.tsv) sets the fixture copy limits
+for fast, full source, and full exported runs. Fixture overruns fail by default.
+Set `budget.fixtures.mode=warn` in the project config to record them as warnings.
+Wall overruns warn by default. Set `budget.wall.mode.local=stop` or
+`budget.wall.mode.ci=stop` to enforce the wall limits in that context.
+`budget.wall.scale` multiplies local ceilings, rounded up to whole seconds.
+CI uses scale 1.0 and reads its budget policy from tracked files.
+
+`scripts/doctor.sh` shows which budgets warn, where their modes came from, and
+the ten most recent overruns. Warning records live in the Git common directory
+under `agentic-flow/state/budget-overruns/`, which retains the newest 20 run files.
+The GitHub Actions step summary shows “wall time not enforced” when its wall policy warns.
+
 Agent context is intentionally progressive. Executors start from `AGENTS.md`, the issue,
 the linked brief step, `CLAUDE.md` Stack profile/Gotchas, and live call sites/tests.
 Planner and close-out work starts from `CLAUDE.md` plus the relevant template, Tracker,

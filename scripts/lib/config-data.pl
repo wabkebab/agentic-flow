@@ -1,6 +1,7 @@
 # Config parsing and writes use byte-oriented I/O so edits can preserve existing lines.
 use strict;
 use warnings;
+use Digest::SHA qw(sha256_hex);
 use Errno qw(ENOENT);
 use Fcntl qw(O_RDONLY O_NONBLOCK O_NOFOLLOW LOCK_EX LOCK_NB);
 use File::Basename qw(dirname);
@@ -14,6 +15,9 @@ my $registry = "$root/config/config-keys.tsv";
 my $byte_limit = 64 * 1024;
 my $key_pattern = qr/[a-z][a-z0-9_.-]{0,63}/;
 my (@keys, %keys);
+my @budget_paths = qw(.agentic-flow/config config/config-keys.tsv config/test-budgets.tsv config/test-wall-ceilings.tsv);
+my @budget_operator = qw(budget.wall.mode.local budget.wall.scale);
+my $json = JSON::PP->new->canonical->max_depth(16);
 
 sub error {
     my ($status, $message) = @_;
@@ -173,21 +177,176 @@ sub resolve {
     return \%resolved;
 }
 
-sub git_bytes {
-    my ($source, @command) = @_;
+sub git_bytes_bounded {
+    my ($source, $limit, @command) = @_;
     open my $fh, '-|', 'git', '-C', $root, @command or error(5, "$source: $!");
-    my $bytes = bounded_read($fh, $source);
+    my $bytes;
+    defined read($fh, $bytes, $limit + 1) or error(5, "$source: $!");
+    length($bytes) <= $limit or error(2, "$source: file exceeds $limit bytes");
     close $fh or error(5, "$source: cannot read Git object");
     return $bytes;
 }
 
+sub git_bytes {
+    my ($source, @command) = @_;
+    return git_bytes_bounded($source, $byte_limit, @command);
+}
+
 sub revision_file_bytes {
-    my ($oid, $path, $source) = @_;
+    my ($oid, $path, $source, $limit) = @_;
     my $row = git_bytes($source, 'ls-tree', '--full-tree', $oid, '--', $path);
     return undef if $row eq '';
     $row =~ /\A100(?:644|755) blob ([a-f0-9]{40,64})\t\Q$path\E\n\z/
         or error(5, "$source: expected a regular file");
-    return git_bytes($source, 'cat-file', 'blob', $1);
+    return git_bytes_bounded($source, $limit // $byte_limit, 'show', "$oid:$path");
+}
+
+sub budget_registry {
+    my ($bytes, $source) = @_;
+    @keys = (); %keys = ();
+    # Old trees have no registry. Keep the budget schema available for
+    # collecting explicit overrides before resolving each tree independently.
+    $bytes //= <<'DEFAULTS';
+key	tier	type	default	summary
+budget.fixtures.mode	project	stop|warn	stop	Fixture mode
+budget.wall.mode.ci	project	stop|warn	warn	CI wall mode
+budget.wall.mode.local	operator	stop|warn	warn	Local wall mode
+budget.wall.scale	operator	decimal:1.0-5.0	1.0	Local wall scale
+controller.turn_cap	operator	int:10-200	50	Controller turn cap
+DEFAULTS
+    load_registry($bytes, $source);
+    for my $key ('budget.fixtures.mode', 'budget.wall.mode.ci', @budget_operator) {
+        my $tier = grep { $_ eq $key } @budget_operator;
+        ($keys{$key}{tier} // '') eq ($tier ? 'operator' : 'project')
+            or error(2, "$source: missing budget key or incorrect tier: $key");
+    }
+}
+
+sub budget_overrides {
+    my $ci = $mode eq 'ci';
+    my ($values) = $operator ne ''
+        ? read_layer(file_bytes($operator) // '', $operator, 'operator', $ci)
+        : ({});
+    my %overrides;
+    for my $key (@keys) {
+        my $env = $keys{$key}{env};
+        if ($ci && $key =~ /\Abudget\./) {
+            print STDERR "config: CI=true ignores $key from $env\n" if exists $ENV{$env};
+            next;
+        }
+        if (exists $ENV{$env}) {
+            $keys{$key}{tier} eq 'operator'
+                or error(2, "$env: $key has tier $keys{$key}{tier} and cannot be set in the environment");
+            valid_value($keys{$key}{type}, $ENV{$env})
+                or error(2, "$env: invalid value for $key (expected " . range_text($keys{$key}{type}) . ')');
+            $values->{$key} = $ENV{$env};
+        }
+        if (defined $values->{$key} && grep { $_ eq $key } @budget_operator) {
+            $overrides{$key} = {value => $values->{$key}, source => exists $ENV{$env} ? $env : $operator};
+        }
+    }
+    return \%overrides;
+}
+
+sub budget_snapshot {
+    my ($raw, $report) = @_;
+    if ($mode eq 'ci') {
+        print STDERR "config: CI=true ignores AGENTIC_FLOW_BUDGET_POLICY\n" if $report;
+        return {};
+    }
+    length($raw) <= $byte_limit or error(2, 'budget snapshot exceeds 64 KiB');
+    my $snapshot = eval { $json->decode($raw) };
+    ref($snapshot) eq 'HASH' or error(2, 'invalid budget snapshot');
+    my %overrides;
+    for my $key (sort keys %$snapshot) {
+        grep { $_ eq $key } @budget_operator
+            or error(2, 'budget snapshot names a non-operator key');
+        my $value = $snapshot->{$key};
+        defined $value && !ref($value) && $json->encode($value) =~ /\A"/
+            && valid_value($keys{$key}{type}, $value)
+            or error(2, "invalid budget snapshot value for $key");
+        $overrides{$key} = {value => $value, source => 'AGENTIC_FLOW_BUDGET_POLICY'};
+    }
+    return \%overrides;
+}
+
+sub budget_effective {
+    my ($files, $source, $overrides) = @_;
+    my ($tracked) = read_layer($files->{$budget_paths[0]} // '', $source, 'project', $mode eq 'ci');
+    my $wall = "budget.wall.mode.$mode";
+    my $scale = 'budget.wall.scale';
+    my $fixtures = 'budget.fixtures.mode';
+    my (%policy, %sources);
+    for my $key ($wall, $scale, $fixtures) {
+        my ($value, $from) = ($keys{$key}{default}, 'default');
+        ($value, $from) = ($tracked->{$key}, $source) if exists $tracked->{$key};
+        ($value, $from) = @{$overrides->{$key}}{qw(value source)} if exists $overrides->{$key};
+        ($value, $from) = ('1.0', 'CI=true') if $key eq $scale && $mode eq 'ci';
+        my $type = $key eq $scale ? 'decimal:1.0-5.0' : 'warn|stop';
+        valid_value($type, $value) or error(2, "$from: invalid effective value for $key");
+        my $field = $key eq $wall ? 'wall_mode' : $key eq $scale ? 'wall_scale' : 'fixtures_mode';
+        $policy{$field} = $value;
+        $sources{$field} = $from;
+    }
+    $policy{context} = $mode;
+    my %files = map { $_ => defined $files->{$_} ? sha256_hex($files->{$_}) : undef } @budget_paths;
+    my $digest = sha256_hex($json->encode({effective => \%policy, files => \%files}));
+    return {effective => \%policy, digest => $digest, sources => \%sources,
+        overrides => {map { $_ => $overrides->{$_}{value} } keys %$overrides}};
+}
+
+sub budget_tree_digest {
+    my ($sha, $base, $paths, $snapshot) = @_;
+    my %tree = map { $_ => $base } ('scripts/self-test.sh', @budget_paths);
+    for my $path (@$paths) {
+        # Git restore also accepts a directory as an overlay path.
+        my $prefix = join '/', grep { length && $_ ne '.' } split m{/+}, $path;
+        for my $file (keys %tree) {
+            $tree{$file} = $sha if $prefix eq '' || index("$file/", "$prefix/") == 0;
+        }
+    }
+    my $runner_rev = $tree{'scripts/self-test.sh'};
+    my $runner = revision_file_bytes($runner_rev, 'scripts/self-test.sh', "$runner_rev:scripts/self-test.sh", 1024 * 1024);
+    return sha256_hex('pre-ack')
+        unless defined $runner && $runner =~ /^# agentic-flow-capability: budget-ack v1$/m;
+    my %files;
+    for my $path (@budget_paths) {
+        my $rev = $tree{$path};
+        $files{$path} = revision_file_bytes($rev, $path, "$rev:$path");
+    }
+    budget_registry($files{$budget_paths[1]}, "$tree{$budget_paths[1]}:$budget_paths[1]");
+    return budget_effective(\%files, "$tree{$budget_paths[0]}:$budget_paths[0]", budget_snapshot($snapshot, 0))->{digest};
+}
+
+sub budget_action {
+    my ($action, @args) = @_;
+    if ($action eq 'budget') {
+        @args <= 2 && (!defined $args[1] || $args[1] eq '--shard') or usage();
+        my %files = map { $_ => $_ eq $budget_paths[0] ? project_bytes() : file_bytes("$root/$_") } @budget_paths;
+        budget_registry($files{$budget_paths[1]}, $registry);
+        my $overrides = @args ? budget_snapshot($args[0], @args == 1) : budget_overrides();
+        print $json->encode(budget_effective(\%files, $project, $overrides)), "\n";
+    } elsif ($action eq 'budget-overrides') {
+        my ($sha) = @args;
+        @args == 1 && $sha =~ /\A(?:[a-f0-9]{40}|[a-f0-9]{64})\z/ or usage();
+        budget_registry(revision_file_bytes($sha, $budget_paths[1], "$sha:$budget_paths[1]"), "$sha:$budget_paths[1]");
+        my $overrides = budget_overrides();
+        print $json->encode({map { $_ => $overrides->{$_}{value} } keys %$overrides}), "\n";
+    } else {
+        my ($sha, $base, $raw_plan, $snapshot) = @args;
+        @args == 4 && $sha =~ /\A(?:[a-f0-9]{40}|[a-f0-9]{64})\z/ &&
+            $base =~ /\A(?:[a-f0-9]{40}|[a-f0-9]{64})?\z/ or usage();
+        my $plan = eval { $json->decode($raw_plan) };
+        ref($plan) eq 'HASH' && ref($plan->{red_first}) eq 'ARRAY' && @{$plan->{red_first}} <= 100
+            or error(2, 'invalid budget command plan');
+        for my $entry (@{$plan->{red_first}}) {
+            $base ne '' && ref($entry) eq 'HASH' && ref($entry->{paths}) eq 'ARRAY' &&
+                @{$entry->{paths}} <= 1000 or error(2, 'invalid budget red overlay');
+        }
+        my $green = budget_tree_digest($sha, $sha, [], $snapshot);
+        my @red = map { budget_tree_digest($sha, $base, $_->{paths}, $snapshot) } @{$plan->{red_first}};
+        print $json->encode({context => $mode, green => $green, red => \@red}), "\n";
+    }
 }
 
 sub pin {
@@ -337,6 +496,10 @@ sub change {
 }
 
 my $action = shift(@args) // 'list';
+if ($action =~ /\Abudget(?:-overrides|-key)?\z/) {
+    budget_action($action, @args);
+    exit 0;
+}
 if ($action eq '--json') {
     unshift @args, $action;
     $action = 'list';

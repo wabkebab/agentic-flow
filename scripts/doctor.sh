@@ -172,6 +172,11 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
     . "$ROOT/scripts/lib/config.sh"
     config_diagnose "$ROOT" || fail 'invalid project config'
   fi
+  if [ -f "$ROOT/config/test-budgets.tsv" ]; then
+    # shellcheck source=scripts/lib/budget.sh
+    . "$ROOT/scripts/lib/budget.sh"
+    budget_doctor "$ROOT" || fail 'could not report test budgets'
+  fi
   require_file ADOPTION.md
   if payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES"; then require_file CLAUDE.md; fi
   require_file AGENTS.md

@@ -35,8 +35,14 @@ fail() {
   exit 1
 }
 
-link_test_wall_ceilings() { # <fixture root>
-  mkdir -p "$1/config"
+link_test_budget_config() { # <fixture root>
+  mkdir -p "$1/config" "$1/scripts/lib"
+  ln "$ROOT/config/config-keys.tsv" "$ROOT/config/test-budgets.tsv" "$1/config/"
+  ln "$ROOT/scripts/lib/budget.sh" "$ROOT/scripts/lib/config.sh" "$ROOT/scripts/lib/config-data.pl" "$ROOT/scripts/lib/roles.sh" "$1/scripts/lib/"
+}
+
+link_test_budgets() { # <fixture root>
+  link_test_budget_config "$1"
   ln "$ROOT/config/test-wall-ceilings.tsv" "$1/config/test-wall-ceilings.tsv"
 }
 

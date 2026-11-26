@@ -479,7 +479,6 @@ fail	"failed diff changed the project tree"
 fail	"failed downgrade changed state"
 fail	"failed shared render changed a consumer"
 fail	"fast dispatch included an unexpected group: $actual_fast_groups"
-fail	"fast mode made $file_copies fixture file copies; limit 33"
 fail	"fast self-test failed in a fresh export"
 fail	"final state stamp did not match the tree"
 fail	"final-head fallback failed: $(cat "$TMP/close.out")"
@@ -490,7 +489,6 @@ fail	"fixture shell inventory missed a manifest source member"
 fail	"focused run passed with a drifted should_run call-site label"
 fail	"focused run passed with its group block disabled"
 fail	"forced export overwrote adopter assurance baseline"
-fail	"full mode made $file_copies fixture file copies; limit 200"
 fail	"fully checked schema-less document was not LEGACY"
 fail	"gap refusal lacked diagnosis: $(cat "$TMP/close.out")"
 fail	"gate cache fixture commit failed"
@@ -1198,8 +1196,6 @@ fail	'foreign takeover not recorded'
 fail	'forged login text bypassed author filter'
 fail	'framed comment exceeds cap'
 fail	'full discovery page lacked bound diagnostic'
-fail	'full fixture budget accepted 201 copies'
-fail	'full fixture budget rejected its approved 200-copy boundary'
 fail	'full fixture copy failure did not name the count and approved limit'
 fail	'full mode did not reuse one source snapshot'
 fail	'full mode exceeded one fixture tree copy'

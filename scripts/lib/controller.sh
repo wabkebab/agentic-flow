@@ -652,7 +652,7 @@ controller_superseded() { # Rule g; decisions always replay through CAS instead.
   return 1
 }
 controller_pending() { # Rule f then g, oldest chain first. Only decide/handoff execute.
-  local item run pending rc
+  local item run pending rc verify intent digest attempt issue
   CT_PENDING='[]'
   printf '%s\n' "$CT_CONTEXT" > "$CT_TMP/context"
   CT_CHAINS=$(ledger_chains "$CT_PLAN" "$CT_TMP/context") || return 5
@@ -677,6 +677,29 @@ controller_pending() { # Rule f then g, oldest chain first. Only decide/handoff 
           *) return "$rc" ;;
         esac ;;
       decide)
+        verify=$(jq -c --arg run "$run" '[.[]|select(.kind=="verify" and .run==$run)]|last' <<< "$CT_RECORDS") || return 5
+        if [ "$(jq -r .status <<< "$verify")" = green ] && [ "$(jq -r '.escalation//""' <<< "$item")" = '' ]; then
+          intent=$(jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)' <<< "$CT_RECORDS") || return 5
+          digest=$(controller_current_budget "$intent" "$(jq -r .head <<< "$verify")") || return 5
+          if [ "$digest" != "$(jq -r '.budget_policy//""' <<< "$verify")" ]; then
+            attempt=$(jq -r '.reverify.attempt//0' <<< "$verify")
+            if [ "$attempt" -lt 2 ]; then
+              rc=0; controller_superseded "$item" || rc=$?
+              case "$rc" in
+                0) continue ;;
+                1) ;;
+                *) return "$rc" ;;
+              esac
+              issue=$(jq -r .issue <<< "$intent")
+              item=$(jq -c --argjson issue "$issue" --argjson attempt "$((attempt+1))" '
+                .pending="verify" | .issue=$issue | .reverify={reason:"budget-policy",attempt:$attempt}' <<< "$item") || return 5
+              CT_PENDING=$(jq --argjson item "$item" '.+[$item]' <<< "$CT_PENDING") || return 5
+              printf '#%s pending verification (budget policy changed)\n' "$issue" >&2
+              continue
+            fi
+            item=$(jq -c '.escalation="budget policy kept changing during verification"' <<< "$item") || return 5
+          fi
+        fi
         controller_decide "$item" || return $?
         CT_RECORDS=$(ledger_read "$CT_PLAN") || return 5
         if printf '%s' "$CT_RECORDS" | jq -e --arg run "$run" 'any(.[];.kind=="decision" and .run==$run)' >/dev/null; then controller_replay_handoff "$run" || return $?; fi ;;
@@ -742,38 +765,65 @@ controller_head_valid() {
     [ "$head" != "$(printf '%s' "$row" | jq -r .replay.last_bounced_head)" ] &&
     git show -s --format=%B "$head" | grep -Eiq "(^|[[:space:]])Fixes #$number([^0-9]|$)"
 }
+controller_verify_base() { # intent
+  # A new chain after a human resume can start on already-implemented code.
+  # Red-first always needs the step's original executor base; the current
+  # intent base still governs ownership and whether the station advanced HEAD.
+  printf '%s' "$CT_RECORDS" | jq -er --argjson intent "$1" '
+    [.[]|select(.kind=="intent" and .station=="executor" and
+      .plan==$intent.plan and .issue==$intent.issue and .step==$intent.step)]|first|.base_head // empty'
+}
+controller_verify_key() { # step, submitted head, red base
+  local selected command_plan checkout=$CT_WORKTREE
+  # Reconcile-only can decide from committed evidence before a plan worktree
+  # exists. The repository still has the same submitted and red-base trees.
+  [ -d "$checkout" ] || checkout=$CT_ROOT
+  selected=$(jq -c --arg s "$1" '.steps[]|select(.id==$s)' <<< "$CT_SPEC") || return 5
+  command_plan=$(verify_record_plan "$selected") || return 5
+  (cd "$checkout" && verify_record_key "$2" "$CT_DOC" "$1" "$3" "$command_plan")
+}
+controller_current_budget() { # intent, submitted head
+  local red_base key
+  red_base=$(controller_verify_base "$1") || return 5
+  key=$(controller_verify_key "$(jq -r .step <<< "$1")" "$2" "$red_base") || return 5
+  jq -er .budget_policy.green <<< "$key"
+}
 controller_verify() {
-  local run=$1 intent result row head status=green rc=0 reused=false selected command_plan key red_base
+  local run=$1 reverify=${2:-null} intent result row head status=green rc=0 reused=false key red_base step budget=''
+  local -a verify_args
   intent=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="intent" and .run==$run)')
   result=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$run" '.[]|select(.kind=="station" and .run==$run)|.result')
   row=$(printf '%s' "$CT_REPORT" | jq -c --argjson n "$(printf '%s' "$intent" | jq .issue)" '.issues[]|select(.number==$n)')
   if ! controller_head_valid "$intent" "$result" "$row"; then
     controller_decide "$(jq -nc --arg run "$run" '{head:$run,escalation:"bad claimed head"}')"; return $?
   fi
-  head=$(printf '%s' "$result" | jq -r .head)
-  # A new chain after a human resume can start on already-implemented code.
-  # Red-first always needs the step's original executor base; the current
-  # intent base still governs ownership and whether the station advanced HEAD.
-  red_base=$(printf '%s' "$CT_RECORDS" | jq -er --argjson intent "$intent" '
-    [.[]|select(.kind=="intent" and .station=="executor" and
-      .plan==$intent.plan and .issue==$intent.issue and .step==$intent.step)]|first|.base_head // empty') || return 5
-  selected=$(printf '%s' "$CT_SPEC" | jq -c --arg s "$(printf '%s' "$intent" | jq -r .step)" '.steps[]|select(.id==$s)') || return 5
-  command_plan=$(verify_record_plan "$selected") || return 5
-  if key=$(cd "$CT_WORKTREE" && verify_record_key "$head" "$CT_DOC" "$(printf '%s' "$intent" | jq -r .step)" "$red_base" "$command_plan") &&
+  head=$(jq -r .head <<< "$result")
+  step=$(jq -r .step <<< "$intent")
+  red_base=$(controller_verify_base "$intent") || return 5
+  if [ "$reverify" = null ] && key=$(controller_verify_key "$step" "$head" "$red_base") &&
     verify_record_fresh "$CT_COMMON/agentic-flow/verify/$head.json" "$key" > "$CT_TMP/verify-output"; then
     reused=true
     : > "$CT_TMP/verify-tail"
   else
+    verify_args=(verify-step "$head" --doc "$CT_DOC" --step "$step" --red-base "$red_base" --json)
+    if [ "$reverify" != null ]; then verify_args+=(--force); fi
     CT_CHILD_KIND=verify
-    (cd "$CT_WORKTREE" && exec scripts/agentic-flow verify-step "$head" --doc "$CT_DOC" --step "$(printf '%s' "$intent" | jq -r .step)" --red-base "$red_base" --json) > "$CT_TMP/verify-output" 2> "$CT_TMP/verify-tail" &
+    (cd "$CT_WORKTREE" && exec scripts/agentic-flow "${verify_args[@]}") > "$CT_TMP/verify-output" 2> "$CT_TMP/verify-tail" &
     CT_CHILD=$!
     wait "$CT_CHILD" || rc=$?
     CT_CHILD=''
   fi
-  [ "$rc" -eq 0 ] || status=red
+  # Read the policy from the verifier result itself. The operator can edit
+  # their config between our cache lookup and the verifier's own snapshot.
+  budget=$(jq -ser --arg head "$head" 'select(length==1)|.[0]|select(.sha==$head)|
+    .budget_policy.green|strings|select(test("^[0-9a-f]{64}$"))' "$CT_TMP/verify-output") || budget=''
+  if [ "$rc" -ne 0 ] || [ -z "$budget" ]; then status=red; fi
   ledger_output_tail "$CT_TMP/verify-tail" 16384 > "$CT_TMP/tail" || return 5
   jq -n --arg run "$run" --arg head "$head" --arg status "$status" --argjson reused "$reused" --arg record "$CT_COMMON/agentic-flow/verify/$head.json" --rawfile tail "$CT_TMP/tail" \
-    '{v:1,kind:"verify",run:$run,head:$head,status:$status,reused:$reused,record:$record,tail:$tail,at:(now|floor)}' > "$CT_TMP/record"
+    --arg budget "$budget" --argjson retry "$reverify" '
+    {v:1,kind:"verify",run:$run,head:$head,status:$status,reused:$reused,record:$record,tail:$tail,at:(now|floor)} +
+    (if $budget=="" then {} else {budget_policy:$budget} end) +
+    (if $retry==null then {} else {reverify:$retry} end)' > "$CT_TMP/record"
   controller_record verify || return 5
   controller_fault after-verify
 }
@@ -803,9 +853,9 @@ controller_result_valid() {
 controller_retry_context() { # pending run; evidence is included verbatim in the retry prompt
   printf '\nRecovery: %s\n' "$1"
   printf '%s\n' "$CT_RECORDS" | jq --arg run "$2" '
-    [.[]|select(.run==$run and (.kind=="station" or .kind=="verify"))|
-      if .kind=="station" then {invalid_reason,result:(.result|{outcome,head,summary})}
-      else {status,tail} end]'
+    map(select(.run==$run)) as $records |
+    [(last($records[]|select(.kind=="station"))|{invalid_reason,result:(.result|{outcome,head,summary})}),
+     (last($records[]|select(.kind=="verify"))|{status,tail})]'
 }
 controller_probe() { # station; once mode never auto-probes
   [ "$CT_UNATTENDED" = true ] || return 0
@@ -850,8 +900,10 @@ controller_dispatch() {
   if [ "$item" != null ]; then
     replaces=$(printf '%s' "$item" | jq -r .head); pending=$(printf '%s' "$item" | jq -r .pending)
     if [ "$pending" = verify ]; then
-      controller_verify "$replaces" || return $?
-      CT_STATIONS=$((CT_STATIONS+1))
+      local reverify
+      reverify=$(jq -c '.reverify//null' <<< "$item") || return 5
+      controller_verify "$replaces" "$reverify" || return $?
+      if [ "$reverify" = null ]; then CT_STATIONS=$((CT_STATIONS+1)); fi
       return 0
     fi
     old=$(printf '%s' "$CT_RECORDS" | jq -c --arg run "$replaces" '.[]|select(.kind=="intent" and .run==$run)')
@@ -1200,6 +1252,6 @@ controller_cmd() (
       status:(if any($report.issues[];(.topology=="tracker" or .topology=="work-standard") and .state=="closed") then "plan closed"
         elif all($report.issues[];if .topology=="step-strict" then .state=="approved" else .state=="closing" end) then "ready to ship" else "reconciled" end)}') || return 5
   if [ "$CT_JSON" = true ]; then printf '%s\n' "$output"
-  else printf '%s' "$output" | jq -r '"Plan \(.plan): \(.status)",(.holds[]|"hold \(.id): \(.reason)"),(.raised[]|"hold #\(.issue): \(.reason)"),(.escalated[]|"escalated #\(.)"),(.repairs[]|"repaired #\(.issue): \(.kind)"),(.pending[]|"pending \(.head): \(.pending)"), (if .ownership!=null then "salvaged \(.ownership.ref)" else empty end)'; fi
+  else printf '%s' "$output" | jq -r '"Plan \(.plan): \(.status)",(.holds[]|"hold \(.id): \(.reason)"),(.raised[]|"hold #\(.issue): \(.reason)"),(.escalated[]|"escalated #\(.)"),(.repairs[]|"repaired #\(.issue): \(.kind)"),(.pending[]|if .reverify then "#\(.issue) pending verification (budget policy changed)" else "pending \(.head): \(.pending)" end), (if .ownership!=null then "salvaged \(.ownership.ref)" else empty end)'; fi
   return "$result"
 )

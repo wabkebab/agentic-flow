@@ -104,7 +104,6 @@ fail	'full run did not record its aggregate group seconds'
 fail	'full run did not record the over-ceiling group'
 fail	'full suite missed the combined seconds for a tagged group'
 fail	'group boundary did not record its seconds'
-fail	'missing wall-time ceiling file: config/test-wall-ceilings.tsv'
 fail	'partial run recorded a group or an unselected tag'
 fail	'scenario union missed an over-ceiling selected tag'
 fail	'tag boundary did not record its seconds'
@@ -379,7 +378,6 @@ fail	'ship-gate accepted one fixture copy over the exported limit'
 fail	'ship-gate did not complete the exported suite before lint'
 fail	'ship-gate did not name the exported copy count and limit'
 fail	'ship-gate did not report the ShellCheck warning'
-fail	"exported full mode made $exported_copies fixture file copies; limit $exported_copy_limit"
 fail	"ship failed on remote lookup: $remote_response"
 fail	"ship retry gate count differs: $(cat "$stored/out")"
 fail	"ship retry push count differs: $(cat "$stored/out")"
@@ -926,3 +924,67 @@ fail	'threshold submit replay failed'
 fail	'threshold verdict replay failed'
 fail	'unknown severity accepted'
 fail	'unpinned packet showed a checked threshold'
+assert_cost_budget	"$TMP/cost" fast
+budget_case	in red green changing
+fail	"$label mode made $measured fixture file copies; limit $limit"
+fail	"budget verify accepted a $key acknowledgment"
+fail	"budget verify changed its in-flight snapshot: $(cat "$TMP/verify.err")"
+fail	"budget verify published evidence or omitted the $key acknowledgment diagnostic"
+fail	"budget verify rejected a project-policy overlay: $(cat "$TMP/verify.err")"
+fail	"budget verify rejected a test-only pre-ack red: $(cat "$TMP/verify.err")"
+fail	"budget verify used the caller policy or rejected per-tree defaults: $(cat "$TMP/verify.err")"
+fail	"budget-mode: loader accepted $key fixture TSV"
+fail	"budget-mode: loader omitted the $key diagnostic"
+fail	"full fixture budget accepted $((full_copy_limit+1)) copies"
+fail	"missing $label file: $file"
+fail	'budget recovery accepted a plain duplicate verify record'
+fail	'budget recovery did not cap reverification attempts'
+fail	'budget recovery did not explain the reverification cap'
+fail	'budget recovery did not route the red reverify to one replacement fix'
+fail	'budget recovery did not submit from the refreshed green verification'
+fail	'budget recovery omitted queued reverify from reconcile-only'
+fail	'budget recovery omitted the pending verification notice'
+fail	'budget recovery reconcile-only launched a verifier'
+fail	'budget recovery reconciled into a stale decision'
+fail	'budget recovery rejected the duplicate for a different reason'
+fail	'budget recovery status did not recommend restarting the controller'
+fail	'budget recovery status did not report a stopped controller'
+fail	'budget verify could not derive the fixture cache key'
+fail	'budget verify did not exercise warn green and stop red'
+fail	'budget verify did not reach its snapshot pause'
+fail	'budget verify did not record the pre-ack green policy'
+fail	'budget verify did not resolve the green and red tree defaults separately'
+fail	'budget verify did not retain the explicit in-flight override'
+fail	'budget verify did not run both trees under the refreshed override'
+fail	'budget verify hashed the base policy instead of the overlay'
+fail	'budget verify key and detached checks disagree'
+fail	'budget verify lost the distinctive pre-ack red tail or command acknowledgments'
+fail	'budget verify rejected a pre-ack green tree with a registry'
+fail	'budget verify reused warn evidence under stop'
+fail	'budget-mode: CI honored a snapshot'
+fail	'budget-mode: CI rejected its default warn overrun'
+fail	'budget-mode: CI snapshot was not ignored and reported once'
+fail	'budget-mode: CI warn evidence was incomplete'
+fail	'budget-mode: concurrent records collided'
+fail	'budget-mode: doctor omitted mode source or latest row'
+fail	'budget-mode: first concurrent run failed'
+fail	'budget-mode: fixture warning row missing'
+fail	'budget-mode: fractional limit was not rounded up'
+fail	'budget-mode: project key error missing'
+fail	'budget-mode: pruning did not keep the newest 20 files'
+fail	'budget-mode: pruning run failed'
+fail	'budget-mode: scale did not double the local limit'
+fail	'budget-mode: scaled limit missing from diagnostic'
+fail	'budget-mode: scaled wall limit was too high'
+fail	'budget-mode: second concurrent run failed'
+fail	'budget-mode: snapshot accepted a project key'
+fail	'budget-mode: stop accepted a fixture overrun'
+fail	'budget-mode: stop accepted a wall overrun'
+fail	'budget-mode: stop changed the fixture diagnostic'
+fail	'budget-mode: stop changed the wall diagnostic'
+fail	'budget-mode: warn evidence was incomplete'
+fail	'budget-mode: warn overrun still failed'
+fail	'budget-mode: warn rejected a fixture overrun'
+fail	'could not resolve test budget policy'
+fail	'full fixture budget rejected its approved copy boundary'
+fail	'ship-gate could not initialize the exported fixture'

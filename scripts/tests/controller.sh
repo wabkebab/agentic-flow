@@ -146,7 +146,7 @@ if should_run_scenario launch timing; then
 # replaced by markers. This avoids recursively launching this suite or a model.
 SELECT_FIX="$TMP/scenario-selection"
 mkdir -p "$SELECT_FIX/scripts/tests"
-link_test_wall_ceilings "$SELECT_FIX"
+link_test_budgets "$SELECT_FIX"
 ln "$ROOT/scripts/tests/helpers.sh" "$SELECT_FIX/scripts/tests/helpers.sh"
 cat "$ROOT/scripts/self-test.sh" > "$SELECT_FIX/scripts/self-test.sh"
 chmod +x "$SELECT_FIX/scripts/self-test.sh"
@@ -250,6 +250,7 @@ mkdir -p "$TIMING_FIX"
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'TMP=$1' 'mkdir -p "$TMP"'
   sed -n '/^# TIMING BEGIN/,/^# TIMING END/p' "$ROOT/scripts/self-test.sh"
   cat <<'TIMING_FIXTURE'
+trap 'test_timing_report; rm -rf "$TMP"' EXIT
 printf 'fixture stdout\n'
 printf 'fixture stderr\n' >&2
 test_timing_begin block fixture
@@ -3058,11 +3059,13 @@ NOTIFY
   jq -e '.pending[0].pending=="fix"' "$c4/out" >/dev/null || fail 'red verify did not remain pending'
   # A green recorded verification produces a submit without invoking a verifier.
   c4_reset; c4_intent executor 0 1 initial
-  local original_head=$head committed
+  local original_head=$head committed pre_ack
   committed=$(printf 'Implement alpha\n\nFixes #1\n' | git -C "$project" commit-tree "$head^{tree}" -p "$head")
   git -C "$project" update-ref refs/heads/topic "$committed"
   head=$committed; c4_station submitted ''; head=$original_head
-  jq -n --arg run "$run" --arg head "$committed" --arg file "$c4/verify" '{v:1,kind:"verify",run:$run,head:$head,record:$file,status:"green",at:(now|floor)}' | c4_send verify
+  pre_ack=$(printf pre-ack | shasum -a 256); pre_ack=${pre_ack%% *}
+  jq -n --arg run "$run" --arg head "$committed" --arg file "$c4/verify" --arg budget "$pre_ack" \
+    '{v:1,kind:"verify",run:$run,head:$head,record:$file,status:"green",budget_policy:$budget,at:(now|floor)}' | c4_send verify
   c4_run 0
   [ "$(c4_count 1)" = 1 ] || fail 'green verification did not submit exactly once'
   c4_run 0
@@ -3517,6 +3520,101 @@ MODEL
     test_timing_end
   }
   . "$ROOT/scripts/lib/brief.sh"
+  # A crash leaves the submit decision pending. Reconciliation must leave an
+  # out-of-date budget decision for dispatch, even if the ledger still says green.
+  local before_budget_fixture=$head budget_operator="$c4/operator/agentic-flow/config/owner/repo.conf"
+  local budget_run_id verify_calls status_rc
+  mkdir -p "${budget_operator%/*}" "$project/scripts/tests"
+  ln "$ROOT/scripts/self-test.sh" "$project/scripts/self-test.sh"
+  ln "$ROOT/config/test-budgets.tsv" "$project/config/test-budgets.tsv"
+  awk -F '\t' 'BEGIN {OFS="\t"} $1=="hooks" {$2=5} {print}' "$ROOT/config/test-wall-ceilings.tsv" \
+    > "$project/config/test-wall-ceilings.tsv"
+  cat > "$project/scripts/tests/helpers.sh" <<'HELPERS'
+fail() { echo "self-test failed: $*" >&2; exit 1; }
+self_test_now() { printf '%s\n' "${FIXTURE_CLOCK:-0}"; }
+HELPERS
+  printf 'FIXTURE_CLOCK=${RECOVERY_BUDGET_CLOCK:-6}\n' > "$project/scripts/tests/hooks.sh"
+  printf 'check:\n\t@scripts/self-test.sh --only hooks\n' > "$project/Makefile"
+  sed '2a\
+if [ "${1:-}" = verify-step ]; then printf "verify\\n" >> "$C4_STATE/verifiers"; fi
+' "$project/scripts/agentic-flow" > "$c4/log-verifier"
+  rm "$project/scripts/agentic-flow"
+  cat "$c4/log-verifier" > "$project/scripts/agentic-flow"
+  chmod +x "$project/scripts/agentic-flow"
+  git -C "$project" add Makefile scripts/agentic-flow scripts/self-test.sh scripts/tests \
+    config/test-budgets.tsv config/test-wall-ceilings.tsv
+  git -C "$project" commit -qm 'Fixture with an acknowledgment-capable wall gate'
+  head=$(git -C "$project" rev-parse HEAD)
+  (
+    export CI=false
+    unset AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL AGENTIC_FLOW_BUDGET_WALL_SCALE
+    for budget_case in red green changing; do
+      c5_reset
+      rm -f "$state/verifiers"
+      printf 'budget.wall.mode.local=warn\n' > "$budget_operator"
+      AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-verify c5_run 5 --once
+      budget_run_id=$(ledger_read recovery | jq -er '[.[]|select(.kind=="verify" and .status=="green" and .budget_policy!=null)]|last|.run')
+      verify_calls=$(cat "$state/verifiers")
+      ledger_read recovery | jq '[.[]|select(.kind=="verify")]|last' > "$c4/duplicate"
+      if ledger_append verify recovery "$c4/duplicate" > "$c4/duplicate.out" 2>&1; then
+        fail 'budget recovery accepted a plain duplicate verify record'
+      fi
+      grep -Fq 'duplicate verify record' "$c4/duplicate.out" || fail 'budget recovery rejected the duplicate for a different reason'
+      printf 'budget.wall.mode.local=stop\n' > "$budget_operator"
+      c5_run 0 --reconcile-only
+      jq -e --arg run "$budget_run_id" '.pending[]|.head==$run and .pending=="verify" and
+        .issue==1 and .reverify=={reason:"budget-policy",attempt:1}' "$c4/out" >/dev/null \
+        || fail 'budget recovery omitted queued reverify from reconcile-only'
+      grep -Fxq '#1 pending verification (budget policy changed)' "$c4/err" \
+        || fail 'budget recovery omitted the pending verification notice'
+      [ "$verify_calls" = "$(cat "$state/verifiers")" ] || fail 'budget recovery reconcile-only launched a verifier'
+      ledger_read recovery | jq -e 'all(.[];.kind!="decision")' >/dev/null || fail 'budget recovery reconciled into a stale decision'
+      if [ "$budget_case" = red ]; then
+        status_rc=0
+        (cd "$project" && PATH="$bin:$PATH" scripts/agentic-flow status docs/inprogress/plan.md --json) > "$c4/budget-status" || status_rc=$?
+        [ "$status_rc" = 10 ] || fail 'budget recovery status did not report a stopped controller'
+        jq -e '.next.command=="agentic-flow run docs/inprogress/plan.md"' "$c4/budget-status" >/dev/null \
+          || fail 'budget recovery status did not recommend restarting the controller'
+      fi
+      case "$budget_case" in
+        red)
+          c5_run 10
+          ledger_read recovery | jq -e --arg run "$budget_run_id" '
+            [.[]|select(.kind=="verify" and .run==$run)] as $v |
+            [.[]|select(.kind=="intent")] as $i |
+            ($v|length)==2 and $v[1].reverify.attempt==1 and $v[1].status=="red" and
+            ($i|length)==2 and $i[0].chain==$i[1].chain and $i[1].replaces==$run and
+            all(.[]; .kind!="decision" or .action!="submit")' >/dev/null \
+            || fail 'budget recovery did not route the red reverify to one replacement fix'
+          ;;
+        green)
+          RECOVERY_BUDGET_CLOCK=0 c5_run 0 --once
+          ledger_read recovery | jq -e --arg run "$budget_run_id" '
+            [.[]|select(.kind=="verify" and .run==$run)] as $v |
+            ($v|length)==2 and $v[1].reverify.attempt==1 and $v[1].status=="green" and
+            $v[0].budget_policy!=$v[1].budget_policy and
+            any(.[];.kind=="decision" and .run==$run and .action=="submit")' >/dev/null \
+            || fail 'budget recovery did not submit from the refreshed green verification'
+          ;;
+        changing)
+          RECOVERY_BUDGET_CLOCK=0 AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-verify c5_run 5 --once
+          printf 'budget.wall.mode.local=warn\n' > "$budget_operator"
+          AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-verify c5_run 5 --once
+          printf 'budget.wall.mode.local=stop\n' > "$budget_operator"
+          c5_run 10 --once
+          ledger_read recovery | jq -e --arg run "$budget_run_id" '
+            [.[]|select(.kind=="verify" and .run==$run)|.reverify.attempt]==[null,1,2] and
+            any(.[];.kind=="decision" and .run==$run and .action=="ask")' >/dev/null \
+            || fail 'budget recovery did not cap reverification attempts'
+          jq -e 'any(.comments.nodes[]; .body|contains("budget policy kept changing during verification"))' \
+            "$state/issue-1.json" >/dev/null || fail 'budget recovery did not explain the reverification cap'
+          ;;
+      esac
+    done
+  )
+  rm -f "$budget_operator"
+  head=$before_budget_fixture
+  git -C "$project" reset --hard -q "$head"
   # A dead launcher holds without an ask, including a crash after its station
   # record. Clearing the hold advances the generation with no journal resume.
   for fault in none after-station; do

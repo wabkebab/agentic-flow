@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091,SC2153,SC2034 # ROOT comes from the sourcing test runner.
+# shellcheck disable=SC1091,SC2153,SC2030,SC2031,SC2034 # Runner globals and isolated fixture subshells.
 # Sourced by self-test.sh. All credentials, GitHub state and faults are fixtures.
 # Fixture builders run only for selected blocks; no tag needs another tag's state.
 STATION_A=$(printf '%040d' 1)
@@ -179,6 +179,124 @@ verify_fixture_run() {
   (cd "$VERIFY_FIX" && PATH="$STATION_FIX/bin:$PATH" "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_HEAD" --doc docs/plan.md --step alpha --red-base "$VERIFY_RED_BASE" --json "$@") > "$TMP/verify.json" 2> "$TMP/verify.err"
 }
 
+budget_verify_tests() (
+  local TMP="$TMP/budget-verify" key tag old_base capable_base green candidate operator pre_ack pid i
+  mkdir -p "$TMP"
+  export CI=false XDG_CONFIG_HOME="$TMP/operator"
+  unset AGENTIC_FLOW_BUDGET_POLICY AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL AGENTIC_FLOW_BUDGET_WALL_SCALE
+  stations_cli_fixture
+  stations_red_fixture
+  printf 'bash scripts/regression.sh\n' > "$VERIFY_FIX/scripts/runner.sh"
+  git -C "$VERIFY_FIX" add scripts/runner.sh
+  git -C "$VERIFY_FIX" commit -qm 'Pre-ack tree with the config registry'
+  old_base=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+  pre_ack=$(printf pre-ack | shasum -a 256); pre_ack=${pre_ack%% *}
+  (cd "$VERIFY_FIX" && "$ROOT/scripts/agentic-flow" verify-step "$old_base" --json) > "$TMP/old.json" 2> "$TMP/old.err" \
+    || fail 'budget verify rejected a pre-ack green tree with a registry'
+  jq -e --arg pre "$pre_ack" '.budget_policy.green==$pre and .commands[0].policy=="pre-ack" and .commands[0].budget_ack==null' \
+    "$TMP/old.json" >/dev/null || fail 'budget verify did not record the pre-ack green policy'
+
+  mkdir -p "$VERIFY_FIX/scripts/tests" "$VERIFY_FIX/.agentic-flow"
+  ln "$ROOT/scripts/self-test.sh" "$VERIFY_FIX/scripts/self-test.sh"
+  ln "$ROOT/config/test-budgets.tsv" "$VERIFY_FIX/config/test-budgets.tsv"
+  {
+    for key in $SELF_TEST_GROUPS upgrade:upstream; do printf '%s\t5\n' "$key"; done
+    for tag in $CONTROLLER_SCENARIOS; do printf 'controller:%s\t5\n' "$tag"; done
+    for tag in $STATIONS_SCENARIOS; do printf 'stations:%s\t5\n' "$tag"; done
+  } > "$VERIFY_FIX/config/test-wall-ceilings.tsv"
+  cat > "$VERIFY_FIX/scripts/tests/helpers.sh" <<'HELPERS'
+fail() { echo "self-test failed: $*" >&2; exit 1; }
+self_test_now() { printf '%s\n' "${FIXTURE_CLOCK:-0}"; }
+HELPERS
+  printf 'FIXTURE_CLOCK=6\n' > "$VERIFY_FIX/scripts/tests/hooks.sh"
+  cat > "$VERIFY_FIX/Makefile" <<'MAKE'
+RED_FIRST_SIGNATURE := ^self-test failed:[[:space:]]
+check:
+	@scripts/self-test.sh --only hooks
+verify-prepare:
+	@:
+MAKE
+  cat > "$VERIFY_FIX/scripts/runner.sh" <<'RUNNER'
+bash scripts/self-test.sh --only hooks || true
+bash scripts/regression.sh
+RUNNER
+  printf 'budget.wall.mode.local=stop\nbudget.fixtures.mode=stop\n' > "$VERIFY_FIX/.agentic-flow/config"
+  git -C "$VERIFY_FIX" add -f .agentic-flow/config
+  git -C "$VERIFY_FIX" add Makefile scripts config
+  git -C "$VERIFY_FIX" commit -qm 'Acknowledgment-capable stop base'
+  capable_base=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+  printf 'budget.wall.mode.local=warn\nbudget.fixtures.mode=warn\n' > "$VERIFY_FIX/.agentic-flow/config"
+  printf '%s\n' "echo 'self-test failed: budget-mode: warn overrun still failed'" 'exit 1' > "$VERIFY_FIX/scripts/regression.sh"
+  git -C "$VERIFY_FIX" add .agentic-flow/config
+  verify_fixture_commit
+  green=$VERIFY_HEAD
+  git -C "$VERIFY_FIX" checkout -q --detach "$capable_base"
+  VERIFY_RED_BASE=$old_base
+  verify_fixture_run || fail "budget verify rejected a test-only pre-ack red: $(cat "$TMP/verify.err")"
+  jq -e --arg pre "$pre_ack" '
+    .passed and .prepare.budget_ack==null and .budget_policy.red==[$pre] and
+    any(.commands[];.role=="green" and .budget_ack!=null) and
+    (.red_first[0]|.budget_ack==null and .policy=="pre-ack" and
+      .tail==["self-test failed: budget-mode: warn overrun still failed"])' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify lost the distinctive pre-ack red tail or command acknowledgments'
+
+  VERIFY_RED_BASE=$capable_base
+  verify_fixture_run || fail "budget verify used the caller policy or rejected per-tree defaults: $(cat "$TMP/verify.err")"
+  jq -e '.budget_policy as $p | .passed and $p.green!=$p.red[0] and .red_first[0].budget_ack==$p.red[0] and
+    all(.commands[]|select(.role=="green"); .budget_ack==$p.green)' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify did not resolve the green and red tree defaults separately'
+  if ! { grep -Fq 'self-test warning: hooks measured 6, limit 5 (warn)' "$TMP/verify.err" \
+    && grep -Fq 'self-test failed: hooks took 6 seconds' "$TMP/verify.err"; }; then
+    fail 'budget verify did not exercise warn green and stop red'
+  fi
+  . "$ROOT/scripts/lib/verify-record.sh"
+  candidate=$(jq -c .command_plan "$TMP/verify.json")
+  key=$(cd "$VERIFY_FIX" && verify_record_key "$green" docs/plan.md alpha "$capable_base" "$candidate" '{}') \
+    || fail 'budget verify could not derive the fixture cache key'
+  jq -e --argjson key "$key" '.budget_policy==$key.budget_policy' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify key and detached checks disagree'
+
+  operator="$XDG_CONFIG_HOME/agentic-flow/config/owner/repo.conf"
+  mkdir -p "${operator%/*}"
+  printf 'budget.wall.mode.local=warn\n' > "$operator"
+  AGENTIC_VERIFY_TESTING=1 AGENTIC_VERIFY_PAUSE="$TMP/pause" verify_fixture_run --force & pid=$!
+  for ((i=0; i<200; i++)); do [ ! -f "$TMP/pause.ready" ] || break; sleep 0.05; done
+  [ -f "$TMP/pause.ready" ] || fail 'budget verify did not reach its snapshot pause'
+  printf 'budget.wall.mode.local=stop\n' > "$operator"
+  : > "$TMP/pause.release"
+  wait "$pid" || fail "budget verify changed its in-flight snapshot: $(cat "$TMP/verify.err")"
+  jq -e --argjson key "$key" '.passed and .budget_policy.green==$key.budget_policy.green and
+    .budget_policy.red[0]!=$key.budget_policy.red[0] and .red_first[0].budget_ack==.budget_policy.red[0]' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify did not retain the explicit in-flight override'
+  verify_fixture_run && fail 'budget verify reused warn evidence under stop'
+  jq -e --argjson key "$key" '.passed==false and .budget_policy.green!=$key.budget_policy.green and
+    .budget_policy.red[0]==$key.budget_policy.red[0] and
+    all(.commands[]|select(.role=="green"); .exit!=0)' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify did not run both trees under the refreshed override'
+  rm "$operator"
+
+  git -C "$VERIFY_FIX" checkout -q --detach "$green"
+  sed 's@— scripts/regression.sh$@— scripts/regression.sh .agentic-flow/config@' "$VERIFY_FIX/docs/plan.md" > "$TMP/overlay"
+  cat "$TMP/overlay" > "$VERIFY_FIX/docs/plan.md"
+  verify_fixture_commit
+  verify_fixture_run || fail "budget verify rejected a project-policy overlay: $(cat "$TMP/verify.err")"
+  jq -e '.budget_policy.green==.budget_policy.red[0] and .red_first[0].budget_ack==.budget_policy.green' \
+    "$TMP/verify.json" >/dev/null || fail 'budget verify hashed the base policy instead of the overlay'
+
+  for key in missing different; do
+    if [ "$key" = missing ]; then printf 'check:\n\t@:\n'
+    else printf 'check:\n\t@echo budget-policy: %s\n' "$pre_ack"; fi > "$VERIFY_FIX/Makefile"
+    git -C "$VERIFY_FIX" add Makefile
+    git -C "$VERIFY_FIX" commit -qm "Fixture $key acknowledgment"
+    candidate=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+    (cd "$VERIFY_FIX" && "$ROOT/scripts/agentic-flow" verify-step "$candidate" --json) > "$TMP/bad.json" 2> "$TMP/bad.err" \
+      && fail "budget verify accepted a $key acknowledgment"
+    if [ -e "$VERIFY_FIX/.git/agentic-flow/verify/$candidate.json" ] || ! grep -q acknowledge "$TMP/bad.err"; then
+      fail "budget verify published evidence or omitted the $key acknowledgment diagnostic"
+    fi
+  done
+)
+
 # Track only this call's watchdogs, including the old watchdog's sleep child.
 # shellcheck disable=SC2016 # Perl code uses Perl variables, not shell expansion.
 review_bounded_tests() (
@@ -278,6 +396,7 @@ done
 fi # scenario
 
 if should_run_scenario verify cache; then
+budget_verify_tests
 verify_timeout_status_tests
 # Verification must certify only committed bytes and classify wiring failures.
 stations_verify_base

@@ -197,6 +197,12 @@ sub validate {
   } elsif ($k eq 'verify') {
     required($r,qw(head record status)); sha($r->{head},40) && string($r->{record}) && member($r->{status},qw(green red)) or fail('invalid verification');
     !exists($r->{tail}) || string($r->{tail},16384) or fail('invalid verification tail');
+    !exists($r->{budget_policy}) || sha($r->{budget_policy},64) or fail('invalid verification budget policy');
+    if (defined $r->{reverify}) {
+      my $retry = $r->{reverify};
+      object($retry) && keys(%$retry)==2 && member($retry->{reason},'budget-policy') &&
+        integer($retry->{attempt},1) && $retry->{attempt}<=2 or fail('invalid reverify');
+    }
   } elsif ($k eq 'decision') {
     required($r,qw(action event head body_file body_sha256));
     !exists($r->{body_format}) || member($r->{body_format},'markdown-v1') or fail('invalid decision body format');
@@ -275,7 +281,8 @@ sub apply_record {
     } else {
       # Each flagged clear may adopt another immutable snapshot of this run.
       # Earlier snapshots remain in records; ordinary duplicates still fail.
-      !exists($run->{$k}) || ($k eq 'salvage' && exists($r->{rebaseline})) or fail("duplicate $k record");
+      !exists($run->{$k}) || ($k eq 'salvage' && exists($r->{rebaseline})) ||
+        ($k eq 'verify' && defined($r->{reverify})) or fail("duplicate $k record");
       # Record captured ids before the station, including confirmation that
       # Claude actually started the caller-chosen session.
       if ($k eq 'session') { !$run->{station} or fail('session must precede station'); }
@@ -283,7 +290,16 @@ sub apply_record {
         my $warnings=defined($r->{result}) ? result_valid($r->{result},$run->{intent}{station}) : [];
         $r->{warnings}=$warnings if $writing; # Leave historical records without this field readable.
       }
-      if ($k eq 'verify') { !$run->{decision} && $run->{station} && !defined($run->{station}{invalid_reason}) && ($run->{station}{result}{outcome}//'') eq 'submitted' && $r->{head} eq $run->{station}{result}{head} or fail('verify requires submitted station/head before decision'); }
+      if ($k eq 'verify') {
+        !$run->{decision} && $run->{station} && !defined($run->{station}{invalid_reason}) &&
+          ($run->{station}{result}{outcome}//'') eq 'submitted' && $r->{head} eq $run->{station}{result}{head}
+          or fail('verify requires submitted station/head before decision');
+        if (defined $r->{reverify}) {
+          my $previous = $run->{verify} or fail('reverify requires an earlier verification');
+          my $attempt = defined $previous->{reverify} ? $previous->{reverify}{attempt} : 0;
+          $r->{reverify}{attempt} == $attempt+1 or fail('reverify requires next attempt');
+        }
+      }
       if ($k eq 'decision') {
         $run->{station} || member($r->{action},qw(ask hold)) or fail('decision requires station');
         if ($r->{action} eq 'submit') { $run->{verify} && $run->{verify}{status} eq 'green' && $r->{head} eq $run->{verify}{head} or fail('submit decision requires green verification/head'); }
