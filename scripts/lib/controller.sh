@@ -125,15 +125,16 @@ controller_acknowledge() {
   rm -f "$tmp"
   return "$status"
 }
-controller_heartbeat() { # phase [intent | waiting | exit]
+controller_heartbeat() { # phase [intent | waiting | retry | exit]
   { [ "${CT_LOCK_OWNED:-false}" = true ] || [ "${CT_RECOVER_CLAIM:-false}" = true ]; } || return 0
   # Ownership flags also cover cleanup of partially published locks.
   [ -n "$CT_START" ] || return 0
-  local phase=$1 ownership=owner intent=null timeout=null waiting=null exit_code=null dir target tmp=''
+  local phase=$1 ownership=owner intent=null timeout=null waiting=null retry=null exit_code=null dir target tmp=''
   [ "$CT_LOCK_OWNED" = true ] || ownership=recovering
   case "$phase" in
     station) intent=$2; timeout=$LAUNCH_TIMEOUT ;;
     waiting-human) waiting=$2 ;;
+    reconciling) retry=${2:-null} ;;
     stopped) exit_code=$2 ;;
   esac
   dir="$CT_COMMON/agentic-flow/state"
@@ -144,11 +145,12 @@ controller_heartbeat() { # phase [intent | waiting | exit]
     jq -nc --arg plan "$CT_PLAN" --arg doc "$CT_DOC" --argjson pid "$CT_PID" --arg start "$CT_START" \
       --arg host "$CT_HOST" --arg run "$CT_RUN" --arg ownership "$ownership" --arg phase "$phase" \
       --argjson turn "$CT_TURNS" --argjson turn_cap "$CT_TURN_CAP" --argjson intent "$intent" \
-      --argjson timeout "$timeout" --argjson waiting "$waiting" --argjson exit "$exit_code" '
+      --argjson timeout "$timeout" --argjson waiting "$waiting" --argjson retry "$retry" --argjson exit "$exit_code" '
       {v:1,plan:$plan,doc:$doc,pid:$pid,start:$start,host:$host,run:$run,ownership:$ownership,
        phase:$phase,turn:$turn,turn_cap:$turn_cap,
        station:($intent|if .==null then null else {issue,step,station,cli,run,started,timeout_s:$timeout} end),
-       waiting:$waiting,exit:$exit,updated_at:(now|floor)}' > "$tmp" &&
+       waiting:$waiting,exit:$exit,updated_at:(now|floor)} +
+      (if $retry==null then {} else {retry:$retry} end)' > "$tmp" &&
     [ "$(wc -c < "$tmp")" -le 4096 ] &&
     [ ! -d "$target" ] && mv -f "$tmp" "$target"
   } 2>/dev/null; then
@@ -857,7 +859,52 @@ controller_retry_context() { # pending run; evidence is included verbatim in the
     [(last($records[]|select(.kind=="station"))|{invalid_reason,result:(.result|{outcome,head,summary})}),
      (last($records[]|select(.kind=="verify"))|{status,tail})]'
 }
-controller_probe() { # station; once mode never auto-probes
+controller_intent_count() { # issue, station; reads the validated ledger records on stdin
+  jq --argjson issue "$1" --arg station "$2" '[.[]|select(.kind=="intent" and .issue==$issue and .station==$station)]|length'
+}
+
+controller_infrastructure_failure() { # issue, station, retry limit, initial intent count, hold issue, cause
+  local number=$1 station=$2 limit=$3 initial_count=$4 hold_issue=$5 cause=$6
+  local records count snapshot delay retry log_cause rc=0
+  if [ "$limit" -gt 0 ]; then
+    if [ "$CT_INFRA_KEY" != "$number/$station" ]; then
+      CT_INFRA_KEY="$number/$station" CT_INFRA_RETRIES=0
+    fi
+    # Predecessor intents are allowed. A new intent during this attempt is not.
+    if [ "$CT_INFRA_RETRIES" -lt "$limit" ] &&
+      records=$(ledger_read "$CT_PLAN") &&
+      count=$(controller_intent_count "$number" "$station" <<< "$records") &&
+      [ "$count" = "$initial_count" ] &&
+      snapshot=$(perl "$CONTROLLER_RECOVERY" snapshot "$CT_WORKTREE") &&
+      jq -e '.dirty==false' <<< "$snapshot" >/dev/null; then
+      CT_INFRA_RETRIES=$((CT_INFRA_RETRIES+1))
+      delay=$((30 << (CT_INFRA_RETRIES-1)))
+      [ "$delay" -le 300 ] || delay=300
+      if [ "${AGENTIC_CONTROLLER_TESTING:-}" = 1 ] && [ -n "${AGENTIC_CONTROLLER_RETRY_S:-}" ]; then
+        delay=$AGENTIC_CONTROLLER_RETRY_S
+        [[ "$delay" =~ ^(0|[1-9][0-9]{0,2})$ ]] && [ "$delay" -le 300 ] || return 2
+      fi
+      printf '%s' "$cause" > "$CT_TMP/retry-cause" || return 5
+      log_cause=$(ledger_output_tail "$CT_TMP/retry-cause" 4096) || return 5
+      controller_error "station-infrastructure retry $CT_INFRA_RETRIES/$limit: ${log_cause//$'\n'/ }"
+      retry=$(jq -nc --argjson issue "$number" --arg station "$station" --argjson attempt "$CT_INFRA_RETRIES" \
+        --argjson of "$limit" --argjson delay "$delay" '{issue:$issue,station:$station,attempt:$attempt,of:$of,until:((now|floor)+$delay)}') || return 5
+      controller_heartbeat reconciling "$retry"
+      CT_CHILD_KIND='sleep'
+      sleep "$delay" &
+      CT_CHILD=$!
+      wait "$CT_CHILD" || rc=$?
+      CT_CHILD=''
+      [ "$rc" -eq 0 ] || return 5
+      return 0
+    fi
+    cause="Stopping after $CT_INFRA_RETRIES automatic retries. $cause"
+  fi
+  controller_hold "$hold_issue" station-infrastructure "$cause" || return $?
+  return 10
+}
+
+controller_probe() { # station; return a refusal via the caller's prelaunch_cause
   [ "$CT_UNATTENDED" = true ] || return 0
   if probe_needed "$1" "$CT_WORKTREE"; then
     local probe_status=0
@@ -867,13 +914,13 @@ controller_probe() { # station; once mode never auto-probes
     wait "$CT_CHILD" || probe_status=$?
     CT_CHILD=''
     if [ "$probe_status" != 0 ]; then
-      controller_hold "$CT_TRACKER" station-infrastructure "$(cat "$CT_TMP/probe.json")" || return $?
-      return 10
+      prelaunch_cause=$(cat "$CT_TMP/probe.json")
+      return 6
     fi
   fi
   if ! launch_preflight "$1" "$CT_WORKTREE" > "$CT_TMP/preflight" 2>&1; then
-    controller_hold "$CT_TRACKER" station-infrastructure "Launch preflight failed for $1: $(cat "$CT_TMP/preflight")" || return $?
-    return 10
+    prelaunch_cause="Launch preflight failed for $1: $(cat "$CT_TMP/preflight")"
+    return 6
   fi
 }
 
@@ -896,6 +943,7 @@ controller_prelaunch_failure() { # exit metadata captured-session (never a preas
 
 controller_dispatch() {
   local item row station number step pending=initial replaces='' chain run seq gen nth=1 old=null resume='' mode=new from='' base hash session='' rc=0 invalid='' result=null metadata snapshot intent fingerprint captured launch_started scratch packet_status=0
+  local retry_limit intent_count=0 prelaunch_cause=''
   item=$(printf '%s' "$CT_PENDING" | jq -c '.[0]//null')
   if [ "$item" != null ]; then
     replaces=$(printf '%s' "$item" | jq -r .head); pending=$(printf '%s' "$item" | jq -r .pending)
@@ -916,6 +964,10 @@ controller_dispatch() {
   fi
   station=executor; [ "$(printf '%s' "$row" | jq -r .state)" != reviewing ] || station=reviewer
   step=$(printf '%s' "$row" | jq -r .step); seq=$(printf '%s' "$row" | jq .replay.seq)
+  retry_limit=$(jq -r '(.infra // "hold") | if .=="hold" then 0 else ltrimstr("retry:") | tonumber end' <<< "$row") || return 5
+  if [ "$retry_limit" -gt 0 ]; then
+    intent_count=$(controller_intent_count "$number" "$station" <<< "$CT_RECORDS") || return 5
+  fi
   launch_assignment "$station" "$CT_ROOT" || return 6
   if [ "$LAUNCH_CLI" = manual ]; then
     controller_error "$station is manual: run it interactively"
@@ -949,12 +1001,15 @@ controller_dispatch() {
   cat "$CT_TMP/packet-suffix" >> "$CT_TMP/packet" || return 5
   # Profiles and effective project config belong to the plan checkout. They may
   # differ from the caller's checkout or have changed during an earlier station.
-  controller_probe "$station" || return $?
+  if ! controller_probe "$station"; then
+    controller_infrastructure_failure "$number" "$station" "$retry_limit" "$intent_count" "$CT_TRACKER" "$prelaunch_cause"
+    return $?
+  fi
   launch_assignment "$station" "$CT_WORKTREE" || return 6
   fingerprint=$(launch_fingerprint "$station" "$CT_WORKTREE") || {
     [ "$CT_UNATTENDED" = true ] || return 6
-    controller_hold "$number" station-infrastructure "Cannot fingerprint the $station launcher." || return $?
-    return 10
+    controller_infrastructure_failure "$number" "$station" "$retry_limit" "$intent_count" "$number" "Cannot fingerprint the $station launcher."
+    return $?
   }
   if [ "$old" = null ]; then
     old=$(printf '%s' "$CT_RECORDS" | jq -c --argjson n "$number" --arg station "$station" '[.[]|select(.kind=="intent" and .issue==$n and .station==$station)]|last//null')
@@ -1023,6 +1078,8 @@ controller_dispatch() {
   metadata=$(jq 'del(.result)' "$CT_TMP/launched") || metadata=''
   if ! printf '%s' "$metadata" | jq -e 'type=="object" and (.seconds|type)=="number" and (.usage|type)=="object"' >/dev/null 2>&1; then
     metadata=$(jq -nc --argjson seconds "$(($(date +%s)-launch_started))" '{seconds:$seconds,usage:{input:null,output:null,cost_usd:null}}')
+  else
+    CT_INFRA_KEY='' CT_INFRA_RETRIES=0
   fi
   CT_RECORDS=$(ledger_read "$CT_PLAN") || return 5
   captured=$(printf '%s' "$CT_RECORDS" | jq -r --arg run "$run" '[.[]|select(.kind=="session" and .run==$run)]|last|.session//""')
@@ -1092,6 +1149,7 @@ controller_cmd() (
   fi
   case "$entry" in /*) ;; *) entry="$PWD/$entry" ;; esac
   local CT_DOC=$doc CT_ASSIGNMENTS='' CT_STATIONS=0 CT_ACTIVE_RUN='' CT_TURNS=0 CT_TURN_CAP CT_CHILD='' CT_CHILD_KIND=station CT_UNATTENDED=false
+  local CT_INFRA_KEY='' CT_INFRA_RETRIES=0
   [ "$once" = true ] || CT_UNATTENDED=true
   local CT_ROOT CT_COMMON CT_TMP CT_PLAN CT_BRANCH CT_SPEC CT_REPORT CT_TRACKER CT_RECORDS CT_CHAINS CT_CONTEXT='{}' CT_PENDING='[]'
   local CT_LOCK='' CT_LOCK_OWNED=false CT_RECOVER_CLAIM=false CT_START='' CT_PREVIOUS_HOST='' CT_STARTED=false CT_FOREIGN_ALLOWED='[]' CT_FOREIGN_SEEN=false

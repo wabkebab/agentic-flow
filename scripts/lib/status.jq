@@ -34,6 +34,10 @@ def heartbeat($plan):
   and (.updated_at | time_value)
   and (if .phase == "waiting-human" then (.waiting | type == "object")
        else has("waiting") and .waiting == null end)
+  and (.retry == null or (.phase == "reconciling" and (.retry |
+    type == "object" and (.issue | issue_number) and (.station | one_of(["executor", "reviewer"]))
+    and (.of | uint(3)) and (.attempt | uint(3) and . > 0) and .attempt <= .of
+    and (.until | time_value))))
   and (if .phase == "station" then
     (.station | type == "object" and (.issue | issue_number) and (.step | identifier)
       and (.station | one_of(["executor", "reviewer"]))
@@ -119,7 +123,7 @@ def workflow_rules:
   };
 
 def controller_view($heartbeat; $state):
-  $heartbeat | {state:$state, pid, phase, turn, turn_cap, updated_at, exit};
+  $heartbeat | {state:$state, pid, phase, turn, turn_cap, updated_at, exit, retry};
 
 def next_action($owner; $action; $command):
   {owner:$owner, action:$action, command:$command};
@@ -211,6 +215,7 @@ def plan_text:
   "Controller: \(.controller.state)\(
     if .controller.pid == null then "" else " (pid \(.controller.pid), \(.controller.phase), turn \(.controller.turn)/\(.controller.turn_cap))" end)\(
     if .controller.exit == null then "" else ", exit \(.controller.exit)" end)",
+  (.controller.retry | select(. != null) | "  retry \(.attempt)/\(.of) until \(.until | epoch | todateiso8601)"),
   "Cache: \(if .snapshot.complete then "complete" else "incomplete" end)\(
     if .snapshot.cache_at == null then "" else " as of \(.snapshot.cache_at) (\(.snapshot.cache_at | seconds_since)s ago)" end)",
   (if .snapshot.missing == [] then empty else "  Missing or invalid: \(.snapshot.missing | join(", "))" end),

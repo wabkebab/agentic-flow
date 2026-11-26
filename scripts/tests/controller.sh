@@ -1042,6 +1042,210 @@ judgment bounce low bounce
 THRESHOLDS
 ) || fail 'pinned review threshold regressions failed'
 
+controller_infrastructure_retry_tests() (
+  . "$ROOT/scripts/lib/controller.sh"
+  local fixture="$TMP/infrastructure-retry" repo doc=docs/inprogress/feature-retry.md
+  local base state heartbeat worktree ledger retry_fixture expected rc limit infra delay_override retry_turns retry_report
+  mkdir -p "$fixture"
+  fixture=$(cd "$fixture" && pwd -P)
+  repo="$fixture/repo"; state="$repo/.git/agentic-flow/state"
+  heartbeat="$state/retry.controller.json"; ledger="$repo/.git/agentic-flow/ledger/retry.jsonl"
+  export AGENTIC_WORKTREE_ROOT="$fixture/worktrees"
+  worktree="$AGENTIC_WORKTREE_ROOT/retry"
+  mkdir -p "$repo/docs/inprogress" "$repo/scripts" "$repo/config"
+  ln "$ROOT/config/workflow.tsv" "$ROOT/config/config-keys.tsv" "$repo/config/"
+  printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=plan owner=plan > "$repo/.agentic-flow-review-policy"
+  cat > "$repo/$doc" <<'RETRY_PLAN'
+# Feature — Retry
+# Part B — Implementation brief
+```agentic-flow-plan
+id: retry
+profile: strict
+tracking: Retry
+branch: topic
+steps: alpha
+policy: review.max_bounces=2 review.block_at=medium andon.station-infrastructure=retry:2
+```
+## alpha — First
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** failure
+## Status
+- **Approval:** pending
+RETRY_PLAN
+  printf '#!/usr/bin/env bash\nprintf "fixture packet\\n"\n' > "$repo/scripts/agentic-flow"
+  chmod +x "$repo/scripts/agentic-flow"
+  cd "$repo"
+  git init -q
+  git checkout -qb main
+  git config user.name Fixture
+  git config user.email fixture@example.invalid
+  git config commit.gpgsign false
+  git add "$doc" scripts/agentic-flow config/workflow.tsv config/config-keys.tsv .agentic-flow-review-policy
+  git commit -qm 'Retry plan'
+  base=$(git rev-parse HEAD)
+  sed "s/Approval:\*\* pending/Approval:** status=approved; by=plan; at=2026-01-01; rev=$base/" "$doc" > "$fixture/approved"
+  cat "$fixture/approved" > "$doc"
+  git commit -qam 'Approve retry plan'
+
+  identity_repository() { printf 'owner/repo\n'; }
+  perl() {
+    if [ "$1" = "$CONTROLLER_RECOVERY" ] && [ "${2:-}" = process ]; then
+      kill -0 "$3" && printf 'fixture-start-%s\n' "$3"
+    else command perl "$@"; fi
+  }
+  controller_check() {
+    CT_TRACKER=2
+    CT_REPORT=$retry_report
+    printf '%s\n' "$CT_REPORT" > "$CT_TMP/report"
+  }
+  controller_foreign() { :; }
+  controller_holds() { :; }
+  controller_worktree() { :; }
+  controller_labels() { :; }
+  controller_open_state() { :; }
+  controller_plan_effect() { :; }
+  controller_unjournaled() { :; }
+  controller_completed_effects() { :; }
+  controller_pending() {
+    if [ "$retry_fixture" = replacement ]; then
+      CT_PENDING=$(jq -c '[{head:.run,chain,pending:"relaunch"}]' "$fixture/predecessor")
+    fi
+  }
+  controller_repair() { :; }
+  handoff_write_cache() { :; }
+  HANDOFF_ISSUES=''
+  roles_load() { ROLES_JSON='[]'; }
+  launch_assignment() {
+    LAUNCH_ROOT=$2 LAUNCH_CLI=codex LAUNCH_PROFILE="$2/fixture"
+    LAUNCH_MODEL=- LAUNCH_CONTRACT_MODE=native LAUNCH_TIMEOUT=10
+  }
+  ledger_chains() { printf '[]\n'; }
+  controller_gate() { if [ "$retry_fixture" = cap ]; then CT_TURNS=$((CT_TURN_CAP - 1)); fi; }
+  controller_finished() { jq -e 'any(.[];.kind=="station")' <<< "$CT_RECORDS" >/dev/null; }
+  handoff_transaction() {
+    printf '%s %s\n' "$2" "${7}" >> "$fixture/holds"
+    cat "${!#}" > "$fixture/note"
+  }
+  probe_needed() { [ "$retry_fixture" != preflight ] && [ "$retry_fixture" != fingerprint ]; }
+  probe_station() {
+    printf '%s\n' "$CT_TURNS" >> "$fixture/probes"
+    [ "$CT_TURNS" -le "$limit" ] || return 0
+    if [ "$retry_fixture" = dirty ]; then printf 'unowned edit\n' > "$worktree/dirty"; fi
+    printf '{"error":"fixture probe failure"}\n'
+    return 1
+  }
+  launch_preflight() {
+    case "$retry_fixture" in
+      changed-intent) ledger_intent retry "$fixture/predecessor" >/dev/null || return 5 ;;
+      preflight) printf 'fixture preflight failure\n' ;;
+      *) return 0 ;;
+    esac
+    return 6
+  }
+  launch_fingerprint() { [ "$retry_fixture" != fingerprint ] || return 6; printf '%064d\n' 0; }
+  launch_station() {
+    printf '%s\n' "$CT_TURNS" >> "$fixture/launches"
+    [ "$retry_fixture" != post-intent ] || return 6
+    printf '{"v":1,"station":"executor","outcome":"ask","head":null,"summary":"Fixture","question":"Fixture?","findings":[]}\n' > "$4"
+    printf '{"seconds":1,"usage":{"input":1,"output":1,"cost_usd":null}}\n'
+  }
+  sleep() {
+    local status_rc=0
+    printf '%s\n' "$1" >> "$fixture/sleeps"
+    [ "$retry_fixture" = recover ] || return 0
+    cat "$heartbeat" >> "$fixture/backoffs"
+    if [ "$CT_TURNS" -eq 1 ]; then
+      "$ROOT/scripts/agentic-flow" status "$doc" > "$fixture/status" || status_rc=$?
+      [ "$status_rc" -eq 0 ] || [ "$status_rc" -eq 10 ]
+    fi
+  }
+  retry_dispatch() {
+    # The recovery and cap fixtures exercise the controller loop. Drive the
+    # remaining cases through dispatch with the same ledger and worktree.
+    local CT_TMP="$fixture/dispatch" CT_ROOT=$repo CT_WORKTREE=$worktree CT_PLAN=retry CT_BRANCH=topic
+    local CT_SPEC='{"steps":[{"id":"alpha"}]}' CT_PENDING='[]' CT_OWNERSHIP=null CT_UNATTENDED=true
+    local CT_CHILD='' CT_STATIONS=0 CT_RAISED=false CT_HOLD_REASONS='[]' CT_TURNS=0
+    local CT_INFRA_KEY='' CT_INFRA_RETRIES=0 CT_RUN=fixture CT_HOST=0123456789ab
+    local CT_TRACKER CT_REPORT CT_RECORDS
+    local HANDOFF_LEDGER_UNAVAILABLE=false
+    mkdir -p "$CT_TMP"
+    controller_check
+    controller_pending
+    for ((CT_TURNS=1; CT_TURNS<=retry_turns; CT_TURNS++)); do
+      CT_RECORDS=$(ledger_read retry) || return 5
+      controller_dispatch || return $?
+    done
+    if [ "$retry_fixture" = replacement ]; then
+      [ "$CT_INFRA_RETRIES" -eq 0 ] || fail 'station metadata did not reset the retry budget'
+    fi
+  }
+  ledger_init "$repo"
+  for retry_fixture in recover cap exhaust post-intent replacement changed-intent dirty hold preflight fingerprint; do
+    rm -f "$ledger" "$fixture/"{probes,launches,holds,note,sleeps,backoffs}
+    expected=10 infra=retry:2 limit=3 delay_override=0 retry_turns=1
+    case "$retry_fixture" in
+      recover) expected=0; limit=2 ;;
+      cap) limit=10 ;;
+      exhaust) delay_override=''; retry_turns=3 ;;
+      post-intent|changed-intent) limit=0 ;;
+      replacement) expected=0; limit=1; retry_turns=2; ledger_intent retry "$fixture/predecessor" >/dev/null ;;
+      hold) infra=hold ;;
+      preflight|fingerprint) expected=0 ;;
+    esac
+    retry_report=$(jq -nc --arg infra "$infra" '{issues:[{number:1,step:"alpha",topology:"step-strict",state:"executing",infra:$infra,replay:{seq:0}}]}')
+    rc=0
+    export AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_RETRY_S=$delay_override AGENTIC_FLOW_CONTROLLER_TURN_CAP=10
+    case "$retry_fixture" in
+      recover|cap) controller_cmd "$ROOT/scripts/agentic-flow" "$doc" --json ;;
+      *) retry_dispatch ;;
+    esac > "$fixture/out" 2> "$fixture/err" || rc=$?
+    [ "$rc" -eq "$expected" ] || fail "$retry_fixture returned $rc, expected $expected: $(cat "$fixture/err" "$fixture/out")"
+    case "$retry_fixture" in
+      recover)
+        [ "$(cat "$fixture/probes")" = $'1\n2\n3' ] && [ "$(cat "$fixture/launches")" = 3 ] &&
+          [ ! -e "$fixture/holds" ] || fail 'probe recovery did not launch once on turn three'
+        grep -Fq 'station-infrastructure retry 2/2: {"error":"fixture probe failure"}' "$fixture/err" || fail 'retry log lost its cause'
+        [ "$(cat "$fixture/sleeps")" = $'0\n0' ] || fail 'test override did not control backoff'
+        jq -se 'length==2 and all(.[];.phase=="reconciling" and .station==null and
+          .retry=={issue:1,station:"executor",attempt:.turn,of:2,until:.retry.until} and .retry.until>0)' "$fixture/backoffs" >/dev/null ||
+          fail 'retry heartbeat lost its launch attempt'
+        grep -Fq 'retry 1/2 until ' "$fixture/status" || fail 'status did not validate and render retry heartbeat'
+        jq -e '.retry==null' "$heartbeat" >/dev/null || fail 'stopped heartbeat retained retry' ;;
+      exhaust)
+        [ "$(cat "$fixture/probes")" = $'1\n2\n3' ] && [ ! -e "$fixture/launches" ] &&
+          [ "$(cat "$fixture/holds")" = '2 station-infrastructure' ] || fail 'retry exhaustion did not raise exactly one hold'
+        [ "$(cat "$fixture/sleeps")" = $'30\n60' ] || fail 'retry delay did not double'
+        grep -Fq 'after 2 automatic retries' "$fixture/note" || fail 'exhausted hold lost its retry count' ;;
+      post-intent)
+        [ "$(cat "$fixture/launches")" = 1 ] && [ "$(cat "$fixture/holds")" = '1 station-infrastructure' ] &&
+          [ ! -e "$fixture/sleeps" ] || fail 'post-intent launch refusal was retried'
+        ledger_read retry | jq -c '.[]|select(.kind=="intent")' > "$fixture/predecessor" ;;
+      replacement)
+        [ "$(cat "$fixture/probes")" = $'1\n2' ] && [ "$(cat "$fixture/launches")" = 2 ] &&
+          [ ! -e "$fixture/holds" ] || fail 'predecessor intent blocked replacement retry'
+        ledger_read retry | jq -e '[.[]|select(.kind=="intent")] |
+          length==2 and .[1].replaces==.[0].run and .[1].run==(.[0].chain+"/2")' >/dev/null ||
+          fail 'replacement retry opened an extra intent or lost the predecessor' ;;
+      dirty|changed-intent|hold)
+        [ "$(cat "$fixture/probes")" = 1 ] && [ "$(cat "$fixture/holds")" = '2 station-infrastructure' ] &&
+          [ ! -e "$fixture/sleeps" ] && [ ! -e "$fixture/launches" ] || fail "$retry_fixture did not hold immediately"
+        if [ "$retry_fixture" = hold ]; then
+          ! grep -Fq 'automatic retries' "$fixture/note" || fail 'hold pin changed its diagnostic'
+        fi
+        rm -f "$worktree/dirty" ;;
+      cap)
+        [ "$(cat "$fixture/probes")" = 10 ] && [ "$(cat "$fixture/holds")" = '2 turn-cap' ] &&
+          [ ! -e "$fixture/launches" ] || fail 'retry crossed the turn cap' ;;
+      preflight|fingerprint)
+        [ "$(cat "$fixture/sleeps")" = 0 ] && [ ! -e "$fixture/launches" ] &&
+          [ ! -e "$fixture/holds" ] || fail "$retry_fixture did not schedule a retry" ;;
+    esac
+  done
+)
+controller_infrastructure_retry_tests || fail 'pinned infrastructure retry regressions failed'
+
 # Clarification approval uses committed content and stages only the document.
 C3="$TMP/clarification"
 mkdir -p "$C3/docs/inprogress"
@@ -2088,30 +2292,33 @@ launch_tests() (
   rc=0; probe_station reviewer "$C1/project" > "$C1/manual.json" 2> "$C1/probe.err" || rc=$?
   [ "$rc" = 6 ] && jq -e '.launched==false' "$C1/manual.json" >/dev/null || fail 'manual station was probed'
 
-  # Exercise the controller's hold chokepoint without requiring a live ps call.
+  # Exercise the probe and the default hold path without a live ps call.
   (
     . "$ROOT/scripts/lib/controller.sh"
-    CT_UNATTENDED=false CT_WORKTREE="$C1/project" CT_TMP="$C1" CT_TRACKER=150
+    CT_UNATTENDED=false CT_WORKTREE="$C1/project" CT_TMP="$C1" CT_TRACKER=150 prelaunch_cause=''
     probe_needed() { printf 'needed\n' >> "$C1/gate"; return 0; }
     probe_station() { printf 'probe\n' >> "$C1/gate"; printf '{"error":"fixture failure"}\n'; return 1; }
     launch_preflight() { printf 'preflight\n' >> "$C1/gate"; }
     controller_hold() { printf '%s %s\n' "$1" "$2" >> "$C1/gate"; }
+    check_probe() {
+      controller_probe executor || controller_infrastructure_failure 150 executor 0 0 "$CT_TRACKER" "$prelaunch_cause"
+    }
     : > "$C1/gate"
-    controller_probe executor || fail 'once probe gate failed'
+    check_probe || fail 'once probe gate failed'
     [ ! -s "$C1/gate" ] || fail 'once auto-probed'
     CT_UNATTENDED=true; rc=0
-    controller_probe executor || rc=$?
+    check_probe || rc=$?
     [ "$rc" = 10 ] || fail 'failed unattended probe did not exit 10'
     [ "$(tr '\n' / < "$C1/gate")" = 'needed/probe/150 station-infrastructure/' ] || fail 'failed probe launched station or missed hold'
     : > "$C1/gate"; probe_needed() { return 1; }
-    controller_probe executor || fail 'cached unattended gate failed'
+    check_probe || fail 'cached unattended gate failed'
     [ "$(cat "$C1/gate")" = preflight ] || fail 'cached unattended gate probed again'
     : > "$C1/gate"
     launch_preflight() { printf 'cached launcher refused\n' >&2; return 6; }
-    rc=0; controller_probe executor || rc=$?
+    rc=0; check_probe || rc=$?
     [ "$rc" = 10 ] && [ "$(cat "$C1/gate")" = '150 station-infrastructure' ] || fail 'cached preflight did not hold'
     CT_UNATTENDED=false; : > "$C1/gate"
-    controller_probe executor || fail 'once mode ran unattended preflight'
+    check_probe || fail 'once mode ran unattended preflight'
     [ ! -s "$C1/gate" ] || fail 'once mode raised a preflight hold'
   )
 
