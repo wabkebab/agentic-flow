@@ -170,7 +170,7 @@ verify_record_key: + budget_policy_sha256
 | `andon.station-infrastructure` | plan | `hold\|retry:1\|retry:2\|retry:3` | `hold` | pin → controller (f-6) |
 | `packet.word_limit` | project | int 1500–6000 | 3000 | `packet.sh` |
 | `budget.fixtures.mode` | project | `stop\|warn` | `stop` | `self-test.sh` |
-| `budget.wall.mode.ci` | project | `stop\|warn` | `stop` | `self-test.sh` under `CI=true` |
+| `budget.wall.mode.ci` | project | `stop\|warn` | `warn` | `self-test.sh` under `CI=true` |
 | `budget.wall.mode.local` | operator | `stop\|warn` | `warn` | `self-test.sh` |
 | `budget.wall.scale` | operator | decimal 1.0–5.0 | 1.0 | `self-test.sh`, local only |
 | `controller.turn_cap` | operator | int 10–200 | 50 | `controller.sh` |
@@ -411,16 +411,30 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
   - Changing policy requires finishing or abandoning the plan and starting a new one.
   - Rejected: changeable until the first journal event (more API reads and another state
     to test); an explicit mid-plan transition (stays deferred); no pinning.
-- **Severity names (deviation from the analysis).** Use `high|medium|low|nit` instead of
-  `critical|major|minor|nit`. The review contract and `sev:` labels already use these
-  names, so this adds no third vocabulary. Recommended: accept.
-- **Default threshold for new plans.** `medium` (the written review contract) or
-  `judgment` (today's unchecked behaviour)? Recommended: `medium`. Old plans keep
-  `judgment` through the legacy pin.
-- **Bounce limit scope.** Recommended: one project default, pinned per plan. Per-assurance
-  defaults are deferred.
-- **Adopter CI wall mode.** Recommended: keep `stop`, which is today's behaviour. An
-  adopter calibrating ceilings sets `budget.wall.mode.ci=warn` in a reviewed commit.
+- **Severity names — decided by the owner (2026-11-26): `high|medium|low|nit`**, not the
+  analysis's `critical|major|minor|nit`. The review contract and `sev:` labels already use
+  them, so there is no third vocabulary. `P1`–`P3` stay as aliases.
+- **Default threshold for new plans — decided by the owner (2026-11-26): `medium`.**
+  - **Source:** the review contract, `templates/shared/review-contract.md:3-6`, mirrored in
+    `.opencode/agent/code-reviewer.md:214-217`.
+    - High: "Blocks merge".
+    - Medium: "Requires a fix or explicit accepted-risk disposition".
+    - Low and Nit: "Does not block".
+  - **Accepted-risk path:** under `medium`, an approve that carries a Medium finding
+    becomes an `ask`. The approver's `resume` note is that disposition, with the risk
+    recorded in `docs/accepted_risks.md`. The reviewer gets the note in its packet and
+    re-approves without the accepted finding.
+  - Old plans keep `judgment` through the legacy pin.
+- **Bounce limit scope — decided by the owner (2026-11-26):** one project default, pinned
+  per plan. Per-assurance defaults are deferred.
+- **CI wall-time mode — decided by the owner (2026-11-26): the shipped default is `warn`.**
+  - Wall time depends on runner load, so a CI overrun is recorded and labelled "wall time
+    not enforced" in the step summary instead of failing the build.
+  - This changes today's behaviour: a CI wall-time overrun currently fails.
+  - A project that wants enforcement sets `budget.wall.mode.ci=stop` in a reviewed commit.
+- **This repository's own CI** (recommendation, open). Its ceilings are calibrated per
+  tag, so f-5 adds `.agentic-flow/config` with `budget.wall.mode.ci=stop` to keep today's
+  enforcement here. Not adding it lets the scaffold run under the adopter default.
 
 ---
 
@@ -445,13 +459,14 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 - Given the legacy pin, then those same results journal as they do today.
 - Given every stored result fixture using `P1`–`P3`, then all still validate.
 - Given `budget.wall.mode.local=warn` and an overrun, then `self-test` exits 0, prints the warning, and records the row. `doctor` lists the budget and the row. Under `stop`, the same overrun fails with today's text.
+- Given `CI=true` and no config file, when a wall ceiling is overrun, then `self-test` exits 0, records the overrun, and writes "wall time not enforced" to the step summary. With `budget.wall.mode.ci=stop`, the same overrun fails.
 - Given `CI=true` and `AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL=warn`, then the CI mode applies, and the ignored value is reported once.
 - Given a verify record made under `warn`, then a check under `stop` treats it as stale and reruns.
 - Given `andon.station-infrastructure=retry:2` and a probe that fails twice and then succeeds, then the station launches with no hold. Given three failures, then one hold whose note says "after 2 automatic retries".
 - Given a retry pin and a dirty worktree, or a failure after the intent record, then the controller holds at once.
 
 ## Invariants
-- Without a `.agentic-flow/config` file and on legacy-pin issues, the controller, `handoff`, `packet`, `status` and `self-test` behave as today. The only exception is that `verify` records are recomputed once.
+- Without a `.agentic-flow/config` file and on legacy-pin issues, the controller, `handoff`, `packet`, `status` and `self-test` behave as today, with two exceptions. `verify` records are recomputed once. A CI wall-time overrun warns instead of failing (owner decision), unless the project sets `budget.wall.mode.ci=stop`.
 - Replay never reads the active config. One issue body and one journal derive one state on every machine running this version.
 - A pin never changes on an issue once it is written.
 - The controller never converts an approve into a bounce or a bounce into an approve.

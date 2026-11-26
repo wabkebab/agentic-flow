@@ -442,6 +442,9 @@ Config changes what replay and gates mean, so it waits for its tier contract.
       required, pseudonymous field in public mode.
 - [ ] **Budget modes (K).** Accept the defaults and the policy-hash cache rule? Should
       adopters' CI start at `warn` until they calibrate their ceilings?
+      *Partly decided 2026-11-26: CI wall time defaults to `warn`
+      (`feature-config-surface.md` C-1). The other defaults are settled at that brief's
+      approval.*
 - [ ] **Uninstall.** Accept removal only on pristine provenance (the `accepted=` upstream
       hash, or bytes re-exported from the installed revision for older installs) and the
       no-override plan guards?
