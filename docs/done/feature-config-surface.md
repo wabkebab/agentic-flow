@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-11-26) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict (changes journal replay and the controller; project baseline is Standard)
 > Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures.
 > Draft 6 (2026-11-26), written against `0.21.0` (`97c6ebe`) after five review rounds; see *Revision history*. Every owner decision is recorded. Next: owner review and approval.
@@ -7,13 +7,12 @@
 # Feature — Config surface, plan-pinned policy and budget modes
 
 ## Tracker
-- [ ] F-1 Replay each issue under its own policy pin — open
-- [ ] F-2 Add the config registry, loader and `agentic-flow config` — open
-- [ ] F-3 Capture the pin at approval and refuse to change it — open
-- [ ] F-4 Use one severity scale and enforce the pinned blocking threshold — open
-- [ ] F-5 Give test budgets a warn or stop mode — open
-- [ ] F-6 Retry pre-launch station failures when the pin allows it — open
-
+- [x] f-1 — #216; approved=f9df0ef7c07da311cf9b4df6db17bd25be9fdb84; submissions=f9df0ef7c07da311cf9b4df6db17bd25be9fdb84
+- [x] f-2 — #217; approved=a9f00ae981ca9f15835e47a197ab668cdd1e7806; submissions=a9f00ae981ca9f15835e47a197ab668cdd1e7806
+- [x] f-3 — #218; approved=69cddb56456de6552fc0bfa525bed0114bbafd8a; submissions=69cddb56456de6552fc0bfa525bed0114bbafd8a
+- [x] f-4 — #219; approved=c1759c65007051d9aeede142497fbd7e8760042f; submissions=c1759c65007051d9aeede142497fbd7e8760042f
+- [x] f-5 — #220; approved=b392f639a8fb5ab1cbf9557e1b0542a366db9253; submissions=b392f639a8fb5ab1cbf9557e1b0542a366db9253
+- [x] f-6 — #221; approved=2cd642bba2dd39475cf8d1d876d0bcca359b6d3a; submissions=2cd642bba2dd39475cf8d1d876d0bcca359b6d3a
 ---
 
 # Part A — Analysis
@@ -1218,10 +1217,10 @@ It is last so it can be dropped without renumbering the other steps.
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/215
 - **Approval:** status=approved; by=wabkebab; at=2026-11-26; rev=f0ad0ff1b2d8cbcfd050b2b6c49c8f6f6001696c
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** source=final-approval
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: `ship` finalizes Status and Tracker, sets TRIAGE to Done, and commits this
   document's move and the updated index before the first push. It opens the PR and
   waits for CI. The reviewer runs `final-approve` to record the PR, head, and run attempt
