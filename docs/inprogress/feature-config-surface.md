@@ -2,7 +2,7 @@
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (changes journal replay and the controller; project baseline is Standard)
 > Phase 2 of [harness configurability](product-harness-configurability.md) (areas A, C and K): one validated config surface with override tiers, a per-plan policy pin that replay reads from each issue, one severity scale with an enforceable blocking threshold, warn-or-stop test budgets, and a bounded retry for pre-launch station failures.
-> Draft 5 (2026-11-26), written against `0.21.0` (`97c6ebe`) after four review rounds; see *Revision history*. Every owner decision is recorded. Next: owner review and approval.
+> Draft 6 (2026-11-26), written against `0.21.0` (`97c6ebe`) after five review rounds; see *Revision history*. Every owner decision is recorded. Next: owner review and approval.
 
 # Feature — Config surface, plan-pinned policy and budget modes
 
@@ -372,6 +372,24 @@ effective value:
   - The value already fits the existing `journal=` grammar in every stamp regex, so the
     identity grammar is unchanged. `journal_stamp`'s legacy flag treats `v1` and `v2`
     alike.
+  - **Limitation: this protects against newer clients only.** A body with its policy line
+    removed has a single prefixed line. 0.21.0's `journal_stamp` parses it, and reads
+    anything other than `journal=v1` as `legacy:true`. So a 0.21.0 `handoff` could act on
+    a hand-damaged pinned issue under the legacy bounce limit. No marker can close this:
+    any line an editor can delete, an editor can delete together with the policy line.
+    The brief therefore narrows the claim instead of adding a further guard:
+    - an **intact** pinned body is protected against every version: 0.21.0 fails on two
+      prefixed lines, and newer code enforces the pin;
+    - a **damaged** body (policy line removed, by hand or by any non-harness writer) is
+      refused by every newer reader. It is outside the guarantee for 0.21.0 clients,
+      which the upgrade requirement already excludes from pinned plans;
+    - a body forged further, with `journal=v2` also rewritten to `v1`, is a legacy-looking
+      issue. A newer `handoff` may replay it at the legacy limit until the controller's
+      next pass, which exits 3 because its pin no longer matches the approved plan
+      (C-2 *Controller backstop*).
+    - Issue-body edits come from accounts with write access to issues, the same
+      authority that can edit journal comments. Close-out records the residual risk in
+      `docs/accepted_risks.md`.
 - `journal_replay` passes `--argjson limit`. `successor` admits
   `bounces<limit` when `$bounces < $limit` and `bounces=limit` when `$bounces == $limit`.
 - Every `workflow_successor` caller passes the issue's limit:
@@ -487,38 +505,56 @@ effective value:
     - The caller's checkout is never read.
   - **One read of mutable policy per verification.** The operator file and env are the
     only mutable inputs; tree files are immutable at a revision.
-    - `verify-step` resolves the **operator-tier** budget values **once**, before
-      computing the key, into canonical JSON: `{wall_mode_local, wall_scale}`.
+    - **The snapshot holds explicit overrides, never resolved values.** C-1 lets each
+      checkout's tracked project file set defaults for operator-tier keys, so the green
+      tree and a red-first tree may differ with no override at all. A single resolved
+      value passed to both would give one of them the wrong policy.
+    - `verify-step` reads the operator file and the `AGENTIC_FLOW_BUDGET_*` env **once**,
+      before computing the key. It captures only the operator-tier keys they explicitly
+      set (`budget.wall.mode.local`, `budget.wall.scale`), as canonical JSON, for example
+      `{"budget.wall.scale":"2.0"}` or `{}`.
     - It exports that JSON as `AGENTIC_FLOW_BUDGET_POLICY` to every check it launches:
       prepare, green and each red-first run.
-  - **The snapshot can never override tracked policy.** It carries only operator-tier
-    fields, so it can do no more than an operator file could. `self-test.sh`:
-    - always resolves the project-tier values (`budget.fixtures.mode`,
-      `budget.wall.mode.ci`) and the context (`CI=true` or not) itself, from the checkout
-      it runs in. They are never taken from the snapshot;
-    - rejects a snapshot containing any other field ("budget snapshot names a non-operator
-      key") and fails;
+  - **Each tree resolves its own policy; the snapshot can never override tracked policy.**
+    `self-test.sh`:
+    - resolves every key in C-1 order from its own checkout: registry default, then the
+      tree's `.agentic-flow/config`, then the snapshot's overrides. The snapshot stands in
+      for the operator file and env, and neither is read again;
+    - takes project-tier values (`budget.fixtures.mode`, `budget.wall.mode.ci`) and the
+      context (`CI=true` or not) only from the tree and the process environment, never
+      from the snapshot;
+    - rejects a snapshot naming any key other than the two operator-tier keys ("budget
+      snapshot names a non-operator key") and fails;
     - **ignores the snapshot entirely under `CI=true`**, reporting it once, exactly as C-1
       ignores the operator file and env in CI. A direct CI invocation with conflicting
-      JSON therefore runs under tracked policy;
-    - otherwise uses the snapshot's two fields verbatim, and reads neither the operator
-      file nor `AGENTIC_FLOW_BUDGET_*` overrides.
+      JSON therefore runs under tracked policy.
+  - `verify_record_key` resolves each tree the same way, from that tree's files plus the
+    same snapshot, so green and red digests can differ correctly.
   - **Digest and acknowledgment.** `self-test.sh` prints `budget-policy: <sha256>` over
-    the full effective policy: the tracked values from its checkout plus the operator
-    snapshot and the context. `verify_record_key` computes the same digest from the
-    `<sha>` or overlaid `<red_base>` tree plus the same snapshot. Acknowledgments are
-    treated as follows:
-    - **Required:** `make check` at a *policy-aware* tree, meaning one that contains
-      `config/config-keys.tsv`. A missing acknowledgment there makes `verify-step` refuse
-      to publish the record.
+    the full effective policy that tree resolved. `verify_record_key` computes the same
+    digest from the `<sha>` or overlaid `<red_base>` tree plus the same snapshot.
+  - **Support is detected in the test runner, not inferred from the registry.**
+    `config/config-keys.tsv` lands in f-2, but the acknowledgment lands in f-5, so a
+    registry check would wrongly reject f-2 to f-4 commits whose `make check` passes.
+    - f-5 adds a fixed capability line to `scripts/self-test.sh`:
+      `# agentic-flow-capability: budget-ack v1`.
+    - A tree is *ack-capable* when the `scripts/self-test.sh` that actually runs carries
+      that line: the tree at `<sha>` for green, and the overlaid `<red_base>` tree for
+      red-first.
+    - f-5's own red-first base runs the pre-f-5 `self-test.sh`, with only
+      `scripts/tests/contracts.sh` overlaid, so it is correctly not ack-capable.
+
+    Acknowledgments are treated as follows:
+    - **Required:** `make check` on an ack-capable tree. A missing acknowledgment there
+      makes `verify-step` refuse to publish the record.
     - **Checked when present:** any other command's acknowledgment must match, or
       `verify-step` refuses to publish.
-    - **Recorded when absent:** a command that does not run the policy-aware `self-test.sh`
-      prints nothing. Examples are a no-op `verify-prepare`, an adopter's own commands, and
-      a red-first run on a pre-policy base such as f-5's. That command's entry records
-      `budget_ack: null`, which is not a failure, because that command consumed no budget
-      policy. A red-first entry on a pre-policy tree records `policy: "pre-policy"`, and
-      its key digest is the constant for that.
+    - **Recorded when absent:** a command that does not run an ack-capable `self-test.sh`
+      prints nothing. Examples are a no-op `verify-prepare`, an adopter's own commands, a
+      green run at an f-2 to f-4 commit, and a red-first run on a pre-f-5 base. That
+      command's entry records `budget_ack: null`, which is not a failure. A run on a tree
+      that is not ack-capable records `policy: "pre-ack"`, and its key digest is the
+      constant for that, because its runner applies only the pre-f-5 fixed limits.
     - An operator-file edit between key generation and execution therefore cannot change
       what the checks consumed, or what the record says they consumed.
   - `verify-step`, `controller_verify` and `packet` all reach freshness through
@@ -535,19 +571,26 @@ effective value:
     - **Checked before deciding.** `controller_pending` handles `pending=decide` items
       whose run has a green verify and a `submitted` station result. Before calling
       `controller_decide`, it recomputes the current green digest for the same head
-      through `verify_record_key`. A match proceeds as today.
-    - **Reverified on a mismatch.** A digest that differs, or a record without the field,
-      reruns `controller_verify` for the same run. The new record carries
-      `reverify:{reason:"budget-policy", attempt:n}`.
+      through `verify_record_key`, which is a local computation. A match proceeds as
+      today.
+    - **A mismatch becomes pending verification; dispatch runs it.**
+      `controller_pending` never launches a verifier itself. `--reconcile-only` exits
+      before dispatch, and its contract forbids running one.
+      - On a digest that differs, or a record without the field, `controller_pending`
+        does not decide. It appends the item to `CT_PENDING` as `pending=verify` with
+        `reverify` set.
+      - `status` reports the step as "pending verification (budget policy changed)".
+      - The next normal dispatch takes that item through the existing `pending=verify`
+        branch (`controller.sh:828-831`), which calls `controller_verify` for the same
+        run. The new record carries `reverify:{reason:"budget-policy", attempt:n}`.
       - Today the ledger rejects a second `verify` for a run as `duplicate verify record`
         (`ledger.pl:277`). That check gains one exception, like salvage's `rebaseline`: a
         `verify` with `reverify` is accepted when no decision exists, its head equals the
         station result's head, and `attempt` is the next number.
       - `$run->{verify}` becomes the newest record, so `ledger_chains` derives the pending
         action from it (`ledger.pl:530`).
-    - **Routing is refreshed in the same pass.** After a reverify, `controller_pending`
-      re-reads the ledger, recomputes that chain's item through `ledger_chains`, and
-      routes it once more through the same `case`:
+    - **Routing after the reverify is the ordinary next pass.** The next reconcile derives
+      the chain's pending action from the newest verify record, through `ledger_chains`:
       - `decide` (green under the current policy) calls `controller_decide`;
       - `fix` (red, no earlier fix) enters `CT_PENDING`, so dispatch schedules a
         replacement fix with `replaces` set. It never falls through to an initial dispatch
@@ -712,7 +755,16 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 
 ## Revision history
 
-- **Draft 5 (2026-11-26), fourth review.**
+- **Draft 6 (2026-11-26), fifth review.**
+  - Acknowledgment support is detected in the running `self-test.sh` by an f-5
+    capability line, so f-2 to f-4 commits verify.
+  - The snapshot carries explicit operator overrides only, and each tree resolves its own
+    defaults.
+  - A stale green verify is queued as `pending=verify` for dispatch, never verified
+    inside reconcile, so `--reconcile-only` stays verifier-free.
+  - The removed-policy-line guard is narrowed to newer clients, with the 0.21.0
+    limitation documented and recorded as an accepted risk.
+- **Draft 5, fourth review.**
   - One shared stamp splitter that every prefix consumer uses (packet, close-out,
     approval migration), guarded by a contracts test.
   - `journal=v2` makes a pinned issue's policy line durably required.
@@ -757,7 +809,7 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 - Given a pinned tracker and step issues, when frozen copies of 0.21.0's `TRACK_STAMP_RE` and `STEP_STAMP_RE` index them through the JSON-spec path, then indexing dies "malformed identity stamp", with zero mutating `gh` calls and the bodies unchanged.
 - Given an unpinned issue, then the same frozen 0.21.0 parsers read it exactly as today.
 - Given a pinned (`journal=v2`) issue body with its policy line, then packet generation, close-out's approved-revision check and a same-revision reapply (`migrate_approval_body`) all succeed. The reapply leaves the policy line byte-identical, with no `approved=` appended to it.
-- Given a `journal=v2` issue whose policy line was removed by hand, then replay, a direct `handoff` event, `packet` and the controller each exit 3 before any write. A pin of 3 never replays at 2.
+- Given a `journal=v2` issue whose policy line was removed by hand, then replay, a direct `handoff` event, `packet` and the controller of this version each exit 3 before any write. A pin of 3 never replays at 2 in this version. The frozen 0.21.0 `journal_stamp` parses the same body as `legacy:true`, which the test asserts to document the stated limitation.
 - Given a script outside `journal.sh` that selects lines by the bare `<!-- agentic-flow:plan:` prefix, then the contracts test fails.
 - Given a doc with `policy:`, then `status` and replay read the pin in f-1, before any writer exists.
 - Given `AGENTIC_FLOW_PACKET_WORD_LIMIT` or an operator-file value for a project key, then `config` and every consumer exit 2 naming the source.
@@ -785,12 +837,16 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 - Given `CI=true` and no config file, when a wall ceiling is overrun, then `self-test` exits 0, records the overrun, and writes "wall time not enforced" to the step summary. With `budget.wall.mode.ci=stop`, the same overrun fails.
 - Given `CI=true` and `AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL=warn`, then the CI mode applies, and the ignored value is reported once.
 - Given a verify record made under `warn`, then a check under `stop` treats it as stale and reruns.
-- Given a controller that crashes at `after-verify` with a warn-green record, when the operator switches to `stop` and restarts, then `controller_pending` sees a different digest and records a `reverify` verify, which the ledger accepts. With an overrun the rerun is red: the refreshed route is `fix`, the ledger has no `submit` decision, and exactly one replacement intent is dispatched (`replaces` = the run). No new chain is started.
+- Given a controller that crashes at `after-verify` with a warn-green record, when the operator switches to `stop` and restarts, then `controller_pending` sees a different digest and queues the run as `pending=verify` with `reverify` set, without deciding. Dispatch then runs `controller_verify`, and the ledger accepts the `reverify` record. With an overrun the rerun is red: the next pass routes `fix`, the ledger has no `submit` decision, and exactly one replacement intent is dispatched (`replaces` = the run). No new chain is started.
+- Given the same stale warn-green record, when `run --reconcile-only` runs, then no `verify-step` is invoked (a sentinel records zero calls), no decision is recorded, and `status` shows the step as pending verification. The next normal `run` reverifies it.
 - Given the same restart where the rerun is green under `stop`, then the refreshed route is `decide` and the submit is journaled from the reverify record.
 - Given a policy that changes before each of three reverifies, then the third mismatch decides as `ask`.
 - Given `verify-step` paused (test hook) between key generation and the first check, when the operator file's `budget.wall.mode.local` is edited, then `make check` prints the snapshot digest from before the edit, and the record's `budget_policy` equals it. A check reporting a different digest makes `verify-step` refuse to publish.
 - Given `CI=true` and a directly supplied `AGENTIC_FLOW_BUDGET_POLICY` claiming warn modes, while tracked config requires `stop`, then `self-test` runs under `stop`, reports the snapshot as ignored, and an overrun fails. Given a snapshot with a project-tier field, outside CI, then `self-test` fails "budget snapshot names a non-operator key".
-- Given a no-op `verify-prepare` and f-5's red-first run on its pre-policy base, then both record `budget_ack: null` (the red entry also records `policy: "pre-policy"`), and the record is published. Given `make check` on a policy-aware tree that prints no acknowledgment, then the record is not published.
+- Given a no-op `verify-prepare` and f-5's red-first run on its pre-f-5 base, then both record `budget_ack: null` (the red entry also records `policy: "pre-ack"`), and the record is published.
+- Given a green run at a pre-f-5 SHA that already contains `config/config-keys.tsv` (an f-2 to f-4 commit), then its `make check` is not ack-capable, records `budget_ack: null` and `policy: "pre-ack"`, and the record is published.
+- Given `make check` on an ack-capable tree that prints no acknowledgment, then the record is not published.
+- Given green and red trees whose tracked `.agentic-flow/config` set `budget.wall.mode.local` to `warn` and `stop` respectively, with no operator file or env override, then the snapshot is `{}`, the green run resolves `warn`, the red run resolves `stop`, and their recorded digests differ accordingly. With an operator override `budget.wall.mode.local=stop`, both resolve `stop`.
 - Given a caller checkout with `budget.fixtures.mode=stop` and a submitted SHA that commits `warn`, then the record's `budget_policy.green` equals the digest of the SHA's tree, not the caller's. A red-first entry whose `paths` include a policy file takes that file from the SHA. `verify-step`, `controller_verify` and `packet` compute the same key.
 - Given a step whose submitted commits change `.agentic-flow/config` in one commit and `config/test-budgets.tsv` in another, then the reviewer packet lists both under "Policy files changed". A change reverted within the range is not listed.
 - Given `andon.station-infrastructure=retry:2` and a probe that fails twice and then succeeds, then the station launches with no hold. Given three failures, then one hold whose note says "after 2 automatic retries".
@@ -801,7 +857,7 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 ## Invariants
 - With no effective project value (no `.agentic-flow/config`, or only the commented template) and on legacy-pin issues, the controller, `handoff`, `packet`, `status` and `self-test` behave as today, with two exceptions. `verify` records are recomputed once. A CI wall-time overrun warns instead of failing (owner decision), unless the project sets `budget.wall.mode.ci=stop`.
 - Replay never reads the active config. One issue body and one journal derive one state on every machine running this version.
-- A pin never changes on an issue once it is written, and no harness version, older or newer, can remove it without replay failing.
+- A pin never changes on an issue once it is written. No harness version rewrites or removes it. No harness version at or after this brief acts on a `journal=v2` issue whose policy line is missing. A hand-damaged body is outside the guarantee for 0.21.0 clients (C-3 *Limitation*).
 - A `submit` is journaled only from a green verification whose budget digest matches the policy in force at the decision.
 - The controller never converts an approve into a bounce or a bounce into an approve.
 - No key loosens the safety floor. Integrity holds stay `hold`.
@@ -1059,19 +1115,20 @@ so it lands after the replay work is stable.
   - add `budget_policy` to `verify_record_key`, derived only from its own arguments (the
     `<sha>` tree for green, and the overlaid `<red_base>` tree for each red-first entry),
     never from the caller's checkout;
-  - resolve the operator-tier values once in `verify-step` and pass them to every check
-    as `AGENTIC_FLOW_BUDGET_POLICY`;
-  - make `self-test.sh` resolve tracked values and context itself, accept only
-    operator-tier snapshot fields, ignore the snapshot under `CI=true`, and print the
-    effective digest;
-  - apply C-5's acknowledgment rule: required for `make check` on a policy-aware tree,
-    matched when present, and recorded as `budget_ack: null` when absent;
+  - capture the explicit operator-file and env overrides once in `verify-step`, and pass
+    them to every check as `AGENTIC_FLOW_BUDGET_POLICY`;
+  - make `self-test.sh` resolve each key over its own tree's defaults and project file,
+    apply the snapshot's overrides, reject non-operator snapshot keys, ignore the
+    snapshot under `CI=true`, and print the effective digest;
+  - add the capability line `# agentic-flow-capability: budget-ack v1` to `self-test.sh`,
+    and apply C-5's acknowledgment rule on ack-capable trees only. Elsewhere, record
+    `budget_ack: null` and `policy: "pre-ack"`;
   - add the optional `budget_policy` and `reverify` fields to the ledger's `verify` record
     (`ledger.pl:197` validation), plus the `reverify` exception to the duplicate check
     (`ledger.pl:277`);
-  - in `controller_pending`, reverify a stale `decide` item, then refresh its route
-    through `ledger_chains` and the same `case`, bounded at two reverifies
-    (C-5 *In-flight attempts*).
+  - in `controller_pending`, queue a stale `decide` item as `pending=verify` with
+    `reverify` set, never verifying inline. Dispatch runs it, and the next pass routes
+    from the newest record. At most two reverifies per run (C-5 *In-flight attempts*).
 - **Red-first lives in a test-only file.** Restoring the new `scripts/self-test.sh` onto
   a base without `config/test-budgets.tsv` would fail its strict loader. That failure
   could match the broad `^self-test failed:` signature, or block valid red evidence.
@@ -1092,19 +1149,9 @@ so it lands after the replay work is stable.
 - Concurrent runs both record.
 - Pruning keeps 20 files.
 - A warn-made verify record is stale under `stop`.
-- A caller checkout and a submitted SHA with deliberately different policies: the key
-  follows the SHA. A red-first entry that overlays a policy file uses the overlaid copy.
-  `verify-step`, `controller_verify` and `packet` agree.
-- A restart at the `after-verify` fault after a switch from `warn` to `stop`: the ledger
-  accepts the `reverify` record, rejects a plain duplicate, and records no `submit`. A red
-  rerun dispatches exactly one replacement fix; a green rerun submits. A third mismatch
-  asks.
-- An operator-file edit between key generation and execution leaves the consumed
-  snapshot, the printed digest and the record in agreement.
-- A direct `CI=true` run with conflicting snapshot JSON runs under tracked `stop`. A
-  snapshot with a project-tier field fails outside CI.
-- A no-op `verify-prepare` and the pre-policy red-first run record `budget_ack: null` and
-  the record publishes. A silent `make check` on a policy-aware tree blocks publication.
+- Every budget acceptance scenario: caller vs SHA policy, the `after-verify` restart
+  (including a rejected plain duplicate), `--reconcile-only`, the mid-verification
+  operator edit, the CI snapshot, acknowledgment cases, and per-tree defaults.
 - The red-first tail contains the distinctive `budget-mode:` line.
 - None of the policy files matches the bookkeeping filter.
 
