@@ -132,14 +132,19 @@ agentic-flow config get <key>                      # effective value only
 agentic-flow config explain <key>                  # value, source, tier, range, who may override
 agentic-flow config set <key> <value> [--scope project|operator]
 agentic-flow config unset <key> [--scope project|operator]
+agentic-flow config init [--missing] [--print]     # commented template, rendered from the registry
   exit 0 ok · 2 usage or invalid value · 3 unknown key or wrong tier for the scope · 5 I/O
-  set/unset write atomically, keep comments and order, and never stage or commit.
-  Agents are denied set/unset by the command policy, like approve.
+  set/unset/init write atomically, keep comments and order, and never stage or commit.
+  set uncomments a key's template line in place; unset comments it back out at its default.
+  init refuses an existing file; --missing appends only absent keys; --print writes stdout.
+  Agents are denied set/unset by the command policy, like approve. init changes no
+  effective value, so it is allowed.
 
 Files (same grammar: '#' comments, blank lines, key=value; ≤ 64 KiB, ≤ 256 lines,
 key ≤ 64 chars, value ≤ 256 chars; unknown or duplicate key = error with file:line)
   config/config-keys.tsv        registry: key, tier, type, default, summary   (payload, core)
-  .agentic-flow/config          project file, committed; absent = all defaults (project-owned)
+  .agentic-flow/config          project file, committed; created by config init at adoption,
+                                every key commented at its default; absent = all defaults
   ${XDG_CONFIG_HOME:-~/.config}/agentic-flow/config/<owner>/<repo>.conf     operator file
   AGENTIC_FLOW_<KEY>            env; KEY = upper(key) with '.' and '-' → '_'
   config/test-budgets.tsv       fixture copy limits (payload, core)
@@ -199,6 +204,32 @@ and one future opt-in.
 
 A config file that names a floor item fails as an unknown key. `explain` names the tier
 and says who may override it.
+
+**Commented template.** The project file is discoverable without reading code.
+`config init` renders it from the registry, so the template cannot drift from
+`config-keys.tsv`. There is no hand-maintained template file and no separate sync check.
+Every key appears once, commented out at its default, so a fresh file changes no
+effective value:
+
+```
+# agentic-flow project config. Commented keys use their defaults.
+# Change one with: agentic-flow config set <key> <value>   then review and commit.
+# Tiers: plan = frozen into each plan at approval · project = this file only ·
+#        operator = may be overridden per machine (~/.config, AGENTIC_FLOW_*).
+# Not configurable: merge, ship and hold-clear stay human-only; see C-1's floor table.
+
+# review.max_bounces — bounces before a step escalates to a human
+# tier: plan · range: 1–5 · default: 2
+#review.max_bounces=2
+```
+
+- **Where it comes from.** `scripts/init.sh` runs `config init` at adoption. This repo
+  commits the generated file in f-2. Existing adopters run `config init` once; `doctor`
+  reports a missing project file as information, not a failure.
+- **New keys later.** `config init --missing` appends commented entries for registry keys
+  absent from the file and leaves every existing line untouched. `doctor` names the keys
+  the file does not list.
+- The upgrade wizard (area D) will run `--missing` automatically.
 
 ### C-2 Policy pin
 
@@ -433,8 +464,8 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
   - This changes today's behaviour: a CI wall-time overrun currently fails.
   - A project that wants enforcement sets `budget.wall.mode.ci=stop` in a reviewed commit.
 - **This repository's own CI — decided by the owner (2026-11-26): `warn`, the default.**
-  f-5 adds no `.agentic-flow/config` here; the scaffold runs under the same default its
-  adopters get. Wall-time overruns in this repo's CI are recorded, not enforced.
+  This repo's `.agentic-flow/config` (the f-2 template) leaves `budget.wall.mode.ci`
+  commented, so the scaffold runs under the same default its adopters get. Wall-time overruns in this repo's CI are recorded, not enforced.
 
 ---
 
@@ -449,6 +480,7 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 - Given an unknown key, a duplicate key or an out-of-range value in `.agentic-flow/config`, then `config list` exits 2 with `file:line`, and `run` refuses before taking the lock.
 - Given `controller.turn_cap=12` in the operator file, then `config explain controller.turn_cap` names the operator file, and the controller stops at 12 turns.
 - Given an agent hook context, then `config set` and `config unset` are denied.
+- Given a fresh adoption, then `.agentic-flow/config` lists every registry key commented at its default, and `config list` shows every source as `default`. Given an existing file, `config init` refuses, and `config init --missing` appends only the absent keys.
 - Given a doc whose plan block pin differs from `.agentic-flow/config` at the approved revision, then `plan-to-issues --apply` exits non-zero before any `gh` mutation (a `gh` sentinel records none).
 - Given stamped issues pinned to `max_bounces=2` and a doc now pinned to `3`, then `plan-to-issues --apply` dies before any label, create, edit or close, including after a partial earlier apply.
 - Given legacy issues and a doc whose pin equals the legacy pin, then the reapply adds the marker. Given any other pin, it dies.
@@ -466,7 +498,7 @@ N ≤ 3 and each sleep ≤ 300 s; `review.max_bounces` 1–5; `controller.turn_c
 - Given a retry pin and a dirty worktree, or a failure after the intent record, then the controller holds at once.
 
 ## Invariants
-- Without a `.agentic-flow/config` file and on legacy-pin issues, the controller, `handoff`, `packet`, `status` and `self-test` behave as today, with two exceptions. `verify` records are recomputed once. A CI wall-time overrun warns instead of failing (owner decision), unless the project sets `budget.wall.mode.ci=stop`.
+- With no effective project value (no `.agentic-flow/config`, or only the commented template) and on legacy-pin issues, the controller, `handoff`, `packet`, `status` and `self-test` behave as today, with two exceptions. `verify` records are recomputed once. A CI wall-time overrun warns instead of failing (owner decision), unless the project sets `budget.wall.mode.ci=stop`.
 - Replay never reads the active config. One issue body and one journal derive one state on every machine running this version.
 - A pin never changes on an issue once it is written.
 - The controller never converts an approve into a bounce or a bounce into an approve.
@@ -562,7 +594,10 @@ must already read.
   and CI rule.
 - The operator path reuses `roles_operator_path`'s owner/repo derivation under
   `agentic-flow/config/`.
-- Add `config list|get|explain|set|unset` to `scripts/agentic-flow` and its usage text.
+- Add `config list|get|explain|set|unset|init` to `scripts/agentic-flow` and its usage
+  text. `init` renders C-1's commented template from the registry.
+- `scripts/init.sh` runs `config init` at adoption. Commit this repo's generated
+  `.agentic-flow/config`. `doctor` reports a missing file and unlisted keys as information.
 - Add command-policy rows denying `config set` and `config unset` to agents, following the
   `approve` rows (wider prefix where a row cannot be expressed exactly), and regenerate.
 - Wire the first consumers: `controller.turn_cap` (`controller.sh:1018`) and
@@ -579,8 +614,14 @@ must already read.
 - The denied `config set` probe.
 - Turn cap 12 stops at 12.
 - The packet limit from config.
+- `config init` output lists every registry key exactly once, commented out, and loads with
+  every value sourced from `default`.
+- `init` refuses an existing file. `--missing` appends only absent keys and leaves the
+  existing bytes unchanged.
+- `set` then `unset` round-trips the template line.
+- An exported adoption has the file.
 
-**DoD:** every C-1 key resolves with its source; invalid config fails closed before the controller lock; agents cannot write config.
+**DoD:** every C-1 key resolves with its source; invalid config fails closed before the controller lock; agents cannot change a value; new adoptions and this repo carry the commented template.
 **Verify:** `make test-one F=contracts` and `make test-one F=controller S=status`
 **Risks:**
 - The loader must not run `gh` or the network.
