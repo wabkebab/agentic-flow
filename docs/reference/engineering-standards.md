@@ -47,6 +47,22 @@ These go in the Feature/Security doc (Part A), not in the implementer's head:
 - **Decide the failure behavior up front.** For each external call: what happens on timeout,
   on a malformed response, on partial success. Decided during coding, these become ad-hoc
   guesses that no one revisits.
+- **Choose the simplest design that meets the goal.** Before adding a mechanism (a new
+  record, lock, state machine, recovery path or flag), first look for a simpler route:
+  - refactor the existing code;
+  - reuse a tool that already covers the case, for example Git's own rollback;
+  - refuse with clear instructions;
+  - print the command for the human to run;
+  - accept and document the risk.
+
+  Prefer rolling back over rolling forward when the operation can be undone. A mechanism
+  that adds cost to every command, or obliges every future script to take part, needs a
+  strong reason.
+- **Answer review findings by subtraction first.** A valid edge case does not oblige new
+  machinery. For each finding, weigh how likely it is and what it would cost, and offer
+  the simpler options alongside "add handling". Revise the design rather than stacking
+  patches on it. When scope is cut, also remove the mechanisms that the cut scope
+  justified.
 
 ### 11.3 Coding stage
 
@@ -90,3 +106,5 @@ These go in the Feature/Security doc (Part A), not in the implementer's head:
   1. Is all external input validated at the boundary?
   2. Are the failure paths handled — timeout, malformed, partial?
   3. Is there enough logging to debug this at 2am without a debugger?
+  4. Is this the simplest design that works? Could a refactor, an existing tool or a
+     refusal replace any new mechanism?

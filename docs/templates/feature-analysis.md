@@ -33,7 +33,10 @@
 
 ## Proposed approach
 <!-- The design. If there are real alternatives, lay them out with trade-offs and make a
-     recommendation — don't just present a menu. -->
+     recommendation — don't just present a menu. Start from the simplest design: refactor
+     or reuse an existing tool before adding a mechanism, and when a review finding
+     arrives, consider refuse / report / roll back / accept-the-risk first
+     (docs/reference/engineering-standards.md §11.2). -->
 
 ### Option A — <name> (recommended)
 <Trade-offs.>
