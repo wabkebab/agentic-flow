@@ -32,6 +32,7 @@ usage:
   agentic-flow diff [--ref <ref>] [--json]
   agentic-flow upgrade [--ref <ref>] [--force] [--yes]
   agentic-flow upgrade --merged <path>
+  agentic-flow uninstall [--json] [--keep-docs] [--remove-project-state] [--claim-adoption]
   agentic-flow --help | --version
 
   run --detach starts a background controller and reports its pid after it takes the lock.
@@ -671,6 +672,16 @@ subcommand="${1:-}"
     status) shift; status_cmd "$@" ;;
     diff) shift; diff_cmd "$@" ;;
     upgrade) shift; upgrade_cmd "$@" ;;
+    uninstall)
+      shift
+      uninstall_entry=$0
+      if [ -L "$uninstall_entry" ]; then
+        uninstall_entry=$(perl -MCwd=abs_path -e 'print abs_path($ARGV[0]) // ""' "$uninstall_entry")
+        [ -n "$uninstall_entry" ] || die 'cannot resolve the uninstall command path'
+      fi
+      # shellcheck disable=SC1091 # Installed alongside the CLI.
+      . "$(dirname "$uninstall_entry")/lib/uninstall.sh"
+      uninstall_cmd "$@" ;;
     *) usage; die "unknown subcommand: $subcommand" ;;
   esac
   exit

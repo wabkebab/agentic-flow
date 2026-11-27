@@ -66,7 +66,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      echo "usage: $0 [--ship-gate|--fast|--full [--jobs N] [--all-groups]|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario TAG[,TAG] (controller: launch,ledger,recovery,ship,andon,status; stations: launch,packet,verify,handoff)]" >&2
+      echo "usage: $0 [--ship-gate|--fast|--full [--jobs N] [--all-groups]|--only export|contracts|hooks|plan-to-issues|lifecycle|upgrade|stations|controller] [--scenario TAG[,TAG] (controller: launch,ledger,recovery,ship,andon,status; stations: launch,packet,verify,handoff; upgrade: uninstall)]" >&2
       exit 0
       ;;
     *)
@@ -128,13 +128,16 @@ CONTROLLER_SCENARIOS="launch ship andon ledger recovery status"
 CONTROLLER_BLOCKS="timing:launch ship:ship andon:andon launch:launch ledger:ledger recovery:recovery status:status"
 STATIONS_SCENARIOS="launch verify handoff packet"
 STATIONS_BLOCKS="watchdogs:launch cache:verify slice:launch journal:handoff cli:handoff interrupt:verify red-first:verify packet:packet closeout:handoff settings:launch"
+UPGRADE_SCENARIOS="uninstall"
+UPGRADE_BLOCKS="uninstall:uninstall"
 SCENARIO_BLOCKS_RAN=" "
 SCENARIO_TAGS=""
 if [ "$SCENARIO_SET" = 1 ]; then
   case "$ONLY_GROUP" in
     controller) SCENARIO_TAGS=$CONTROLLER_SCENARIOS ;;
     stations) SCENARIO_TAGS=$STATIONS_SCENARIOS ;;
-    *) echo 'error: --scenario requires --only controller or --only stations' >&2; exit 2 ;;
+    upgrade) SCENARIO_TAGS=$UPGRADE_SCENARIOS ;;
+    *) echo 'error: --scenario requires --only controller, stations or upgrade' >&2; exit 2 ;;
   esac
   case "$SCENARIOS" in
     ''|,*|*,|*,,*) echo 'error: --scenario requires a nonempty comma-separated selection' >&2; exit 2 ;;
@@ -351,12 +354,20 @@ load_test_limits() { # TSV path relative to ROOT, label, expected keys, unknown-
   ' "$ROOT/$file"
 }
 
-# Validate against the dispatcher inventory in every mode, including make check.
-load_wall_ceilings() {
+wall_ceiling_keys() {
   local key keys="$SELF_TEST_GROUPS upgrade:upstream"
+  # A focused red-first overlay has the tests but predates the ceiling and the command.
+  if [ "$SCENARIO_SET" = 0 ] || [ "$ONLY_GROUP" != upgrade ] || [ -f "$ROOT/scripts/lib/uninstall.sh" ]; then
+    keys="$keys upgrade:uninstall"
+  fi
   for key in $CONTROLLER_SCENARIOS; do keys="$keys controller:$key"; done
   for key in $STATIONS_SCENARIOS; do keys="$keys stations:$key"; done
-  load_test_limits config/test-wall-ceilings.tsv 'wall-time ceiling' "$keys" 'group or tag'
+  printf '%s\n' "$keys"
+}
+
+# Validate against the dispatcher inventory in every mode, including make check.
+load_wall_ceilings() {
+  load_test_limits config/test-wall-ceilings.tsv 'wall-time ceiling' "$(wall_ceiling_keys)" 'group or tag'
 }
 WALL_CEILINGS=$(load_wall_ceilings) || exit 1
 FIXTURE_BUDGETS=$(load_test_limits config/test-budgets.tsv 'fixture copy budget' 'fixtures.fast fixtures.full fixtures.exported' budget) || exit 1
@@ -449,11 +460,12 @@ should_run() { # <group>
 }
 
 # SCENARIO HELPERS BEGIN
-scenario_group_begin() { # <controller|stations>; isolate markers in whole-suite runs.
+scenario_group_begin() { # <group>; isolate markers in whole-suite runs.
   SCENARIO_GROUP=$1
   case "$1" in
     controller) SCENARIO_BLOCKS=$CONTROLLER_BLOCKS; SCENARIO_TAGS=$CONTROLLER_SCENARIOS ;;
     stations) SCENARIO_BLOCKS=$STATIONS_BLOCKS; SCENARIO_TAGS=$STATIONS_SCENARIOS ;;
+    upgrade) SCENARIO_BLOCKS=$UPGRADE_BLOCKS; SCENARIO_TAGS=$UPGRADE_SCENARIOS ;;
   esac
   SCENARIO_BLOCKS_RAN=" "
   SCENARIO_WALL_TAG=""
@@ -477,9 +489,11 @@ should_run_scenario() { # <tag> <unique-block-name>
   scenario_wall_end
   case " $SCENARIO_BLOCKS " in
     *" $2:$1 "*) ;;
-    *) if [ "$SCENARIO_GROUP" = controller ]; then
-         fail "unknown controller scenario block at call site: $2:$1"
-       else fail "unknown stations scenario block at call site: $2:$1"; fi ;;
+    *) case "$SCENARIO_GROUP" in
+         controller) fail "unknown controller scenario block at call site: $2:$1" ;;
+         stations) fail "unknown stations scenario block at call site: $2:$1" ;;
+         upgrade) fail "unknown upgrade scenario block at call site: $2:$1" ;;
+       esac ;;
   esac
   scenario_selected "$1" || return 1
   SCENARIO_BLOCKS_RAN="$SCENARIO_BLOCKS_RAN $2:$1 "
@@ -493,17 +507,22 @@ assert_scenarios_ran() {
   local block tag
   scenario_wall_end
   if [ "$SCENARIO_BLOCKS_RAN" = ' ' ]; then
-    if [ "$SCENARIO_GROUP" = controller ]; then fail 'no controller scenario block executed'
-    else fail 'no stations scenario block executed'; fi
+    case "$SCENARIO_GROUP" in
+      controller) fail 'no controller scenario block executed' ;;
+      stations) fail 'no stations scenario block executed' ;;
+      upgrade) fail 'no upgrade scenario block executed' ;;
+    esac
   fi
   for block in $SCENARIO_BLOCKS; do
     tag=${block#*:}
     scenario_selected "$tag" || continue
     case "$SCENARIO_BLOCKS_RAN" in
       *" $block "*) ;;
-      *) if [ "$SCENARIO_GROUP" = controller ]; then
-           fail "controller scenario block '$block' never executed"
-         else fail "stations scenario block '$block' never executed"; fi ;;
+      *) case "$SCENARIO_GROUP" in
+           controller) fail "controller scenario block '$block' never executed" ;;
+           stations) fail "stations scenario block '$block' never executed" ;;
+           upgrade) fail "upgrade scenario block '$block' never executed" ;;
+         esac ;;
     esac
   done
 }
@@ -527,7 +546,7 @@ report_focused_wall_time() {
       tag_seconds=$(awk -v tag="$tag" '$1 == tag { total+=$2 } END { print total+0 }' "$TMP/scenario-wall")
     fi
     measure_event "group:$ONLY_GROUP:$tag:$tag_seconds"
-    if [ "$SCENARIO_SET" = 1 ]; then
+    if [ "$SCENARIO_SET" = 1 ] || [ "$ONLY_GROUP" = upgrade ]; then
       check_wall_ceiling "$ONLY_GROUP:$tag" "$tag_seconds" || status=1
     fi
   done

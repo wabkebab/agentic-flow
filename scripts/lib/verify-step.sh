@@ -16,8 +16,13 @@ verify_cleanup() {
 verify_run() { # directory, command; result in VERIFY_RESULT
   local directory=$1 command=$2 role=${3:-green} start=$SECONDS status=0 timer digest
   local ack='' policy=${VERIFY_BUDGET_DIGEST:-pre-ack}
+  local -a recipe
+  recipe=(bash -o pipefail -c "$command")
+  if [ "$role" = red-first ] && [[ "$command" =~ ^([a-z][a-z-]*):([a-z]+)$ ]]; then
+    recipe=(scripts/self-test.sh --only "${BASH_REMATCH[1]}" --scenario "${BASH_REMATCH[2]}")
+  fi
   # setsid ensures timeout/interrupt terminates the whole recipe process tree.
-  (cd "$directory" && exec perl -MPOSIX=setsid -e 'setsid() or die $!; exec @ARGV' bash -o pipefail -c "$command") > "$VERIFY_TMP/output" 2>&1 &
+  (cd "$directory" && exec perl -MPOSIX=setsid -e 'setsid() or die $!; exec @ARGV' "${recipe[@]}") > "$VERIFY_TMP/output" 2>&1 &
   VERIFY_PID=$!
   perl -e '
     my ($limit,$pid,$marker)=@ARGV;

@@ -744,6 +744,14 @@ for mutation in \
   'bash -c "echo ok"; gh issue edit 1 --add-label needs-review'; do
   must_block "$STEP_HOOK" "$mutation"
 done
+# Scenario 10: the generated permission rules cover these forms and the hook
+# also recognizes the executable by basename.
+for uninstall_path in scripts/agentic-flow ./scripts/agentic-flow agentic-flow; do
+  for uninstall_prefix in '' 'rtk proxy '; do
+    must_block "$STEP_HOOK" "${uninstall_prefix}${uninstall_path} uninstall --json"
+  done
+done
+must_block "$STEP_HOOK" 'bash -lc "/checkout/scripts/agentic-flow uninstall"'
 PATH="$STEP_HOOK_GH:$PATH" must_block "$STEP_HOOK" 'gh issue close 1'
 PATH="$STEP_HOOK_GH:$PATH" must_block "$STEP_HOOK" 'gh issue reopen 1'
 PATH="$STEP_HOOK_GH:$PATH" STEP_HOOK_GH_FAIL=1 must_block "$STEP_HOOK" 'gh issue close 1'

@@ -25,6 +25,7 @@ check_handoff_write() {
     if [ "${word##*/}" = agentic-flow ]; then
       case "${HOOK_WORDS[i+1]:-}:${HOOK_WORDS[i+2]:-}" in
         token:*|ship:*|roles:set|roles:unset|roles:manual|approve:*|hold:clear) block_handoff; return 2 ;;
+        uninstall:*) echo 'Blocked: the human uninstalls.' >&2; return 2 ;;
       esac
       if [ "${HOOK_WORDS[i+1]:-}" = handoff ] && [ "${HOOK_WORDS[i+3]:-}" = hold-clear ]; then block_handoff; return 2; fi
     fi

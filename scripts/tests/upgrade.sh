@@ -4,6 +4,219 @@
 AGENTIC_FLOW_CLI="$ROOT/scripts/agentic-flow"
 assert_file "$AGENTIC_FLOW_CLI"
 
+# shellcheck disable=SC2016 # jq expressions use jq variables.
+uninstall_scenarios() (
+  local fixture="$TMP/uninstall" report="$TMP/uninstall.json" status before text_report
+  local head digest line workflow
+  mkdir -p "$fixture"
+  cd "$fixture"
+  git init -q -b main
+  git config commit.gpgsign false
+  git config core.fileMode true
+  printf 'before adoption\n' > adopter
+  git add -- adopter
+  git commit -qm base
+  mkdir -p docs/done .github/workflows scripts .agentic-flow
+  printf 'fixture\n' > .agentic-flow-version
+  printf 'offered-version\n' > .agentic-flow-candidate-version
+  printf 'settings\n' > .agentic-flow/config
+  for path in docs/done/.gitkeep later adopter-neutral edited mode-only pending \
+    scripts/self-test.sh scripts/doctor.sh 'literal*' docs/pristine.md CLAUDE.md Makefile \
+    pending.agentic-new edited.agentic-new later.agentic-new.offered-version \
+    loose.agentic-new stranger.agentic-new.extra; do
+    printf 'shipped fixture\n' > "$path"
+  done
+  digest=$(git hash-object --no-filters --stdin < scripts/self-test.sh) # candidate name uses Git's hash prefix
+  printf 'shipped fixture\n' > "later.agentic-new.offered-version.${digest:0:12}"
+  digest=$(payload_sha256 scripts/self-test.sh)
+  printf 'version=1\nscope=core\nscope=docs\n' > .agentic-flow-installation
+  for path in docs/done/.gitkeep adopter-neutral edited mode-only pending \
+    scripts/self-test.sh scripts/doctor.sh 'literal*' docs/pristine.md CLAUDE.md Makefile later; do
+    printf 'file=%s  %s\n' "$digest" "$path" >> .agentic-flow-installation
+  done
+  # Write accepted hashes for each installation row and a still pending offer.
+  sed -n 's/^file=/accepted=/p' .agentic-flow-installation > .agentic-flow-upstream
+  printf 'offered=%s  pending\n' "$digest" >> .agentic-flow-upstream
+  printf 'version=1\norigin=export\n' > .agentic-flow-ownership
+  for path in edited mode-only pending scripts/self-test.sh scripts/doctor.sh 'literal*' docs/pristine.md CLAUDE.md Makefile; do
+    printf 'created=%s  %s\n' "$digest" "$path" >> .agentic-flow-ownership
+  done
+  for path in pending.agentic-new edited.agentic-new loose.agentic-new; do
+    printf 'candidate=%s  %s\n' "$digest" "$path" >> .agentic-flow-ownership
+  done
+  printf 'shipped fixture\n' > owned-pending-only.agentic-new
+  printf 'candidate=%s  owned-pending-only.agentic-new\n' "$digest" >> .agentic-flow-ownership
+  printf 'shipped fixture\n' > pending-only
+  printf 'created=%s  pending-only\n' "$digest" >> .agentic-flow-ownership
+  printf 'accepted=%s  pending-only\n' "$digest" >> .agentic-flow-upstream
+  printf 'check:\n\tbash scripts/self-test.sh\n' > Makefile
+  printf 'Project guidance invokes agentic-flow.\n' > CLAUDE.md
+  printf 'run: scripts/doctor.sh\n' > .github/workflows/ci.yml
+  git add -- .agentic-flow-version .agentic-flow-candidate-version .agentic-flow-installation \
+    .agentic-flow-upstream .agentic-flow-ownership .agentic-flow/config docs/done/.gitkeep \
+    adopter-neutral edited mode-only pending scripts/self-test.sh scripts/doctor.sh \
+    ':(literal)literal*' docs/pristine.md CLAUDE.md Makefile .github/workflows/ci.yml \
+    pending.agentic-new owned-pending-only.agentic-new pending-only edited.agentic-new
+  git commit -qm adoption
+  head=$(git rev-parse HEAD)
+  git add -- later
+  git commit -qm later
+  printf 'edited\n' > edited
+  printf 'edited candidate\n' > edited.agentic-new
+  chmod +x mode-only .agentic-flow-version
+  git config core.hooksPath scripts/git-hooks
+  git update-ref refs/agentic-flow/salvage/fixture "$head"
+  mkdir -p .git/agentic-flow/ledger
+  printf 'journal\n' > .git/agentic-flow/ledger/events
+
+  uninstall_snapshot() {
+    git ls-files --stage
+    git diff --cached --no-ext-diff
+    git config --local --list
+    git for-each-ref
+    tree_digest "$PWD"
+    local common
+    common=$(git rev-parse --path-format=absolute --git-common-dir)
+    (cd "$common" && find . -type f ! -name index -exec cksum {} + | LC_ALL=C sort)
+    find . -type f -perm -100 -print | LC_ALL=C sort
+  }
+  uninstall_report() {
+    status=0
+    before=$(uninstall_snapshot)
+    "$AGENTIC_FLOW_CLI" uninstall --json "$@" > "$report" || status=$?
+    [ "$before" = "$(uninstall_snapshot)" ] || fail 'uninstall dry run wrote to the checkout or common dir'
+  }
+  uninstall_expect() {
+    jq -e "$@" "$report" >/dev/null || { cat "$report" >&2; fail 'uninstall report did not match the expected plan'; }
+  }
+  kept() { uninstall_expect --arg p "$1" --arg r "$2" 'any(.kept[]; .path == $p and .why == $r)'; }
+  removed() { uninstall_expect --arg p "$1" --arg k "$2" 'any(.remove[]; .path == $p and .kind == $k)'; }
+  refused() {
+    [ "$status" = 3 ] || fail "expected uninstall refusal $1, got exit $status"
+    uninstall_expect --arg r "$1" 'any(.refusals[]; .reason == $r)'
+  }
+
+  # Scenario 5: refuse before any write and report all independent blockers.
+  mkdir -p .git/agentic-flow/{plans,locks,worktree-locks}
+  printf 'open\tfixture\tmain\n' > .git/agentic-flow/plans/fixture
+  mkdir .git/agentic-flow/locks/controller .git/agentic-flow/worktree-locks/cleanup
+  printf 'staged\n' > adopter
+  git add -- adopter
+  chmod +x scripts/self-test.sh
+  git config core.fileMode false
+  printf 'upgrade\n' > scripts/doctor.sh
+  digest=$(payload_sha256 scripts/doctor.sh)
+  sed 's/^accepted=.*  scripts\/doctor\.sh$/accepted='"$digest"'  scripts\/doctor.sh/' .agentic-flow-upstream > .agentic-flow-upstream.tmp
+  mv .agentic-flow-upstream.tmp .agentic-flow-upstream
+  uninstall_report
+  refused staged-changes
+  refused plan-open
+  refused lock-present
+  refused uncommitted-install
+  uninstall_expect 'any(.refusals[]; .reason == "plan-open" and .command == "agentic-flow clean fixture") and ([.refusals[] | select(.reason == "lock-present")] | length == 2)'
+  git restore --source=HEAD --staged --worktree -- adopter scripts/doctor.sh .agentic-flow-upstream
+  chmod -x scripts/self-test.sh
+  git config core.fileMode true
+  rmdir .git/agentic-flow/locks/controller .git/agentic-flow/worktree-locks/cleanup
+  printf 'closed\tfixture\tmain\n' > .git/agentic-flow/plans/fixture
+
+  # Scenarios 1–4: lack of ownership, candidate provenance, pristine bytes and Git mode.
+  uninstall_report --claim-adoption
+  [ "$status" = 0 ] || fail 'valid uninstall dry run refused'
+  uninstall_expect 'keys == (["v","root","version","origin","adoption_commit","refusals","remove","kept","dangling_references","dangling_truncated","git","git_state","outside"] | sort) and .v == 1 and .origin == "export" and .version == "fixture" and .adoption_commit == null and .refusals == [] and all(.remove[]; (.sha256 | test("^[0-9a-f]{64}$")) and (.mode | test("^100(644|755)$")))'
+  kept docs/done/.gitkeep no-ownership
+  kept later no-ownership
+  removed pending.agentic-new candidate
+  removed owned-pending-only.agentic-new candidate
+  removed pending-only payload
+  kept loose.agentic-new untracked
+  uninstall_expect 'any(.kept[]; .path == "loose.agentic-new" and .command == "rm -- loose.agentic-new")'
+  kept edited.agentic-new edited-candidate
+  kept later.agentic-new.offered-version legacy-candidate
+  kept stranger.agentic-new.extra unrecognized-candidate
+  kept pending pending-offer
+  removed 'literal*' payload
+  removed scripts/self-test.sh payload
+  kept edited edited
+  kept CLAUDE.md edited
+  kept mode-only mode-changed
+  kept .agentic-flow-version mode-changed
+  kept .agentic-flow/config project-state-kept
+  uninstall_report --keep-docs --remove-project-state
+  kept docs/pristine.md keep-docs
+  removed .agentic-flow/config project
+  git config core.fileMode false
+  uninstall_report
+  removed .agentic-flow-version stamp
+  removed mode-only payload
+  git config core.fileMode true
+
+  # Scenario 9: reports reference locations, config, refs and common state.
+  uninstall_expect 'any(.dangling_references[]; .file == "Makefile" and .line == 2 and .ref == "scripts/self-test.sh") and any(.dangling_references[]; .file == ".github/workflows/ci.yml" and .line == 1 and .ref == "scripts/doctor.sh") and any(.git[]; .what == "core.hooksPath" and .command == "git config --local --unset core.hooksPath") and any(.git[]; .what == "salvage-ref") and any(.git_state[]; (.dir | endswith("/ledger")) and .class == "record" and .entries == 1 and .bytes > 0) and (.outside | length >= 5)'
+  text_report=$("$AGENTIC_FLOW_CLI" uninstall)
+  [[ "$text_report" == *'make check'* && "$text_report" == *'CI'* && "$text_report" == *'only copy'* ]] ||
+    fail 'uninstall text report omitted the reference or ledger warning'
+  for ((line=0; line<23; line++)); do
+    printf 'agentic-flow scripts/doctor.sh\n' >> Makefile
+  done
+  uninstall_report
+  uninstall_expect '[.dangling_references[] | select(.file == "Makefile")] | length == 20'
+  uninstall_expect '.dangling_truncated == 4'
+  for ((workflow=0; workflow<10; workflow++)); do
+    cp -- Makefile ".github/workflows/references-$workflow"
+  done
+  printf 'agentic-flow\0binary\n' > .github/workflows/binary
+  (printf 'agentic-flow\n'; dd if=/dev/zero bs=1048576 count=1 2>/dev/null) > .github/workflows/oversize
+  uninstall_report
+  uninstall_expect '(.dangling_references | length) == 200 and .dangling_truncated == 66 and all(.dangling_references[]; .file != ".github/workflows/binary" and .file != ".github/workflows/oversize")'
+
+  # Scenario 8: claim only pristine additions from adoption, and never without upstream.
+  sed 's/^origin=export$/origin=upgrade/' .agentic-flow-ownership > .agentic-flow-ownership.tmp
+  mv .agentic-flow-ownership.tmp .agentic-flow-ownership
+  uninstall_report --claim-adoption
+  uninstall_expect --arg head "$head" '.adoption_commit == $head and any(.remove[]; .path == "adopter-neutral" and .why == "claimed")'
+  kept later no-ownership
+  mv .agentic-flow-upstream "$TMP/uninstall-upstream"
+  uninstall_report --claim-adoption
+  uninstall_expect 'all(.remove[]; .why != "claimed")'
+  text_report=$("$AGENTIC_FLOW_CLI" uninstall --claim-adoption)
+  [[ "$text_report" == *'agentic-flow upgrade'* ]] || fail 'legacy uninstall did not print the upgrade command'
+  mv "$TMP/uninstall-upstream" .agentic-flow-upstream
+
+  git worktree add -qb fixture-linked "$TMP/uninstall-linked"
+  uninstall_report
+  refused plan-open
+  (cd "$TMP/uninstall-linked" && uninstall_report; refused linked-worktree)
+  git worktree remove "$TMP/uninstall-linked"
+  mkdir nested
+  printf 'fixture\n' > nested/.agentic-flow-version
+  (cd nested && uninstall_report; refused not-git-toplevel)
+  mv .agentic-flow-installation "$TMP/uninstall-installation"
+  uninstall_report
+  refused no-installation
+  mv "$TMP/uninstall-installation" .agentic-flow-installation
+  printf 'unknown=invalid\n' >> .agentic-flow-installation
+  uninstall_report
+  refused invalid-record
+  git restore -- .agentic-flow-installation
+  rm -- scripts/doctor.sh
+  ln -s "$TMP/uninstall-installation" scripts/doctor.sh
+  uninstall_report
+  uninstall_expect 'any(.kept[]; .path == "scripts/doctor.sh") and all(.remove[]; .path != "scripts/doctor.sh")'
+)
+
+scenario_group_begin upgrade
+if should_run_scenario uninstall uninstall; then
+  uninstall_scenarios
+  if [ -z "$ONLY_GROUP" ]; then
+    uninstall_seconds=$(( $(self_test_now) - SCENARIO_START_SECONDS ))
+    measure_event "group:upgrade:uninstall:$uninstall_seconds"
+    check_wall_ceiling upgrade:uninstall "$uninstall_seconds"
+  fi
+fi
+assert_scenarios_ran
+[ "$SCENARIO_SET" = 0 ] || return 0
+
 # The red-first overlay contains only this group and helpers. Guard the owning
 # groups' holdout wiring as well, so a pristine-only suite cannot pass scenario 8.
 for twin_group in export hooks; do

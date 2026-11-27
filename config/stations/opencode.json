@@ -598,6 +598,66 @@
     },
     {
       "action": "shell",
+      "resource": "scripts/agentic-flow uninstall",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scripts/agentic-flow uninstall *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "./scripts/agentic-flow uninstall",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "./scripts/agentic-flow uninstall *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "agentic-flow uninstall",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "agentic-flow uninstall *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow uninstall",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy scripts/agentic-flow uninstall *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy ./scripts/agentic-flow uninstall",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy ./scripts/agentic-flow uninstall *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy agentic-flow uninstall",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rtk proxy agentic-flow uninstall *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
       "resource": "git-claude push",
       "effect": "deny"
     },

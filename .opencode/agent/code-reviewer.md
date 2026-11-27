@@ -121,6 +121,18 @@ permission:
     "rtk proxy scripts/agentic-flow ship *": deny
     "rtk proxy scripts/agentic-flow token": deny
     "rtk proxy scripts/agentic-flow token *": deny
+    "scripts/agentic-flow uninstall": deny
+    "scripts/agentic-flow uninstall *": deny
+    "./scripts/agentic-flow uninstall": deny
+    "./scripts/agentic-flow uninstall *": deny
+    "agentic-flow uninstall": deny
+    "agentic-flow uninstall *": deny
+    "rtk proxy scripts/agentic-flow uninstall": deny
+    "rtk proxy scripts/agentic-flow uninstall *": deny
+    "rtk proxy ./scripts/agentic-flow uninstall": deny
+    "rtk proxy ./scripts/agentic-flow uninstall *": deny
+    "rtk proxy agentic-flow uninstall": deny
+    "rtk proxy agentic-flow uninstall *": deny
     "git-claude push": deny
     "git-claude push *": deny
     "git-claude add -A": deny

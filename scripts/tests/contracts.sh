@@ -3,7 +3,7 @@
 # shellcheck disable=SC1091,SC2030,SC2034,SC2153,SC2164,SC2329 # Intentional fixture subshells and dispatcher context.
 
 budget_mode_tests() (
-  local fixture="$TMP/budget-mode" key tag
+  local fixture="$TMP/budget-mode" key
   mkdir -p "$fixture/scripts/tests" "$fixture/config" "$fixture/.agentic-flow"
   git -C "$fixture" init -q --template=
   ln "$ROOT/scripts/self-test.sh" "$fixture/scripts/self-test.sh"
@@ -19,11 +19,7 @@ if [ "${FIXTURE_OVERRUN:-0}" = 1 ]; then
   assert_cost_budget "$TMP/cost" fast
 fi
 HOOKS
-  {
-    for key in $SELF_TEST_GROUPS upgrade:upstream; do printf '%s\t5\n' "$key"; done
-    for tag in $CONTROLLER_SCENARIOS; do printf 'controller:%s\t5\n' "$tag"; done
-    for tag in $STATIONS_SCENARIOS; do printf 'stations:%s\t5\n' "$tag"; done
-  } > "$fixture/config/test-wall-ceilings.tsv"
+  for key in $(wall_ceiling_keys); do printf '%s\t5\n' "$key"; done > "$fixture/config/test-wall-ceilings.tsv"
   printf 'fixtures.fast\t1\nfixtures.full\t1\nfixtures.exported\t1\n' > "$fixture/config/test-budgets.tsv"
   cat > "$fixture/config/config-keys.tsv" <<'REGISTRY'
 key	tier	type	default	summary
@@ -576,7 +572,7 @@ if [ "$SELF_TEST_MODE" = fast ] && [ -z "$ONLY_GROUP" ]; then return 0; fi
 
 # Scenario 11: advance a private clock from inert group and scenario bodies.
 wall_ceiling_tests() (
-  local fixture="$TMP/wall-ceilings" key tag gate missing
+  local fixture="$TMP/wall-ceilings" key gate missing
   mkdir -p "$fixture/scripts/tests" "$fixture/config"
   link_test_budget_config "$fixture"
   mkdir "$fixture/.agentic-flow"
@@ -605,11 +601,7 @@ BODY
         ;;
     esac
   done
-  {
-    for key in $SELF_TEST_GROUPS upgrade:upstream; do printf '%s\t5\n' "$key"; done
-    for tag in $CONTROLLER_SCENARIOS; do printf 'controller:%s\t5\n' "$tag"; done
-    for tag in $STATIONS_SCENARIOS; do printf 'stations:%s\t5\n' "$tag"; done
-  } > "$fixture/ceilings"
+  for key in $(wall_ceiling_keys); do printf '%s\t5\n' "$key"; done > "$fixture/ceilings"
   cat "$fixture/ceilings" > "$fixture/config/test-wall-ceilings.tsv"
 
   ceiling_probe() {
@@ -655,7 +647,7 @@ BODY
     printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$fixture/scripts/$gate.sh"
     chmod +x "$fixture/scripts/$gate.sh"
   done
-  for missing in hooks stations:verify; do
+  for missing in hooks stations:verify upgrade:uninstall; do
     awk -v missing="$missing" '$1 != missing' "$fixture/ceilings" > "$fixture/config/test-wall-ceilings.tsv"
     make -s -C "$fixture" check > "$fixture/out" 2>&1 \
       && fail "make check accepted a missing wall-time ceiling for $missing"

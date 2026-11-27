@@ -43,10 +43,14 @@ payload_relative_path() { # reject traversal and characters that cannot be recor
   [[ "$1" != *[[:cntrl:]]* ]]
 }
 
+payload_valid_record_path() { # <relative-path>
+  payload_relative_path "$1" || return 1
+  printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1
+}
+
 payload_safe_path() { # <root> <relative-path>; also reject symlink components
   local rel="$2" part current="$1" rest
-  payload_relative_path "$rel" || return 1
-  printf '%s' "$rel" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || return 1
+  payload_valid_record_path "$rel" || return 1
   rest="$rel"
   while :; do
     part=${rest%%/*}
@@ -80,17 +84,88 @@ payload_scope_for_destination() { # <manifest> <destination> <active-scopes>
   return 1
 }
 
+# Uninstall reads historical destinations without reinterpreting today's manifest.
+# With manifest scopes supplied, export/upgrade also validate active disk paths.
+payload_read_installation() { # <target-root> [manifest-scopes]
+  local LC_ALL=C state="$1/.agentic-flow-installation" manifest_scopes="${2:-}"
+  local line key value path digest number=0 files=0 version_seen=false scopes="" nul_line duplicate seen
+  local check_manifest=false
+  [ "$#" -lt 2 ] || check_manifest=true
+  PAYLOAD_STATE_FILES=()
+  PAYLOAD_STATE_DIGESTS=()
+  PAYLOAD_STATE_LINES=()
+  PAYLOAD_STATE_PRESENT=false
+  PAYLOAD_STATE_SCOPES=""
+  [ -e "$state" ] || [ -L "$state" ] || return 0
+  [ -f "$state" ] && [ ! -L "$state" ] || payload_die "$state must be a regular file"
+  [ "$(wc -c < "$state")" -le "$((2007 * 4097))" ] || payload_die "$state exceeds the record size limit"
+  PAYLOAD_STATE_PRESENT=true
+  nul_line=$(LC_ALL=C od -An -v -tu1 "$state" | awk '
+    BEGIN { line=1 }
+    { for (i=1; i<=NF; i++) { if ($i == 0 && !found) found=line; if ($i == 10) line++ } }
+    END { if (found) print found }
+  ')
+  [ -z "$nul_line" ] || payload_die "$state line $nul_line: NUL byte"
+  while IFS= read -r line || [ -n "$line" ]; do
+    number=$((number + 1))
+    [ "${#line}" -le 4096 ] || payload_die "$state line $number exceeds 4096 bytes"
+    key=${line%%=*}; value=${line#*=}
+    case "$key" in
+      version)
+        [ "$version_seen" = false ] && [ "$value" = 1 ] \
+          || payload_die "$state line $number: invalid or duplicate version"
+        version_seen=true ;;
+      scope)
+        if ! payload_valid_scope "$value" || { [ "$check_manifest" = true ] && ! payload_has_word "$value" "$manifest_scopes"; }; then
+          payload_die "$state line $number: unknown scope '$value'"
+        fi
+        payload_has_word "$value" "$scopes" \
+          && payload_die "$state line $number: duplicate scope '$value'"
+        scopes="${scopes}${scopes:+ }$value" ;;
+      file)
+        files=$((files + 1))
+        [ "$files" -le 2000 ] || payload_die "$state line $number: more than 2000 files"
+        digest=${value%%  *}; path=${value#*'  '}
+        [ "${#digest}" -eq 64 ] && [[ "$digest" =~ ^[0-9a-f]+$ ]] \
+          && [ "$value" = "$digest  $path" ] \
+          || payload_die "$state line $number: malformed file digest or separator"
+        if [ "$check_manifest" = true ]; then
+          payload_safe_path "$root" "$path" || payload_die "$state line $number: unsafe file path '$path'"
+        else
+          payload_valid_record_path "$path" || payload_die "$state line $number: unsafe file path '$path'"
+        fi
+        PAYLOAD_STATE_FILES+=("$path"); PAYLOAD_STATE_DIGESTS+=("$digest")
+        PAYLOAD_STATE_LINES+=("$number") ;;
+      *) payload_die "$state line $number: unknown or malformed key '$key'" ;;
+    esac
+  done < "$state"
+  [ "$version_seen" = true ] || payload_die "$state: missing version"
+  duplicate=$(printf '%s\n' "${PAYLOAD_STATE_FILES[@]+"${PAYLOAD_STATE_FILES[@]}"}" \
+    | LC_ALL=C sort | uniq -d)
+  if [ -n "$duplicate" ]; then
+    duplicate=${duplicate%%$'\n'*}
+    seen=false
+    files=0
+    while [ "$files" -lt "${#PAYLOAD_STATE_FILES[@]}" ]; do
+      if [ "${PAYLOAD_STATE_FILES[$files]}" = "$duplicate" ]; then
+        if [ "$seen" = true ]; then
+          payload_die "$state line ${PAYLOAD_STATE_LINES[$files]}: duplicate file path '$duplicate'"
+        fi
+        seen=true
+      fi
+      files=$((files + 1))
+    done
+  fi
+  PAYLOAD_STATE_SCOPES=$scopes
+}
+
 # Read the old exclusion record first. A new record wins only when both agree. The
 # source manifest is passed explicitly so upgrades validate before copying any file.
 payload_resolve_installation() { # <target-root> <source-manifest> [requested-exclusions]
   local LC_ALL=C
   local root="$1" manifest="$2" requested="${3:-}" state="$1/.agentic-flow-installation"
-  local legacy="$1/.agentic-flow-scopes-excluded" line key value number=0 version_seen=false
-  local scopes="" files=0 path digest old_excluded="" scope all_scopes="" src dst merge disposition seen nul_line duplicate
-  PAYLOAD_STATE_FILES=()
-  PAYLOAD_STATE_DIGESTS=()
-  PAYLOAD_STATE_LINES=()
-  PAYLOAD_STATE_PRESENT=false
+  local legacy="$1/.agentic-flow-scopes-excluded"
+  local scopes="" files=0 path old_excluded="" scope all_scopes="" src dst merge disposition
   while IFS=$'\t' read -r src dst scope merge disposition; do
     case "$src" in ''|\#*) continue ;; esac
     payload_valid_scope "$scope" || [ "$scope" = source-only ] \
@@ -113,61 +188,9 @@ payload_resolve_installation() { # <target-root> <source-manifest> [requested-ex
       old_excluded="${old_excluded}${old_excluded:+ }$scope"
     done < "$legacy"
   fi
-  if [ -f "$state" ]; then
-    PAYLOAD_STATE_PRESENT=true
-    nul_line=$(LC_ALL=C od -An -v -tu1 "$state" | awk '
-      BEGIN { line=1 }
-      { for (i=1; i<=NF; i++) { if ($i == 0 && !found) found=line; if ($i == 10) line++ } }
-      END { if (found) print found }
-    ')
-    [ -z "$nul_line" ] || payload_die "$state line $nul_line: NUL byte"
-    while IFS= read -r line || [ -n "$line" ]; do
-      number=$((number + 1))
-      [ "${#line}" -le 4096 ] || payload_die "$state line $number exceeds 4096 bytes"
-      key=${line%%=*}; value=${line#*=}
-      case "$key" in
-        version)
-          [ "$version_seen" = false ] && [ "$value" = 1 ] \
-            || payload_die "$state line $number: invalid or duplicate version"
-          version_seen=true ;;
-        scope)
-          if ! payload_valid_scope "$value" || ! payload_has_word "$value" "$all_scopes"; then
-            payload_die "$state line $number: unknown scope '$value'"
-          fi
-          payload_has_word "$value" "$scopes" \
-            && payload_die "$state line $number: duplicate scope '$value'"
-          scopes="${scopes}${scopes:+ }$value" ;;
-        file)
-          files=$((files + 1))
-          [ "$files" -le 2000 ] || payload_die "$state line $number: more than 2000 files"
-          digest=${value%%  *}; path=${value#*'  '}
-          [ "${#digest}" -eq 64 ] && [[ "$digest" =~ ^[0-9a-f]+$ ]] \
-            && [ "$value" = "$digest  $path" ] \
-            || payload_die "$state line $number: malformed file digest or separator"
-          payload_safe_path "$root" "$path" \
-            || payload_die "$state line $number: unsafe file path '$path'"
-          PAYLOAD_STATE_FILES+=("$path"); PAYLOAD_STATE_DIGESTS+=("$digest")
-          PAYLOAD_STATE_LINES+=("$number") ;;
-        *) payload_die "$state line $number: unknown or malformed key '$key'" ;;
-      esac
-    done < "$state"
-    [ "$version_seen" = true ] || payload_die "$state: missing version"
-    duplicate=$(printf '%s\n' "${PAYLOAD_STATE_FILES[@]+"${PAYLOAD_STATE_FILES[@]}"}" \
-      | LC_ALL=C sort | uniq -d)
-    if [ -n "$duplicate" ]; then
-      duplicate=${duplicate%%$'\n'*}
-      seen=false
-      files=0
-      while [ "$files" -lt "${#PAYLOAD_STATE_FILES[@]}" ]; do
-        if [ "${PAYLOAD_STATE_FILES[$files]}" = "$duplicate" ]; then
-          if [ "$seen" = true ]; then
-            payload_die "$state line ${PAYLOAD_STATE_LINES[$files]}: duplicate file path '$duplicate'"
-          fi
-          seen=true
-        fi
-        files=$((files + 1))
-      done
-    fi
+  payload_read_installation "$root" "$all_scopes"
+  if [ "$PAYLOAD_STATE_PRESENT" = true ]; then
+    scopes=$PAYLOAD_STATE_SCOPES
     files=0
     while [ "$files" -lt "${#PAYLOAD_STATE_FILES[@]}" ]; do
       path=${PAYLOAD_STATE_FILES[$files]}
@@ -579,7 +602,7 @@ payload_upstream_lookup() { # <destination>; return its array index (or the next
   done
 }
 
-payload_upstream_load() { # <target-root> <upgrade|export|acknowledge>
+payload_upstream_load() { # <target-root> <upgrade|export|acknowledge|inspect>
   local LC_ALL=C
   local state="$1/.agentic-flow-upstream" line row=0 key path index
   local max_rows=$((2 * PAYLOAD_RECORD_MAX_PATHS))
@@ -592,7 +615,7 @@ payload_upstream_load() { # <target-root> <upgrade|export|acknowledge>
   # Load alongside upstream so the first upgrade by a pre-ownership CLI also
   # records its writes when it sources this release's apply library.
   payload_ownership_load "$1"
-  payload_ownership_prepare "$1" "$2"
+  [ "$2" = inspect ] || payload_ownership_prepare "$1" "$2"
   payload_record_check "$state" "$max_rows" || return 0
   PAYLOAD_UPSTREAM_PRESENT=true
   # shellcheck disable=SC2094 # Helpers use the filename for diagnostics only.
