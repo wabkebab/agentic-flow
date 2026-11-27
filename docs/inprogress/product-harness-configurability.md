@@ -460,6 +460,11 @@ Config changes what replay and gates mean, so it waits for its tier contract.
       is dropped. Automatic commit and purge are follow-ups. After the fifth review, the
       adopter also runs `clean` for each plan before uninstall, which refuses while any
       plan is open, replacing J's in-uninstall plan cleanup.*
+      *Reshaped 2026-11-27 (draft 11), after an owner-requested over-engineering
+      analysis. Removal is limited to tracked, owned, pristine files in one batched
+      `git rm`, which a printed `git restore` undoes. Git config, refs and untracked
+      files are reported with commands. The fence, resume and the fetch of older
+      revisions are dropped, and the legacy claim compares only against `accepted=`.*
 
 Settled by this revision:
 - Phase 1 uses the feature brief's `status` interface. Service units are deferred.
@@ -468,7 +473,7 @@ Settled by this revision:
 
 - [ ] `docs/inprogress/feature-process-status.md` — areas E, G (Phase 1; drafted 2026-11-25 on `configurability-phase-1`, revision 2)
 - [ ] `docs/inprogress/feature-config-surface.md` — areas A, C, K (Phase 2; drafted 2026-11-26 on `configurability-phase-2`, draft 1)
-- [ ] `docs/inprogress/feature-uninstall.md` — area J (Phase 3; drafted 2026-11-27 on `configurability-phase-3`, draft 10, stage-only v1)
+- [ ] `docs/inprogress/feature-uninstall.md` — area J (Phase 3; drafted 2026-11-27 on `configurability-phase-3`, draft 11, three steps, one reversible `git rm`)
 - [ ] `docs/backlog/feature-uninstall-purge.md` — area J follow-up: automatic commit and shared Git state purge, only if adopters ask
 - [ ] `docs/inprogress/feature-setup-upgrade-wizard.md` — area D
 - [ ] `docs/inprogress/feature-visibility-modes.md` — area I (part 1; part 2 on demand)
