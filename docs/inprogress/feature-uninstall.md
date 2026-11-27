@@ -1070,7 +1070,7 @@ revision, and the report names that revision.
 ## Status / Implementation status
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
-- **Tracking issue:** pending
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/225
 - **Approval:** status=approved; by=wabkebab; at=2026-11-27; rev=b2656dc8b1d9e32299e4a33c7b29a5b6c9865555
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
