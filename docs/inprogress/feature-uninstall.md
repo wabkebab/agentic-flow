@@ -2,7 +2,7 @@
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (deletes adopter files, changes the install records, and adds a command-policy floor row; project baseline is Standard)
 > Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness recorded creating and still holds unchanged. A single batched `git rm` stages those deletions and verifies them, and a rerunnable receipt script undoes them without touching adopter content. Everything else is reported with exact commands.
-> Draft 14 (2026-11-27), written against `0.21.0` (`3757627`). It keeps draft 11's three-step reshape: one batched `git rm` of tracked files, with literal pathspecs and a receipt per run. Verification claims only the listed deletions against the recorded `HEAD`. The receipt's undo fills in only what is missing, can be rerun after a partial undo or an incomplete apply, and never touches adopter content. See *Revision history*. The owner decisions all still hold. Next: owner re-approval, then re-run `plan-to-issues`, which updates #226–#228 and closes #229 and #230.
+> Draft 15 (2026-11-27), written against `0.21.0` (`3757627`). Draft 15 stops suggesting `rm` for a file left after apply; such a file is reported for inspection. It keeps draft 11's three-step reshape: one batched `git rm` of tracked files, with literal pathspecs and a receipt per run. Verification claims only the listed deletions against the recorded `HEAD`. The receipt's undo fills in only what is missing, can be rerun after a partial undo or an incomplete apply, and never touches adopter content. See *Revision history*. The owner decisions all still hold. Next: owner re-approval, then re-run `plan-to-issues`, which updates #226–#228 and closes #229 and #230.
 
 # Feature — Uninstall: remove only what the harness owns
 
@@ -176,9 +176,16 @@ nothing:
      says it did not review anything else in the index, and points to `git diff --cached`.
    - **unchanged**: `git rm` refused, and every path is still indexed and present. Exit 4
      with Git's message.
-   - **incomplete**: anything else. Exit 4, list each path's state, point to the receipt,
-     and say: either fix the cause and finish by hand (`rm -- <path>` for a file Git
-     could not remove), or run the receipt's undo, which handles this state.
+   - **incomplete**: anything else. Exit 4, list each path's state, and point to the
+     receipt. A path that is out of the index but still in the worktree is reported for
+     what the check can show:
+     - **matches the recorded bytes and mode**: Git probably could not unlink it. Running
+       the receipt's undo restores its index entry and leaves the file as it is;
+     - **different content or mode**: it may have been recreated after `git rm`. Inspect
+       it. The undo will refuse to touch it.
+
+     Uninstall never suggests deleting a leftover file. Removing one is the adopter's
+     decision, made after inspecting it.
 
    Nothing in the tree is read after `git rm`, apart from these checks.
 
@@ -358,7 +365,7 @@ uninstall.
 
 | External call | On timeout | On malformed response | On partial success |
 |---------------|-----------|-----------------------|--------------------|
-| `git rm` (one batch) | n/a | Refuses → verified `unchanged`, exit 4 | Exits 0 but an unlink failed, or the run is interrupted → verified `incomplete`, exit 4 with each path's state and the two routes: finish by hand, or run the receipt's undo. The next run refuses with `staged-changes` |
+| `git rm` (one batch) | n/a | Refuses → verified `unchanged`, exit 4 | Exits 0 but an unlink failed, or the run is interrupted → verified `incomplete`, exit 4 with each path's state. A leftover that matches the receipt can be rolled back with its undo; one with other content is to be inspected. No `rm` is ever suggested. The next run refuses with `staged-changes` |
 | `HEAD` moves during apply | n/a | n/a | → `head-moved`, exit 4. Nothing is claimed as verified |
 | The undo script (run by the adopter) | n/a | Moved checkout, branch or `HEAD`, or adopter content at a listed path → restores nothing, exit 3, names the paths or the manual route | `checkout-index` fails on some file → `partial`, exit 4, listing what is left; a rerun finishes it |
 | `git` reads (status, ls-files, config, log) | n/a | Unparseable → refuse, nothing changed | n/a |
@@ -396,6 +403,11 @@ default. Draft 11 asks for one more:
 
 Kept in Part A so that it does not count against Part B's word cap.
 
+- **Draft 15 (2026-11-27)** answers the review of draft 14. An `incomplete` apply no
+  longer suggests `rm -- <path>` for a leftover file, because the file may have been
+  recreated with new content after `git rm`. A leftover is reported as matching the
+  receipt (undo restores its index entry) or as different content (inspect it; undo
+  refuses). Scenario 7 recreates a file between `git rm` and the check.
 - **Draft 14 (2026-11-27)** answers the review of draft 13, keeping the one-batch apply:
   1. The undo is no longer all-or-nothing. It classifies each listed path against the
      receipt, fills in only missing index entries and files, re-checks, and reports a
@@ -496,8 +508,11 @@ Kept in Part A so that it does not count against Part B's word cap.
      - The file Git failed to remove is preserved, with the same bytes and mode, and only
        its index entry is restored.
      - Every path's Git entry, contents and mode match the pre-apply state.
-     - Following the other printed route (`rm -- <path>` after restoring write access)
-       finishes the removal instead.
+     - The output contains no `rm` command for the leftover path.
+   - **Recreated between `git rm` and the check:** a test pause after `git rm` writes
+     new content at one removed path. The outcome is `incomplete`, and that path is
+     reported as "different content: inspect it", with no `rm` command. The receipt's
+     undo then exits 3 and restores nothing, and the new content survives unchanged.
    - **Wildcard name:** a removable tracked file named `a*` sits beside a kept `abc`.
      Only `a*` is staged, and undo restores only `a*`.
    - **Scoped verification:**
