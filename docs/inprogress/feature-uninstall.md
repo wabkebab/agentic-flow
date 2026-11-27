@@ -1,8 +1,8 @@
 <!-- TRIAGE (first pass · 2026-11-27) -->
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (deletes adopter files, changes the install records, and adds a command-policy floor row; project baseline is Standard)
-> Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness recorded creating and still holds unchanged. A single batched `git rm` stages those deletions and verifies them, and a receipt script undoes the whole batch, or nothing, while nothing has changed since. Everything else is reported with exact commands.
-> Draft 13 (2026-11-27), written against `0.21.0` (`3757627`). It keeps draft 11's three-step reshape: one batched `git rm` of tracked files, with literal pathspecs and a receipt per run. The undo is now a receipt script that checks first, then restores everything or nothing, and is bound to the recorded `HEAD`. Verification claims only the listed deletions. Uninstall no longer infers which run left staged changes. See *Revision history*. The owner decisions all still hold. Next: owner re-approval, then re-run `plan-to-issues`, which updates #226–#228 and closes #229 and #230.
+> Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness recorded creating and still holds unchanged. A single batched `git rm` stages those deletions and verifies them, and a rerunnable receipt script undoes them without touching adopter content. Everything else is reported with exact commands.
+> Draft 14 (2026-11-27), written against `0.21.0` (`3757627`). It keeps draft 11's three-step reshape: one batched `git rm` of tracked files, with literal pathspecs and a receipt per run. Verification claims only the listed deletions against the recorded `HEAD`. The receipt's undo fills in only what is missing, can be rerun after a partial undo or an incomplete apply, and never touches adopter content. See *Revision history*. The owner decisions all still hold. Next: owner re-approval, then re-run `plan-to-issues`, which updates #226–#228 and closes #229 and #230.
 
 # Feature — Uninstall: remove only what the harness owns
 
@@ -176,26 +176,41 @@ nothing:
      says it did not review anything else in the index, and points to `git diff --cached`.
    - **unchanged**: `git rm` refused, and every path is still indexed and present. Exit 4
      with Git's message.
-   - **incomplete**: anything else. Exit 4, list each path's state, and print the undo
-     command.
+   - **incomplete**: anything else. Exit 4, list each path's state, point to the receipt,
+     and say: either fix the cause and finish by hand (`rm -- <path>` for a file Git
+     could not remove), or run the receipt's undo, which handles this state.
 
    Nothing in the tree is read after `git rm`, apart from these checks.
 
-**The undo is a receipt script that checks first, then restores everything or nothing.**
+**The undo is a receipt script that only fills in what is missing, and can be rerun.**
 Run it with `bash <common>/agentic-flow/uninstall-<id>.undo`. Like the rest of the
 receipt, it uses only Git, so it works after the harness is gone. It:
 1. `cd`s to the recorded top level.
 2. Requires the recorded branch, with `HEAD` at the recorded commit. If either moved, it
    restores nothing. It says that restoring after a commit or branch change is a manual
    operation, for example `git checkout <commit> -- <path>`, and names the commit.
-3. Requires that **no** listed path has an index entry or a worktree entry, using the same
-   `xargs` and `lstat` checks. If any does, the adopter has staged or edited something
-   there. It restores nothing, lists those paths, and exits 3.
-4. Runs `git update-index -z --index-info < <index>`, then
-   `git checkout-index --stdin -z < <paths>`.
+3. Classifies every listed path against its recorded `<mode> <blob>`:
 
-It therefore never overwrites a staged entry or a worktree file, and never mixes a partial
-restore with the adopter's edits.
+   | Index entry | Worktree file | Action |
+   |---|---|---|
+   | none | none | restore both |
+   | none | recorded bytes and mode | restore the index entry only (Git could not unlink it) |
+   | recorded | none | restore the file only (a partly finished undo) |
+   | recorded | recorded bytes and mode | already restored |
+   | anything else | anything else | the adopter changed it: list it, restore **nothing**, exit 3 |
+
+   The file's mode counts only when `core.fileMode` is true.
+4. Runs one `git update-index -z --index-info` over the entries it needs, then
+   `git checkout-index --stdin -z` (no `-f`) over the files it needs.
+5. Classifies every path again. If any is not fully restored, it lists those paths as
+   **partial**, exits 4, and says "fix the cause, then run this undo again". The rerun
+   picks up exactly where this one stopped.
+
+**Undo is not atomic.** If `checkout-index` fails on one file, for example in an
+unwritable directory, the index entries are already back. The undo says so, names what
+is left, and a rerun or `git checkout-index -- <path>` finishes it. It never overwrites a
+staged entry or a worktree file. The same script also rolls back an `incomplete` apply,
+because a file Git failed to unlink is in the "none / recorded" state.
 
 **No inference about interrupted runs.** A later `uninstall` that finds staged changes
 refuses with the ordinary `staged-changes`. Its message says: if this is an interrupted
@@ -244,8 +259,9 @@ These would let uninstall strip only the harness's section from a hand-merged
 to edit.
 
 **Recommendation:** Option A. Every ambiguous case keeps the file. The one destructive
-step is one Git operation, verified afterwards. A check-first receipt script undoes it,
-or does nothing. The adopter reviews and commits.
+step is one Git operation, verified afterwards. A receipt script undoes it by filling in
+only what is missing, can be rerun, and never touches adopter content. The adopter
+reviews and commits.
 
 ## Interface (before the implementation)
 
@@ -259,7 +275,8 @@ or does nothing. The adopter reviews and commits.
 
 <common>/agentic-flow/uninstall-<id>.paths  (f-3 receipt; NUL-separated list; created once)
 <common>/agentic-flow/uninstall-<id>.index  (f-3 receipt; "<mode> <blob>\t<path>" NUL records)
-<common>/agentic-flow/uninstall-<id>.undo   (f-3 receipt; check-first undo script; bash, Git only)
+<common>/agentic-flow/uninstall-<id>.undo   (f-3 receipt; rerunnable undo script; bash, Git only;
+                                             exit 0 restored, 3 refused (nothing changed), 4 partial)
 
 agentic-flow uninstall [--yes] [--json] [--keep-docs] [--remove-project-state] [--claim-adoption]
 
@@ -341,9 +358,9 @@ uninstall.
 
 | External call | On timeout | On malformed response | On partial success |
 |---------------|-----------|-----------------------|--------------------|
-| `git rm` (one batch) | n/a | Refuses → verified `unchanged`, exit 4 | Exits 0 but an unlink failed, or the run is interrupted → verified `incomplete`, exit 4 with the paths and the undo command; the next run refuses with `staged-changes` |
+| `git rm` (one batch) | n/a | Refuses → verified `unchanged`, exit 4 | Exits 0 but an unlink failed, or the run is interrupted → verified `incomplete`, exit 4 with each path's state and the two routes: finish by hand, or run the receipt's undo. The next run refuses with `staged-changes` |
 | `HEAD` moves during apply | n/a | n/a | → `head-moved`, exit 4. Nothing is claimed as verified |
-| The undo script (run by the adopter) | n/a | Moved checkout, branch or `HEAD` → restores nothing, names the manual route | Any listed path staged or present → restores nothing and lists them. It never restores partially |
+| The undo script (run by the adopter) | n/a | Moved checkout, branch or `HEAD`, or adopter content at a listed path → restores nothing, exit 3, names the paths or the manual route | `checkout-index` fails on some file → `partial`, exit 4, listing what is left; a rerun finishes it |
 | `git` reads (status, ls-files, config, log) | n/a | Unparseable → refuse, nothing changed | n/a |
 
 Bounds: the record limits (2,000 paths, 4,100-byte lines) apply to the ownership record
@@ -379,6 +396,19 @@ default. Draft 11 asks for one more:
 
 Kept in Part A so that it does not count against Part B's word cap.
 
+- **Draft 14 (2026-11-27)** answers the review of draft 13, keeping the one-batch apply:
+  1. The undo is no longer all-or-nothing. It classifies each listed path against the
+     receipt, fills in only missing index entries and files, re-checks, and reports a
+     `partial` undo that a rerun finishes. It still restores nothing when any listed path
+     holds adopter content.
+  2. An `incomplete` apply now has working routes: finish by hand, or run the same undo,
+     which restores only the index entry of a file Git failed to unlink. The test follows
+     the route and checks that the file is preserved.
+  3. Restoration is asserted with `git ls-files --stage`, file contents and modes, and
+     the staged diff, never raw index bytes. Preflight's "unchanged" uses the same
+     definition.
+  - All of this was checked in scratch with an unwritable directory, both during the
+    undo and during the apply.
 - **Draft 13 (2026-11-27)** answers the review of draft 12:
   1. The undo is a receipt script that checks first, then restores everything or
      nothing. It requires the recorded `HEAD`, refuses if any listed path is staged or
@@ -439,8 +469,10 @@ Kept in Part A so that it does not count against Part B's word cap.
    - An edited file, a hand-merged `CLAUDE.md`, and a file whose mode alone changed are
      kept.
    - A stamp whose mode alone changed is also kept.
-5. **Preflight refusals.** Each of these exits 3 with the tree, index, Git config, refs
-   and common dir byte-identical:
+5. **Preflight refusals.** Each of these exits 3 with the Git state unchanged. That means
+   the same `git ls-files --stage`, the same staged diff, the same worktree contents and
+   modes, Git config and refs, and an unchanged common dir. Raw index bytes are not
+   compared, because Git may rewrite stat data:
    - an open plan (listing `agentic-flow clean <id>`);
    - a lock directory (left in place);
    - a staged change;
@@ -457,8 +489,15 @@ Kept in Part A so that it does not count against Part B's word cap.
      planned file. `git rm` refuses, the outcome is `unchanged`, and the run exits 4.
    - **Unlink failure:** the test makes a planned file's parent directory unwritable
      (skipped when running as root). `git rm` exits 0, but the outcome is `incomplete`
-     and names that path, staged but still present. The run exits 4, prints the undo
-     command, and prints no success summary.
+     and names that path, staged but still present. The run exits 4, points to the
+     receipt, and prints no success summary.
+     - The test then follows the printed rollback: it restores write access and runs the
+       receipt's undo.
+     - The file Git failed to remove is preserved, with the same bytes and mode, and only
+       its index entry is restored.
+     - Every path's Git entry, contents and mode match the pre-apply state.
+     - Following the other printed route (`rm -- <path>` after restoring write access)
+       finishes the removal instead.
    - **Wildcard name:** a removable tracked file named `a*` sits beside a kept `abc`.
      Only `a*` is staged, and undo restores only `a*`.
    - **Scoped verification:**
@@ -467,13 +506,18 @@ Kept in Part A so that it does not count against Part B's word cap.
      - The same pause instead stages an unrelated edit. The outcome is `complete`, and
        `verified_deletions` lists only the uninstall paths. The report says the rest of
        the index was not reviewed.
-   - **Undo:**
-     - After a complete apply, `bash <receipt>.undo` restores the tree and index
-       byte-identical to before, executable bits included.
+   - **Undo.** "Restored" means three things, never raw index bytes:
+     `git ls-files --stage` equals its pre-apply output; every listed file has its
+     pre-apply contents and mode; and `git diff --cached` is empty.
+     - After a complete apply, `bash <receipt>.undo` exits 0, and everything is restored.
+     - **Partial undo:** a listed file's directory is recreated unwritable before the
+       undo. Undo exits 4 and lists that path as index restored, file missing. After
+       write access is restored, a rerun exits 0, and everything is restored.
      - **Distinct staged and unstaged edits:** a listed path gets one edit staged and a
        different edit in the worktree. Undo exits 3, restores nothing at all, and lists
        that path. Both edits survive, the staged blob and the worktree bytes unchanged.
-     - A listed path that is merely recreated, unstaged, also makes undo restore nothing.
+     - A listed path recreated with other content, unstaged, also makes undo exit 3
+       without restoring anything.
      - After the adopter commits the removal, or on another branch, undo restores nothing
        and names the manual route from the recorded commit.
    - **Interrupted:** after an `incomplete` apply, a second `uninstall` refuses with
@@ -504,8 +548,10 @@ Kept in Part A so that it does not count against Part B's word cap.
   covers exactly those deletions, never the rest of the index. Every listed path was
   tracked, owned, and identical in bytes and mode across the worktree, the index and
   `HEAD`.
-- The undo is bound to the recorded checkout, branch and `HEAD`. It restores everything
-  or nothing, and never overwrites a staged entry or a worktree file.
+- The undo is bound to the recorded checkout, branch and `HEAD`. It never overwrites a
+  staged entry or a worktree file, and restores nothing if any listed path holds
+  adopter content. It is not atomic: a partial undo is reported, and rerunning it
+  finishes the job.
 - Uninstall never infers which run left staged changes.
 - No flag overrides a preflight refusal. No lock is cleared. There are no network calls.
 - Every kept path, and every shared-state directory, is printed with its reason or
@@ -628,7 +674,8 @@ writes nothing. Agents cannot run it.
   2. Render the full report into memory.
   3. Create this run's receipt (`.paths`, `.index`, `.undo`) with exclusive creation.
      Capture `.index` from the index before `git rm`. Generate `.undo` from one fixed
-     template, then print its command.
+     template implementing the Part A state table and the final re-check, then print its
+     command.
   4. Run one `git --literal-pathspecs rm -q --pathspec-from-file=<paths>
      --pathspec-file-nul`.
   5. Check that `HEAD` is still the recorded commit, then check every listed path with
@@ -643,9 +690,10 @@ nothing; a `remove` list that is empty exits 0, writes no files and runs no `git
 
 **DoD:** apply removes the `remove` list in one Git operation. It reports success only
 after verifying `HEAD` and every listed path, and claims nothing beyond those paths.
-Refused, incomplete or moved runs exit 4 with what happened. The receipt's undo restores
-everything or nothing, never touches an adopter edit, and refuses once `HEAD` has moved.
-The run completes even though the CLI's own files are among the deletions.
+Refused, incomplete or moved runs exit 4 with what happened, and a route that works. The
+receipt's undo fills in only missing entries and files, refuses on adopter content or a
+moved `HEAD`, reports a partial undo, and finishes on a rerun. The run completes even
+though the CLI's own files are among the deletions.
 **Verify:** `make test-one F=upgrade`
 **Risks:**
 - After `git rm`, nothing may source or read a tree file. Load every library and render
@@ -654,6 +702,8 @@ The run completes even though the CLI's own files are among the deletions.
   `--worktree` overwrites recreated files.
 - `git ls-files` does not accept `--pathspec-from-file`. Use `xargs -0 … --` with
   `--literal-pathspecs`.
+- Tests compare `git ls-files --stage`, file contents and modes, and the staged diff.
+  They never compare raw index bytes.
 - The undo script never names individual paths; they stay in the NUL receipt files. Quote
   only the top level, the branch, the commit and the receipt paths, with `printf %q`.
 **Red-first:** `upgrade:uninstall` — scripts/tests/upgrade.sh scripts/self-test.sh
