@@ -387,6 +387,8 @@ payload_queue_file() { # <source-rel> <dest-rel>
   local src_rel="$1" dst_rel="$2" i
   case "$dst_rel" in .agentic-flow-upstream|.agentic-flow-upstream/*)
     payload_die "upstream state cannot be a payload destination" ;;
+  .agentic-flow-ownership|.agentic-flow-ownership/*)
+    payload_die "ownership state cannot be a payload destination" ;;
   esac
   payload_safe_path "$PAYLOAD_SRC_ROOT" "$src_rel" \
     || payload_die "unsafe manifest source path: $src_rel"
@@ -405,6 +407,169 @@ payload_queue_file() { # <source-rel> <dest-rel>
 }
 
 PAYLOAD_UPSTREAM_MODE=
+PAYLOAD_RECORD_MAX_PATHS=2000
+PAYLOAD_RECORD_MAX_LINE=4100
+
+payload_record_check() { # <state> <max-rows>; absent records return 1
+  local state="$1" max_rows="$2" bytes nonnul_bytes
+  [ -e "$state" ] || [ -L "$state" ] || return 1
+  [ -f "$state" ] && [ ! -L "$state" ] || payload_die "$state must be a regular file"
+  bytes=$(wc -c < "$state")
+  [ "$bytes" -le "$((max_rows * (PAYLOAD_RECORD_MAX_LINE + 1)))" ] || payload_die "$state exceeds the record size limit"
+  nonnul_bytes=$(LC_ALL=C tr -d '\000' < "$state" | wc -c)
+  [ "$bytes" -eq "$nonnul_bytes" ] || payload_die "$state contains a NUL byte"
+  iconv -f UTF-8 -t UTF-8 "$state" >/dev/null 2>&1 || payload_die "$state is not UTF-8"
+}
+
+payload_record_check_line() { # <state> <row> <max-rows> <line>
+  local LC_ALL=C
+  [ "$2" -le "$3" ] && [ "${#4}" -le "$PAYLOAD_RECORD_MAX_LINE" ] \
+    || payload_die "$1 line $2 exceeds record limits"
+}
+
+payload_record_parse_hash() { # <state> <row> <value>; record encoding already checked
+  local value="$3"
+  PAYLOAD_RECORD_DIGEST=${value%%  *}
+  PAYLOAD_RECORD_PATH=${value#*'  '}
+  [ "${#PAYLOAD_RECORD_DIGEST}" -eq 64 ] && [[ "$PAYLOAD_RECORD_DIGEST" =~ ^[0-9a-f]+$ ]] &&
+    [ "$value" = "$PAYLOAD_RECORD_DIGEST  $PAYLOAD_RECORD_PATH" ] \
+    || payload_die "$1 line $2: malformed hash or separator"
+  # Obsolete paths may now be symlinks. Check record syntax here. The manifest
+  # and --merged check the filesystem before acting on active paths.
+  payload_relative_path "$PAYLOAD_RECORD_PATH" || payload_die "$1 line $2: unsafe path '$PAYLOAD_RECORD_PATH'"
+}
+
+payload_record_replace() { # <state> [lines...]
+  local state="$1" tmp
+  shift
+  tmp=$(mktemp "$state.XXXXXX") || payload_die "could not write $state"
+  if ! { { [ "$#" -eq 0 ] || printf '%s\n' "$@"; } > "$tmp" && mv -f -- "$tmp" "$state"; }; then
+    rm -f -- "$tmp"
+    payload_die "could not write $state"
+  fi
+}
+
+payload_ownership_lookup() { # <path>; return its index (or the next free index)
+  PAYLOAD_OWNERSHIP_INDEX=0
+  while [ "$PAYLOAD_OWNERSHIP_INDEX" -lt "${#PAYLOAD_OWNERSHIP_PATHS[@]}" ]; do
+    [ "${PAYLOAD_OWNERSHIP_PATHS[$PAYLOAD_OWNERSHIP_INDEX]}" != "$1" ] || return 0
+    PAYLOAD_OWNERSHIP_INDEX=$((PAYLOAD_OWNERSHIP_INDEX + 1))
+  done
+}
+
+payload_ownership_load() { # <target-root>; an absent record has no origin
+  local LC_ALL=C
+  local state="$1/.agentic-flow-ownership" line row=0 key value path index version=''
+  local max_rows=$((2 * PAYLOAD_RECORD_MAX_PATHS + 2))
+  PAYLOAD_OWNERSHIP_ORIGIN=''
+  PAYLOAD_OWNERSHIP_PATHS=()
+  PAYLOAD_OWNERSHIP_CREATED=()
+  PAYLOAD_OWNERSHIP_CANDIDATES=()
+  payload_record_check "$state" "$max_rows" || return 0
+  # shellcheck disable=SC2094 # Helpers use the filename for diagnostics only.
+  while IFS= read -r line || [ -n "$line" ]; do
+    row=$((row + 1))
+    payload_record_check_line "$state" "$row" "$max_rows" "$line"
+    key=${line%%=*}; value=${line#*=}
+    case "$key" in
+      version)
+        [ -z "$version" ] && [ "$value" = 1 ] || payload_die "$state line $row: invalid or duplicate version"
+        version=$value ;;
+      origin)
+        [ -z "$PAYLOAD_OWNERSHIP_ORIGIN" ] && [[ "$value" = export || "$value" = upgrade ]] \
+          || payload_die "$state line $row: invalid or duplicate origin"
+        PAYLOAD_OWNERSHIP_ORIGIN=$value ;;
+      created|candidate)
+        payload_record_parse_hash "$state" "$row" "$value"
+        path=$PAYLOAD_RECORD_PATH
+        payload_ownership_lookup "$path"
+        index=$PAYLOAD_OWNERSHIP_INDEX
+        [ "$index" -lt "$PAYLOAD_RECORD_MAX_PATHS" ] \
+          || payload_die "$state line $row: more than $PAYLOAD_RECORD_MAX_PATHS paths"
+        PAYLOAD_OWNERSHIP_PATHS[index]=$path
+        case "$key" in
+          created)
+            [ -z "${PAYLOAD_OWNERSHIP_CREATED[$index]:-}" ] || payload_die "$state line $row: duplicate created row for '$path'"
+            PAYLOAD_OWNERSHIP_CREATED[index]=$PAYLOAD_RECORD_DIGEST ;;
+          candidate)
+            [ -z "${PAYLOAD_OWNERSHIP_CANDIDATES[$index]:-}" ] || payload_die "$state line $row: duplicate candidate row for '$path'"
+            PAYLOAD_OWNERSHIP_CANDIDATES[index]=$PAYLOAD_RECORD_DIGEST ;;
+        esac ;;
+      *) payload_die "$state line $row: unknown record key '$key'" ;;
+    esac
+  done < "$state"
+  [ "$version" = 1 ] || payload_die "$state: missing version"
+  [ -n "$PAYLOAD_OWNERSHIP_ORIGIN" ] || payload_die "$state: missing origin"
+}
+
+payload_ownership_prepare() { # <target-root> <mode>; after manifest expansion
+  local root="$1" mode="$2" active=$'\n' i=0 kept=0 path created candidate
+  if [ -z "$PAYLOAD_OWNERSHIP_ORIGIN" ]; then
+    PAYLOAD_OWNERSHIP_ORIGIN='export'
+    if [ "$mode" != export ] || [ "${PAYLOAD_STATE_PRESENT:-false}" = true ] ||
+      [ -f "$root/.agentic-flow-version" ] || [ -f "$root/.agentic-flow-candidate-version" ]; then
+      PAYLOAD_OWNERSHIP_ORIGIN=upgrade
+    fi
+  fi
+  [ "$mode" != acknowledge ] && [ "${#PAYLOAD_OWNERSHIP_PATHS[@]}" -gt 0 ] || return 0
+  # Paths cannot contain newlines. Include both boundaries for literal membership.
+  while [ "$i" -lt "${#DESTS[@]}" ]; do
+    payload_is_excluded "${FILES[$i]}" || active+="${DESTS[$i]}"$'\n'
+    i=$((i + 1))
+  done
+  i=0
+  while [ "$i" -lt "${#PAYLOAD_OWNERSHIP_PATHS[@]}" ]; do
+    path=${PAYLOAD_OWNERSHIP_PATHS[$i]}
+    created=${PAYLOAD_OWNERSHIP_CREATED[$i]:-}
+    candidate=${PAYLOAD_OWNERSHIP_CANDIDATES[$i]:-}
+    [[ "$active" = *$'\n'"$path"$'\n'* ]] || created=''
+    [ -e "$root/$path" ] || [ -L "$root/$path" ] || candidate=''
+    if [ -n "$created$candidate" ]; then
+      PAYLOAD_OWNERSHIP_PATHS[kept]=$path
+      PAYLOAD_OWNERSHIP_CREATED[kept]=$created
+      PAYLOAD_OWNERSHIP_CANDIDATES[kept]=$candidate
+      kept=$((kept + 1))
+    fi
+    i=$((i + 1))
+  done
+  while [ "$kept" -lt "$i" ]; do
+    i=$((i - 1))
+    unset 'PAYLOAD_OWNERSHIP_PATHS[i]' 'PAYLOAD_OWNERSHIP_CREATED[i]' 'PAYLOAD_OWNERSHIP_CANDIDATES[i]'
+  done
+}
+
+payload_ownership_add() { # <created|candidate> <path> <digest>; before writing the file
+  local LC_ALL=C
+  local kind="$1" path="$2" digest="$3" index
+  [ -n "$PAYLOAD_UPSTREAM_MODE" ] && [ "${PAYLOAD_DRY:-false}" = false ] || return 0
+  [ "$(( ${#kind} + 67 + ${#path} ))" -le "$PAYLOAD_RECORD_MAX_LINE" ] \
+    || payload_die "owned path exceeds ownership line bound: $path"
+  if [ "$kind" = candidate ]; then
+    payload_safe_path "$PAYLOAD_DST_ROOT" "$path" || payload_die "unsafe merge candidate path: $path"
+  fi
+  payload_ownership_lookup "$path"
+  index=$PAYLOAD_OWNERSHIP_INDEX
+  [ "$index" -lt "$PAYLOAD_RECORD_MAX_PATHS" ] || payload_die "ownership record exceeds $PAYLOAD_RECORD_MAX_PATHS paths"
+  PAYLOAD_OWNERSHIP_PATHS[index]=$path
+  case "$kind" in
+    created) PAYLOAD_OWNERSHIP_CREATED[index]=$digest ;;
+    candidate) PAYLOAD_OWNERSHIP_CANDIDATES[index]=$digest ;;
+  esac
+}
+
+payload_ownership_write() { # <target-root>
+  local i=0 path created candidate
+  local rows=(version=1 "origin=$PAYLOAD_OWNERSHIP_ORIGIN")
+  while [ "$i" -lt "${#PAYLOAD_OWNERSHIP_PATHS[@]}" ]; do
+    path=${PAYLOAD_OWNERSHIP_PATHS[$i]}
+    created=${PAYLOAD_OWNERSHIP_CREATED[$i]:-}
+    candidate=${PAYLOAD_OWNERSHIP_CANDIDATES[$i]:-}
+    [ -z "$created" ] || rows+=("created=$created  $path")
+    [ -z "$candidate" ] || rows+=("candidate=$candidate  $path")
+    i=$((i + 1))
+  done
+  payload_record_replace "$1/.agentic-flow-ownership" "${rows[@]}"
+}
 
 payload_upstream_lookup() { # <destination>; return its array index (or the next free index)
   PAYLOAD_UPSTREAM_INDEX=0
@@ -416,45 +581,38 @@ payload_upstream_lookup() { # <destination>; return its array index (or the next
 
 payload_upstream_load() { # <target-root> <upgrade|export|acknowledge>
   local LC_ALL=C
-  local state="$1/.agentic-flow-upstream" line row=0 key value digest path index bytes nonnul_bytes
-  local max_paths=2000 max_line=4100 max_rows
-  max_rows=$((2 * max_paths))
+  local state="$1/.agentic-flow-upstream" line row=0 key path index
+  local max_rows=$((2 * PAYLOAD_RECORD_MAX_PATHS))
   PAYLOAD_UPSTREAM_MODE="$2"
   PAYLOAD_UPSTREAM_PRESENT=false
   PAYLOAD_UPSTREAM_PATHS=()
   PAYLOAD_UPSTREAM_ACCEPTED=()
   PAYLOAD_UPSTREAM_OFFERED=()
   PAYLOAD_UPSTREAM_NEXT=()
-  [ -e "$state" ] || [ -L "$state" ] || return 0
-  [ -f "$state" ] && [ ! -L "$state" ] || payload_die "$state must be a regular file"
-  # Two hashes per installed path. Allow for the longer accepted= and offered= keys.
-  bytes=$(wc -c < "$state")
-  [ "$bytes" -le "$((max_rows * (max_line + 1)))" ] || payload_die "$state exceeds the record size limit"
-  nonnul_bytes=$(LC_ALL=C tr -d '\000' < "$state" | wc -c)
-  [ "$bytes" -eq "$nonnul_bytes" ] || payload_die "$state contains a NUL byte"
-  iconv -f UTF-8 -t UTF-8 "$state" >/dev/null 2>&1 || payload_die "$state is not UTF-8"
+  # Load alongside upstream so the first upgrade by a pre-ownership CLI also
+  # records its writes when it sources this release's apply library.
+  payload_ownership_load "$1"
+  payload_ownership_prepare "$1" "$2"
+  payload_record_check "$state" "$max_rows" || return 0
   PAYLOAD_UPSTREAM_PRESENT=true
+  # shellcheck disable=SC2094 # Helpers use the filename for diagnostics only.
   while IFS= read -r line || [ -n "$line" ]; do
     row=$((row + 1))
-    [ "$row" -le "$max_rows" ] && [ "${#line}" -le "$max_line" ] || payload_die "$state line $row exceeds record limits"
-    key=${line%%=*}; value=${line#*=}
-    digest=${value%%  *}; path=${value#*'  '}
-    [ "${#digest}" -eq 64 ] && [[ "$digest" =~ ^[0-9a-f]+$ ]] && [ "$value" = "$digest  $path" ] \
-      || payload_die "$state line $row: malformed hash or separator"
-    # An obsolete path may now be a symlink. Check record syntax here, before
-    # active paths get their filesystem checks from the manifest or --merged.
-    payload_relative_path "$path" || payload_die "$state line $row: unsafe path '$path'"
+    payload_record_check_line "$state" "$row" "$max_rows" "$line"
+    key=${line%%=*}
+    payload_record_parse_hash "$state" "$row" "${line#*=}"
+    path=$PAYLOAD_RECORD_PATH
     payload_upstream_lookup "$path"
     index=$PAYLOAD_UPSTREAM_INDEX
-    [ "$index" -lt "$max_paths" ] || payload_die "$state line $row: more than $max_paths paths"
+    [ "$index" -lt "$PAYLOAD_RECORD_MAX_PATHS" ] || payload_die "$state line $row: more than $PAYLOAD_RECORD_MAX_PATHS paths"
     PAYLOAD_UPSTREAM_PATHS[index]="$path"
     case "$key" in
       accepted)
         [ -z "${PAYLOAD_UPSTREAM_ACCEPTED[$index]:-}" ] || payload_die "$state line $row: duplicate accepted hash for '$path'"
-        PAYLOAD_UPSTREAM_ACCEPTED[index]="$digest" ;;
+        PAYLOAD_UPSTREAM_ACCEPTED[index]=$PAYLOAD_RECORD_DIGEST ;;
       offered)
         [ -z "${PAYLOAD_UPSTREAM_OFFERED[$index]:-}" ] || payload_die "$state line $row: duplicate offered hash for '$path'"
-        PAYLOAD_UPSTREAM_OFFERED[index]="$digest" ;;
+        PAYLOAD_UPSTREAM_OFFERED[index]=$PAYLOAD_RECORD_DIGEST ;;
       *) payload_die "$state line $row: unknown record key" ;;
     esac
   done < "$state"
@@ -467,13 +625,8 @@ payload_upstream_append() { # <destination> <accepted> <offered>
 
 payload_upstream_write() { # <target-root>
   [ "${PAYLOAD_DRY:-false}" = false ] || return 0
-  local state="$1/.agentic-flow-upstream" tmp
-  tmp=$(mktemp "$state.XXXXXX")
-  if ! { { [ "${#PAYLOAD_UPSTREAM_NEXT[@]}" -eq 0 ] || printf '%s\n' "${PAYLOAD_UPSTREAM_NEXT[@]}"; } > "$tmp" &&
-    mv -f -- "$tmp" "$state"; }; then
-    rm -f -- "$tmp"
-    payload_die "could not write $state"
-  fi
+  payload_ownership_write "$1"
+  payload_record_replace "$1/.agentic-flow-upstream" ${PAYLOAD_UPSTREAM_NEXT[@]+"${PAYLOAD_UPSTREAM_NEXT[@]}"}
 }
 
 payload_find_candidates() { # <absolute destination>
@@ -500,6 +653,8 @@ payload_acknowledge_merge() { # <target-root> <destination>
   PAYLOAD_UPSTREAM_OFFERED[index]=""
   for candidate in "${PAYLOAD_CANDIDATES[@]}"; do
     rm -- "$candidate"
+    payload_ownership_lookup "${candidate#"$root"/}"
+    unset 'PAYLOAD_OWNERSHIP_CANDIDATES[PAYLOAD_OWNERSHIP_INDEX]'
     printf '  removed    %s\n' "${candidate#"$root"/}"
   done
   while [ "$i" -lt "${#PAYLOAD_UPSTREAM_PATHS[@]}" ]; do
@@ -513,9 +668,9 @@ payload_candidate_matches() { # <source> <candidate>
   [ -f "$2" ] && [ ! -L "$2" ] && cmp -s "$1" "$2"
 }
 
-payload_apply_candidate() { # <src> <dst> <existing candidate paths...>
-  local src="$1" dst="$2" candidate content_id existing
-  shift 2
+payload_apply_candidate() { # <src> <dst> <upstream hash> <existing candidate paths...>
+  local src="$1" dst="$2" upstream="$3" candidate content_id existing
+  shift 3
   for existing in "$@"; do
     if payload_candidate_matches "$src" "$existing"; then
       PAYLOAD_RESULT_CANDIDATE_ACTION=pending
@@ -537,14 +692,18 @@ payload_apply_candidate() { # <src> <dst> <existing candidate paths...>
       || payload_die "refusing to overwrite occupied merge candidate: ${candidate#"$PAYLOAD_DST_ROOT"/}"
     PAYLOAD_RESULT_CANDIDATE_ACTION=pending
   else
-    [ "${PAYLOAD_DRY:-false}" = true ] || { mkdir -p "$(dirname "$candidate")"; cp -p "$src" "$candidate"; }
+    if [ "${PAYLOAD_DRY:-false}" = false ]; then
+      payload_ownership_add candidate "${candidate#"${PAYLOAD_DST_ROOT:-}"/}" "$upstream"
+      mkdir -p "$(dirname "$candidate")"
+      cp -p "$src" "$candidate"
+    fi
     PAYLOAD_RESULT_CANDIDATE_ACTION=candidate
   fi
   PAYLOAD_RESULT_PATH="$candidate"
 }
 
 payload_apply_entry() { # <src> <dst> <mode>
-  local src="$1" dst="$2" mode="$3" path accepted='' offered='' upstream='' pending=false
+  local src="$1" dst="$2" mode="$3" path='' accepted='' offered='' upstream='' pending=false
   PAYLOAD_RESULT_PATH=""
   PAYLOAD_RESULT_CANDIDATE_ACTION=""
   PAYLOAD_RESULT_CLASSIFICATION=""
@@ -573,10 +732,14 @@ payload_apply_entry() { # <src> <dst> <mode>
     PAYLOAD_RESULT_CLASSIFICATION=same
   elif [ "$mode" != force ] && [ "$PAYLOAD_UPSTREAM_MODE" = upgrade ] &&
     [ "$PAYLOAD_UPSTREAM_PRESENT" = true ] && [ "$pending" = true ]; then
-    payload_apply_candidate "$src" "$dst" "${PAYLOAD_CANDIDATES[@]}"
+    payload_apply_candidate "$src" "$dst" "$upstream" "${PAYLOAD_CANDIDATES[@]}"
     PAYLOAD_RESULT_CLASSIFICATION=pending
   elif [ ! -e "$dst" ]; then
-    [ "${PAYLOAD_DRY:-false}" = true ] || { mkdir -p "$(dirname "$dst")"; cp -p "$src" "$dst"; }
+    if [ "${PAYLOAD_DRY:-false}" = false ]; then
+      payload_ownership_add created "$path" "$upstream"
+      mkdir -p "$(dirname "$dst")"
+      cp -p "$src" "$dst"
+    fi
     PAYLOAD_RESULT_CLASSIFICATION=create
   elif [ "$mode" = force ]; then
     [ "${PAYLOAD_DRY:-false}" = true ] || cp -p "$src" "$dst"
@@ -588,7 +751,7 @@ payload_apply_entry() { # <src> <dst> <mode>
     [ "${PAYLOAD_DRY:-false}" = true ] || cp -p "$src" "$dst"
     PAYLOAD_RESULT_CLASSIFICATION=overwrite
   else
-    payload_apply_candidate "$src" "$dst"
+    payload_apply_candidate "$src" "$dst" "$upstream"
     PAYLOAD_RESULT_CLASSIFICATION=$PAYLOAD_RESULT_CANDIDATE_ACTION
   fi
 

@@ -58,7 +58,7 @@ load_local_upstream_lib() { # <adopted-root>; for a PATH alias or an older fetch
   if [ -f "$1/scripts/lib/payload-apply.sh" ]; then
     load_payload_lib "$1"
   fi
-  if ! declare -F payload_upstream_load >/dev/null; then
+  if ! declare -F payload_ownership_load >/dev/null; then
     load_payload_lib "$(dirname "${BASH_SOURCE[0]}")/.."
   fi
 }
@@ -358,8 +358,8 @@ upgrade_cmd() {
   fi
   source="$FETCHED_SOURCE"
   load_payload_lib "$source"
-  # An explicit ref can point to a release from before upstream tracking.
-  if ! declare -F payload_upstream_load >/dev/null; then
+  # An older ref still needs to preserve ownership evidence for this apply.
+  if ! declare -F payload_ownership_load >/dev/null; then
     load_local_upstream_lib "$root"
   fi
   [ ! -f "$source/scripts/lib/guard-migration.sh" ] || migrate=true

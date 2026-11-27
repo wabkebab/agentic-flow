@@ -1007,3 +1007,22 @@ fail	'station metadata did not reset the retry budget'
 fail	'status did not validate and render retry heartbeat'
 fail	'stopped heartbeat retained retry'
 fail	'test override did not control backoff'
+fail	"export accepted malformed ownership ($malformed)"
+fail	"export wrote before refusing malformed ownership ($malformed)"
+fail	"upgrade $operation accepted malformed ownership"
+fail	"upgrade $operation wrote before refusing malformed ownership"
+fail	'export accepted an ownership payload destination'
+fail	'export did not reject the reserved ownership destination before apply'
+fail	'forced export did not overwrite without claiming an adopter file'
+fail	'fresh export did not distinguish created paths from identical adopter files'
+fail	'pending export did not retain ownership and record its new candidate'
+fail	'pending legacy upgrade did not distinguish its new candidate from existing files and reused candidates'
+fail	'pending legacy upgrade did not reuse the adopter candidate'
+fail	'pending upgrade retry changed ownership'
+fail	'upgrade --merged did not drop the ownership of the candidates it removed'
+fail	'upgrade --merged rejected an owned candidate'
+fail	'upgrade claimed an identical adopter file at a new destination'
+fail	'upgrade could not re-create a deleted path'
+fail	'upgrade did not record the path it re-created'
+fail	'upgrade failed on an identical adopter file at a new destination'
+fail	'retry retained ownership rows for removed candidates'

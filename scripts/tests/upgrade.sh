@@ -280,6 +280,9 @@ grep -q "pass --yes" "$TMP/upgrade-no-yes.err" \
 
 printf '%s\n' '# local project edits' > "$UPGRADE_TARGET/CLAUDE.md"
 printf '%s\n' '# occupied candidate' > "$UPGRADE_TARGET/CLAUDE.md.agentic-new"
+# Scenario 3. One candidate is already present with exactly the offered bytes.
+printf '# adopter docs script\n' > "$UPGRADE_TARGET/scripts/docs-index.sh"
+cp "$UPGRADE_SOURCE/scripts/docs-index.sh" "$UPGRADE_TARGET/scripts/docs-index.sh.agentic-new"
 (cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-pending.out" \
   || fail "upgrade with merge candidates failed"
 grep -qx strict "$UPGRADE_TARGET/.agentic-flow-assurance" \
@@ -298,12 +301,43 @@ grep -qx '# occupied candidate' "$UPGRADE_TARGET/CLAUDE.md.agentic-new" \
 suffixed_candidates=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new.*' | wc -l | tr -d ' ')
 [ "$suffixed_candidates" -eq 1 ] \
   || fail "upgrade did not create exactly one suffixed candidate for occupied content"
+candidate=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new.*' -print -quit)
+candidate_row="candidate=$(shasum -a 256 "$candidate" | cut -d ' ' -f 1)  ${candidate##*/}"
+ownership="$UPGRADE_TARGET/.agentic-flow-ownership"
+if ! grep -Fxq 'origin=upgrade' "$ownership" || ! grep -Fxq "$candidate_row" "$ownership" ||
+  [ "$(grep -c '^candidate=' "$ownership")" -ne 1 ] || grep -q '^created=' "$ownership"; then
+  fail 'pending legacy upgrade did not distinguish its new candidate from existing files and reused candidates'
+fi
+grep -Fq 'scripts/docs-index.sh.agentic-new   (pending' "$TMP/upgrade-pending.out" \
+  || fail 'pending legacy upgrade did not reuse the adopter candidate'
 candidate_count_before=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new*' | wc -l | tr -d ' ')
+ownership_before=$(cat "$ownership")
 (cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-rerun.out" \
   || fail "rerunning upgrade with pending candidates failed"
 candidate_count_after=$(find "$UPGRADE_TARGET" -type f -name 'CLAUDE.md.agentic-new*' | wc -l | tr -d ' ')
 [ "$candidate_count_before" = "$candidate_count_after" ] \
   || fail "rerunning upgrade duplicated existing merge candidates"
+[ "$(cat "$ownership")" = "$ownership_before" ] || fail 'pending upgrade retry changed ownership'
+
+printf 'unexpected=1\n' >> "$ownership"
+before=$(tree_digest "$UPGRADE_TARGET")
+for operation in apply merged; do
+  case "$operation" in
+    apply) upgrade_args=(--yes --force) ;;
+    merged) upgrade_args=(--merged CLAUDE.md) ;;
+  esac
+  (cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade "${upgrade_args[@]}") \
+    > "$TMP/upgrade-bad-ownership.out" 2>&1 && fail "upgrade $operation accepted malformed ownership"
+  grep -q 'ownership.*unknown record key' "$TMP/upgrade-bad-ownership.out" &&
+    [ "$before" = "$(tree_digest "$UPGRADE_TARGET")" ] \
+    || fail "upgrade $operation wrote before refusing malformed ownership"
+done
+printf '%s\n' "$ownership_before" > "$ownership"
+(cd "$UPGRADE_TARGET" && "$AGENTIC_FLOW_CLI" upgrade --merged CLAUDE.md) > "$TMP/upgrade-ownership-merged.out" \
+  || fail 'upgrade --merged rejected an owned candidate'
+[ "$(cat "$ownership")" = $'version=1\norigin=upgrade' ] && [ ! -e "$candidate" ] &&
+  [ ! -e "$UPGRADE_TARGET/CLAUDE.md.agentic-new" ] && [ -f "$UPGRADE_TARGET/scripts/docs-index.sh.agentic-new" ] \
+  || fail 'upgrade --merged did not drop the ownership of the candidates it removed'
 
 CHANGED_ORIGIN_TARGET="$TMP/upgrade-origin-target"
 mkdir -p "$CHANGED_ORIGIN_TARGET/config" "$CHANGED_ORIGIN_TARGET/scripts/lib"
@@ -332,6 +366,27 @@ assert_no_file "$UPGRADE_CLEAN/.agentic-flow-candidate-version"
 assert_file "$UPGRADE_CLEAN/.agentic-flow-installation"
 assert_file "$UPGRADE_CLEAN/.agentic-flow-source-applied"
 assert_no_file "$UPGRADE_CLEAN/docs-index-sentinel"
+
+# Scenario 2. A new release ships bytes the adopter already has at a new path.
+printf 'already here\n' > "$UPGRADE_CLEAN/adopter-file"
+printf 'already here\n' > "$UPGRADE_SOURCE/adopter-file"
+printf 'adopter-file\tadopter-file\tcore\tpreserve\texport\n' >> "$UPGRADE_SOURCE/config/payload.tsv"
+git -C "$UPGRADE_SOURCE" add adopter-file config/payload.tsv
+git -C "$UPGRADE_SOURCE" commit -qm 'Ship a destination that exists in the adopter'
+(cd "$UPGRADE_CLEAN" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-identical.out" \
+  || fail 'upgrade failed on an identical adopter file at a new destination'
+ownership="$UPGRADE_CLEAN/.agentic-flow-ownership"
+if ! grep -Fxq 'origin=upgrade' "$ownership" || grep -Eq '^created=.*  adopter-file$' "$ownership"; then
+  fail 'upgrade claimed an identical adopter file at a new destination'
+fi
+rm -- "$UPGRADE_CLEAN/adopter-file"
+(cd "$UPGRADE_CLEAN" && "$AGENTIC_FLOW_CLI" upgrade --yes) > "$TMP/upgrade-recreate.out" \
+  || fail 'upgrade could not re-create a deleted path'
+adopter_hash=$(shasum -a 256 "$UPGRADE_SOURCE/adopter-file" | cut -d ' ' -f 1)
+if ! cmp -s "$UPGRADE_SOURCE/adopter-file" "$UPGRADE_CLEAN/adopter-file" ||
+  ! grep -Fxq "created=$adopter_hash  adopter-file" "$ownership"; then
+  fail 'upgrade did not record the path it re-created'
+fi
 
 # An installed pre-F-7 upgrader parses the fetched five-column manifest with its
 # installed library. Prove that path before the replacement CLI can read new state.
@@ -757,6 +812,10 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
     customized=$(shasum -a 256 CLAUDE.md | cut -d ' ' -f 1)
     grep -Fxq "file=$customized  CLAUDE.md" .agentic-flow-installation \
       || fail 'retry did not record the hand-merged file as installed'
+    if ! grep -Fxq 'origin=upgrade' .agentic-flow-ownership ||
+      grep -Eq '^candidate=.*  (CLAUDE|Makefile).*\.agentic-new' .agentic-flow-ownership; then
+      fail 'retry retained ownership rows for removed candidates'
+    fi
 
     upstream="$ADOPTER_TWIN_SOURCE/templates/harness/CLAUDE.md"
     { cat "$upstream"; printf '\n'; } > "$upstream.next"
