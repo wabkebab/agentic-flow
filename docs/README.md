@@ -129,10 +129,10 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-review-followups-186 | Feature | ✅ Done | done |
 | feature-station-hardening | Feature | ✅ Done | done |
 | feature-test-streamlining | Feature | ✅ Done | done |
+| feature-uninstall | Feature | ✅ Done | done |
 | feature-upgrade-surface | Feature | ✅ Done | done |
 | product-roadmap-history | Product Analysis | ✅ Decided | done |
 | feature-role-signing | Feature | 🟦 Proposal | inprogress |
-| feature-uninstall | Feature | 🟦 Proposal | inprogress |
 | product-harness-configurability | Product Analysis | ✅ Decided | inprogress |
 | product-harness-factory-optimization | Product Analysis | ✅ Decided | inprogress |
 <!-- END: generated index -->

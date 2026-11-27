@@ -1,5 +1,5 @@
 <!-- TRIAGE (first pass · 2026-11-27) -->
-> **Type:** Feature · **Status:** 🟦 Proposal
+> **Type:** Feature · **Status:** ✅ Done
 > **Assurance:** Strict (deletes adopter files, changes the install records, and adds a command-policy floor row; project baseline is Standard)
 > Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness recorded creating and still holds unchanged. A single batched `git rm` stages those deletions and verifies them, and a rerunnable receipt script undoes them without touching adopter content. Everything else is reported with exact commands.
 > Draft 15 (2026-11-27), written against `0.21.0` (`3757627`). Draft 15 stops suggesting `rm` for a file left after apply; such a file is reported for inspection. It keeps draft 11's three-step reshape: one batched `git rm` of tracked files, with literal pathspecs and a receipt per run. Verification claims only the listed deletions against the recorded `HEAD`. The receipt's undo fills in only what is missing, can be rerun after a partial undo or an incomplete apply, and never touches adopter content. See *Revision history*. The owner decisions all still hold. Next: owner re-approval, then re-run `plan-to-issues`, which updates #226–#228 and closes #229 and #230.
@@ -7,10 +7,9 @@
 # Feature — Uninstall: remove only what the harness owns
 
 ## Tracker
-- [ ] f-1 — Record which paths the harness created — #232
-- [ ] f-2 — Classify ownership and report the removal as a dry run — #233
-- [ ] f-3 — Stage the verified removal in one checked, reversible `git rm` — #234
-
+- [x] f-1 — #232; approved=77aec3336c15a44c2c3bee02b57ee79dbb4b18a3; submissions=77aec3336c15a44c2c3bee02b57ee79dbb4b18a3
+- [x] f-2 — #233; approved=14c13ad00091a86a1062ce45f00fa6ae283f3025; submissions=14c13ad00091a86a1062ce45f00fa6ae283f3025
+- [x] f-3 — #234; approved=0af31a364170da695561b4f92a3d50816fe1b3ab; submissions=0af31a364170da695561b4f92a3d50816fe1b3ab,8795a61e5f48d3cb2e4fd8498979859d60ebd1e9
 ---
 
 # Part A — Analysis
@@ -732,10 +731,10 @@ though the CLI's own files are among the deletions.
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/231
 - **Approval:** status=approved; by=wabkebab; at=2026-11-27; rev=57b6138ccc07b2c87462284f7690c157976a5d3d
 - **Implementation head:** source=pr-head
-- **Implementation PR:** pending
+- **Implementation PR:** source=final-approval
 - **Verification evidence:** source=final-approval-run
 - **Review verdict:** source=close-out-attestation
-- **Memory:** pending
+- **Memory:** status=n/a
 - Close-out: `ship` finalizes Status and Tracker, sets TRIAGE to Done, and commits this
   document's move and the updated index before the first push. It opens the PR and
   waits for CI. The reviewer runs `final-approve` to record the PR, head, and run attempt
