@@ -4,16 +4,18 @@ use strict;
 use warnings;
 use Encode qw(decode FB_DEFAULT FB_CROAK);
 use JSON::PP;
+use POSIX qw(strftime);
 
 my %report = (
     v => 1, root => '', version => '', origin => 'none', adoption_commit => undef,
     refusals => [], remove => [], kept => [], dangling_references => [],
     dangling_truncated => 0, git => [], git_state => [], outside => [],
+    _checkout => { receipts => [] },
 );
 my ($root, $common) = ('', '');
 my %fields = (
     refusal => [qw(reason subject command)],
-    remove  => [qw(path kind why sha256 mode)],
+    remove  => [qw(path kind why sha256 mode blob)],
     kept    => [qw(path why command)],
     git     => [qw(what detail command)],
 );
@@ -40,6 +42,9 @@ sub field {
             push @{ $report{$section{$entry}} }, \%row;
         } elsif ($entry eq 'common') {
             $common = field();
+            $report{_checkout}{common} = text($common);
+        } elsif ($entry =~ /\A(?:commit|branch|file_mode)\z/) {
+            $report{_checkout}{$entry} = text(field());
         } elsif ($entry eq 'notice') {
             push @{ $report{outside} }, text(field());
         } elsif ($entry =~ /\A(?:root|version|origin|adoption_commit)\z/) {
@@ -152,6 +157,7 @@ sub shared_state {
     return if -l $state || !opendir(my $dir, $state);
     my @names;
     my $count = 0;
+    my $staged = grep { $_->{reason} eq 'staged-changes' } @{ $report{refusals} };
     while (defined(my $name = readdir $dir)) {
         next if $name eq '.' || $name eq '..';
         if (++$count > 2000) {
@@ -162,8 +168,17 @@ sub shared_state {
             last;
         }
         push @names, $name if !-l "$state/$name" && -d _;
+        if ($staged && $name =~ /\Auninstall-\d{8}T\d{6}Z-\d+\.(?:paths|index|undo)\z/) {
+            my @stat = lstat "$state/$name";
+            next unless @stat && -f _;
+            push @{ $report{_checkout}{receipts} }, {
+                path => text("$state/$name"),
+                modified_utc => strftime('%Y-%m-%dT%H:%M:%SZ', gmtime($stat[9])),
+            };
+        }
     }
     closedir $dir;
+    @{ $report{_checkout}{receipts} } = sort { $a->{path} cmp $b->{path} } @{ $report{_checkout}{receipts} };
     for my $name (sort @names) {
         my ($entries, $bytes) = directory_size("$state/$name");
         push @{ $report{git_state} }, {

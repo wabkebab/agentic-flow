@@ -1,8 +1,55 @@
 #!/usr/bin/env bash
 # Sourced by self-test.sh; shared fixture context is intentional.
-# shellcheck disable=SC1091,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals (including ROOT), indirect fixture calls, inherited errexit.
+# shellcheck disable=SC1091,SC2030,SC2031,SC2034,SC2153,SC2164,SC2329 # Dispatcher globals, dynamic fixture scope, inherited errexit.
 AGENTIC_FLOW_CLI="$ROOT/scripts/agentic-flow"
 assert_file "$AGENTIC_FLOW_CLI"
+
+uninstall_terminal() {
+  python3 - "$AGENTIC_FLOW_CLI" "$1" <<'PYTHON'
+import errno
+import os
+import pty
+import select
+import subprocess
+import sys
+import time
+
+master, slave = pty.openpty()
+process = subprocess.Popen([sys.argv[1], "uninstall"], stdin=slave, stdout=slave, stderr=slave)
+os.close(slave)
+output = bytearray()
+prompt = b"Stage these uninstall deletions?"
+answered = False
+deadline = time.monotonic() + 15
+try:
+    while time.monotonic() < deadline and len(output) < 1024 * 1024:
+        readable, _, _ = select.select([master], [], [], 0.1)
+        if not readable:
+            continue
+        try:
+            chunk = os.read(master, 8192)
+        except OSError as error:
+            if error.errno != errno.EIO:
+                raise
+            break
+        if not chunk:
+            break
+        output.extend(chunk)
+        if not answered and prompt in output:
+            if sys.argv[2] == "change":
+                with open("scripts/doctor.sh", "ab") as changed:
+                    changed.write(b"changed after preview\n")
+            os.write(master, b"n\n" if sys.argv[2] == "decline" else b"y\n")
+            answered = True
+    sys.stdout.buffer.write(output)
+    sys.exit(process.wait(timeout=1) if output.count(prompt) == 1 else 1)
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait()
+    os.close(master)
+PYTHON
+}
 
 # shellcheck disable=SC2016 # jq expressions use jq variables.
 uninstall_scenarios() (
@@ -11,6 +58,8 @@ uninstall_scenarios() (
   mkdir -p "$fixture"
   cd "$fixture"
   git init -q -b main
+  git config user.name 'Uninstall fixture'
+  git config user.email uninstall@example.invalid
   git config commit.gpgsign false
   git config core.fileMode true
   printf 'before adoption\n' > adopter
@@ -114,6 +163,11 @@ uninstall_scenarios() (
   refused lock-present
   refused uncommitted-install
   uninstall_expect 'any(.refusals[]; .reason == "plan-open" and .command == "agentic-flow clean fixture") and ([.refusals[] | select(.reason == "lock-present")] | length == 2)'
+  uninstall_report --yes
+  refused staged-changes
+  refused plan-open
+  refused lock-present
+  refused uncommitted-install
   git restore --source=HEAD --staged --worktree -- adopter scripts/doctor.sh .agentic-flow-upstream
   chmod -x scripts/self-test.sh
   git config core.fileMode true
@@ -203,11 +257,231 @@ uninstall_scenarios() (
   ln -s "$TMP/uninstall-installation" scripts/doctor.sh
   uninstall_report
   uninstall_expect 'any(.kept[]; .path == "scripts/doctor.sh") and all(.remove[]; .path != "scripts/doctor.sh")'
+
+  git restore -- .agentic-flow-ownership scripts/doctor.sh
+  printf 'wildcard neighbour\n' > literal-neighbour
+  chmod +x scripts/self-test.sh
+  git add -- literal-neighbour scripts/self-test.sh
+  git commit -qm 'Keep a wildcard neighbour and record an executable payload'
+  git update-index --assume-unchanged -- pending-only
+
+  before=$(uninstall_snapshot)
+  uninstall_terminal decline > "$TMP/uninstall-terminal.log" || fail 'interactive uninstall did not accept a no response'
+  [ "$before" = "$(uninstall_snapshot)" ] || fail 'interactive uninstall wrote after a no response'
+  status=0
+  uninstall_terminal change > "$TMP/uninstall-terminal.log" || status=$?
+  if [ "$status" != 3 ] || ! grep -q 'plan-changed' "$TMP/uninstall-terminal.log"; then
+    fail 'confirmation accepted a changed plan'
+  fi
+  git restore -- scripts/doctor.sh
+  [ "$before" = "$(uninstall_snapshot)" ] || fail 'changed interactive plan wrote to the checkout or common dir'
+
+  uninstall_apply_scenarios
+)
+
+# shellcheck disable=SC2016 # jq expressions use jq variables.
+uninstall_apply_scenarios() {
+  local stage contents modes pause_pid undo_script receipt_two initial_head output
+  local before_dir="$TMP/uninstall-pauses" diagnostics="$TMP/uninstall.stderr"
+  stage=$(git ls-files --stage)
+  contents=$(tree_digest "$PWD")
+  modes=$(find . -path ./.git -prune -o -type f -perm -100 -print | LC_ALL=C sort)
+  mkdir -p "$before_dir"
+
+  start_paused() { # <run> <point>
+    mkdir -p "$before_dir/$1/$2"
+    AGENTIC_UNINSTALL_TESTING=1 AGENTIC_UNINSTALL_TEST_PAUSES="$before_dir/$1" \
+      "$AGENTIC_FLOW_CLI" uninstall --yes --json > "$before_dir/$1.json" 2> "$before_dir/$1.err" &
+    pause_pid=$!
+    local i
+    for ((i=0; i<400; i++)); do
+      [ ! -f "$before_dir/$1/$2/ready" ] || return 0
+      kill -0 "$pause_pid" 2>/dev/null || break
+      sleep 0.05
+    done
+    cat "$before_dir/$1.err" >&2
+    fail "uninstall did not reach $2 for $1"
+  }
+  finish_paused() { # <run> <point> <pid> <exit>
+    touch "$before_dir/$1/$2/continue"
+    status=0
+    wait "$3" || status=$?
+    report="$before_dir/$1.json"
+    diagnostics="$before_dir/$1.err"
+    [ "$status" = "$4" ] || { cat "$report" "$diagnostics" >&2; fail "unexpected apply status for $1: $status"; }
+    undo_script=$(jq -r '.receipt.undo' "$report")
+    grep -Fq -- "bash $(printf '%q' "$undo_script")" "$diagnostics" || fail 'uninstall omitted its printed undo command'
+  }
+  check_restored() {
+    [ "$stage" = "$(git ls-files --stage)" ] && git diff --cached --quiet &&
+      [ "$contents" = "$(tree_digest "$PWD")" ] &&
+      [ "$modes" = "$(find . -path ./.git -prune -o -type f -perm -100 -print | LC_ALL=C sort)" ] ||
+      fail 'undo did not restore the index, bytes, and Git modes'
+  }
+
+  # Scenario 7: Git refuses the whole batch after a planned file becomes dirty.
+  start_paused dirty before-rm
+  printf 'racing worktree edit\n' > scripts/doctor.sh
+  finish_paused dirty before-rm "$pause_pid" 4
+  uninstall_expect '.outcome == "unchanged" and .verified_deletions == []'
+  [ "$(cat scripts/doctor.sh)" = 'racing worktree edit' ] && [ "$stage" = "$(git ls-files --stage)" ] ||
+    fail 'Git refusal changed the index or lost the worktree edit'
+  git restore -- scripts/doctor.sh
+  check_restored
+
+  # Scenario 7: an interrupted apply keeps new adopter content and lists receipts on retry.
+  start_paused recreated before-check
+  printf 'new adopter worktree content\n' > 'literal*'
+  finish_paused recreated before-check "$pause_pid" 4
+  uninstall_expect '.outcome == "incomplete" and .incomplete == [{path: "literal*", index: false, worktree: true}]'
+  if ! grep -Fq 'different content or mode: inspect it' "$diagnostics" || grep -Fq 'rm --' "$diagnostics"; then
+    fail 'incomplete apply gave the wrong advice for recreated content'
+  fi
+  uninstall_report --yes
+  refused staged-changes
+  uninstall_expect --arg undo "$undo_script" '.receipts_present | length >= 6 and any(.[]; .path == $undo and (.modified_utc | endswith("Z")))'
+  for edit in unstaged staged; do
+    if [ "$edit" = staged ]; then
+      printf 'distinct staged edit\n' > 'literal*'
+      git --literal-pathspecs add -- 'literal*'
+      printf 'distinct worktree edit\n' > 'literal*'
+    fi
+    before=$(uninstall_snapshot)
+    status=0
+    bash "$undo_script" > "$diagnostics" 2>&1 || status=$?
+    [ "$status" = 3 ] && grep -Fq 'literal\*' "$diagnostics" && [ "$before" = "$(uninstall_snapshot)" ] ||
+      fail 'undo touched distinct adopter content'
+  done
+  git --literal-pathspecs rm --cached -qf -- 'literal*'
+  rm -- 'literal*'
+  bash "$undo_script"
+  check_restored
+
+  # Scenario 7: Git stages the deletion but cannot unlink a file in an unwritable parent.
+  if [ "$(id -u)" != 0 ]; then
+    start_paused unlink before-rm
+    chmod a-w docs
+    finish_paused unlink before-rm "$pause_pid" 4
+    uninstall_expect '.outcome == "incomplete" and .incomplete == [{path: "docs/pristine.md", index: false, worktree: true}]'
+    if ! grep -Fq 'matches the receipt' "$diagnostics" || grep -Eq '(^Verified|rm --)' "$diagnostics"; then
+      fail 'unlink failure was reported as success or advised deleting the leftover'
+    fi
+    local inode
+    inode=$(perl -e 'print((lstat $ARGV[0])[1])' docs/pristine.md)
+    chmod u+w docs
+    bash "$undo_script"
+    [ "$inode" = "$(perl -e 'print((lstat $ARGV[0])[1])' docs/pristine.md)" ] || fail 'undo replaced the leftover file'
+    check_restored
+  fi
+
+  # Scenarios 4 and 7: removal is literal and verifies only its own paths.
+  start_paused scoped before-check
+  printf 'unrelated staged edit\n' > adopter
+  git add -- adopter
+  finish_paused scoped before-check "$pause_pid" 0
+  uninstall_expect '.outcome == "complete" and .verified_deletions == [.remove[].path] and
+    (.verified_deletions | index("literal*") != null and index("literal-neighbour") == null and index("adopter") == null) and
+    any(.kept[]; .path == "pending-only" and .why == "index-flags")'
+  grep -Fq 'Other staged changes are outside this check' "$diagnostics" && [ -f literal-neighbour ] &&
+    [ -f edited ] && [ -f CLAUDE.md ] && [ -f pending-only ] && [ -x mode-only ] && [ -x .agentic-flow-version ] ||
+    fail 'apply altered kept content or overclaimed its verification'
+  git restore --source=HEAD --staged --worktree -- adopter
+  if [ "$(id -u)" != 0 ]; then
+    mkdir -p scripts
+    chmod a-w scripts
+    status=0
+    bash "$undo_script" > "$diagnostics" 2>&1 || status=$?
+    chmod u+w scripts
+    [ "$status" = 4 ] && grep -Fq 'scripts/self-test.sh (index restored, file missing)' "$diagnostics" &&
+      [ "$stage" = "$(git ls-files --stage)" ] && [ ! -e scripts/self-test.sh ] || fail 'undo did not report partial work'
+  fi
+  bash "$undo_script"
+  check_restored
+  bash "$undo_script"
+  check_restored
+
+  # Scenario 7: overlapping applies use distinct receipts and only one stages anything.
+  local first_pid
+  start_paused first before-rm
+  first_pid=$pause_pid
+  start_paused second before-rm
+  finish_paused first before-rm "$first_pid" 0
+  output=$undo_script
+  finish_paused second before-rm "$pause_pid" 4
+  receipt_two=$undo_script
+  [ "$output" != "$receipt_two" ] && [ -s "$output" ] && [ -s "$receipt_two" ] || fail 'overlapping applies shared a receipt'
+  git switch -qc other-branch
+  before=$(uninstall_snapshot)
+  status=0
+  bash "$output" > "$diagnostics" 2>&1 || status=$?
+  [ "$status" = 3 ] && grep -Fq "git checkout $(git rev-parse HEAD)" "$diagnostics" &&
+    [ "$before" = "$(uninstall_snapshot)" ] || fail 'undo changed the index on another branch'
+  git switch -q main
+  bash "$output"
+  check_restored
+
+  initial_head=$(git rev-parse HEAD)
+  start_paused moved before-check
+  git commit -qm 'Commit the removal before its final check'
+  finish_paused moved before-check "$pause_pid" 4
+  uninstall_expect --arg head "$initial_head" '.outcome == "head-moved" and .commit == $head and .verified_deletions == []'
+  before=$(uninstall_snapshot)
+  status=0
+  bash "$undo_script" > "$diagnostics" 2>&1 || status=$?
+  [ "$status" = 3 ] && grep -Fq "git checkout $initial_head" "$diagnostics" &&
+    [ "$before" = "$(uninstall_snapshot)" ] || fail 'undo touched a moved HEAD or omitted the manual route'
+}
+
+uninstall_empty_apply() (
+  mkdir "$TMP/uninstall-empty"
+  cd "$TMP/uninstall-empty"
+  git init -q -b main
+  printf 'version=1\nscope=core\n' > .agentic-flow-installation
+  GIT_TRACE="$TMP/uninstall-empty.trace" "$AGENTIC_FLOW_CLI" uninstall --yes --json > "$TMP/uninstall-empty.json" ||
+    fail 'an empty uninstall apply refused'
+  jq -e '.remove == [] and .refusals == [] and (has("receipt") | not)' "$TMP/uninstall-empty.json" >/dev/null &&
+    [ ! -e .git/agentic-flow ] && [ -f .agentic-flow-installation ] || fail 'empty apply created a receipt or touched the installation'
+  if grep -q 'built-in: git rm ' "$TMP/uninstall-empty.trace"; then fail 'empty apply called git rm'; fi
+)
+
+# Scenario 6: run the installed CLI, including after Git unlinks it.
+uninstall_export_roundtrip() (
+  local common="$TMP/uninstall export" pre_export remove_list git_config
+  mkdir "$common"
+  cd "$common"
+  git init -q -b main
+  git config user.name 'Uninstall fixture'
+  git config user.email uninstall@example.invalid
+  git config commit.gpgsign false
+  git commit --allow-empty -qm 'Before export'
+  pre_export=$(git rev-parse HEAD)
+  "$ROOT/scripts/export.sh" "$common" > "$TMP/uninstall-export.log"
+  git ls-files --others --exclude-standard -z | xargs -0 git add --
+  git commit -qm 'Install the harness'
+  git config core.hooksPath scripts/git-hooks
+  git_config=$(git config --local --list)
+  GIT_TRACE="$TMP/uninstall-export.trace" scripts/agentic-flow uninstall --yes --json \
+    > "$TMP/uninstall-export-apply.json" 2> "$TMP/uninstall-export-apply.err" ||
+    { cat "$TMP/uninstall-export-apply.err" >&2; fail 'the installed CLI did not survive removing itself'; }
+  [ "$(grep -c 'built-in: git rm ' "$TMP/uninstall-export.trace")" = 1 ] || fail 'apply did not call git rm exactly once'
+  remove_list=$(jq -r '.remove[].path' "$TMP/uninstall-export-apply.json" | LC_ALL=C sort)
+  [ -n "$remove_list" ] && [ ! -e scripts/agentic-flow ] &&
+    [ "$remove_list" = "$(git -c core.quotePath=false diff --cached --name-status | sed -n 's/^D\t//p' | LC_ALL=C sort)" ] &&
+    [ -z "$(git diff --cached --name-only --diff-filter=d)" ] &&
+    [ "$git_config" = "$(git config --local --list)" ] || fail 'export uninstall staged a different set from the report'
+  jq -e '.outcome == "complete" and .verified_deletions == [.remove[].path] and
+    any(.git[]; .what == "core.hooksPath" and .command == "git config --local --unset core.hooksPath")' \
+    "$TMP/uninstall-export-apply.json" >/dev/null || fail 'export uninstall omitted verification or the hooks command'
+  git commit -qm 'Stage-only uninstall reviewed by the adopter'
+  [ "$(git diff --name-status "$pre_export" HEAD)" = $'A\t.agentic-flow-assurance\nA\t.agentic-flow-review-policy\nA\tdocs/README.md' ] ||
+    fail 'uninstalled export left unexpected files in the committed tree'
 )
 
 scenario_group_begin upgrade
 if should_run_scenario uninstall uninstall; then
   uninstall_scenarios
+  uninstall_empty_apply
+  if [ -f "$ROOT/scripts/export.sh" ]; then uninstall_export_roundtrip; fi
   if [ -z "$ONLY_GROUP" ]; then
     uninstall_seconds=$(( $(self_test_now) - SCENARIO_START_SECONDS ))
     measure_event "group:upgrade:uninstall:$uninstall_seconds"

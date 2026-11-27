@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Read-only uninstall planning. The report data is streamed as NUL-delimited fields.
+# Uninstall planning. The report data is streamed as NUL-delimited fields.
 # shellcheck source=scripts/lib/payload-apply.sh
 . "$(dirname "${BASH_SOURCE[0]}")/payload-apply.sh"
 # shellcheck source=scripts/lib/start.sh
 . "$(dirname "${BASH_SOURCE[0]}")/start.sh"
+# shellcheck source=scripts/lib/uninstall-apply.sh
+. "$(dirname "${BASH_SOURCE[0]}")/uninstall-apply.sh"
 UNINSTALL_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 
 uninstall_git() {
@@ -137,7 +139,7 @@ uninstall_classify() { # <path> <kind> [expected sha256] [why]
     uninstall_keep "$path" unsafe-path
     return
   fi
-  index_entry=$(uninstall_git_entry "$path" ls-files -z --stage)
+  index_entry=$(uninstall_git_entry "$path" ls-files -v -z --stage)
   [ -e "$file" ] || [ -n "$index_entry" ] || return 0
   if [ "$kind" = project ] && [ "$remove_project_state" = false ]; then
     uninstall_keep "$path" project-state-kept
@@ -175,7 +177,12 @@ uninstall_classify() { # <path> <kind> [expected sha256] [why]
     fi
     return
   fi
-  if ! [[ "$index_entry" =~ ^(100644|100755)\ ([0-9a-f]+)\ 0$ ]]; then
+  # Git can trust these index flags instead of checking the worktree during rm.
+  if [[ "$index_entry" == [hSs]' '* ]]; then
+    uninstall_keep "$path" index-flags
+    return
+  fi
+  if ! [[ "$index_entry" =~ ^H\ (100644|100755)\ ([0-9a-f]+)\ 0$ ]]; then
     uninstall_staged_change "$path"
     return
   fi
@@ -202,7 +209,7 @@ uninstall_classify() { # <path> <kind> [expected sha256] [why]
     uninstall_keep "$path" mode-changed
     return
   fi
-  printf '%s\0' remove "$path" "$kind" "$why" "$digest" "$head_mode"
+  printf '%s\0' remove "$path" "$kind" "$why" "$digest" "$head_mode" "$head_hash"
 }
 
 uninstall_adoption() {
@@ -341,7 +348,7 @@ uninstall_stamp() {
 
 uninstall_collect() {
   local uninstall_root uninstall_top uninstall_common='' git_dir='' uninstall_head='' status=0
-  local uninstall_file_mode='' uninstall_version uninstall_pending_version
+  local uninstall_file_mode='' uninstall_version uninstall_pending_version branch='' index_path
   # Variables used by the EXIT trap need shell scope after this function unwinds.
   uninstall_read_reason=git-read-failed
   uninstall_read_subject='could not read Git state'
@@ -367,6 +374,10 @@ uninstall_collect() {
       0) ;;
       *) uninstall_refuse git-read-failed 'could not inspect staged changes' 'git diff --cached' ;;
     esac
+    index_path=$(uninstall_git rev-parse --path-format=absolute --git-path index)
+    if [ "$index_path" != "$git_dir/index" ]; then
+      uninstall_refuse alternate-index "$index_path" 'Use the regular Git index for this checkout.'
+    fi
     uninstall_check_plans
     uninstall_check_locks
     uninstall_git_report
@@ -386,9 +397,13 @@ uninstall_collect() {
       uninstall_read_subject='could not compare the installation with Git'
       uninstall_head=$(uninstall_git rev-parse --verify -q 'HEAD^{commit}') || uninstall_head=''
       status=0
+      branch=$(uninstall_git symbolic-ref -q HEAD) || status=$?
+      [ "$status" -le 1 ] || return "$status"
+      status=0
       uninstall_file_mode=$(uninstall_git config --type=bool --get core.fileMode) || status=$?
       [ "$status" -le 1 ] || return "$status"
       uninstall_file_mode=${uninstall_file_mode:-true}
+      printf '%s\0' commit "$uninstall_head" branch "$branch" file_mode "$uninstall_file_mode"
       uninstall_pending_version=$(uninstall_stamp "$uninstall_root/.agentic-flow-candidate-version")
       uninstall_paths
     fi
@@ -396,11 +411,46 @@ uninstall_collect() {
   trap - EXIT
 }
 
+uninstall_plan() {
+  (set -e; uninstall_collect | perl "$UNINSTALL_LIB/uninstall-report.pl")
+}
+
+uninstall_render() {
+    jq -r '
+      def rows(heading; values): heading, (values[] | "  " + .);
+      def cmd: if .command == null then "" else "  " + .command end;
+      $heading,
+      (if .refusals == [] then empty else rows("Refusals"; [.refusals[] | "\(.reason)  \(.subject)" + cmd]) end),
+      (if ._checkout.receipts == [] then empty else rows("Receipts present (information only)"; [._checkout.receipts[] | "\(.path)  \(.modified_utc)"]) end),
+      rows("Will remove (staged by git rm)"; [.remove[] | "\(.path)  (\(.why))"]),
+      rows("Kept — finish by hand"; [.kept[] | "\(.path)  (\(.why))" + cmd]),
+      rows("Still referencing removed files"; [.dangling_references[] | "\(.file):\(.line): \(.ref)"]),
+      (if .dangling_references == [] then empty else "  Review these references. make check and CI may fail after removal." end),
+      (if .dangling_truncated == 0 then empty else "  \(.dangling_truncated) additional matching lines omitted." end),
+      rows("Git config and refs"; [.git[] | "\(.what)  \(.detail)  \(.command)"]),
+      rows("Shared Git state (not removed)"; [.git_state[] | "\(.dir)  \(.entries) entries  \(.bytes) bytes  \(.class)  \(.command)" +
+        (if (.dir | endswith("/ledger")) then "  (only copy of the plan journal)" else "" end)]),
+      rows("Outside the repository"; .outside)
+      | gsub("[\u0000-\u001f\u007f]"; "?")
+    ' --arg heading "$1" <<< "$2"
+}
+
+uninstall_print_plan() {
+  if [ "$json" = true ]; then
+    jq 'del(._checkout, .remove[].blob) +
+        (if ._checkout.receipts == [] then {} else {receipts_present: ._checkout.receipts} end)' <<< "$1"
+  else
+    uninstall_render 'agentic-flow uninstall (dry run)' "$1"
+  fi
+}
+
 uninstall_cmd() {
-  local json=false claim_adoption=false keep_docs=false remove_project_state=false report
+  local json=false yes=false claim_adoption=false keep_docs=false remove_project_state=false
+  local report shown='' answer rendered=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=true ;;
+      --yes) yes=true ;;
       --claim-adoption) claim_adoption=true ;;
       --keep-docs) keep_docs=true ;;
       --remove-project-state) remove_project_state=true ;;
@@ -412,26 +462,46 @@ uninstall_cmd() {
   # Suppress index refresh, promisor fetching and configured filesystem monitors.
   local GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1
   export GIT_OPTIONAL_LOCKS GIT_NO_LAZY_FETCH
-  report=$(set -e; uninstall_collect | perl "$UNINSTALL_LIB/uninstall-report.pl")
-  if [ "$json" = true ]; then
-    printf '%s\n' "$report"
-  else
-    jq -r '
-      def rows(heading; values): heading, (values[] | "  " + .);
-      def cmd: if .command == null then "" else "  " + .command end;
-      "agentic-flow uninstall (dry run)",
-      (if .refusals == [] then empty else rows("Refusals"; [.refusals[] | "\(.reason)  \(.subject)" + cmd]) end),
-      rows("Will remove (staged by git rm)"; [.remove[] | "\(.path)  (\(.why))"]),
-      rows("Kept — finish by hand"; [.kept[] | "\(.path)  (\(.why))" + cmd]),
-      rows("Still referencing removed files"; [.dangling_references[] | "\(.file):\(.line): \(.ref)"]),
-      (if .dangling_references == [] then empty else "  Review these references. make check and CI may fail after removal." end),
-      (if .dangling_truncated == 0 then empty else "  \(.dangling_truncated) additional matching lines omitted." end),
-      rows("Git config and refs"; [.git[] | "\(.what)  \(.detail)  \(.command)"]),
-      rows("Shared Git state (not removed)"; [.git_state[] | "\(.dir)  \(.entries) entries  \(.bytes) bytes  \(.class)  \(.command)" +
-        (if (.dir | endswith("/ledger")) then "  (only copy of the plan journal)" else "" end)]),
-      rows("Outside the repository"; .outside)
-      | gsub("[\u0000-\u001f\u007f]"; "?")
-    ' <<< "$report"
+  report=$(uninstall_plan)
+  if jq -e '.refusals != []' <<< "$report" >/dev/null; then
+    uninstall_print_plan "$report"
+    return 3
   fi
-  if jq -e '.refusals | length > 0' <<< "$report" >/dev/null; then return 3; fi
+  if jq -e '.remove == []' <<< "$report" >/dev/null; then
+    uninstall_print_plan "$report"
+    return 0
+  fi
+  if [ "$yes" = false ]; then
+    if [ ! -t 0 ] || [ ! -t 1 ] || [ ! -t 2 ]; then
+      uninstall_print_plan "$report"
+      return 0
+    fi
+    rendered=$(uninstall_render 'agentic-flow uninstall (dry run)' "$report")
+    printf '%s\n' "$rendered" >&2
+    printf 'Stage these uninstall deletions? [y/N] ' >&2
+    if ! IFS= read -r answer || [[ "$answer" != [yY] ]]; then
+      [ "$json" = false ] || uninstall_print_plan "$report"
+      return 0
+    fi
+    shown=$report
+  fi
+  report=$(uninstall_plan)
+  if jq -e '.refusals != []' <<< "$report" >/dev/null; then
+    uninstall_print_plan "$report"
+    return 3
+  fi
+  if [ -n "$shown" ] && [ "$shown" != "$report" ]; then
+    report=$(jq '.refusals += [{reason: "plan-changed", subject: "The plan changed after confirmation. Review the new plan and run uninstall again.", command: null}]' <<< "$report")
+    uninstall_print_plan "$report"
+    return 3
+  fi
+  if jq -e '.remove == []' <<< "$report" >/dev/null; then
+    uninstall_print_plan "$report"
+    return 0
+  fi
+  if [ "$json" = false ] && [ -z "$rendered" ]; then
+    rendered=$(uninstall_render 'agentic-flow uninstall (apply)' "$report")
+    printf '%s\n' "$rendered"
+  fi
+  uninstall_apply "$report" "$json"
 }

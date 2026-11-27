@@ -32,7 +32,7 @@ usage:
   agentic-flow diff [--ref <ref>] [--json]
   agentic-flow upgrade [--ref <ref>] [--force] [--yes]
   agentic-flow upgrade --merged <path>
-  agentic-flow uninstall [--json] [--keep-docs] [--remove-project-state] [--claim-adoption]
+  agentic-flow uninstall [--yes] [--json] [--keep-docs] [--remove-project-state] [--claim-adoption]
   agentic-flow --help | --version
 
   run --detach starts a background controller and reports its pid after it takes the lock.
