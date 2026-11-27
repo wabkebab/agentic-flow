@@ -1073,7 +1073,7 @@ revision, and the report names that revision.
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-27; rev=ff3fb41c520c74c3718f430552bbcc5695955562
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
