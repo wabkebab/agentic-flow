@@ -35,8 +35,14 @@ fail() {
   exit 1
 }
 
-link_test_wall_ceilings() { # <fixture root>
-  mkdir -p "$1/config"
+link_test_budget_config() { # <fixture root>
+  mkdir -p "$1/config" "$1/scripts/lib"
+  ln "$ROOT/config/config-keys.tsv" "$ROOT/config/test-budgets.tsv" "$1/config/"
+  ln "$ROOT/scripts/lib/budget.sh" "$ROOT/scripts/lib/config.sh" "$ROOT/scripts/lib/config-data.pl" "$ROOT/scripts/lib/roles.sh" "$1/scripts/lib/"
+}
+
+link_test_budgets() { # <fixture root>
+  link_test_budget_config "$1"
   ln "$ROOT/config/test-wall-ceilings.tsv" "$1/config/test-wall-ceilings.tsv"
 }
 
@@ -263,7 +269,7 @@ assert_ci_gate_needs_asserted() { # <workflow.yml>
 path_without_tools() { # <output-dir> <tool>...
   local out_dir="$1" tool resolved blocked skip
   shift
-  for tool in awk bash cat cp find git grep iconv jq make mkdir rm sed sort tr uniq wc; do
+  for tool in awk bash cat cp find git grep iconv jq make mkdir perl rm sed sort tr uniq wc; do
     skip=false
     for blocked in "$@"; do
       [ "$tool" = "$blocked" ] && skip=true
@@ -276,7 +282,7 @@ path_without_tools() { # <output-dir> <tool>...
   # Resolve names directly; walking PATH copies unrelated executables and makes the
   # cost depend on the caller's machine.
   for tool in awk bash basename cat chmod cksum cmp cp cut date dirname env find git \
-    grep head iconv jq ln make mkdir mktemp mv od pwd readlink rm sed sh \
+    grep head iconv jq ln make mkdir mktemp mv od perl pwd readlink rm sed sh \
     sha256sum shasum sort stat tail touch tr uname uniq wc xargs; do
     skip=false
     for blocked in "$@"; do

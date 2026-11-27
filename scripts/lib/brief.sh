@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Strict, offline parsing shared by the plan and station commands.
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/journal.sh"
+
 brief_normalize() { # stdin; preserve every byte outside the bookkeeping lines
   local line ending tracker=false status=false
   while :; do
@@ -32,7 +35,8 @@ brief_normalize() { # stdin; preserve every byte outside the bookkeeping lines
 # Issue layout keeps Markdown that the canonical spec omits. The writer
 # removes it before hashing so previously approved specs keep their identity.
 brief_parse() { # file, display path, revision, optional issue-layout -> JSON spec
-  awk -v path="$2" -v rev="$3" -v issue_layout="${4:-}" '
+  local parsed
+  parsed=$(awk -v path="$2" -v rev="$3" -v issue_layout="${4:-}" '
     function bad(message) {print path ":" NR ": " message > "/dev/stderr"; failed=1; exit 1}
     function quote(s) {gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); gsub(/\t/,"\\t",s); gsub(/\r/,"\\r",s); gsub(/\n/,"\\n",s); return "\"" s "\""}
     function trim(s) {sub(/\n+$/,"",s); return s}
@@ -61,7 +65,7 @@ brief_parse() { # file, display path, revision, optional issue-layout -> JSON sp
     block && /^```$/ {block=0; next}
     block {
       key=$0; sub(/:.*/,"",key); value=$0; sub(/^[^:]*: /,"",value)
-      if (key !~ /^(id|profile|tracking|branch|base|steps|format)$/ || value==$0 || value=="") bad("invalid plan field")
+      if (key !~ /^(id|profile|tracking|branch|base|steps|format|policy)$/ || value==$0 || value=="") bad("invalid plan field")
       if (key in plan) bad("duplicate plan field " key)
       if (key=="format" && value !~ /^2$/) bad("unsupported plan format " value)
       plan[key]=value; next
@@ -152,7 +156,9 @@ brief_parse() { # file, display path, revision, optional issue-layout -> JSON sp
       for(i=1;i<=sections;i++) if(!(order[i] in seen)) bad("section has no steps entry: " order[i])
       cap=1500+500*count
       if ("format" in plan && part_b_words>cap) bad("Part B has " part_b_words " words; cap is " cap)
-      printf "{\"id\":%s,\"profile\":%s,\"branch\":%s,\"labels\":[\"plan\"],",quote(plan["id"]),quote(plan["profile"]),quote(plan["branch"])
+      printf "{"
+      if ("policy" in plan) printf "\"policy\":%s,",quote(plan["policy"])
+      printf "\"id\":%s,\"profile\":%s,\"branch\":%s,\"labels\":[\"plan\"],",quote(plan["id"]),quote(plan["profile"]),quote(plan["branch"])
       if(plan["base"]!="") printf "\"base\":%s,",quote(plan["base"])
       if(plan["profile"]=="strict") printf "\"tracking\":{\"title\":%s},",quote(plan["tracking"])
       printf "\"steps\":["
@@ -186,7 +192,16 @@ brief_parse() { # file, display path, revision, optional issue-layout -> JSON sp
       }
       print "}"
     }
-  ' "$1"
+  ' "$1") || return 1
+  # Keep the legacy spec serialization byte-identical. Only pinned specs
+  # begin with this field, so the shared validator runs when a pin is present.
+  if [[ "$parsed" = '{"policy":'* ]]; then
+    if ! printf '%s\n' "$parsed" | journal_jq -e 'include "journal-marker"; .policy | journal_pin' >/dev/null 2>&1; then
+      printf '%s: invalid policy pin\n' "$2" >&2
+      return 1
+    fi
+  fi
+  printf '%s\n' "$parsed"
 }
 
 brief_approval() { # file -> approved revision and human identity (tab-separated)

@@ -8,7 +8,7 @@
 close_out_error() { printf 'close-out: %s\n' "$*" >&2; }
 
 close_out_load() { # root doc tmp; read-only, all decisions come from replay
-  local root=$1 doc=$2 tmp=$3 approval spec profile plan n step topology state expected count=0 target=''
+  local root=$1 doc=$2 tmp=$3 approval spec profile plan n step body stamp state expected count=0 target=''
   workflow_load "$root" && read_review_policy "$root" || return 3
   approval=$(brief_approval "$root/$doc") || return 3
   CLOSE_REV=${approval%%$'\t'*}
@@ -23,16 +23,17 @@ close_out_load() { # root doc tmp; read-only, all decisions come from replay
   while IFS= read -r step; do
     count=0
     for n in $HANDOFF_ISSUES; do
-      [ "$(jq -r .body "$tmp/$n.issue" | journal_stamp | jq -r .step)" = "$step" ] || continue
+      body=$(jq -r .body "$tmp/$n.issue")
+      stamp=$(printf '%s' "$body" | journal_stamp_lines body) || return 3
+      [ "$(printf '%s' "$stamp" | jq -r .step)" = "$step" ] || continue
       count=$((count+1))
-      jq -e --arg rev "$CLOSE_REV" '[.body|split("\n")[]|select(startswith("<!-- agentic-flow:plan:"))]|length==1 and (.[0]|contains(" approved="+$rev+" "))' "$tmp/$n.issue" >/dev/null || {
+      [ "$(printf '%s' "$stamp" | jq -r .approved)" = "$CLOSE_REV" ] || {
         close_out_error "#$n lacks the approved revision stamp"; return 3;
       }
-      topology=$(jq -r .body "$tmp/$n.issue")
-      printf '%s\n' "$topology" | grep -Fxq "<!-- agentic-flow:topology:$profile -->" || {
+      printf '%s\n' "$body" | grep -Fxq "<!-- agentic-flow:topology:$profile -->" || {
         close_out_error 'legacy or mismatched topology; close out by hand'; return 3;
       }
-      journal_context "$topology" || return 3
+      journal_context "$body" || return 3
       expected="step-strict"
       [ "$profile" != standard ] || expected=work-standard
       [ "$JOURNAL_TOPOLOGY" = "$expected" ] || { close_out_error 'legacy or mismatched topology; close out by hand'; return 3; }

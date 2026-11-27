@@ -30,7 +30,8 @@ status_probe_doc() { # immutable commit path [expected plan]; 1 absent, 3 invali
   [ "$size" -le 1048576 ] || return 4
   git show "$tip:$doc" 2>/dev/null | brief_parse - "$doc" "$tip" 2>/dev/null |
     jq -ec --arg expected "$expected" '
-      select($expected == "" or .id == $expected) | {id,profile,branch,steps:[.steps[] | {id}]}' || return 3
+      select($expected == "" or .id == $expected) |
+      {id,profile,branch,policy,steps:[.steps[] | {id}]}' || return 3
 }
 
 status_resolve_doc() { # requested path or id, optional heartbeat doc

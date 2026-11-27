@@ -110,17 +110,19 @@ sub evidence_item {
 
 my $event=$c->{event};
 my $r=$c->{result};
-my $structured=$event eq 'bounce' && defined $r->{findings};
+my $structured=($event eq 'bounce' || $event eq 'approve') && defined $r->{findings};
 my @findings=$structured ? @{$r->{findings}} : ();
 my @evidence=@{$r->{evidence}//[]};
 my ($finding_count,$evidence_count)=(scalar @findings,scalar @evidence);
 my ($summary_cut,$rows_cut)=(0,0);
-my @rows=map { +{severity=>$_->{severity},
+my %severity_alias=(P1=>'high',P2=>'medium',P3=>'low');
+my %severity_rank=(high=>0,medium=>1,low=>2,nit=>3);
+my @rows=map { +{severity=>$severity_alias{$_->{severity}}//$_->{severity},
   location=>$_->{file}.':'.($_->{line}//'?'), text=>$_->{text}} } @findings;
 
 sub render {
   my $completeness='';
-  if ($structured) {
+  if ($structured && $event eq 'bounce') {
     my $status=$rows_cut ? 'false' : 'true';
     $completeness="\nfindings-complete=$status; findings-shown=".scalar(@rows)."/$finding_count";
     # The table is lossy even without truncation (e.g. newlines). Carry the
@@ -185,7 +187,7 @@ if (length($comment)>$limit && $c->{station}) {
     $comment=render();
   }
   if (length($comment)>$limit && @rows) {
-    @rows=sort { $a->{severity} cmp $b->{severity} } @rows;
+    @rows=sort { $severity_rank{$a->{severity}} <=> $severity_rank{$b->{severity}} } @rows;
     while (@rows && length($comment)>$limit) {
       pop @rows; $rows_cut=1; $comment=render();
     }

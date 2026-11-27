@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091,SC2153,SC2034 # ROOT comes from the sourcing test runner.
+# shellcheck disable=SC1091,SC2153,SC2030,SC2031,SC2034 # Runner globals and isolated fixture subshells.
 # Sourced by self-test.sh. All credentials, GitHub state and faults are fixtures.
 # Fixture builders run only for selected blocks; no tag needs another tag's state.
 STATION_A=$(printf '%040d' 1)
@@ -136,6 +136,7 @@ stations_red_fixture() {
     esac
   done
   cp "$ROOT/config/workflow.tsv" "$VERIFY_FIX/config/workflow.tsv"
+  ln "$ROOT/config/config-keys.tsv" "$VERIFY_FIX/config/"
   cp "$STATION_FIX/project/.agentic-flow-review-policy" "$VERIFY_FIX/"
   git -C "$VERIFY_FIX" remote add origin https://github.com/owner/repo.git
   cat > "$VERIFY_FIX/docs/plan.md" <<'PLAN'
@@ -177,6 +178,124 @@ verify_fixture_commit() {
 verify_fixture_run() {
   (cd "$VERIFY_FIX" && PATH="$STATION_FIX/bin:$PATH" "$ROOT/scripts/agentic-flow" verify-step "$VERIFY_HEAD" --doc docs/plan.md --step alpha --red-base "$VERIFY_RED_BASE" --json "$@") > "$TMP/verify.json" 2> "$TMP/verify.err"
 }
+
+budget_verify_tests() (
+  local TMP="$TMP/budget-verify" key tag old_base capable_base green candidate operator pre_ack pid i
+  mkdir -p "$TMP"
+  export CI=false XDG_CONFIG_HOME="$TMP/operator"
+  unset AGENTIC_FLOW_BUDGET_POLICY AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL AGENTIC_FLOW_BUDGET_WALL_SCALE
+  stations_cli_fixture
+  stations_red_fixture
+  printf 'bash scripts/regression.sh\n' > "$VERIFY_FIX/scripts/runner.sh"
+  git -C "$VERIFY_FIX" add scripts/runner.sh
+  git -C "$VERIFY_FIX" commit -qm 'Pre-ack tree with the config registry'
+  old_base=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+  pre_ack=$(printf pre-ack | shasum -a 256); pre_ack=${pre_ack%% *}
+  (cd "$VERIFY_FIX" && "$ROOT/scripts/agentic-flow" verify-step "$old_base" --json) > "$TMP/old.json" 2> "$TMP/old.err" \
+    || fail 'budget verify rejected a pre-ack green tree with a registry'
+  jq -e --arg pre "$pre_ack" '.budget_policy.green==$pre and .commands[0].policy=="pre-ack" and .commands[0].budget_ack==null' \
+    "$TMP/old.json" >/dev/null || fail 'budget verify did not record the pre-ack green policy'
+
+  mkdir -p "$VERIFY_FIX/scripts/tests" "$VERIFY_FIX/.agentic-flow"
+  ln "$ROOT/scripts/self-test.sh" "$VERIFY_FIX/scripts/self-test.sh"
+  ln "$ROOT/config/test-budgets.tsv" "$VERIFY_FIX/config/test-budgets.tsv"
+  {
+    for key in $SELF_TEST_GROUPS upgrade:upstream; do printf '%s\t5\n' "$key"; done
+    for tag in $CONTROLLER_SCENARIOS; do printf 'controller:%s\t5\n' "$tag"; done
+    for tag in $STATIONS_SCENARIOS; do printf 'stations:%s\t5\n' "$tag"; done
+  } > "$VERIFY_FIX/config/test-wall-ceilings.tsv"
+  cat > "$VERIFY_FIX/scripts/tests/helpers.sh" <<'HELPERS'
+fail() { echo "self-test failed: $*" >&2; exit 1; }
+self_test_now() { printf '%s\n' "${FIXTURE_CLOCK:-0}"; }
+HELPERS
+  printf 'FIXTURE_CLOCK=6\n' > "$VERIFY_FIX/scripts/tests/hooks.sh"
+  cat > "$VERIFY_FIX/Makefile" <<'MAKE'
+RED_FIRST_SIGNATURE := ^self-test failed:[[:space:]]
+check:
+	@scripts/self-test.sh --only hooks
+verify-prepare:
+	@:
+MAKE
+  cat > "$VERIFY_FIX/scripts/runner.sh" <<'RUNNER'
+bash scripts/self-test.sh --only hooks || true
+bash scripts/regression.sh
+RUNNER
+  printf 'budget.wall.mode.local=stop\nbudget.fixtures.mode=stop\n' > "$VERIFY_FIX/.agentic-flow/config"
+  git -C "$VERIFY_FIX" add -f .agentic-flow/config
+  git -C "$VERIFY_FIX" add Makefile scripts config
+  git -C "$VERIFY_FIX" commit -qm 'Acknowledgment-capable stop base'
+  capable_base=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+  printf 'budget.wall.mode.local=warn\nbudget.fixtures.mode=warn\n' > "$VERIFY_FIX/.agentic-flow/config"
+  printf '%s\n' "echo 'self-test failed: budget-mode: warn overrun still failed'" 'exit 1' > "$VERIFY_FIX/scripts/regression.sh"
+  git -C "$VERIFY_FIX" add .agentic-flow/config
+  verify_fixture_commit
+  green=$VERIFY_HEAD
+  git -C "$VERIFY_FIX" checkout -q --detach "$capable_base"
+  VERIFY_RED_BASE=$old_base
+  verify_fixture_run || fail "budget verify rejected a test-only pre-ack red: $(cat "$TMP/verify.err")"
+  jq -e --arg pre "$pre_ack" '
+    .passed and .prepare.budget_ack==null and .budget_policy.red==[$pre] and
+    any(.commands[];.role=="green" and .budget_ack!=null) and
+    (.red_first[0]|.budget_ack==null and .policy=="pre-ack" and
+      .tail==["self-test failed: budget-mode: warn overrun still failed"])' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify lost the distinctive pre-ack red tail or command acknowledgments'
+
+  VERIFY_RED_BASE=$capable_base
+  verify_fixture_run || fail "budget verify used the caller policy or rejected per-tree defaults: $(cat "$TMP/verify.err")"
+  jq -e '.budget_policy as $p | .passed and $p.green!=$p.red[0] and .red_first[0].budget_ack==$p.red[0] and
+    all(.commands[]|select(.role=="green"); .budget_ack==$p.green)' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify did not resolve the green and red tree defaults separately'
+  if ! { grep -Fq 'self-test warning: hooks measured 6, limit 5 (warn)' "$TMP/verify.err" \
+    && grep -Fq 'self-test failed: hooks took 6 seconds' "$TMP/verify.err"; }; then
+    fail 'budget verify did not exercise warn green and stop red'
+  fi
+  . "$ROOT/scripts/lib/verify-record.sh"
+  candidate=$(jq -c .command_plan "$TMP/verify.json")
+  key=$(cd "$VERIFY_FIX" && verify_record_key "$green" docs/plan.md alpha "$capable_base" "$candidate" '{}') \
+    || fail 'budget verify could not derive the fixture cache key'
+  jq -e --argjson key "$key" '.budget_policy==$key.budget_policy' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify key and detached checks disagree'
+
+  operator="$XDG_CONFIG_HOME/agentic-flow/config/owner/repo.conf"
+  mkdir -p "${operator%/*}"
+  printf 'budget.wall.mode.local=warn\n' > "$operator"
+  AGENTIC_VERIFY_TESTING=1 AGENTIC_VERIFY_PAUSE="$TMP/pause" verify_fixture_run --force & pid=$!
+  for ((i=0; i<200; i++)); do [ ! -f "$TMP/pause.ready" ] || break; sleep 0.05; done
+  [ -f "$TMP/pause.ready" ] || fail 'budget verify did not reach its snapshot pause'
+  printf 'budget.wall.mode.local=stop\n' > "$operator"
+  : > "$TMP/pause.release"
+  wait "$pid" || fail "budget verify changed its in-flight snapshot: $(cat "$TMP/verify.err")"
+  jq -e --argjson key "$key" '.passed and .budget_policy.green==$key.budget_policy.green and
+    .budget_policy.red[0]!=$key.budget_policy.red[0] and .red_first[0].budget_ack==.budget_policy.red[0]' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify did not retain the explicit in-flight override'
+  verify_fixture_run && fail 'budget verify reused warn evidence under stop'
+  jq -e --argjson key "$key" '.passed==false and .budget_policy.green!=$key.budget_policy.green and
+    .budget_policy.red[0]==$key.budget_policy.red[0] and
+    all(.commands[]|select(.role=="green"); .exit!=0)' "$TMP/verify.json" >/dev/null \
+    || fail 'budget verify did not run both trees under the refreshed override'
+  rm "$operator"
+
+  git -C "$VERIFY_FIX" checkout -q --detach "$green"
+  sed 's@— scripts/regression.sh$@— scripts/regression.sh .agentic-flow/config@' "$VERIFY_FIX/docs/plan.md" > "$TMP/overlay"
+  cat "$TMP/overlay" > "$VERIFY_FIX/docs/plan.md"
+  verify_fixture_commit
+  verify_fixture_run || fail "budget verify rejected a project-policy overlay: $(cat "$TMP/verify.err")"
+  jq -e '.budget_policy.green==.budget_policy.red[0] and .red_first[0].budget_ack==.budget_policy.green' \
+    "$TMP/verify.json" >/dev/null || fail 'budget verify hashed the base policy instead of the overlay'
+
+  for key in missing different; do
+    if [ "$key" = missing ]; then printf 'check:\n\t@:\n'
+    else printf 'check:\n\t@echo budget-policy: %s\n' "$pre_ack"; fi > "$VERIFY_FIX/Makefile"
+    git -C "$VERIFY_FIX" add Makefile
+    git -C "$VERIFY_FIX" commit -qm "Fixture $key acknowledgment"
+    candidate=$(git -C "$VERIFY_FIX" rev-parse HEAD)
+    (cd "$VERIFY_FIX" && "$ROOT/scripts/agentic-flow" verify-step "$candidate" --json) > "$TMP/bad.json" 2> "$TMP/bad.err" \
+      && fail "budget verify accepted a $key acknowledgment"
+    if [ -e "$VERIFY_FIX/.git/agentic-flow/verify/$candidate.json" ] || ! grep -q acknowledge "$TMP/bad.err"; then
+      fail "budget verify published evidence or omitted the $key acknowledgment diagnostic"
+    fi
+  done
+)
 
 # Track only this call's watchdogs, including the old watchdog's sleep child.
 # shellcheck disable=SC2016 # Perl code uses Perl variables, not shell expansion.
@@ -277,6 +396,7 @@ done
 fi # scenario
 
 if should_run_scenario verify cache; then
+budget_verify_tests
 verify_timeout_status_tests
 # Verification must certify only committed bytes and classify wiring failures.
 stations_verify_base
@@ -597,6 +717,58 @@ station_append 4 bounce reviewing reviewer none review
 station_append 5 submit executing executor "$STATION_C" exec
 station_append 6 bounce reviewing reviewer none review
 station_replay; station_expect '.seq==6 and .state=="escalated" and .bounces==3'
+(
+  pinned_identity='<!-- agentic-flow:plan:fixture step:alpha spec:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa journal=v2 -->'
+  pinned_policy='<!-- agentic-flow:plan:fixture policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->'
+  journal_context "$pinned_identity"$'\n'"$pinned_policy" || fail 'policy-pin: intact v2 stamp was refused'
+  # shellcheck disable=SC2031 # journal_context set these values in this subshell.
+  [ "$JOURNAL_MAX_BOUNCES/$JOURNAL_BLOCK_AT/$JOURNAL_INFRA/$JOURNAL_LEGACY" = 3/medium/hold/false ] \
+    || fail 'policy-pin: context did not expose the validated pin'
+  station_replay; station_expect '.seq==6 and .state=="executing" and .bounces==3'
+  station_append 7 submit executing executor "$STATION_A" exec
+  station_append 8 bounce reviewing reviewer none review
+  station_replay; station_expect '.seq==8 and .state=="escalated" and .bounces==4'
+  journal_context "$pinned_identity"$'\n'"${pinned_policy/max_bounces=3/max_bounces=1}" || fail 'policy-pin: limit of one was refused'
+  station_replay; station_expect '.seq==4 and .state=="escalated" and .bounces==2'
+  journal_context "${pinned_identity/journal=v2/journal=v1}" || fail 'policy-pin: unpinned stamp was refused'
+  station_replay; station_expect '.seq==6 and .state=="escalated" and .bounces==3'
+  for invalid in "$pinned_identity" "$pinned_identity"$'\n'"$pinned_policy"$'\n'"$pinned_policy" \
+    "$pinned_identity"$'\n'"${pinned_policy/max_bounces=3/max_bounces=03}" \
+    "$pinned_identity"$'\n'"${pinned_policy/plan:fixture/plan:another}" \
+    "$pinned_identity"$'\n'"${pinned_policy/policy:v1/future:v1}" \
+    "${pinned_identity/journal=v2/journal=v1}"$'\n'"$pinned_policy"; do
+    rc=0
+    (journal_context "$invalid" && journal_replay "$STATION_COMMENTS" step-strict) > "$TMP/invalid-pin.out" 2>&1 || rc=$?
+    [ "$rc" = 3 ] || fail 'policy-pin: invalid issue body did not exit 3'
+  done
+  mkdir -p "$TMP/old-workflow/config"
+  sed 's/bounces<limit/bounces<2/; s/bounces=limit/bounces=2/' "$ROOT/config/workflow.tsv" > "$TMP/old-workflow/config/workflow.tsv"
+  new_replay=$STATION_REPLAY
+  workflow_load "$TMP/old-workflow" || fail 'policy-pin: deprecated workflow was refused'
+  station_replay
+  [ "$STATION_REPLAY" = "$new_replay" ] || fail 'policy-pin: deprecated workflow changed legacy replay'
+  journal_context "$pinned_identity"$'\n'"${pinned_policy/max_bounces=3/max_bounces=2}" || fail 'policy-pin: explicit limit of two was refused'
+  station_replay
+  [ "$STATION_REPLAY" = "$new_replay" ] || fail 'policy-pin: deprecated workflow changed pinned limit of two'
+  journal_context "$pinned_identity"$'\n'"$pinned_policy" || fail 'policy-pin: intact v2 stamp was refused'
+  rc=0
+  journal_replay "$STATION_COMMENTS" step-strict > "$TMP/old-workflow.out" 2>&1 || rc=$?
+  [ "$rc" = 3 ] && grep -Fq 'workflow.tsv predates policy pins; take the upgrade candidate' "$TMP/old-workflow.out" \
+    || fail 'policy-pin: deprecated workflow accepted a non-default limit or omitted the upgrade diagnostic'
+  (
+    . "$ROOT/scripts/tests/fixtures/stations/journal-0.21.0.sh"
+    journal_context "${pinned_identity/journal=v2/journal=v1}" && [ "$JOURNAL_LEGACY" = false ] \
+      || fail '0.21.0 refused an unpinned journal'
+    journal_context "$pinned_identity" && [ "$JOURNAL_LEGACY" = true ] \
+      || fail '0.21.0 behavior changed for a damaged v2 stamp'
+    ! journal_context "$pinned_identity"$'\n'"$pinned_policy" 2>/dev/null \
+      && ! printf '%s\n' "$pinned_identity" "$pinned_policy" | journal_stamp >/dev/null 2>&1 \
+      || fail '0.21.0 accepted a pinned journal'
+    if [[ "$pinned_policy" =~ $STEP_STAMP_RE || "$pinned_policy" =~ $TRACK_STAMP_RE ]]; then
+      fail '0.21.0 index accepted the policy marker as an identity stamp'
+    fi
+  ) || fail 'frozen parser compatibility failed'
+) || fail 'policy-pin: pinned replay failed'
 station_append 7 resume escalated approver none plan
 station_append 8 submit executing executor "$STATION_A" exec
 station_append 9 bounce reviewing reviewer none review
@@ -719,9 +891,19 @@ MARKDOWN
   jq -eRs 'length<=60000 and contains("findings-complete=false") and contains("Showing 0 of 20 evidence items") and
     contains("Summary shortened") and contains("Finding locations or text shortened") and
     test("Showing [0-9]+ of 100 findings")' huge.md >/dev/null || fail 'oversize bounce omitted a reduction or exceeded the cap'
-  grep -q '^| P1 | `0-' huge.md || fail 'findings sort did not preserve severity order'
-  awk -F '|' '/^\| P[123] \|/ {if ($2<last) exit 1; last=$2}' huge.md || fail 'findings are out of severity order'
-  if grep -q '^| P3 | `97-' huge.md; then fail 'reduced comment kept the final lower-priority row'; fi
+  grep -q '^| high | `0-' huge.md || fail 'findings sort did not preserve severity order'
+  awk -F '|' 'BEGIN {rank[" high "]=1; rank[" medium "]=2; rank[" low "]=3; rank[" nit "]=4}
+    $2 in rank {if (rank[$2]<last) exit 1; last=rank[$2]}' huge.md || fail 'findings are out of severity order'
+  if grep -q '^| low | `97-' huge.md; then fail 'reduced comment kept the final lower-priority row'; fi
+  for severity in high medium low nit P1 P2 P3; do
+    jq --arg severity "$severity" --arg head "$STATION_A" \
+      '. + {station:"reviewer",outcome:"bounce",head:$head,question:null} | .findings[0].severity=$severity' bounce.json > severity.json
+    perl "$LEDGER_HELPER" - result-check reviewer severity.json | jq -e '.invalid_reason==null' >/dev/null ||
+      fail "valid severity refused: $severity"
+  done
+  jq '.findings[0].severity="critical"' severity.json > invalid-severity.json
+  perl "$LEDGER_HELPER" - result-check reviewer invalid-severity.json |
+    jq -e '.invalid_reason|startswith("findings[0].severity is invalid")' >/dev/null || fail 'unknown severity accepted'
   jq -n --arg head "$STATION_A" '{v:1,station:"executor",outcome:"submitted",head:$head,summary:"Evidence",findings:[],question:null,evidence:[range(21)|"entry"]}' > evidence.json
   perl "$LEDGER_HELPER" - result-check executor evidence.json | jq -e '.invalid_reason=="evidence 21 > 20"' >/dev/null || fail 'over-limit evidence accepted'
   jq '.evidence=["e"*301]' evidence.json > long-evidence.json
@@ -729,7 +911,9 @@ MARKDOWN
   jq '.evidence=null' evidence.json > no-evidence.json
   perl "$LEDGER_HELPER" - result-check executor no-evidence.json | jq -e '.invalid_reason==null' >/dev/null || fail 'strict-schema null evidence refused'
   jq -e '. as $schema | ($schema.required|sort)==($schema.properties|keys) and
-    .properties.evidence.type==["array","null"]' "$ROOT/config/stations/result.schema.json" >/dev/null || fail 'station schema is incompatible with strict modes'
+    .properties.evidence.type==["array","null"] and
+    (.properties.findings.items.properties.severity.enum|sort)==["P1","P2","P3","high","low","medium","nit"]' \
+    "$ROOT/config/stations/result.schema.json" >/dev/null || fail 'station schema is incompatible with strict modes'
 ) || fail 'journal Markdown scenario failed'
 fi # scenario
 
@@ -808,6 +992,30 @@ STATION_LOGIN=plan station_run 3 1 resume --as approver --return reviewing --bod
 STATION_LOGIN=plan station_run 0 1 resume --as approver --body-file "$TMP/c3-question"
 station_run 0 1 reconcile --json
 jq -e '."1"|.state=="executing" and .bounces==0' "$TMP/station.out" >/dev/null || fail 'executor resume did not reset bounces'
+# The real handoff projects escalation at the pinned limit and refuses the next submit.
+station_issue 1 step:alpha
+pinned_policy='<!-- agentic-flow:plan:fixture policy:v1 review.max_bounces=1 review.block_at=medium andon.station-infrastructure=hold -->'
+jq --arg pin "$pinned_policy" '.body |= (sub("journal=v1";"journal=v2")+ "\n"+$pin)' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+STATION_LOGIN='exec' station_run 0 1 submit --as executor --head "$STATION_A"
+STATION_LOGIN=review station_run 0 1 bounce --as reviewer --body-file "$TMP/c3-question"
+STATION_LOGIN='exec' station_run 0 1 submit --as executor --head "$STATION_B"
+STATION_LOGIN=review station_run 0 1 bounce --as reviewer --body-file "$TMP/c3-question"
+STATION_LOGIN='exec' station_run 3 1 submit --as executor --head "$STATION_C"
+station_run 0 1 reconcile --check --json
+jq -e '.issues[]|select(.number==1)|.state=="escalated" and .max_bounces==1 and .replay.bounces==2 and .drift==[]' \
+  "$TMP/station.out" >/dev/null || fail 'handoff did not escalate at the pinned limit'
+jq -e '.issues[]|select(.number==1)|.block_at=="medium"' "$TMP/station.out" >/dev/null ||
+  fail 'drift report did not carry the pinned threshold'
+jq -e '.comments.nodes[-1].body|contains("@owner needs a decision: bounce cap reached")' \
+  "$STATION_STATE/1.json" >/dev/null || fail 'pinned escalation omitted owner notification'
+jq --arg pin "$pinned_policy" '.body |= sub("\n"+$pin; "")' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+: > "$STATION_STATE/calls"
+STATION_LOGIN=plan station_run 3 1 resume --as approver --body-file "$TMP/c3-question"
+if grep -Eq '^issue (comment|edit|close|reopen) ' "$STATION_STATE/calls"; then fail 'handoff wrote to a damaged v2 issue'; fi
+station_issue 1 step:alpha
+station_run 0 1 reconcile --json
 # Check reports drift without posting, changing labels, or updating any cache.
 jq '.labels.nodes=[{name:"needs-review"}]' "$STATION_STATE/1.json" > "$STATION_STATE/next"
 mv "$STATION_STATE/next" "$STATION_STATE/1.json"
@@ -1198,6 +1406,27 @@ packet_issue
 jq '.body|=sub(" approved=[a-f0-9]{40}";"")' "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 packet_refused
 packet_issue
+jq '.body|=sub("journal=v1";"journal=v2")' "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+packet_refused
+grep -Fq 'journal=v2 requires a policy line' "$TMP/packet.err" || fail 'packet did not identify the missing v2 policy'
+jq '.body += "\n<!-- agentic-flow:plan:fixture policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->"' \
+  "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+packet_run 0 --station executor --json
+jq -e '.journal.state=="executing" and .journal.seq==0' "$TMP/packet.json" >/dev/null || fail 'packet did not read a pinned journal'
+jq -e 'has("blocking_threshold")|not' "$TMP/packet.json" >/dev/null || fail 'executor packet included a reviewer threshold'
+packet_run 0 --station reviewer --json
+jq -e '.blocking_threshold=="medium"' "$TMP/packet.json" >/dev/null || fail 'reviewer JSON omitted the checked threshold'
+packet_run 0 --station reviewer
+grep -Fxq 'Blocking threshold: medium. Bounce only for findings at or above it; report the rest in an approve.' "$TMP/packet.json" ||
+  fail 'reviewer prompt omitted the checked threshold'
+jq '.body|=sub("review.block_at=medium";"review.block_at=judgment")' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+packet_run 0 --station reviewer
+if grep -q '^Blocking threshold:' "$TMP/packet.json"; then fail 'judgment packet showed a checked threshold'; fi
+packet_issue
+packet_run 0 --station reviewer
+if grep -q '^Blocking threshold:' "$TMP/packet.json"; then fail 'unpinned packet showed a checked threshold'; fi
+packet_issue
 PACKET_MISSING=$(printf '%040d' 99)
 jq --arg rev "$PACKET_MISSING" '.body|=sub("approved=[a-f0-9]{40}";"approved="+$rev)' "$STATION_STATE/1.json" > "$STATION_STATE/next"; mv "$STATION_STATE/next" "$STATION_STATE/1.json"
 packet_refused
@@ -1318,7 +1547,7 @@ Submitted."
         (if $mode=="dropped" then [range(100)|row("P2";("x"*4096);("z"*1200))]
         elif $mode=="shortened" then [range(15)|row("P3";("x"*4096);("z"*1200))]
         elif $mode=="indexed" then [range(80)|row("P1";"src/a|b.sh";(("word "*45)+"original\nline | ends"))]
-        else [row("P2";"src/path|part.sh";"Fix issue.")] end)}' > "$TMP/findings-verdict"
+        else ["P2","P1","P3","high","medium","low","nit"] | map(row(.;"src/path|part.sh";"Fix issue.")) end)}' > "$TMP/findings-verdict"
     journal_render bounce 'alpha — Fixture title' \
       "agentic-flow-transition: v=1; id=fixture/alpha/2/bounce; event=bounce; from=reviewing; role=reviewer; head=$PACKET_REV
 agentic-flow-review: status=changes-requested; step=alpha; head=$PACKET_REV; role=reviewer" \
@@ -1376,9 +1605,12 @@ agentic-flow-review: status=changes-requested; step=alpha; head=$PACKET_REV; rol
       [ "$(jq -r '.findings_index[]' "$TMP/packet.json" | wc -w)" -le 1200 ] || fail 'findings index exceeded 1200 words'
       packet_run 0 --station executor
       [ "$(wc -w < "$TMP/packet.json")" -le 3000 ] || fail 'plaintext packet exceeded 3000 words'
+      grep -Fq 'high src/a|b.sh:4' "$TMP/packet.json" || fail 'findings index did not render canonical severity'
     elif [ "$mode" = fits ]; then
       jq -e '.findings[0].text=="Fix issue." and .findings_index==null' "$TMP/packet.json" >/dev/null ||
         fail 'small findings were not inlined'
+      packet_run 0 --station executor
+      grep -Fxq 'medium src/path|part.sh:4 Fix issue.' "$TMP/packet.json" || fail 'inline finding did not render canonical severity'
       # Keep the payload and terminator intact but remove the hidden opener.
       jq '.comments.nodes[-1].body |= ltrimstr("<!-- ")' "$STATION_STATE/1.json" > "$STATION_STATE/next"
       mv "$STATION_STATE/next" "$STATION_STATE/1.json"
@@ -1647,15 +1879,72 @@ Please fix the fixture."
     "$TMP/packet.json" >/dev/null || fail 'reviewer packet lost its decision'
 ) || fail 'findings and decision packet scenario failed'
 
+# The packet compares the approval to the submitted commit, including earlier steps.
+packet_policy_tests() (
+  local original="$PACKET_REV" submitted
+  cd "$VERIFY_FIX" || return 1
+  mkdir -p .agentic-flow
+  printf 'packet.word_limit=6000\n' > .agentic-flow/config
+  printf 'temporary budget\n' > config/test-budgets.tsv
+  git add .agentic-flow/config config/test-budgets.tsv
+  git commit -qm 'Change project policy in the first step'
+  printf 'changed ceilings\n' > config/test-wall-ceilings.tsv
+  git add config/test-wall-ceilings.tsv
+  git rm -q config/test-budgets.tsv
+  git commit -qm 'Change ceilings and revert the temporary budget'
+  submitted=$(git rev-parse HEAD)
+  packet_issue
+  packet_comment exec "agentic-flow-transition: v=1; id=fixture/alpha/1/submit; event=submit; from=executing; role=executor; head=$submitted"
+  packet_run 0 --station reviewer --json
+  jq -e '.policy_files_changed==[".agentic-flow/config","config/test-wall-ceilings.tsv"]' "$TMP/packet.json" >/dev/null ||
+    fail 'packet did not list net policy changes across both commits'
+  packet_run 0 --station reviewer
+  { grep -Fxq 'Policy files changed:' "$TMP/packet.json" &&
+    grep -Fxq '.agentic-flow/config' "$TMP/packet.json"; } || fail 'reviewer plaintext lost policy changes'
+  packet_run 0 --station executor --json
+  jq -e 'has("policy_files_changed")|not' "$TMP/packet.json" >/dev/null || fail 'executor packet included reviewer policy section'
+
+  git checkout -q --detach "$original"
+  printf 'approval-side budget\n' > config/test-budgets.tsv
+  git add config/test-budgets.tsv
+  git commit -qm 'Approve on an alternate branch'
+  PACKET_REV=$(git rev-parse HEAD)
+  git checkout -q --detach "$submitted"
+  packet_issue
+  packet_comment exec "agentic-flow-transition: v=1; id=fixture/alpha/1/submit; event=submit; from=executing; role=executor; head=$submitted"
+  packet_run 0 --station reviewer --json
+  jq -e '.policy_files_changed==[".agentic-flow/config","config/test-wall-ceilings.tsv"]' "$TMP/packet.json" >/dev/null ||
+    fail 'packet did not use the merge-base for a non-ancestor approval'
+
+  jq --arg words "$(awk 'BEGIN {for(i=0;i<1750;i++) printf "word "}') " \
+    '.comments.nodes[-1].body += ("\n" + $words)' "$STATION_STATE/1.json" > "$STATION_STATE/next"
+  mv "$STATION_STATE/next" "$STATION_STATE/1.json"
+  printf 'packet.word_limit=1500\n' > .agentic-flow/config
+  packet_run 3 --station reviewer --json
+  { [ ! -s "$TMP/packet.json" ] && grep -Fq 'packet exceeds 1500 words' "$TMP/packet.err"; } ||
+    fail 'packet did not enforce the configured cap'
+  printf 'packet.word_limit=6000\n' > .agentic-flow/config
+  packet_run 0 --station reviewer --json
+)
+packet_policy_tests
+
 fi # scenario
 
 if should_run_scenario handoff closeout; then
 stations_cli_fixture
 # Close-out end to end: real linear history, policy-authored journals, fake PR/CI.
 CLOSE_ORIGINAL_FIX=$STATION_FIX
+printf 'owner=owner\n' >> "$CLOSE_ORIGINAL_FIX/project/.agentic-flow-review-policy"
 STATION_FIX="$TMP/close-stations"
 mkdir -p "$STATION_FIX/bin" "$STATION_FIX/state/evidence"
 ln "$CLOSE_ORIGINAL_FIX/bin/gh" "$STATION_FIX/bin/gh"
+cat > "$STATION_FIX/bin/ps" <<'PS'
+#!/usr/bin/env bash
+[ "$#" -eq 4 ] && [ "$1" = -p ] && [ "$3" = -o ] && [ "$4" = lstart= ] || exit 2
+kill -0 "$2" || exit 1
+printf 'fixture-start-%s\n' "$2"
+PS
+chmod +x "$STATION_FIX/bin/ps"
 export STATION_STATE="$STATION_FIX/state"
 close_commit() {
   git -C "$STATION_FIX/project" add -- "$@"
@@ -1682,7 +1971,7 @@ for close_profile in standard strict; do
   for close_script in agentic-flow lifecycle-status.sh docs-index.sh; do
     ln "$ROOT/scripts/$close_script" "$STATION_FIX/project/scripts/$close_script"
   done
-  ln "$ROOT/config/workflow.tsv" "$STATION_FIX/project/config/workflow.tsv"
+  ln "$ROOT/config/workflow.tsv" "$ROOT/config/config-keys.tsv" "$STATION_FIX/project/config/"
   ln "$CLOSE_ORIGINAL_FIX/project/.agentic-flow-review-policy" "$STATION_FIX/project/.agentic-flow-review-policy"
   git -C "$STATION_FIX/project" init -q
   git -C "$STATION_FIX/project" checkout -qb main
@@ -1706,6 +1995,7 @@ profile: $close_profile
 $(if [ "$close_profile" = strict ]; then printf 'tracking: Plan: fixture\n'; fi)
 branch: topic
 steps: $(if [ "$close_profile" = strict ]; then echo 'alpha beta'; else echo alpha; fi)
+$(if [ "$close_profile" = strict ]; then echo 'policy: review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold'; fi)
 \`\`\`
 ## alpha — First
 **Approach:** Keep this instruction.
@@ -1747,6 +2037,14 @@ PLAN
     jq --arg rev "$CLOSE_REV" '.body|=sub(" journal=v1";" approved="+$rev+" journal=v1") | .body += "\n<!-- agentic-flow:approval approved-by:Tester approved-at:2026-01-01 -->"' "$STATION_STATE/$close_n.json" > "$STATION_STATE/next"
     mv "$STATION_STATE/next" "$STATION_STATE/$close_n.json"
   done
+  if [ "$close_profile" = strict ]; then
+    for close_n in 1 2 3; do
+      jq '.body |= (sub("journal=v1";"journal=v2") +
+        "\n<!-- agentic-flow:plan:fixture policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->")' \
+        "$STATION_STATE/$close_n.json" > "$STATION_STATE/next"
+      mv "$STATION_STATE/next" "$STATION_STATE/$close_n.json"
+    done
+  fi
   close_evidence
   close_run prep docs/inprogress/plan.md --pr https://github.com/owner/repo/pull/7 && fail 'prep accepted executing journals'
   close_run prep docs/inprogress/plan.md && fail 'prep accepted missing PR'
@@ -1770,6 +2068,27 @@ PLAN
     station_run 0 2 submit --as executor --head "$CLOSE_HEAD"
     export STATION_LOGIN=review
     station_run 0 2 approve --as reviewer --head "$CLOSE_HEAD"
+    station_run 0 1 reconcile --check --json
+    jq -e '.issues[]|select(.number==1)|.state=="approved" and .observed_status=="closed" and .drift==[]' \
+      "$TMP/station.out" >/dev/null || fail 'controller report would reopen a pinned approved step'
+    (
+      . "$ROOT/scripts/tests/fixtures/stations/journal-0.21.0.sh"
+      ! jq -r .body "$STATION_STATE/1.json" | journal_stamp >/dev/null 2>&1 \
+        || fail '0.21.0 accepted a closed approved pinned step'
+    ) || fail 'old reconcile was not guarded'
+    jq '.body |= sub("\n<!-- agentic-flow:plan:fixture policy:v1 [^\n]+ -->";"")' \
+      "$STATION_STATE/1.json" > "$STATION_STATE/damaged"
+    mv "$STATION_STATE/1.json" "$STATION_STATE/intact"
+    mv "$STATION_STATE/damaged" "$STATION_STATE/1.json"
+    : > "$STATION_STATE/calls"
+    rc=0
+    (cd "$STATION_FIX/project" && PATH="$STATION_FIX/bin:$PATH" scripts/agentic-flow run docs/inprogress/plan.md --reconcile-only) \
+      > "$TMP/damaged-controller.out" 2>&1 || rc=$?
+    if [ "$rc" != 3 ] || ! grep -Fq 'issue #1 has an invalid policy stamp' "$TMP/damaged-controller.out"; then
+      fail "controller did not reject a damaged v2 issue: $(cat "$TMP/damaged-controller.out")"
+    fi
+    if grep -Eq '^issue (comment|edit|close|reopen) ' "$STATION_STATE/calls"; then fail 'controller wrote to a damaged v2 plan'; fi
+    mv "$STATION_STATE/intact" "$STATION_STATE/1.json"
   fi
   CLOSE_APPROVED=$CLOSE_HEAD
   close_evidence

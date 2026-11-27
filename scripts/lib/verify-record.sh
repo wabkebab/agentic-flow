@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # One cache key and freshness predicate for verifier, controller and packet.
+# shellcheck source=scripts/lib/budget.sh
+. "$(dirname "${BASH_SOURCE[0]}")/budget.sh"
 
 verify_record_digest() {
   local directory digest
   directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P) || return 1
-  digest=$(cat "$directory/verify-step.sh" "$directory/verify-record.sh" "$directory/ledger.pl" "$directory/ledger.sh" | shasum -a 256) || return 1
+  digest=$(cat "$directory/verify-step.sh" "$directory/verify-record.sh" "$directory/budget.sh" "$directory/config-data.pl" "$directory/ledger.pl" "$directory/ledger.sh" | shasum -a 256) || return 1
   printf '%s\n' "${digest%% *}"
 }
 
@@ -14,21 +16,27 @@ verify_record_plan() { # selected step JSON (or empty for check-only)
   else printf '%s\n' '{"green":["make check"],"red_first":[]}'; fi
 }
 
-verify_record_key() { # sha, doc, step, red base, command plan; no worktrees or recipes
+verify_record_key() { # sha, doc, step, red base, command plan, [captured operator overrides]
   local sha=$1 doc=$2 step=$3 base=$4 plan=$5 tree source source_tree blob version tools digest commands_hash
+  local overrides policy root
+  root=$(git rev-parse --show-toplevel) || return 1
+  if [ "$#" -ge 6 ]; then overrides=$6; else overrides=$(budget_capture "$root" "$sha") || return 1; fi
+  policy=$(budget_key "$root" "$sha" "$base" "$plan" "$overrides") || return 1
   tree=$(git rev-parse "$sha^{tree}") || return 1
   source=$(git rev-parse HEAD) || return 1
   source_tree=$(git rev-parse "$source^{tree}") || return 1
-  blob=$(git rev-parse "$source:Makefile") || return 1
+  # A reconcile-only caller can be on a branch without a Makefile. Its
+  # budget key is still useful. The actual verifier requires the signature.
+  blob=$(git rev-parse --verify "$source:Makefile" 2>/dev/null) || blob=missing
   version=$(git show "$sha:.agentic-flow-version" 2>/dev/null) || version=unknown
   tools=$(jq -n --arg bash "$BASH_VERSION" --arg git "$(git --version)" --arg make "$(make --version | head -1)" --arg jq "$(jq --version)" '{bash:$bash,git:$git,make:$make,jq:$jq}') || return 1
   digest=$(verify_record_digest) || return 1
   commands_hash=$(printf '%s' "$plan" | shasum -a 256) || return 1
   jq -n --arg sha "$sha" --arg tree "$tree" --arg doc "$doc" --arg step "$step" --arg base "$base" \
     --arg version "$version" --argjson tools "$tools" --arg impl "$digest" --arg source "$source" --arg source_tree "$source_tree" \
-    --arg blob "$blob" --arg commands "${commands_hash%% *}" --argjson plan "$plan" --argjson timeout "${AGENTIC_VERIFY_TIMEOUT:-1800}" \
+    --arg blob "$blob" --arg commands "${commands_hash%% *}" --argjson plan "$plan" --argjson timeout "${AGENTIC_VERIFY_TIMEOUT:-1800}" --argjson policy "$policy" \
     '{v:1,sha:$sha,tree:$tree,doc:$doc,step:$step,red_base:$base,harness_version:$version,tools:$tools,
-      commands_sha256:$commands,command_plan:$plan,verifier:{implementation_sha256:$impl,timeout_seconds:$timeout,
+      commands_sha256:$commands,command_plan:$plan,budget_policy:$policy,verifier:{implementation_sha256:$impl,timeout_seconds:$timeout,
       signature_source:{sha:$source,tree:$source_tree,makefile_blob:$blob}}}'
 }
 

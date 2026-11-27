@@ -420,11 +420,15 @@ Config changes what replay and gates mean, so it waits for its tier contract.
 
 ## Decisions to make up front
 
-- [ ] **Safety floor.** Accept that config can tighten but never loosen the floor? Until
+- [x] **Safety floor.** Accept that config can tighten but never loosen the floor? Until
       this is decided, no andon override from C ships.
-- [ ] **Override tiers (A).** Accept the five tiers and the plan-pinned list, including
+      *Decided 2026-11-26: yes, with a split floor; agent push to the plan branch is
+      reserved for a later opt-in brief. See `feature-config-surface.md` C-1.*
+- [x] **Override tiers (A).** Accept the five tiers and the plan-pinned list, including
       `review.block_at`?
-- [ ] **Plan pinning.** Accept the pin in the plan block and journal stamp, immutable once
+      *Decided 2026-11-26: yes, as `feature-config-surface.md` C-1.*
+- [x] **Plan pinning.** *Decided 2026-11-26: yes, immutable once stamped
+      (`feature-config-surface.md` C-2, C-3).* Accept the pin in the plan block and journal stamp, immutable once
       issues are stamped and enforced first by `plan-to-issues` before any mutation, with
       stampless journals replaying under the implicit legacy pin
       (2 bounces, P1–P3 blocking)? An explicit policy transition at a journal sequence
@@ -438,6 +442,9 @@ Config changes what replay and gates mean, so it waits for its tier contract.
       required, pseudonymous field in public mode.
 - [ ] **Budget modes (K).** Accept the defaults and the policy-hash cache rule? Should
       adopters' CI start at `warn` until they calibrate their ceilings?
+      *Partly decided 2026-11-26: CI wall time defaults to `warn`
+      (`feature-config-surface.md` C-1). The other defaults are settled at that brief's
+      approval.*
 - [ ] **Uninstall.** Accept removal only on pristine provenance (the `accepted=` upstream
       hash, or bytes re-exported from the installed revision for older installs) and the
       no-override plan guards?
@@ -449,7 +456,7 @@ Settled by this revision:
 ## If approved → next docs
 
 - [ ] `docs/inprogress/feature-process-status.md` — areas E, G (Phase 1; drafted 2026-11-25 on `configurability-phase-1`, revision 2)
-- [ ] `docs/inprogress/feature-config-surface.md` — areas A, C, K
+- [ ] `docs/inprogress/feature-config-surface.md` — areas A, C, K (Phase 2; drafted 2026-11-26 on `configurability-phase-2`, draft 1)
 - [ ] `docs/inprogress/feature-uninstall.md` — area J
 - [ ] `docs/inprogress/feature-setup-upgrade-wizard.md` — area D
 - [ ] `docs/inprogress/feature-visibility-modes.md` — area I (part 1; part 2 on demand)

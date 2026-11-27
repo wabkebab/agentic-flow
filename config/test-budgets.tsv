@@ -1,0 +1,10 @@
+# budget	limit in fixture file copies
+# Fast mode keeps its original 33-copy limit.
+# On 2026-11-18 the first full run with the snapshot uncounted (989e849)
+# measured 190 copies. On 2026-11-21 flow-ergonomics measured 194 (CI 44872894369).
+# On 2026-11-25 process-status and the frozen journal parser grew both layouts.
+# Config surface's registry and pinned policy fixtures brought full/exported to 200/123.
+# Budget modes and their regression fixtures measured 211 in source and 127 in export.
+fixtures.fast	33
+fixtures.full	211
+fixtures.exported	127

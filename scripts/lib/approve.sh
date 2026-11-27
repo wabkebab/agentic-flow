@@ -3,10 +3,19 @@
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/review-policy.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/config.sh"
+APPROVE_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 
 approve_cmd() (
-  [ "$#" -eq 3 ] && [ "$2" = --by ] || return 2
-  local doc=$1 by=$3 root tmp head approval rev old new diff_status=0
+  [ "$#" -ge 3 ] && [ "$2" = --by ] || return 2
+  local doc=$1 by=$3 root tmp head approval rev old new diff_status=0 repin=false
+  local old_policy new_policy current_policy plan stamped stamp_status=0
+  shift 3
+  if [ "$#" -ne 0 ]; then
+    [ "$#" -eq 1 ] && [ "$1" = --repin ] || return 2
+    repin=true
+  fi
   root=$(git rev-parse --show-toplevel) || return 2
   cd "$root" || return 2
   case "$doc" in docs/inprogress/*.md) ;; *) return 2 ;; esac
@@ -31,6 +40,25 @@ approve_cmd() (
     ([$old.steps[].id]-[$new.steps[].id]|length)==0' >/dev/null || {
     echo 'approve: removed or changed plan ids; re-plan required' >&2; return 3;
   }
+  old_policy=$(jq -r '.policy // empty' <<< "$old") || return 3
+  new_policy=$(jq -r '.policy // empty' <<< "$new") || return 3
+  if [ "$repin" = true ]; then
+    plan=$(jq -er .id <<< "$new") || return 3
+    stamped=$("$APPROVE_LIB/../plan-to-issues.sh" --stamped "$plan") || stamp_status=$?
+    case "$stamp_status" in
+      0) ;;
+      1) echo "approve: plan $plan already has stamped issues: $(tr '\n' ' ' <<< "$stamped")" >&2; return 3 ;;
+      *) echo "approve: could not verify that plan $plan is unstamped" >&2; return 5 ;;
+    esac
+    current_policy=$(config_pin "$root" "$head") || return 3
+    if [ "$new_policy" != "$current_policy" ]; then
+      echo 'approve: policy must match project config at HEAD; run agentic-flow config pin and commit the updated policy:' >&2
+      return 3
+    fi
+  elif [ -n "$old_policy" ] && [ "$old_policy" != "$new_policy" ]; then
+    echo 'approve: changed plan-pinned policy; re-plan required' >&2
+    return 3
+  fi
   brief_normalize < "$tmp/old" > "$tmp/old.normalized"
   brief_normalize < "$tmp/head" > "$tmp/new.normalized"
   diff -u "$tmp/old.normalized" "$tmp/new.normalized" || diff_status=$?
@@ -41,6 +69,9 @@ approve_cmd() (
   cat "$tmp/approved" > "$doc" || return 5
   git add -- "$doc" || return 5
   printf 'Approval staged for %s at %s. Commit the Status change, then run:\n  scripts/plan-to-issues.sh --doc %s --apply\n' "$doc" "$head" "$doc"
+  if [ "$repin" = true ]; then
+    printf 'If a concurrent stamp causes apply to refuse the new pin, restore the previous policy and approval with:\n  git revert --no-edit <approval-commit> <pin-commit>\n'
+  fi
 )
 
 hold_cmd() (

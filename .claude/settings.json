@@ -121,7 +121,15 @@
       "Bash(git-opencode commit * -n)",
       "Bash(git-opencode commit * --no-verify)",
       "Bash(git commit -n:*)",
-      "Bash(git commit --no-verify:*)"
+      "Bash(git commit --no-verify:*)",
+      "Bash(scripts/agentic-flow config set:*)",
+      "Bash(scripts/agentic-flow config unset:*)",
+      "Bash(./scripts/agentic-flow config set:*)",
+      "Bash(./scripts/agentic-flow config unset:*)",
+      "Bash(agentic-flow config set:*)",
+      "Bash(agentic-flow config unset:*)",
+      "Bash(rtk proxy scripts/agentic-flow config set:*)",
+      "Bash(rtk proxy scripts/agentic-flow config unset:*)"
     ]
   }
 }

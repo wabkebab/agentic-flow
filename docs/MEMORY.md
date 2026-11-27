@@ -18,7 +18,8 @@ Gotchas bullet or a `make check` assertion and delete the line.
 | `cp-restores-interactively` | trap | `cp` prompts on overwrite and `-f` may not suppress it, so a `cp`-based fixture restore can silently fail; stage first and restore with `git checkout --`. |
 | `timeout-exit-not-a-signal` | trap | GNU make on Linux handles TERM and exits 2, so a timeout check that only maps 137/143 to 124 misses real timeouts; decide from the watchdog's marker. |
 | `relative-source-path-after-cd` | trap | `BASH_SOURCE` is relative at call time after the caller `cd`s; resolve a library's directory once at source time. |
-| `fixes-trailer-on-fix-commits` | trap | A hand-made commit on a controller-run step branch needs `Fixes #N`, or the head becomes an `ask`. |
+| `fixes-trailer-on-fix-commits` | trap | A hand-made commit on a controller-run step branch needs `Fixes #N`, or the head becomes an `ask`. A head already applied can't be re-verified; an empty `Fixes #N` commit gives a new one. |
 | `brief-prose-frozen-at-close-out` | trap | `ship` compares the closed doc to the approved brief; at close-out change only the Status block and Tracker, never the brief's prose. |
 | `library-sources-its-dependencies` | trap | A library that calls another library's function must source that library itself; a shard that sources only part of the set hits `command not found`. |
 | `lint-before-push` | trap | The ship gate runs shellcheck and checks the exported copy budget. `make test` checks the source-layout copy budget. |
+| `symlinked-tmpdir-breaks-budget-doctor` | trap | A default macOS `TMPDIR` (`/var/...`, trailing slash) fails the budget-mode doctor test; run contracts and the controller with the physical `TMPDIR`. |

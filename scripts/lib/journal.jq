@@ -6,8 +6,9 @@ def authorized($role; $author):
    elif $role=="approver" then $approvers else "" end | split(" ") | index($author)) != null;
 def successor($state; $event; $bounces; $return):
   [$rules[] | select(.[0]=="transition" and .[1]==$topology and .[2]==$event and .[4]==$state) |
-    select($event!="bounce" or (.[6]=="findings,bounces<2" and $bounces<2) or
-      (.[6]=="findings,bounces=2" and $bounces==2)) | select($event!="resume" or .[5]==$return) | {state:.[5],role:.[3]}] |
+    select($event!="bounce" or ((.[6]=="findings,bounces<limit" or .[6]=="findings,bounces<2") and $bounces<$limit) or
+      ((.[6]=="findings,bounces=limit" or .[6]=="findings,bounces=2") and $bounces==$limit)) |
+    select($event!="resume" or .[5]==$return) | {state:.[5],role:.[3]}] |
   if length==1 then .[0] else null end;
 def accept($t; $c; $old):
   successor(.state; $t.event; .bounces; .return_to) as $next |

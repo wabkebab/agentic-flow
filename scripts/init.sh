@@ -232,6 +232,12 @@ preexisting_ci_template=false
 
 "$SRC/scripts/export.sh" "${EXCLUDE_SCOPE_ARGS[@]+"${EXCLUDE_SCOPE_ARGS[@]}"}" "$TARGET_ABS"
 
+# Export can leave a candidate version when an existing file needs merging.
+# Pass the target explicitly so config init also works before the first installed stamp.
+# shellcheck source=scripts/lib/config.sh
+. "$SRC/scripts/lib/config.sh"
+config_cmd "$TARGET_ABS" init --missing
+
 # shellcheck source=scripts/lib/git-guards.sh
 . "$SRC/scripts/lib/git-guards.sh"
 if target_in_git_repo "$TARGET_ABS"; then

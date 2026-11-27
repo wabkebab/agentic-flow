@@ -10,6 +10,7 @@ It wraps the low-level exporter, fills the project token, preserves existing fil
 - `make`
 - `git`
 - `jq`
+- `perl`
 - `gh`
 - `git-claude`, unless the project opts out of Claude commits
 - `git-codex`, unless the project is Claude-only or otherwise opts out of Codex execution
@@ -104,6 +105,14 @@ make check
 change: `export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, or `upgrade`.
 `make test` still runs the complete suite plus `shellcheck`.
 
+Adoption creates the commented project config at `.agentic-flow/config`. In an existing
+checkout, run `scripts/agentic-flow config init` to create it or `config init --missing`
+to append newly registered keys. Use `config list` or `config explain <key>` to see
+effective values and their sources. Use `config set <key> <value>` and `config unset <key>`
+to edit the project file, then review and commit the change. Operator-tier keys also
+accept `--scope operator` or an `AGENTIC_FLOW_*` environment override. The operator
+file lives under `${XDG_CONFIG_HOME:-$HOME/.config}/agentic-flow/config/<owner>/<repo>.conf`.
+
 [`config/test-wall-ceilings.tsv`](config/test-wall-ceilings.tsv) sets the
 allowed seconds for each self-test group and each controller and stations tag.
 A focused run checks the group ceiling. Adding `S=<tag>[,<tag>…]` checks only
@@ -112,6 +121,19 @@ durations for each tagged group's ceiling. `make check` requires a ceiling for
 every group and tag. Set `AGENTIC_MEASURE_EVENTS` to an absolute output file to
 capture group and tag seconds. Raising a ceiling requires review. Include a
 fresh measurement and explain the headroom in the proposed change.
+
+[`config/test-budgets.tsv`](config/test-budgets.tsv) sets the fixture copy limits
+for fast, full source, and full exported runs. Fixture overruns fail by default.
+Set `budget.fixtures.mode=warn` in the project config to record them as warnings.
+Wall overruns warn by default. Set `budget.wall.mode.local=stop` or
+`budget.wall.mode.ci=stop` to enforce the wall limits in that context.
+`budget.wall.scale` multiplies local ceilings, rounded up to whole seconds.
+CI uses scale 1.0 and reads its budget policy from tracked files.
+
+`scripts/doctor.sh` shows which budgets warn, where their modes came from, and
+the ten most recent overruns. Warning records live in the Git common directory
+under `agentic-flow/state/budget-overruns/`, which retains the newest 20 run files.
+The GitHub Actions step summary shows “wall time not enforced” when its wall policy warns.
 
 Agent context is intentionally progressive. Executors start from `AGENTS.md`, the issue,
 the linked brief step, `CLAUDE.md` Stack profile/Gotchas, and live call sites/tests.

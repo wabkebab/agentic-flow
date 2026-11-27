@@ -6,6 +6,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/brief.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/verify-record.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/packet-findings.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
 packet_error() { printf 'packet: %s\n' "$*" >&2; }
 packet_words() {
@@ -51,18 +52,25 @@ packet_decision() { # station journal-json normalized-comments-json
 }
 
 packet_format() { # packet JSON file -> station prompt
-  jq -r '
+  journal_jq -r '
+    include "journal-marker";
     "Station: "+.station+" · issue #"+(.issue|tostring)+" · approved "+.approved,
     .brief,
+    (.blocking_threshold | select(.!=null) |
+      "Blocking threshold: \(.). Bounce only for findings at or above it; report the rest in an approve."),
     (.decision|select(.!=null)|
       "Owner decision:", "Question (seq \(.ask.seq)):", .ask.body,
       (if .answer==null then "Answer: none yet" else "Answer (seq \(.answer.seq)):", .answer.body end),
       (.file|select(.!=null)|"Full text: \(.path) (sha256 \(.sha256))")),
     "Journal:",(.journal|tojson),"Findings:",
     (.findings_file|select(.!=null)|"Findings file: "+.path+" (count "+(.count|tostring)+", sha256 "+.sha256+")"),
-    (.findings[]?|if has("body") then .body else "\(.severity) \(.file):\(.line//"?") \(.text)" end),
+    (.findings[]?|if has("body") then .body else "\(.severity|review_severity) \(.file):\(.line//"?") \(.text)" end),
     .findings_index[]?,
-    "Latest submit:",(.submit.body//"none"),"Verification:",(.verification|if type=="string" then . else tojson end),.notice' "$1"
+    "Latest submit:",(.submit.body//"none"),
+    (if has("policy_files_changed") then
+      "Policy files changed:", (if .policy_files_changed==[] then "none" else .policy_files_changed[] end)
+     else empty end),
+    "Verification:",(.verification|if type=="string" then . else tojson end),.notice' "$1"
 }
 
 packet_measure() { # packet JSON file, requested presentation file
@@ -76,13 +84,13 @@ packet_render_words() { # packet JSON file rendered file
   packet_format "$1" > "$2" && packet_measure "$1" "$2"
 }
 
-packet_over_limit() { # packet JSON file effective-limit measured-words
-  local packet=$1 limit=$2 words=$3 part count largest='' maximum=0
-  for part in brief journal decision findings submit verification; do
+packet_over_limit() { # packet JSON file configured limit total words (including suffix)
+  local packet=$1 cap=$2 words=$3 part count largest='' maximum=0
+  for part in brief journal decision findings submit policy_files_changed verification; do
     count=$(jq --arg part "$part" '.[$part]' "$packet" | packet_words)
     if [ "$count" -gt "$maximum" ]; then maximum=$count; largest=$part; fi
   done
-  packet_error "packet exceeds 3000 words ($((words+3000-limit))); largest part: $largest ($maximum words)"
+  packet_error "packet exceeds $cap words ($words); largest part: $largest ($maximum words)"
   return 3
 }
 
@@ -101,9 +109,9 @@ packet_clip_decision() { # intact decision file shell decision file prose budget
     .clipped=true | .file=$shell[0].file' "$1"
 }
 
-packet_fit_decision() { # packet scratch directory word-limit measured-full-packet findings-file plan issue
-  local tmp=$1 limit=$2 full_words=$3 findings_file=$4 plan=$5 number=$6
-  local base base_words intact_words reserve prose room=0 seq common dest path shell_words words fitted
+packet_fit_decision() { # scratch directory configured cap suffix words measured-full-packet findings-file plan issue
+  local tmp=$1 cap=$2 suffix=$3 full_words=$4 findings_file=$5 plan=$6 number=$7
+  local limit=$((cap-suffix)) base base_words intact_words reserve prose room=0 seq common dest path shell_words words fitted
   local index_budget=0 pass=0 clipped=false
   base="$tmp/base"
   jq --slurpfile other "$tmp/findings-other" '.findings=$other[0]' "$tmp/packet" > "$base" || return 3
@@ -128,7 +136,7 @@ packet_fit_decision() { # packet scratch directory word-limit measured-full-pack
     shell_words=$(packet_render_words "$tmp/probe-json" "$tmp/probe") || return 3
     room=$((limit-shell_words))
     [ "$room" -le 600 ] || room=600
-    [ "$room" -ge 80 ] || { packet_over_limit "$tmp/intact" "$limit" "$intact_words"; return 3; }
+    [ "$room" -ge 80 ] || { packet_over_limit "$tmp/intact" "$cap" "$((intact_words+suffix))"; return 3; }
     reserve=$((shell_words-base_words+room))
   fi
 
@@ -154,7 +162,7 @@ packet_fit_decision() { # packet scratch directory word-limit measured-full-pack
     fi
     words=$(packet_render_words "$tmp/candidate" "$tmp/output") || return 3
     [ "$words" -gt "$limit" ] || break
-    if [ "$pass" -eq 3 ]; then packet_over_limit "$tmp/candidate" "$limit" "$words"; return 3; fi
+    if [ "$pass" -eq 3 ]; then packet_over_limit "$tmp/candidate" "$cap" "$((words+suffix))"; return 3; fi
     if [ "$base" = "$tmp/packet" ]; then
       # JSON and rendered word counts can dominate different parts of the sum.
       base="$tmp/base"
@@ -164,7 +172,7 @@ packet_fit_decision() { # packet scratch directory word-limit measured-full-pack
     else
       # With no index, an intact decision was already measured to fit the base.
       room=$((room-(words-limit)))
-      [ "$room" -ge 80 ] || { packet_over_limit "$tmp/candidate" "$limit" "$words"; return 3; }
+      [ "$room" -ge 80 ] || { packet_over_limit "$tmp/candidate" "$cap" "$((words+suffix))"; return 3; }
       packet_clip_decision "$tmp/decision" "$tmp/shell" "$room" > "$fitted" || return 3
     fi
     pass=$((pass+1))
@@ -185,9 +193,24 @@ packet_fit_decision() { # packet scratch directory word-limit measured-full-pack
   fi
 }
 
+packet_policy_files() { # approved SHA submitted SHA
+  local approved=$1 head=$2 base path status changed=''
+  [ "$approved" != "$head" ] || { printf '[]\n'; return 0; }
+  base=$(git merge-base "$approved" "$head") || {
+    packet_error "cannot compare policy files from $approved to $head"
+    return 3
+  }
+  for path in .agentic-flow/config config/config-keys.tsv config/test-budgets.tsv config/test-wall-ceilings.tsv; do
+    status=0
+    git diff --quiet --no-ext-diff --ignore-submodules=none "$base" "$head" -- "$path" || status=$?
+    case "$status" in 0) ;; 1) changed+="$path"$'\n' ;; *) return 3 ;; esac
+  done
+  printf '%s' "$changed" | jq -Rsc 'split("\n") | map(select(length>0))'
+}
+
 packet_cmd() (
   local number=${1:-} station='' json=false root tmp initial body author stamp approved doc step plan query comments accepted submit_id submit_index findings submit dropped brief journal decision verification common head selected red_base key command_plan record words part
-  local bounce bounce_id bounce_seq findings_file=null word_limit=3000 reserve
+  local bounce bounce_id bounce_seq findings_file=null word_cap word_limit suffix=0 policy_files='[]' threshold=judgment
   [[ "$number" =~ ^[1-9][0-9]{0,9}$ ]] || return 2
   shift
   while [ "$#" -gt 0 ]; do
@@ -198,12 +221,14 @@ packet_cmd() (
     esac
   done
   case "$station" in executor|reviewer) ;; *) packet_error '--station requires executor or reviewer'; return 2 ;; esac
-  if [ -n "${PACKET_SUFFIX_FILE:-}" ]; then
-    reserve=$(wc -w < "$PACKET_SUFFIX_FILE") || return 3
-    word_limit=$((word_limit-reserve))
-  fi
   root=$(git rev-parse --show-toplevel) || return 3
   cd "$root" || return 3
+  config_load "$root" || return $?
+  word_cap=$(config_get packet.word_limit) || return 2
+  if [ -n "${PACKET_SUFFIX_FILE:-}" ]; then
+    suffix=$(wc -w < "$PACKET_SUFFIX_FILE") || return 3
+  fi
+  word_limit=$((word_cap-suffix))
   workflow_load "$root" && read_review_policy "$root" || return 3
   # shellcheck disable=SC2034 # The read-only adapter consumes these context variables.
   HANDOFF_ROOT=$root HANDOFF_TOKEN=''
@@ -224,11 +249,8 @@ packet_cmd() (
   review_valid_login "$author" || { packet_error 'invalid issue author'; return 3; }
   case "$REVIEW_APPROVERS" in *" $author "*) ;; *) packet_error 'issue creator is not an approver'; return 3 ;; esac
   body=$(printf '%s' "$initial" | jq -r .body)
-  stamp=$(printf '%s' "$body" | journal_stamp) || { packet_error 'no valid plan stamp'; return 3; }
-  approved=$(printf '%s' "$body" | jq -Rser '
-    [split("\n")[]|select(startswith("<!-- agentic-flow:plan:"))|
-      [scan("(?:^| )approved=([a-f0-9]{40})(?= |$)")|.[0]]] |
-    if length==1 and (.[0]|length)==1 then .[0][0] else error("missing or ambiguous approved stamp") end') || return 3
+  stamp=$(printf '%s' "$body" | journal_stamp_lines body) || { packet_error 'no valid plan stamp'; return 3; }
+  approved=$(printf '%s' "$stamp" | jq -er .approved) || { packet_error 'missing or ambiguous approved stamp'; return 3; }
   git cat-file -e "$approved^{commit}" 2>/dev/null || {
     packet_error "approved revision $approved missing locally; run: git fetch origin $approved"; return 3;
   }
@@ -288,10 +310,12 @@ packet_cmd() (
         select(.body|journal_marker_line|(startswith("agentic-flow-hold:") or startswith("agentic-flow-hold-clear:") or
           startswith("agentic-flow-transition:"))|not)]') || return 3
   else
+    threshold=$(printf '%s' "$stamp" | jq -er .pin.block_at) || return 3
     submit=$(printf '%s' "$comments" | jq --arg id "$submit_id" '[.[]|select(.id==$id)]|first // null')
     verification='"no record; run verify-step"'
     head=$(printf '%s' "$accepted" | jq -r '.head // "none"')
     if [[ "$head" =~ ^[a-f0-9]{40}$ ]]; then
+      policy_files=$(packet_policy_files "$approved" "$head") || return 3
       common=$(git rev-parse --git-common-dir) || return 3
       record="$common/agentic-flow/verify/$head.json"
       if [ -f "$record" ]; then
@@ -316,13 +340,16 @@ packet_cmd() (
   printf '%s\n' "$submit" > "$tmp/submit" && printf '%s\n' "$verification" > "$tmp/verification" || return 3
   jq -n --argjson number "$number" --arg station "$station" --arg approved "$approved" --arg plan "$plan" --arg step "$step" --arg brief "$brief" \
     --argjson journal "$journal" --slurpfile other "$tmp/findings-other" --slurpfile source "$tmp/findings-source" \
-    --argjson findings_file "$findings_file" --slurpfile submit "$tmp/submit" --slurpfile verification "$tmp/verification" --argjson dropped "$dropped" \
+    --argjson findings_file "$findings_file" --argjson policy_files "$policy_files" --arg threshold "$threshold" \
+    --slurpfile submit "$tmp/submit" --slurpfile verification "$tmp/verification" --argjson dropped "$dropped" \
     '{v:1,issue:$number,station:$station,approved:$approved,plan:$plan,step:$step,brief:$brief,journal:$journal,
       findings:($source[0]+$other[0]),findings_file:$findings_file,submit:$submit[0],verification:$verification[0],
-      decision:null,dropped:$dropped,notice:("dropped "+($dropped|tostring)+" comment(s) from authors outside the policy")}' > "$tmp/packet" || return 3
+      decision:null,dropped:$dropped,notice:("dropped "+($dropped|tostring)+" comment(s) from authors outside the policy")} |
+      if $station=="reviewer" then .policy_files_changed=$policy_files else . end |
+      if $threshold!="judgment" then .blocking_threshold=$threshold else . end' > "$tmp/packet" || return 3
   words=$(packet_render_words "$tmp/packet" "$tmp/output") || return 3
   if [ "$decision" != null ]; then
-    words=$(packet_fit_decision "$tmp" "$word_limit" "$words" "$findings_file" "$plan" "$number") || return 3
+    words=$(packet_fit_decision "$tmp" "$word_cap" "$suffix" "$words" "$findings_file" "$plan" "$number") || return 3
   elif [ "$words" -gt "$word_limit" ] && [ "$findings_file" != null ]; then
     jq --slurpfile other "$tmp/findings-other" '.findings=$other[0]' "$tmp/packet" > "$tmp/without-source" || return 3
     packet_format "$tmp/without-source" > "$tmp/output" || return 3
@@ -334,7 +361,7 @@ packet_cmd() (
     words=$(packet_measure "$tmp/packet" "$tmp/output") || return 3
   fi
   if [ "$words" -gt "$word_limit" ]; then
-    packet_over_limit "$tmp/packet" "$word_limit" "$words"; return 3
+    packet_over_limit "$tmp/packet" "$word_cap" "$((words+suffix))"; return 3
   fi
   if [ "$json" = true ]; then cat "$tmp/packet"; else cat "$tmp/output"; fi
 )

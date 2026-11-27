@@ -2,6 +2,129 @@
 # Sourced by self-test.sh; shared fixture context is intentional.
 # shellcheck disable=SC1091,SC2030,SC2034,SC2153,SC2164,SC2329 # Intentional fixture subshells and dispatcher context.
 
+budget_mode_tests() (
+  local fixture="$TMP/budget-mode" key tag
+  mkdir -p "$fixture/scripts/tests" "$fixture/config" "$fixture/.agentic-flow"
+  git -C "$fixture" init -q --template=
+  ln "$ROOT/scripts/self-test.sh" "$fixture/scripts/self-test.sh"
+  ln -s "$ROOT/scripts/lib" "$fixture/scripts/lib"
+  cat > "$fixture/scripts/tests/helpers.sh" <<'HELPERS'
+fail() { echo "self-test failed: $*" >&2; exit 1; }
+self_test_now() { printf '%s\n' "${FIXTURE_CLOCK:-0}"; }
+HELPERS
+  cat > "$fixture/scripts/tests/hooks.sh" <<'HOOKS'
+FIXTURE_CLOCK=${STEP_GROUP:-6}
+if [ "${FIXTURE_OVERRUN:-0}" = 1 ]; then
+  printf 'fixture_file_copy\nfixture_file_copy\n' > "$TMP/cost"
+  assert_cost_budget "$TMP/cost" fast
+fi
+HOOKS
+  {
+    for key in $SELF_TEST_GROUPS upgrade:upstream; do printf '%s\t5\n' "$key"; done
+    for tag in $CONTROLLER_SCENARIOS; do printf 'controller:%s\t5\n' "$tag"; done
+    for tag in $STATIONS_SCENARIOS; do printf 'stations:%s\t5\n' "$tag"; done
+  } > "$fixture/config/test-wall-ceilings.tsv"
+  printf 'fixtures.fast\t1\nfixtures.full\t1\nfixtures.exported\t1\n' > "$fixture/config/test-budgets.tsv"
+  cat > "$fixture/config/config-keys.tsv" <<'REGISTRY'
+key	tier	type	default	summary
+budget.fixtures.mode	project	stop|warn	stop	Fixture mode
+budget.wall.mode.ci	project	stop|warn	warn	CI wall mode
+budget.wall.mode.local	operator	stop|warn	warn	Local wall mode
+budget.wall.scale	operator	decimal:1.0-5.0	1.0	Local wall scale
+REGISTRY
+  printf 'budget.wall.mode.local=warn\n' > "$fixture/.agentic-flow/config"
+  CI=false AGENTIC_FLOW_BUDGET_POLICY='{}' "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 \
+    || fail 'budget-mode: warn overrun still failed'
+  local overrun_dir="$fixture/.git/agentic-flow/state/budget-overruns" p1 p2 i before
+  if ! { grep -Fxq 'self-test warning: hooks measured 6, limit 5 (warn)' "$fixture/out" \
+    && grep -Fxq '1 budget overruns recorded as warnings' "$fixture/out" \
+    && grep -q $'\thooks\t6\t5\twarn\tlocal$' "$overrun_dir/"*.tsv; }; then
+    fail 'budget-mode: warn evidence was incomplete'
+  fi
+  export CI=false AGENTIC_FLOW_BUDGET_POLICY='{}'
+  printf 'budget.wall.mode.local=stop\n' > "$fixture/.agentic-flow/config"
+  "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 \
+    && fail 'budget-mode: stop accepted a wall overrun'
+  grep -Fq 'hooks took 6 seconds (ceiling: 5 seconds)' "$fixture/out" \
+    || fail 'budget-mode: stop changed the wall diagnostic'
+  AGENTIC_FLOW_BUDGET_POLICY='{"budget.wall.scale":"2.0"}' STEP_GROUP=10 \
+    "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 || fail 'budget-mode: scale did not double the local limit'
+  AGENTIC_FLOW_BUDGET_POLICY='{"budget.wall.scale":"2.0"}' STEP_GROUP=11 \
+    "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 && fail 'budget-mode: scaled wall limit was too high'
+  grep -Fq 'ceiling: 10 seconds' "$fixture/out" || fail 'budget-mode: scaled limit missing from diagnostic'
+  AGENTIC_FLOW_BUDGET_POLICY='{"budget.wall.scale":"1.01"}' STEP_GROUP=6 \
+    "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 || fail 'budget-mode: fractional limit was not rounded up'
+  STEP_GROUP=0 FIXTURE_OVERRUN=1 "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 \
+    && fail 'budget-mode: stop accepted a fixture overrun'
+  grep -Fq 'fast mode made 2 fixture file copies; limit 1' "$fixture/out" \
+    || fail 'budget-mode: stop changed the fixture diagnostic'
+  printf 'budget.fixtures.mode=warn\n' >> "$fixture/.agentic-flow/config"
+  STEP_GROUP=0 FIXTURE_OVERRUN=1 "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 \
+    || fail 'budget-mode: warn rejected a fixture overrun'
+  grep -q $'\tfixtures.fast\t2\t1\twarn\tlocal$' "$overrun_dir/"*.tsv \
+    || fail 'budget-mode: fixture warning row missing'
+
+  AGENTIC_FLOW_BUDGET_POLICY='{"budget.fixtures.mode":"warn"}' \
+    "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 && fail 'budget-mode: snapshot accepted a project key'
+  grep -Fq 'budget snapshot names a non-operator key' "$fixture/out" \
+    || fail 'budget-mode: project key error missing'
+  printf 'budget.wall.mode.ci=stop\nbudget.wall.scale=2.0\n' > "$fixture/.agentic-flow/config"
+  CI=true AGENTIC_FLOW_BUDGET_POLICY='{"budget.wall.mode.ci":"warn","budget.wall.scale":"2.0"}' \
+    "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 && fail 'budget-mode: CI honored a snapshot'
+  if ! { [ "$(grep -c 'CI=true ignores AGENTIC_FLOW_BUDGET_POLICY' "$fixture/out")" = 1 ] \
+    && grep -Fq 'ceiling: 5 seconds' "$fixture/out"; }; then
+    fail 'budget-mode: CI snapshot was not ignored and reported once'
+  fi
+  rm "$fixture/.agentic-flow/config"
+  (unset AGENTIC_FLOW_BUDGET_POLICY
+    CI=true AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL=stop AGENTIC_FLOW_BUDGET_WALL_SCALE=2.0 \
+      GITHUB_STEP_SUMMARY="$fixture/summary" "$fixture/scripts/self-test.sh" --only hooks
+  ) > "$fixture/out" 2>&1 || fail 'budget-mode: CI rejected its default warn overrun'
+  if ! { [ "$(grep -c 'CI=true ignores budget.wall.mode.local' "$fixture/out")" = 1 ] \
+    && [ "$(grep -c 'CI=true ignores budget.wall.scale' "$fixture/out")" = 1 ] \
+    && grep -Fxq 'wall time not enforced' "$fixture/summary" \
+    && grep -q $'\thooks\t6\t5\twarn\tci$' "$overrun_dir/"*.tsv; }; then
+    fail 'budget-mode: CI warn evidence was incomplete'
+  fi
+
+  STEP_GROUP=7 "$fixture/scripts/self-test.sh" --only hooks > "$fixture/first" 2>&1 & p1=$!
+  STEP_GROUP=8 "$fixture/scripts/self-test.sh" --only hooks > "$fixture/second" 2>&1 & p2=$!
+  wait "$p1" || fail 'budget-mode: first concurrent run failed'
+  wait "$p2" || fail 'budget-mode: second concurrent run failed'
+  if ! { grep -q $'\thooks\t7\t5\twarn\tlocal$' "$overrun_dir/"*.tsv \
+    && grep -q $'\thooks\t8\t5\twarn\tlocal$' "$overrun_dir/"*.tsv; }; then
+    fail 'budget-mode: concurrent records collided'
+  fi
+  for ((i=0; i<20; i++)); do
+    printf 'old row\n' > "$overrun_dir/1000000000.000000-$i.tsv"
+  done
+  STEP_GROUP=9 "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 || fail 'budget-mode: pruning run failed'
+  before=$(find "$overrun_dir" -name '*.tsv' | wc -l | tr -d ' ')
+  [ "$before" = 20 ] && [ ! -e "$overrun_dir/1000000000.000000-0.tsv" ] \
+    || fail 'budget-mode: pruning did not keep the newest 20 files'
+  # shellcheck source=scripts/lib/budget.sh
+  . "$ROOT/scripts/lib/budget.sh"
+  unset AGENTIC_FLOW_BUDGET_POLICY
+  budget_doctor "$fixture" > "$fixture/out"
+  if ! { grep -Fxq '  wall hooks: warn (default)' "$fixture/out" \
+    && grep -q $'\thooks\t9\t5\twarn\tlocal$' "$fixture/out"; }; then
+    fail 'budget-mode: doctor omitted mode source or latest row'
+  fi
+  for key in missing duplicate unknown malformed; do
+    printf 'fixtures.fast\t1\nfixtures.full\t1\n' > "$fixture/config/test-budgets.tsv"
+    case "$key" in
+      duplicate) printf 'fixtures.fast\t2\n' ;;
+      unknown) printf 'fixtures.other\t1\n' ;;
+      malformed) printf 'fixtures.exported\t01\n' ;;
+    esac >> "$fixture/config/test-budgets.tsv"
+    "$fixture/scripts/self-test.sh" --only hooks > "$fixture/out" 2>&1 \
+      && fail "budget-mode: loader accepted $key fixture TSV"
+    grep -q 'self-test failed:.*fixture copy budget' "$fixture/out" \
+      || fail "budget-mode: loader omitted the $key diagnostic"
+  done
+)
+budget_mode_tests
+
 # Harness simplification scenario 11. Fake the two scanners' external responses
 # and use real Git objects and refs, with no network or GitHub writes.
 publish_scan_tests() (
@@ -227,7 +350,7 @@ ci_bookkeeping_check() (
           < <(find "$ROOT/$source" \( -type f -o -type l \) -print0)
       fi
     done < "$ROOT/config/payload.tsv"
-    printf '%s\0' README.md docs/README.md docs/accepted_risks.md .editorconfig .gitignore
+    printf '%s\0' README.md docs/README.md docs/accepted_risks.md .editorconfig .gitignore .agentic-flow/config
   } | git -C "$probe" -c core.excludesFile=/dev/null check-ignore --no-index -z --stdin \
     > "$probe/matches" || status=$?
   [ "$status" -le 1 ] || fail 'could not check CI bookkeeping against the payload manifest'
@@ -455,6 +578,9 @@ if [ "$SELF_TEST_MODE" = fast ] && [ -z "$ONLY_GROUP" ]; then return 0; fi
 wall_ceiling_tests() (
   local fixture="$TMP/wall-ceilings" key tag gate missing
   mkdir -p "$fixture/scripts/tests" "$fixture/config"
+  link_test_budget_config "$fixture"
+  mkdir "$fixture/.agentic-flow"
+  printf 'budget.wall.mode.local=stop\nbudget.wall.mode.ci=stop\n' > "$fixture/.agentic-flow/config"
   ln "$ROOT/scripts/self-test.sh" "$fixture/scripts/self-test.sh"
   cat "$ROOT/scripts/tests/helpers.sh" > "$fixture/scripts/tests/helpers.sh"
   cat >> "$fixture/scripts/tests/helpers.sh" <<'CLOCK'
@@ -490,7 +616,7 @@ BODY
     local expected=$1 status=0
     shift
     : > "$fixture/events"
-    AGENTIC_MEASURE_EVENTS="$fixture/events" "$fixture/scripts/self-test.sh" "$@" \
+    AGENTIC_FLOW_BUDGET_POLICY='{}' AGENTIC_MEASURE_EVENTS="$fixture/events" "$fixture/scripts/self-test.sh" "$@" \
       > "$fixture/out" 2>&1 || status=$?
     [ "$status" = "$expected" ] || fail "wall ceiling ($*) returned $status, expected $expected: $(cat "$fixture/out")"
   }
@@ -543,7 +669,7 @@ wall_ceiling_tests
 parallel_shard_tests() (
   local fixture="$TMP/parallel-shards" status=0 group shard count selection actual expected
   mkdir -p "$fixture/scripts/tests" "$fixture/bin" "$fixture/roots"
-  link_test_wall_ceilings "$fixture"
+  link_test_budgets "$fixture"
   cat "$ROOT/scripts/self-test.sh" > "$fixture/scripts/self-test.sh"
   chmod +x "$fixture/scripts/self-test.sh"
   printf '#!/usr/bin/env bash\necho 2\n' > "$fixture/bin/nproc"
@@ -632,7 +758,7 @@ SHARD_PROBE
   git -C "$fixture" init -q
   : > "$fixture/scripts/export.sh"
   parallel_probe 1 budget --jobs 2
-  grep -q 'full mode made 240 fixture file copies; limit 199' "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
+  grep -q "full mode made 240 fixture file copies; limit $(fixture_budget_limit full)" "$fixture/out" || fail 'parallel dispatcher missed the combined copy budget'
   [ "$(cost_count "$fixture/events" source_snapshot_copy)" -eq 1 ] || fail 'parallel dispatcher duplicated the source snapshot'
 
   expected='export contracts upgrade hooks plan-to-issues lifecycle stations/launch stations/verify stations/handoff stations/packet controller/launch controller/ship controller/andon controller/ledger controller/recovery controller/status '
@@ -657,7 +783,7 @@ stations_selector_tests() (
   local fixture selection status expected actual group mf
   fixture="$TMP/stations-selector"
   mkdir -p "$fixture/scripts/tests"
-  link_test_wall_ceilings "$fixture"
+  link_test_budgets "$fixture"
   ln "$ROOT/scripts/tests/helpers.sh" "$fixture/scripts/tests/helpers.sh"
   cat "$ROOT/scripts/self-test.sh" > "$fixture/scripts/self-test.sh"
   chmod +x "$fixture/scripts/self-test.sh"
@@ -746,7 +872,7 @@ split_regression_tests() (
   local fixture group bootstrap_status=0
   fixture="$TMP/split-regression"
   mkdir -p "$fixture/scripts/tests"
-  link_test_wall_ceilings "$fixture"
+  link_test_budgets "$fixture"
   # The approved t-4 red-first paths copy only the dispatcher and contracts.
   # Missing split dependencies must produce an assertion, not a source error.
   mkdir -p "$fixture/bootstrap/scripts/tests"
@@ -826,7 +952,7 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   # these cases measure dispatch, without recursively executing the regression suite.
   SCOPE_FIX="$TMP/group-scope"
   mkdir -p "$SCOPE_FIX/scripts/tests" "$SCOPE_FIX/config" "$SCOPE_FIX/bin"
-  link_test_wall_ceilings "$SCOPE_FIX"
+  link_test_budgets "$SCOPE_FIX"
   ln "$ROOT/scripts/tests/helpers.sh" "$SCOPE_FIX/scripts/tests/helpers.sh"
   awk '/^FULL_FAILED=0$/ { exit } { print }' "$ROOT/scripts/self-test.sh" \
     > "$SCOPE_FIX/scripts/self-test.sh"
@@ -879,7 +1005,8 @@ SELECTOR
   git -C "$SCOPE_FIX" config user.name Fixture
   git -C "$SCOPE_FIX" config user.email fixture@example.invalid
   git -C "$SCOPE_FIX" config commit.gpgsign false
-  git -C "$SCOPE_FIX" add scripts/self-test.sh scripts/tests/helpers.sh config/payload.tsv config/test-wall-ceilings.tsv
+  git -C "$SCOPE_FIX" add scripts/self-test.sh scripts/tests/helpers.sh scripts/lib config/payload.tsv \
+    config/test-wall-ceilings.tsv config/config-keys.tsv config/test-budgets.tsv
   git -C "$SCOPE_FIX" commit -qm 'Scope fixture base'
   scope_base=$(git -C "$SCOPE_FIX" rev-parse HEAD)
   scope_expect "$SELF_TEST_GROUPS" 'no remote'
@@ -983,7 +1110,7 @@ GIT_ERROR
   # full suite. The exported runner reports a group and a controlled copy count.
   GATE_FIX="$TMP/ship-gate"
   mkdir -p "$GATE_FIX/scripts/tests" "$GATE_FIX/bin"
-  link_test_wall_ceilings "$GATE_FIX"
+  link_test_budgets "$GATE_FIX"
   ln "$ROOT/scripts/tests/helpers.sh" "$GATE_FIX/scripts/tests/helpers.sh"
   ln "$ROOT/scripts/self-test.sh" "$GATE_FIX/scripts/self-test.sh"
   ln "$ROOT/scripts/shell-inventory.sh" "$GATE_FIX/scripts/shell-inventory.sh"
@@ -1027,7 +1154,7 @@ SH
   [ "$gate_rc" -ne 0 ] || fail 'ship-gate accepted a failing exported suite'
   grep -q 'group: hooks' "$TMP/gate.out" || fail 'ship-gate did not name the failing exported group'
 
-  gate_copy_limit=122
+  gate_copy_limit=$(fixture_budget_limit exported)
   gate_copy_over=$((gate_copy_limit+1))
   gate_make "$gate_copy_over" && fail 'ship-gate accepted one fixture copy over the exported limit'
   grep -Fq "exported full mode made $gate_copy_over fixture file copies; limit $gate_copy_limit" "$TMP/gate.out" \
@@ -1312,6 +1439,26 @@ workflow_load "$ROOT" || fail 'valid workflow rejected'
 workflow_successor step-strict executing approve 0 >/dev/null 2>&1 && fail 'illegal successor accepted'
 workflow_successor step-strict reviewing bounce bad >/dev/null 2>&1 && fail 'invalid bounce count accepted'
 workflow_state_labels tracker absent >/dev/null 2>&1 && fail 'unknown state labels accepted'
+
+unexpected_stamp_prefixes() {
+  awk -F : '
+    $1 == "scripts/lib/journal.sh" {next}
+    $1 == "scripts/plan-to-issues.sh" && /:[0-9]+:(PLAN_MARKER=|TRACK_STAMP_RE=.* tracker spec:|STEP_STAMP_RE=.* step:)/ {next}
+    $1 == "scripts/lifecycle-status.sh" && / tracker spec:| step:|--search .* in:body/ {next}
+    $1 ~ /^scripts\/lib\/(handoff|verify-step)\.sh$/ && /--search .* in:body/ {next}
+    $1 == "scripts/hooks/require-step-comment.sh" && /if \[\[ "\$payload" = / {next}
+    {print}
+  '
+}
+stamp_prefix_violations=$(
+  cd "$ROOT" &&
+    find scripts -path scripts/tests -prune -o -type f \( -name '*.sh' -o -name '*.jq' -o -name '*.pl' -o -name agentic-flow \) \
+      -exec grep -nHF 'agentic-flow:plan:' {} + | unexpected_stamp_prefixes
+) || fail 'could not audit plan stamp readers'
+[ -z "$stamp_prefix_violations" ] || fail "plan stamp prefix outside journal.sh: $stamp_prefix_violations"
+printf '%s\n' 'scripts/example.sh:1:grep "^<!-- agentic-flow:plan:"' | unexpected_stamp_prefixes |
+  grep -Fq 'scripts/example.sh' || fail 'plan stamp prefix audit missed bare line selection'
+
 mkdir -p "$WORKFLOW_FIX/scripts/lib" "$WORKFLOW_FIX/scripts/hooks"
 cp "$ROOT/config/workflow.tsv" "$WORKFLOW_FIX/config/workflow.tsv"
 cp "$ROOT/scripts/lib/workflow.sh" "$WORKFLOW_FIX/scripts/lib/workflow.sh"
@@ -2219,7 +2366,7 @@ done < <(grep -RhoE 'METHODOLOGY\.md[^[:cntrl:]]*' "${route_inputs[@]}" \
 # the executor's per-step gate, so both ways it can go quietly empty must be red.
 DISPATCH_FIX="$TMP/dispatch/scripts"
 mkdir -p "$DISPATCH_FIX/tests"
-link_test_wall_ceilings "${DISPATCH_FIX%/scripts}"
+link_test_budgets "${DISPATCH_FIX%/scripts}"
 ln "$ROOT/scripts/tests/helpers.sh" "$DISPATCH_FIX/tests/helpers.sh"
 sed 's/^if should_run hooks; then$/if should_run hook; then/' "$ROOT/scripts/self-test.sh" \
   > "$DISPATCH_FIX/self-test.sh"
@@ -2294,17 +2441,18 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   grep -q 'exceeded one fixture tree copy' "$MEASURE_FIX/recopied.out" \
     || fail 'fixture budget did not identify repeated tree copying'
   printf 'source_snapshot_copy\nfixture_tree_copy\n' > "$MEASURE_FIX/full-files.events"
-  for ((copy_i=0; copy_i<200; copy_i++)); do
+  full_copy_limit=$(fixture_budget_limit full)
+  for ((copy_i=0; copy_i<=full_copy_limit; copy_i++)); do
     printf 'fixture_file_copy\n' >> "$MEASURE_FIX/full-files.events"
   done
   ( assert_cost_budget "$MEASURE_FIX/full-files.events" full ) \
     > "$MEASURE_FIX/full-files.out" 2>&1 \
-    && fail 'full fixture budget accepted 200 copies'
-  grep -q 'full mode made 200 fixture file copies; limit 199' "$MEASURE_FIX/full-files.out" \
+    && fail "full fixture budget accepted $((full_copy_limit+1)) copies"
+  grep -q "full mode made $((full_copy_limit+1)) fixture file copies; limit $full_copy_limit" "$MEASURE_FIX/full-files.out" \
     || fail 'full fixture copy failure did not name the count and approved limit'
   sed '$d' "$MEASURE_FIX/full-files.events" > "$MEASURE_FIX/full-boundary.events"
   assert_cost_budget "$MEASURE_FIX/full-boundary.events" full \
-    || fail 'full fixture budget rejected its approved 199-copy boundary'
+    || fail 'full fixture budget rejected its approved copy boundary'
 fi
 : > "$MEASURE_FIX/fast-files.events"
 for ((copy_i=0; copy_i<34; copy_i++)); do
@@ -2372,3 +2520,138 @@ printf 'packet_words:801\n' > "$MEASURE_FIX/events/full.events"
 
 # The final negative case returns nonzero when it passes; sourcing must succeed.
 :
+
+config_contract_tests() (
+  local fixture="$TMP/config-contract" cli="$ROOT/scripts/agentic-flow" project operator key message rev bytes
+  mkdir -p "$fixture/project/config" "$fixture/home"
+  export HOME="$fixture/home" XDG_CONFIG_HOME="$fixture/operator"
+  unset CI AGENTIC_FLOW_PACKET_WORD_LIMIT AGENTIC_FLOW_CONTROLLER_TURN_CAP AGENTIC_FLOW_BUDGET_WALL_SCALE
+  unset AGENTIC_FLOW_REVIEW_MAX_BOUNCES AGENTIC_FLOW_REVIEW_BLOCK_AT AGENTIC_FLOW_ANDON_STATION_INFRASTRUCTURE
+  unset AGENTIC_FLOW_BUDGET_FIXTURES_MODE AGENTIC_FLOW_BUDGET_WALL_MODE_CI AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL
+  # Exercise project discovery from a logical path, as with a symlinked TMPDIR.
+  ln -s project "$fixture/project-link"
+  cd "$fixture/project-link"
+  git init -q
+  git remote add origin git@github.com:owner/config-fixture.git
+  ln "$ROOT/config/config-keys.tsv" config/config-keys.tsv
+  project="$(pwd -P)/.agentic-flow/config"
+  operator="$XDG_CONFIG_HOME/agentic-flow/config/owner/config-fixture.conf"
+
+  config_expect() {
+    local expected=$1 status=0
+    shift
+    "$cli" config "$@" > "$fixture/out" 2> "$fixture/err" || status=$?
+    [ "$status" -eq "$expected" ] || fail "config $* returned $status, expected $expected: $(cat "$fixture/err")"
+  }
+
+  mkdir -p "${project%/*}"
+  for message in unknown duplicate 'invalid value'; do
+    case "$message" in
+      unknown) printf 'unknown.key=2\n' ;;
+      duplicate) printf 'packet.word_limit=3000\npacket.word_limit=4000\n' ;;
+      *) printf 'review.max_bounces=6\n' ;;
+    esac > "$project"
+    config_expect 2 list
+    grep -E ":([12]): $message" "$fixture/err" >/dev/null || fail "config failed to locate $message"
+  done
+  perl -e 'print "#", "a" x 65536' > "$project"
+  config_expect 2 list
+  grep -Fq 'file exceeds 64 KiB' "$fixture/err" || fail 'config omitted oversize diagnostic'
+  perl -e 'print "#\n" x 257' > "$project"
+  config_expect 2 list
+  grep -Fq ':257: file exceeds 256 lines' "$fixture/err" || fail 'config omitted line-bound diagnostic'
+  printf 'packet.word_limit=3000\000\n' > "$project"
+  config_expect 2 list
+  rm "$project"
+
+  config_expect 0 init --print
+  mv "$fixture/out" "$fixture/template"
+  [ ! -e "$project" ] || fail 'config init --print wrote a file'
+  config_expect 0 init
+  cmp -s "$project" "$fixture/template" || fail 'config init differs from printed template'
+  cmp -s "$project" "$ROOT/.agentic-flow/config" || [ ! -f "$ROOT/scripts/export.sh" ] ||
+    fail 'scaffold config differs from generated template'
+  awk -F '\t' 'NR>1 {print "#" $1 "=" $4}' config/config-keys.tsv > "$fixture/expected"
+  awk '/^#[a-z][a-z_.-]*=/' "$project" > "$fixture/entries"
+  cmp -s "$fixture/expected" "$fixture/entries" || fail 'template entries do not match the registry'
+  config_expect 2 init
+  cmp -s "$project" "$fixture/template" || fail 'config init overwrote the project file'
+  env -i PATH="$PATH" "$cli" config list --json > "$fixture/out"
+  jq -e 'length==9 and all(.[];.source=="default")' "$fixture/out" >/dev/null ||
+    fail 'config did not load defaults without HOME'
+
+  # A linked observer keeps the old bytes after the new file is published.
+  ln "$project" "$fixture/old-inode"
+  config_expect 0 set controller.turn_cap 11
+  sed 's/^#controller.turn_cap=50$/controller.turn_cap=11/' "$fixture/template" > "$fixture/expected"
+  { cmp -s "$project" "$fixture/expected" && cmp -s "$fixture/old-inode" "$fixture/template"; } ||
+    fail 'config set did not atomically replace the template line'
+  [ -z "$(git diff --cached --name-only)" ] || fail 'config set staged the project file'
+  config_expect 0 explain controller.turn_cap
+  { grep -Fxq 'controller.turn_cap=11' "$fixture/out" &&
+    grep -Fxq "source: $project" "$fixture/out" &&
+    grep -Fxq 'tier: operator' "$fixture/out" &&
+    grep -Fxq 'range: 10-200' "$fixture/out"; } || fail 'config explain omitted the project source or metadata'
+
+  config_expect 0 set controller.turn_cap 12 --scope operator
+  config_expect 0 --json
+  jq -e --arg source "$operator" '."controller.turn_cap" | .value=="12" and .source==$source' "$fixture/out" >/dev/null ||
+    fail 'config --json omitted the operator layer'
+  config_expect 0 explain controller.turn_cap
+  { grep -Fxq 'controller.turn_cap=12' "$fixture/out" &&
+    grep -Fxq "source: $operator" "$fixture/out"; } || fail 'config explain omitted the operator source'
+  AGENTIC_FLOW_CONTROLLER_TURN_CAP=13 config_expect 0 explain controller.turn_cap
+  { grep -Fxq 'controller.turn_cap=13' "$fixture/out" &&
+    grep -Fxq 'source: AGENTIC_FLOW_CONTROLLER_TURN_CAP' "$fixture/out"; } || fail 'config explain omitted the environment source'
+  config_expect 0 explain review.max_bounces
+  { grep -Fxq 'source: default' "$fixture/out" &&
+    grep -Fxq 'tier: plan' "$fixture/out"; } || fail 'config explain omitted the default source or plan tier'
+  config_expect 3 set packet.word_limit 6000 --scope operator
+  printf 'packet.word_limit=6000\n' >> "$operator"
+  config_expect 2 list
+  grep -Fq "$operator:2: packet.word_limit has tier project" "$fixture/err" || fail 'wrong file tier did not name its source'
+  printf 'controller.turn_cap=12\n' > "$operator"
+  AGENTIC_FLOW_PACKET_WORD_LIMIT=6000 config_expect 2 list
+  grep -Fq 'AGENTIC_FLOW_PACKET_WORD_LIMIT' "$fixture/err" || fail 'wrong environment tier did not name its source'
+
+  config_expect 0 set budget.wall.scale 2.5
+  config_expect 0 set budget.wall.scale 3.5 --scope operator
+  CI=true AGENTIC_FLOW_BUDGET_WALL_SCALE=4.5 config_expect 0 list --json
+  jq -e '."budget.wall.scale"=={value:"1.0",source:"default",tier:"operator"} and
+    ."controller.turn_cap".value=="12"' "$fixture/out" >/dev/null || fail 'CI did not resolve its budget independently of machine overrides'
+  [ "$(grep -cF "ignores budget.wall.scale from $operator:2" "$fixture/err")" -eq 1 ] &&
+    [ "$(grep -cF 'ignores budget.wall.scale from AGENTIC_FLOW_BUDGET_WALL_SCALE' "$fixture/err")" -eq 1 ] ||
+    fail 'CI did not report each ignored override exactly once'
+  config_expect 0 unset budget.wall.scale
+  config_expect 0 unset controller.turn_cap
+  cmp -s "$project" "$fixture/template" || fail 'config set and unset did not round-trip the template'
+
+  printf '# Retain this comment\r\npacket.word_limit=1800\n#review.max_bounces=2' > "$project"
+  cat "$project" > "$fixture/original"
+  bytes=$(wc -c < "$project" | tr -d ' ')
+  config_expect 0 init --missing
+  head -c "$bytes" "$project" | cmp -s "$fixture/original" - || fail 'config init --missing rewrote existing bytes'
+  for key in packet.word_limit review.max_bounces; do
+    [ "$(grep -Ec "^(#)?$key=" "$project")" -eq 1 ] || fail 'config init --missing duplicated a listed key'
+  done
+  [ "$(grep -Ec '^#?[a-z][a-z_.-]*=' "$project")" -eq 9 ] || fail 'config init --missing omitted keys'
+
+  git add .agentic-flow/config
+  git -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit -qm 'Config fixture'
+  rev=$(git rev-parse HEAD)
+  config_expect 0 set review.max_bounces 4
+  config_expect 0 pin
+  grep -Fxq 'review.max_bounces=4 review.block_at=medium andon.station-infrastructure=hold' "$fixture/out" ||
+    fail 'current pin did not use project config in registry order'
+  . "$ROOT/scripts/lib/config.sh"
+  [ "$(config_pin "$PWD" "$rev")" = 'review.max_bounces=2 review.block_at=medium andon.station-infrastructure=hold' ] ||
+    fail 'revision pin used working-tree config'
+
+  for key in set unset; do
+    grep -Fq "prefix_rule(pattern=[\"scripts/agentic-flow\",\"config\",\"$key\"], decision=\"forbidden\")" \
+      "$ROOT/config/stations/command-policy.rules" || fail "native command policy did not deny config $key"
+    grep -Fq "scripts/agentic-flow config $key packet.word_limit" \
+      "$ROOT/config/stations/command-policy-probes.txt" || fail "no station probe for config $key"
+  done
+)
+config_contract_tests

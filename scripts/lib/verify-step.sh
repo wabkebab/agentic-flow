@@ -15,6 +15,7 @@ verify_cleanup() {
 
 verify_run() { # directory, command; result in VERIFY_RESULT
   local directory=$1 command=$2 role=${3:-green} start=$SECONDS status=0 timer digest
+  local ack='' policy=${VERIFY_BUDGET_DIGEST:-pre-ack}
   # setsid ensures timeout/interrupt terminates the whole recipe process tree.
   (cd "$directory" && exec perl -MPOSIX=setsid -e 'setsid() or die $!; exec @ARGV' bash -o pipefail -c "$command") > "$VERIFY_TMP/output" 2>&1 &
   VERIFY_PID=$!
@@ -44,17 +45,36 @@ verify_run() { # directory, command; result in VERIFY_RESULT
   if [ "$status" -ne 0 ]; then
     ledger_output_tail "$VERIFY_TMP/output" 65536 > "$VERIFY_TMP/output-tail" || return 1
   fi
-  VERIFY_RESULT=$(jq -n --rawfile tail "$VERIFY_TMP/output-tail" --arg cmd "$command" --arg role "$role" --argjson exit "$status" --argjson seconds "$((SECONDS-start))" --arg digest "$digest" \
-    '{cmd:$cmd,role:$role,exit:$exit,seconds:$seconds,output_sha256:$digest} + (if $exit!=0 then {output_tail:$tail} else {} end)')
-  printf '%s\n' "$VERIFY_RESULT" > "$VERIFY_TMP/command-result"
   cat "$VERIFY_TMP/output" >&2
+  if [ "$policy" = "${VERIFY_PRE_ACK:-pre-ack}" ]; then
+    policy=pre-ack
+  else
+    if ! ack=$(awk -v digest="$policy" '
+      /^budget-policy:/ {
+        if ($0 != "budget-policy: " digest) { invalid=1; exit }
+        seen=1
+      }
+      END { if (invalid) exit 1; if (seen) print digest }
+    ' "$VERIFY_TMP/output"); then
+      echo "verify-step: $command acknowledged a different budget policy" >&2
+      return 1
+    fi
+    if [ "$role" = green ] && [ "$command" = 'make check' ] && [ -z "$ack" ]; then
+      echo 'verify-step: make check did not acknowledge the budget policy' >&2
+      return 1
+    fi
+  fi
+  VERIFY_RESULT=$(jq -n --rawfile tail "$VERIFY_TMP/output-tail" --arg cmd "$command" --arg role "$role" --argjson exit "$status" --argjson seconds "$((SECONDS-start))" --arg digest "$digest" --arg ack "$ack" --arg policy "$policy" \
+    '{cmd:$cmd,role:$role,exit:$exit,seconds:$seconds,output_sha256:$digest,policy:$policy,
+     budget_ack:(if $ack=="" then null else $ack end)} + (if $exit!=0 then {output_tail:$tail} else {} end)')
+  printf '%s\n' "$VERIFY_RESULT" > "$VERIFY_TMP/command-result"
 }
 
 verify_step_cmd() {
   [ "$#" -ge 1 ] || return 2
   local sha=$1 doc='' step='' red_base='' json=false force=false root common rev='' spec='' selected='' first='' issue='' issues='' number=''
-  local signature_sha key command_plan
-  local commands='[]' prepare='{"cmd":"skipped","role":"prepare","exit":0,"seconds":0}' reds='"not-declared"' passed=true signature='' selector paths path status result verify started record
+  local signature_sha key command_plan overrides green_budget red_index=0 VERIFY_BUDGET_DIGEST VERIFY_PRE_ACK
+  local commands='[]' prepare='{"cmd":"skipped","role":"prepare","exit":0,"seconds":0,"budget_ack":null}' reds='"not-declared"' passed=true signature='' selector paths path status result verify started record
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -141,11 +161,27 @@ verify_step_cmd() {
   printf '%s' "$command_plan" | jq -e '(.green|length)+2*(.red_first|length)+1<=100' >/dev/null || {
     echo 'verify command plan exceeds 100 commands' >&2; return 1;
   }
-  key=$(verify_record_key "$sha" "$doc" "$step" "$red_base" "$command_plan") || return 1
+  overrides=$(budget_capture "$root" "$sha") || return 1
+  key=$(verify_record_key "$sha" "$doc" "$step" "$red_base" "$command_plan" "$overrides") || return 1
   if [ "$force" = false ] && record=$(verify_record_fresh "$common/agentic-flow/verify/$sha.json" "$key"); then
     echo "verify-step $sha: reused ($common/agentic-flow/verify/$sha.json)" >&2
     if [ "$json" = true ]; then printf '%s\n' "$record"; fi
     return 0
+  fi
+  local AGENTIC_FLOW_BUDGET_POLICY=$overrides
+  export AGENTIC_FLOW_BUDGET_POLICY
+  green_budget=$(jq -er .budget_policy.green <<< "$key") || return 1
+  VERIFY_BUDGET_DIGEST=$green_budget
+  VERIFY_PRE_ACK=$(printf pre-ack | shasum -a 256) || return 1
+  VERIFY_PRE_ACK=${VERIFY_PRE_ACK%% *}
+  local green_policy=$green_budget
+  if [ "$green_budget" = "$VERIFY_PRE_ACK" ]; then green_policy=pre-ack; fi
+  prepare=$(jq --arg policy "$green_policy" '.policy=$policy' <<< "$prepare") || return 1
+  if [ "${AGENTIC_VERIFY_TESTING:-}" = 1 ] && [ -n "${AGENTIC_VERIFY_PAUSE:-}" ]; then
+    local waited=0
+    : > "$AGENTIC_VERIFY_PAUSE.ready"
+    while [ ! -f "$AGENTIC_VERIFY_PAUSE.release" ] && [ "$waited" -lt 300 ]; do sleep 0.1; waited=$((waited+1)); done
+    [ -f "$AGENTIC_VERIFY_PAUSE.release" ] || return 1
   fi
   signature_sha=$(printf '%s' "$key" | jq -r .verifier.signature_source.sha)
   started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -180,6 +216,8 @@ MAKE
     if [ "$(printf '%s' "$selected" | jq -r '.red_first|type')" = array ]; then
       reds='[]'
       while IFS= read -r result; do
+        VERIFY_BUDGET_DIGEST=$(jq -er --argjson i "$red_index" '.budget_policy.red[$i]' <<< "$key") || return 1
+        red_index=$((red_index+1))
         git worktree remove --force "$VERIFY_WT" || return 1
         git worktree add --quiet --detach "$VERIFY_WT" "$red_base" || return 1
         paths=$(printf '%s' "$result" | jq -c .paths)
@@ -202,7 +240,8 @@ MAKE
         ledger_output_tail "$VERIFY_TMP/output" 65536 > "$VERIFY_TMP/red-output" || return 1
         tail -40 "$VERIFY_TMP/red-output" > "$VERIFY_TMP/tail"
         reds=$(printf '%s' "$reds" | jq --arg selector "$selector" --argjson paths "$paths" --slurpfile r "$VERIFY_TMP/command-result" --arg status "$status" --rawfile tail "$VERIFY_TMP/tail" \
-          '.+[{selector:$selector,paths:$paths,exit:$r[0].exit,status:$status,tail:($tail|split("\n")|if .[-1]=="" then .[:-1] else . end)}]')
+          '.+[{selector:$selector,paths:$paths,exit:$r[0].exit,status:$status,policy:$r[0].policy,budget_ack:$r[0].budget_ack,
+            tail:($tail|split("\n")|if .[-1]=="" then .[:-1] else . end)}]')
       done < <(printf '%s' "$selected" | jq -c '.red_first[]')
     fi
   fi

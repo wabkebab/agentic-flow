@@ -29,7 +29,7 @@ Review summary
 
 | Severity | Location | Finding |
 | --- | --- | --- |
-| P2 | `path\|name.sh:4` | Fix a \| b on both paths |
+| medium | `path\|name.sh:4` | Fix a \| b on both paths |
 
 <details>
 <summary>Evidence</summary>

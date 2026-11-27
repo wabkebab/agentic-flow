@@ -492,7 +492,7 @@ SH
     || { cat "$TMP/doctor.log" >&2; fail "doctor --check failed on the scaffold repo"; }
 
   INIT_TARGET="$TMP/init-empty"
-  "$ROOT/scripts/init.sh" "$INIT_TARGET" --owner-login wabkebab --name demo-proj --stack none --git-init --yes >"$TMP/init-empty.log" 2>&1 \
+  PATH="$STRIPPED_PATH" "$ROOT/scripts/init.sh" "$INIT_TARGET" --owner-login wabkebab --name demo-proj --stack none --git-init --yes >"$TMP/init-empty.log" 2>&1 \
     || { cat "$TMP/init-empty.log" >&2; fail "init failed for an empty target"; }
   if grep -RE "$TOKEN_RE" "$INIT_TARGET" >/dev/null 2>&1; then
     grep -RE "$TOKEN_RE" "$INIT_TARGET" >&2 || true
@@ -501,6 +501,12 @@ SH
   grep -q "demo-proj" "$INIT_TARGET/CLAUDE.md" || fail "init did not stamp project name in CLAUDE.md"
   grep -q "demo-proj" "$INIT_TARGET/AGENTS.md" || fail "init did not stamp project name in AGENTS.md"
   assert_file "$INIT_TARGET/.agentic-flow-version"
+  assert_file "$INIT_TARGET/.agentic-flow/config"
+  cmp -s "$INIT_TARGET/.agentic-flow/config" "$ROOT/.agentic-flow/config" ||
+    fail 'adoption did not generate the project config template'
+  (cd "$TARGET" && scripts/doctor.sh --scope repo --skip-make-check) > "$TMP/doctor-config.out"
+  grep -Fq 'info    .agentic-flow/config is absent' "$TMP/doctor-config.out" ||
+    fail 'doctor did not report the missing project config as information'
   [ "$(git -C "$INIT_TARGET" config --local --get core.hooksPath)" = scripts/git-hooks ] \
     || fail 'init did not configure the Git pre-commit hook'
   (cd "$INIT_TARGET" && make check) >"$TMP/init-empty-check.log" 2>&1 \
@@ -509,7 +515,7 @@ SH
   INIT_EXISTING="$TMP/init-existing"
   mkdir -p "$INIT_EXISTING"
   printf '%s\n' "# Existing project guidance" > "$INIT_EXISTING/CLAUDE.md"
-  "$ROOT/scripts/init.sh" "$INIT_EXISTING" --owner-login wabkebab --name demo-proj --stack none --yes >"$TMP/init-existing.log" 2>&1 \
+  PATH="$STRIPPED_PATH" "$ROOT/scripts/init.sh" "$INIT_EXISTING" --owner-login wabkebab --name demo-proj --stack none --yes >"$TMP/init-existing.log" 2>&1 \
     || { cat "$TMP/init-existing.log" >&2; fail "init failed for a target with existing CLAUDE.md"; }
   grep -qx "# Existing project guidance" "$INIT_EXISTING/CLAUDE.md" \
     || fail "init modified a pre-existing CLAUDE.md"
@@ -526,7 +532,7 @@ SH
     || fail "init missing-name error did not explain --name requirement"
 
   INIT_NONTty="$TMP/init-nontty"
-  "$ROOT/scripts/init.sh" "$INIT_NONTty" --owner-login wabkebab --name pipe-proj --stack none < /dev/null >"$TMP/init-nontty.log" 2>&1 \
+  PATH="$STRIPPED_PATH" "$ROOT/scripts/init.sh" "$INIT_NONTty" --owner-login wabkebab --name pipe-proj --stack none < /dev/null >"$TMP/init-nontty.log" 2>&1 \
     || { cat "$TMP/init-nontty.log" >&2; fail "init non-TTY fallback failed"; }
   grep -q "pipe-proj" "$INIT_NONTty/CLAUDE.md" || fail "non-TTY init did not stamp project name"
   if grep -RE "$TOKEN_RE" "$INIT_NONTty" >/dev/null 2>&1; then
@@ -534,7 +540,7 @@ SH
   fi
 
   INIT_RUST="$TMP/init-rust"
-  "$ROOT/scripts/init.sh" "$INIT_RUST" --owner-login wabkebab --name rust-proj --stack rust --yes >"$TMP/init-rust.log" 2>&1 \
+  PATH="$STRIPPED_PATH" "$ROOT/scripts/init.sh" "$INIT_RUST" --owner-login wabkebab --name rust-proj --stack rust --yes >"$TMP/init-rust.log" 2>&1 \
     || { cat "$TMP/init-rust.log" >&2; fail "init failed for a rust target"; }
   assert_no_file "$INIT_RUST/.github/workflows/ci.yml"
   assert_no_file "$INIT_RUST/.github/workflows/deploy.yml"

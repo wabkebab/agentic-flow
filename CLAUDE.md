@@ -58,7 +58,7 @@ A closed Strict step means reviewed clean. The Status block and CI record shippi
 
 | Target | What it does on this project | Notes / gotchas |
 |--------|------------------------------|-----------------|
-| `make check` | Bash syntax for shipped scripts, docs index freshness, action-pin structure, and `scripts/self-test.sh` | the fast gate; **run by the Stop hook** so an agent can't end a turn red |
+| `make check` | Bash syntax for shipped scripts, docs index freshness, action-pin structure, and `scripts/self-test.sh` | the Stop hook runs this fast gate. Budget overruns in warn mode are recorded and allow the gate to pass. |
 | `make test` | full offline scaffold regression suite, plus `shellcheck` over `scripts/` | no network or GitHub writes; **fails if `shellcheck` is missing** rather than skipping |
 | `make test-one F=…` | one focused harness group (`export`, `contracts`, `hooks`, `plan-to-issues`, `lifecycle`, `upgrade`, or `stations`) | the Makefile owns exact behavior |
 | `make build` | dry-run export into a temporary directory | validates the payload assembles without writing a real target |

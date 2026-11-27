@@ -36,7 +36,7 @@ handoff_identity() { # role, exit 7 means unavailable here, 5 means configured b
 }
 
 handoff_read() { # number; results in HANDOFF_ISSUE/HANDOFF_REPLAY and journal context
-  local response body comments
+  local response body comments replay_status
   # shellcheck disable=SC2016
   local query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number title body state labels(first:100){pageInfo{hasNextPage} nodes{name}} comments(first:100){pageInfo{hasNextPage} nodes{id fullDatabaseId body author{login __typename} createdAt lastEditedAt}}}}}'
   response=$(handoff_gh api graphql -f "query=$query" -f "owner=${HANDOFF_REPO%%/*}" \
@@ -56,7 +56,11 @@ handoff_read() { # number; results in HANDOFF_ISSUE/HANDOFF_REPLAY and journal c
   journal_context "$body" || { handoff_error "issue #$1 has no valid plan stamp"; return 3; }
   [ "$JOURNAL_PLAN" = "$HANDOFF_PLAN" ] || { handoff_error 'plan changed while reading'; return 5; }
   comments=$(printf '%s' "$HANDOFF_ISSUE" | jq '.comments.nodes' | journal_normalize) || return 5
-  HANDOFF_REPLAY=$(journal_replay "$comments" "$JOURNAL_TOPOLOGY") || return 5
+  HANDOFF_REPLAY=$(journal_replay "$comments" "$JOURNAL_TOPOLOGY") || {
+    replay_status=$?
+    [ "$replay_status" != 3 ] || return 3
+    return 5
+  }
   if [ "${HANDOFF_ALLOW_UNJOURNALED:-false}" = false ] && [ "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .unjournaled)" != null ]; then
     handoff_error "UNJOURNALED #$1 comment $(printf '%s' "$HANDOFF_REPLAY" | jq -r .unjournaled)"; return 3
   fi
@@ -106,7 +110,8 @@ handoff_render() { # event role head subject result-file output [diagnostic-file
       fi
       markers="$markers"$'\n'"agentic-flow-review: status=$verdict; step=$JOURNAL_STEP; head=$compatibility_head; role=reviewer" ;;
   esac
-  next=$(workflow_successor "$JOURNAL_TOPOLOGY" "$from" "$event" "$(printf '%s' "$HANDOFF_REPLAY" | jq .bounces)" "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)") || return 3
+  next=$(workflow_successor "$JOURNAL_TOPOLOGY" "$from" "$event" "$(printf '%s' "$HANDOFF_REPLAY" | jq .bounces)" \
+    "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)" "$JOURNAL_MAX_BOUNCES") || return 3
   if [ "$next" = escalated ]; then
     owner=${REVIEW_OWNER:-}
     reason='bounce cap reached'
@@ -238,8 +243,11 @@ handoff_plan_read() { # bounded exact-stamped discovery; labels are not evidence
       '[.[] | select(.author.login as $login | ($roles|split(" ")|index($login))!=null)]') || return 5
     while IFS= read -r candidate; do
       # Search text can be a quotation or malformed stamp. It is not membership.
-      context=$(printf '%s' "$candidate" | jq -r .body | journal_stamp 2>/dev/null) || context=''
-      if [ -z "$context" ]; then
+      context=$(printf '%s' "$candidate" | jq -r .body | journal_stamp_lines discover "$HANDOFF_PLAN") || {
+        handoff_error "issue #$(printf '%s' "$candidate" | jq -r .number) has an invalid policy stamp"
+        return 3
+      }
+      if [ "$context" = null ]; then
         handoff_error "skipping approver-authored discovery hit #$(printf '%s' "$candidate" | jq -r .number): unparseable plan stamp"
         continue
       fi
@@ -419,7 +427,8 @@ handoff_transaction() ( # transaction-local credentials, temporary files, lock a
       local state bounces
       state=$(printf '%s' "$HANDOFF_REPLAY" | jq -r .state)
       bounces=$(printf '%s' "$HANDOFF_REPLAY" | jq .bounces)
-      workflow_successor "$topology" "$state" "$event" "$bounces" "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)" >/dev/null || {
+      workflow_successor "$topology" "$state" "$event" "$bounces" \
+        "$(printf '%s' "$HANDOFF_REPLAY" | jq -r .return_to)" "$JOURNAL_MAX_BOUNCES" >/dev/null || {
         handoff_error "illegal $event from $state; legal events: $(printf '%s\n' "$WORKFLOW_DATA" | awk -F '\t' -v t="$topology" -v s="$state" '$1=="transition"&&$2==t&&$5==s{print $3}' | sort -u | tr '\n' ' ')"; return 3;
       }
       case "$event" in

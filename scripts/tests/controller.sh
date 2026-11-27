@@ -146,7 +146,7 @@ if should_run_scenario launch timing; then
 # replaced by markers. This avoids recursively launching this suite or a model.
 SELECT_FIX="$TMP/scenario-selection"
 mkdir -p "$SELECT_FIX/scripts/tests"
-link_test_wall_ceilings "$SELECT_FIX"
+link_test_budgets "$SELECT_FIX"
 ln "$ROOT/scripts/tests/helpers.sh" "$SELECT_FIX/scripts/tests/helpers.sh"
 cat "$ROOT/scripts/self-test.sh" > "$SELECT_FIX/scripts/self-test.sh"
 chmod +x "$SELECT_FIX/scripts/self-test.sh"
@@ -250,6 +250,7 @@ mkdir -p "$TIMING_FIX"
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'TMP=$1' 'mkdir -p "$TMP"'
   sed -n '/^# TIMING BEGIN/,/^# TIMING END/p' "$ROOT/scripts/self-test.sh"
   cat <<'TIMING_FIXTURE'
+trap 'test_timing_report; rm -rf "$TMP"' EXIT
 printf 'fixture stdout\n'
 printf 'fixture stderr\n' >&2
 test_timing_begin block fixture
@@ -981,6 +982,270 @@ c3_holds=$(jq -nc '[
 ]')
 printf '%s' "$c3_holds" | hold_replay questions | jq -e 'length==1 and .[0].id=="questions/hold/2"' >/dev/null || fail 'hold author boundary failed'
 
+(
+  . "$ROOT/scripts/lib/controller.sh"
+  CT_TMP="$TMP/review-threshold"; mkdir -p "$CT_TMP"
+  CT_PLAN=threshold CT_REVIEWER_ESCALATE='' CT_HOST=fixture
+  CT_SPEC='{"steps":[{"id":"alpha","title":"Review fixture"}]}'
+  controller_record() { :; }
+  controller_fault() { :; }
+  controller_diagnostic() { cat "$3"; }
+  head=$(printf '%040d' 1)
+  submitted=$(jq -nc --arg head "$head" '[{id:"submit",dbid:"1",author:"exec",last_edited_at:null,
+    body:("agentic-flow-transition: v=1; id=threshold/alpha/1/submit; event=submit; from=executing; role=executor; head="+$head)}]')
+  while read -r threshold outcome severity expected; do
+    policy="review.max_bounces=2 review.block_at=$threshold andon.station-infrastructure=hold"
+    journal_context "<!-- agentic-flow:plan:threshold step:alpha spec:fixture journal=v2 -->
+<!-- agentic-flow:plan:threshold policy:v1 $policy -->" || fail 'threshold issue stamp refused'
+    replay=$(journal_replay "$submitted" step-strict) || fail 'threshold submit replay failed'
+    CT_REPORT=$(jq -nc --arg block_at "$JOURNAL_BLOCK_AT" --argjson replay "$replay" '{issues:[{number:1,topology:"step-strict",state:"reviewing",
+      max_bounces:2,block_at:$block_at,replay:$replay}]}')
+    jq -n --arg head "$head" --arg outcome "$outcome" --arg severity "$severity" '{
+      v:1,station:"reviewer",outcome:$outcome,head:$head,summary:"Review fixture",question:null,evidence:null,
+      findings:[{severity:$severity,file:"fixture",line:1,text:"Fixture finding"}]}' > "$CT_TMP/verdict"
+    CT_RECORDS=$(jq -nc --slurpfile result "$CT_TMP/verdict" '
+      [{kind:"intent",run:"fixture",issue:1,station:"reviewer",step:"alpha"},
+       {kind:"station",run:"fixture",result:$result[0],invalid_reason:null}]')
+    controller_decide '{"head":"fixture"}' || fail 'threshold decision failed'
+    action=$(jq -r .action "$CT_TMP/record")
+    [ "$action" = "$expected" ] || fail "$threshold $outcome with $severity recorded $action, expected $expected"
+    controller_result_valid reviewer "$CT_TMP/verdict" || fail "valid $severity result refused"
+    comments=$(jq -nc --argjson submitted "$submitted" --rawfile body "$CT_TMP/body" '
+      $submitted+[{id:"review",dbid:"2",author:"review",last_edited_at:null,body:$body}]')
+    replay=$(journal_replay "$comments" step-strict) || fail 'threshold verdict replay failed'
+    printf '%s' "$replay" | jq -e --arg event "$expected" '.seq==2 and .latest.event==$event and
+      (if $event=="ask" then .state=="escalated" and .return_to=="reviewing" and .bounces==0 else true end)' >/dev/null ||
+      fail 'threshold decision did not journal the expected event'
+    if [ "$expected" = ask ]; then
+      case "$outcome:$severity" in
+        approve:medium|approve:P2) reason='reviewer approved with a blocking medium finding' ;;
+        bounce:low) reason='reviewer bounced with no blocking finding' ;;
+        *) fail 'missing expected threshold diagnostic' ;;
+      esac
+      grep -Fxq "$reason" "$CT_TMP/diagnostic-body" || fail 'threshold ask lost its diagnostic'
+    elif [ "$expected" = approve ]; then
+      canonical=$severity
+      [ "$severity" != P2 ] || canonical=medium
+      grep -Fq "| $canonical | " "$CT_TMP/body" || fail 'approval dropped its finding'
+    fi
+  done <<'THRESHOLDS'
+medium approve medium ask
+medium approve P2 ask
+medium approve nit approve
+medium bounce low ask
+medium bounce P1 bounce
+high approve P2 approve
+low bounce P3 bounce
+judgment approve medium approve
+judgment approve nit approve
+judgment bounce low bounce
+THRESHOLDS
+) || fail 'pinned review threshold regressions failed'
+
+controller_infrastructure_retry_tests() (
+  . "$ROOT/scripts/lib/controller.sh"
+  local fixture="$TMP/infrastructure-retry" repo doc=docs/inprogress/feature-retry.md
+  local base state heartbeat worktree ledger retry_fixture expected rc limit infra delay_override retry_turns retry_report
+  mkdir -p "$fixture"
+  fixture=$(cd "$fixture" && pwd -P)
+  repo="$fixture/repo"; state="$repo/.git/agentic-flow/state"
+  heartbeat="$state/retry.controller.json"; ledger="$repo/.git/agentic-flow/ledger/retry.jsonl"
+  export AGENTIC_WORKTREE_ROOT="$fixture/worktrees"
+  worktree="$AGENTIC_WORKTREE_ROOT/retry"
+  mkdir -p "$repo/docs/inprogress" "$repo/scripts" "$repo/config"
+  ln "$ROOT/config/workflow.tsv" "$ROOT/config/config-keys.tsv" "$repo/config/"
+  printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=plan owner=plan > "$repo/.agentic-flow-review-policy"
+  cat > "$repo/$doc" <<'RETRY_PLAN'
+# Feature — Retry
+# Part B — Implementation brief
+```agentic-flow-plan
+id: retry
+profile: strict
+tracking: Retry
+branch: topic
+steps: alpha
+policy: review.max_bounces=2 review.block_at=medium andon.station-infrastructure=retry:2
+```
+## alpha — First
+**DoD:** done
+**Verify:** `make check`
+**Red-first:** none
+**Risks:** failure
+## Status
+- **Approval:** pending
+RETRY_PLAN
+  printf '#!/usr/bin/env bash\nprintf "fixture packet\\n"\n' > "$repo/scripts/agentic-flow"
+  chmod +x "$repo/scripts/agentic-flow"
+  cd "$repo"
+  git init -q
+  git checkout -qb main
+  git config user.name Fixture
+  git config user.email fixture@example.invalid
+  git config commit.gpgsign false
+  git add "$doc" scripts/agentic-flow config/workflow.tsv config/config-keys.tsv .agentic-flow-review-policy
+  git commit -qm 'Retry plan'
+  base=$(git rev-parse HEAD)
+  sed "s/Approval:\*\* pending/Approval:** status=approved; by=plan; at=2026-01-01; rev=$base/" "$doc" > "$fixture/approved"
+  cat "$fixture/approved" > "$doc"
+  git commit -qam 'Approve retry plan'
+
+  identity_repository() { printf 'owner/repo\n'; }
+  perl() {
+    if [ "$1" = "$CONTROLLER_RECOVERY" ] && [ "${2:-}" = process ]; then
+      kill -0 "$3" && printf 'fixture-start-%s\n' "$3"
+    else command perl "$@"; fi
+  }
+  controller_check() {
+    CT_TRACKER=2
+    CT_REPORT=$retry_report
+    printf '%s\n' "$CT_REPORT" > "$CT_TMP/report"
+  }
+  controller_foreign() { :; }
+  controller_holds() { :; }
+  controller_worktree() { :; }
+  controller_labels() { :; }
+  controller_open_state() { :; }
+  controller_plan_effect() { :; }
+  controller_unjournaled() { :; }
+  controller_completed_effects() { :; }
+  controller_pending() {
+    if [ "$retry_fixture" = replacement ]; then
+      CT_PENDING=$(jq -c '[{head:.run,chain,pending:"relaunch"}]' "$fixture/predecessor")
+    fi
+  }
+  controller_repair() { :; }
+  handoff_write_cache() { :; }
+  HANDOFF_ISSUES=''
+  roles_load() { ROLES_JSON='[]'; }
+  launch_assignment() {
+    LAUNCH_ROOT=$2 LAUNCH_CLI=codex LAUNCH_PROFILE="$2/fixture"
+    LAUNCH_MODEL=- LAUNCH_CONTRACT_MODE=native LAUNCH_TIMEOUT=10
+  }
+  ledger_chains() { printf '[]\n'; }
+  controller_gate() { if [ "$retry_fixture" = cap ]; then CT_TURNS=$((CT_TURN_CAP - 1)); fi; }
+  controller_finished() { jq -e 'any(.[];.kind=="station")' <<< "$CT_RECORDS" >/dev/null; }
+  handoff_transaction() {
+    printf '%s %s\n' "$2" "${7}" >> "$fixture/holds"
+    cat "${!#}" > "$fixture/note"
+  }
+  probe_needed() { [ "$retry_fixture" != preflight ] && [ "$retry_fixture" != fingerprint ]; }
+  probe_station() {
+    printf '%s\n' "$CT_TURNS" >> "$fixture/probes"
+    [ "$CT_TURNS" -le "$limit" ] || return 0
+    if [ "$retry_fixture" = dirty ]; then printf 'unowned edit\n' > "$worktree/dirty"; fi
+    printf '{"error":"fixture probe failure"}\n'
+    return 1
+  }
+  launch_preflight() {
+    case "$retry_fixture" in
+      changed-intent) ledger_intent retry "$fixture/predecessor" >/dev/null || return 5 ;;
+      preflight) printf 'fixture preflight failure\n' ;;
+      *) return 0 ;;
+    esac
+    return 6
+  }
+  launch_fingerprint() { [ "$retry_fixture" != fingerprint ] || return 6; printf '%064d\n' 0; }
+  launch_station() {
+    printf '%s\n' "$CT_TURNS" >> "$fixture/launches"
+    [ "$retry_fixture" != post-intent ] || return 6
+    printf '{"v":1,"station":"executor","outcome":"ask","head":null,"summary":"Fixture","question":"Fixture?","findings":[]}\n' > "$4"
+    printf '{"seconds":1,"usage":{"input":1,"output":1,"cost_usd":null}}\n'
+  }
+  sleep() {
+    local status_rc=0
+    printf '%s\n' "$1" >> "$fixture/sleeps"
+    [ "$retry_fixture" = recover ] || return 0
+    cat "$heartbeat" >> "$fixture/backoffs"
+    if [ "$CT_TURNS" -eq 1 ]; then
+      "$ROOT/scripts/agentic-flow" status "$doc" > "$fixture/status" || status_rc=$?
+      [ "$status_rc" -eq 0 ] || [ "$status_rc" -eq 10 ]
+    fi
+  }
+  retry_dispatch() {
+    # The recovery and cap fixtures exercise the controller loop. Drive the
+    # remaining cases through dispatch with the same ledger and worktree.
+    local CT_TMP="$fixture/dispatch" CT_ROOT=$repo CT_WORKTREE=$worktree CT_PLAN=retry CT_BRANCH=topic
+    local CT_SPEC='{"steps":[{"id":"alpha"}]}' CT_PENDING='[]' CT_OWNERSHIP=null CT_UNATTENDED=true
+    local CT_CHILD='' CT_STATIONS=0 CT_RAISED=false CT_HOLD_REASONS='[]' CT_TURNS=0
+    local CT_INFRA_KEY='' CT_INFRA_RETRIES=0 CT_RUN=fixture CT_HOST=0123456789ab
+    local CT_TRACKER CT_REPORT CT_RECORDS
+    local HANDOFF_LEDGER_UNAVAILABLE=false
+    mkdir -p "$CT_TMP"
+    controller_check
+    controller_pending
+    for ((CT_TURNS=1; CT_TURNS<=retry_turns; CT_TURNS++)); do
+      CT_RECORDS=$(ledger_read retry) || return 5
+      controller_dispatch || return $?
+    done
+    if [ "$retry_fixture" = replacement ]; then
+      [ "$CT_INFRA_RETRIES" -eq 0 ] || fail 'station metadata did not reset the retry budget'
+    fi
+  }
+  ledger_init "$repo"
+  for retry_fixture in recover cap exhaust post-intent replacement changed-intent dirty hold preflight fingerprint; do
+    rm -f "$ledger" "$fixture/"{probes,launches,holds,note,sleeps,backoffs}
+    expected=10 infra=retry:2 limit=3 delay_override=0 retry_turns=1
+    case "$retry_fixture" in
+      recover) expected=0; limit=2 ;;
+      cap) limit=10 ;;
+      exhaust) delay_override=''; retry_turns=3 ;;
+      post-intent|changed-intent) limit=0 ;;
+      replacement) expected=0; limit=1; retry_turns=2; ledger_intent retry "$fixture/predecessor" >/dev/null ;;
+      hold) infra=hold ;;
+      preflight|fingerprint) expected=0 ;;
+    esac
+    retry_report=$(jq -nc --arg infra "$infra" '{issues:[{number:1,step:"alpha",topology:"step-strict",state:"executing",infra:$infra,replay:{seq:0}}]}')
+    rc=0
+    export AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_RETRY_S=$delay_override AGENTIC_FLOW_CONTROLLER_TURN_CAP=10
+    case "$retry_fixture" in
+      recover|cap) controller_cmd "$ROOT/scripts/agentic-flow" "$doc" --json ;;
+      *) retry_dispatch ;;
+    esac > "$fixture/out" 2> "$fixture/err" || rc=$?
+    [ "$rc" -eq "$expected" ] || fail "$retry_fixture returned $rc, expected $expected: $(cat "$fixture/err" "$fixture/out")"
+    case "$retry_fixture" in
+      recover)
+        [ "$(cat "$fixture/probes")" = $'1\n2\n3' ] && [ "$(cat "$fixture/launches")" = 3 ] &&
+          [ ! -e "$fixture/holds" ] || fail 'probe recovery did not launch once on turn three'
+        grep -Fq 'station-infrastructure retry 2/2: {"error":"fixture probe failure"}' "$fixture/err" || fail 'retry log lost its cause'
+        [ "$(cat "$fixture/sleeps")" = $'0\n0' ] || fail 'test override did not control backoff'
+        jq -se 'length==2 and all(.[];.phase=="reconciling" and .station==null and
+          .retry=={issue:1,station:"executor",attempt:.turn,of:2,until:.retry.until} and .retry.until>0)' "$fixture/backoffs" >/dev/null ||
+          fail 'retry heartbeat lost its launch attempt'
+        grep -Fq 'retry 1/2 until ' "$fixture/status" || fail 'status did not validate and render retry heartbeat'
+        jq -e '.retry==null' "$heartbeat" >/dev/null || fail 'stopped heartbeat retained retry' ;;
+      exhaust)
+        [ "$(cat "$fixture/probes")" = $'1\n2\n3' ] && [ ! -e "$fixture/launches" ] &&
+          [ "$(cat "$fixture/holds")" = '2 station-infrastructure' ] || fail 'retry exhaustion did not raise exactly one hold'
+        [ "$(cat "$fixture/sleeps")" = $'30\n60' ] || fail 'retry delay did not double'
+        grep -Fq 'after 2 automatic retries' "$fixture/note" || fail 'exhausted hold lost its retry count' ;;
+      post-intent)
+        [ "$(cat "$fixture/launches")" = 1 ] && [ "$(cat "$fixture/holds")" = '1 station-infrastructure' ] &&
+          [ ! -e "$fixture/sleeps" ] || fail 'post-intent launch refusal was retried'
+        ledger_read retry | jq -c '.[]|select(.kind=="intent")' > "$fixture/predecessor" ;;
+      replacement)
+        [ "$(cat "$fixture/probes")" = $'1\n2' ] && [ "$(cat "$fixture/launches")" = 2 ] &&
+          [ ! -e "$fixture/holds" ] || fail 'predecessor intent blocked replacement retry'
+        ledger_read retry | jq -e '[.[]|select(.kind=="intent")] |
+          length==2 and .[1].replaces==.[0].run and .[1].run==(.[0].chain+"/2")' >/dev/null ||
+          fail 'replacement retry opened an extra intent or lost the predecessor' ;;
+      dirty|changed-intent|hold)
+        [ "$(cat "$fixture/probes")" = 1 ] && [ "$(cat "$fixture/holds")" = '2 station-infrastructure' ] &&
+          [ ! -e "$fixture/sleeps" ] && [ ! -e "$fixture/launches" ] || fail "$retry_fixture did not hold immediately"
+        if [ "$retry_fixture" = hold ]; then
+          ! grep -Fq 'automatic retries' "$fixture/note" || fail 'hold pin changed its diagnostic'
+        fi
+        rm -f "$worktree/dirty" ;;
+      cap)
+        [ "$(cat "$fixture/probes")" = 10 ] && [ "$(cat "$fixture/holds")" = '2 turn-cap' ] &&
+          [ ! -e "$fixture/launches" ] || fail 'retry crossed the turn cap' ;;
+      preflight|fingerprint)
+        [ "$(cat "$fixture/sleeps")" = 0 ] && [ ! -e "$fixture/launches" ] &&
+          [ ! -e "$fixture/holds" ] || fail "$retry_fixture did not schedule a retry" ;;
+    esac
+  done
+)
+controller_infrastructure_retry_tests || fail 'pinned infrastructure retry regressions failed'
+
 # Clarification approval uses committed content and stages only the document.
 C3="$TMP/clarification"
 mkdir -p "$C3/docs/inprogress"
@@ -1059,16 +1324,17 @@ test_timing_begin block launch
   set -e
   fixture="$(cd "$TMP" && pwd -P)/plan-launch"
   project="$fixture/project" origin="$fixture/origin"
-  mkdir -p "$project/docs/templates" "$project/docs/inprogress" "$project/scripts" "$fixture/bin"
+  mkdir -p "$project/docs/templates" "$project/docs/inprogress" "$project/scripts" "$project/config" "$fixture/bin"
   cp "$ROOT/docs/templates/feature-analysis.md" "$ROOT/docs/templates/security-review.md" "$project/docs/templates/"
   cp "$ROOT/docs/README.md" "$project/docs/README.md"
   cp "$ROOT/scripts/docs-index.sh" "$project/scripts/"
+  ln "$ROOT/config/config-keys.tsv" "$project/config/"
   git -C "$project" init -qb main
   git -C "$project" config user.name 'Plan fixture'
   git -C "$project" config user.email 'fixture@example.invalid'
   git -C "$project" config commit.gpgsign false
   touch "$project/docs/inprogress/.gitkeep"
-  git -C "$project" add docs scripts
+  git -C "$project" add docs scripts config/config-keys.tsv
   git -C "$project" commit -qm 'Seed plan templates'
   initial=$(git -C "$project" rev-parse HEAD)
   git clone -q --bare --shared "$project" "$origin"
@@ -1500,14 +1766,21 @@ PLAN
   CT_RECORDS=$(jq -nc --slurpfile result "$verdict" --argjson warnings "$CONTROLLER_RESULT_WARNINGS" '
     [{kind:"intent",run:"fixture",issue:1,station:"reviewer",step:"alpha"},
      {kind:"station",run:"fixture",result:$result[0],warnings:$warnings,invalid_reason:null}]')
-  CT_REPORT=$(jq -nc '{issues:[{number:1,topology:"step-strict",replay:{seq:1,state:"reviewing",return_to:"executing",submitted_head:("a"*40),bounces:0}}]}')
+  CT_REPORT=$(jq -nc '{issues:[{number:1,topology:"step-strict",max_bounces:1,
+    block_at:"judgment",
+    replay:{seq:1,state:"reviewing",return_to:"executing",submitted_head:("a"*40),bounces:0}}]}')
   controller_record() { :; }; controller_fault() { :; }
+  controller_diagnostic() { cat "$3"; }
   controller_decide '{"head":"fixture"}' || fail 'warning decision failed'
   jq -e '.action=="bounce" and .body_format=="markdown-v1"' "$CT_TMP/record" >/dev/null || fail 'controller did not record the rendered verdict'
   grep -q '^<!-- agentic-flow-transition:' "$CT_TMP/body" || fail 'controller wrote a bare transition'
   jq -n --rawfile body "$CT_TMP/body" --slurpfile verdict "$verdict" '
     ($body|contains($verdict[0].summary)) and ($body|contains($verdict[0].findings[0].text)) and
     ($body|contains("Warnings: summary 2311 > 2000; findings[0].text 1500 > 1200"))' | grep -qx true || fail 'journal lost warning or verdict text'
+  [ ! -s "$CT_TMP/diagnostic-body" ] || fail 'controller escalated below the pinned limit'
+  CT_REPORT=$(printf '%s\n' "$CT_REPORT" | jq '.issues[0].replay.bounces=1')
+  controller_decide '{"head":"fixture"}' || fail 'pinned bounce decision failed'
+  grep -Fxq 'bounce cap reached' "$CT_TMP/diagnostic-body" || fail 'controller did not escalate at the pinned limit'
   CT_RECORDS='[{"kind":"station","run":"fixture","result":null,"invalid_reason":"summary 8001 > 8000"}]'
   controller_retry_context resume-valid fixture > "$CT_TMP/retry"
   grep -Fq 'summary 8001 > 8000' "$CT_TMP/retry" || fail 'retry prompt lost refusal reason'
@@ -2019,30 +2292,33 @@ launch_tests() (
   rc=0; probe_station reviewer "$C1/project" > "$C1/manual.json" 2> "$C1/probe.err" || rc=$?
   [ "$rc" = 6 ] && jq -e '.launched==false' "$C1/manual.json" >/dev/null || fail 'manual station was probed'
 
-  # Exercise the controller's hold chokepoint without requiring a live ps call.
+  # Exercise the probe and the default hold path without a live ps call.
   (
     . "$ROOT/scripts/lib/controller.sh"
-    CT_UNATTENDED=false CT_WORKTREE="$C1/project" CT_TMP="$C1" CT_TRACKER=150
+    CT_UNATTENDED=false CT_WORKTREE="$C1/project" CT_TMP="$C1" CT_TRACKER=150 prelaunch_cause=''
     probe_needed() { printf 'needed\n' >> "$C1/gate"; return 0; }
     probe_station() { printf 'probe\n' >> "$C1/gate"; printf '{"error":"fixture failure"}\n'; return 1; }
     launch_preflight() { printf 'preflight\n' >> "$C1/gate"; }
     controller_hold() { printf '%s %s\n' "$1" "$2" >> "$C1/gate"; }
+    check_probe() {
+      controller_probe executor || controller_infrastructure_failure 150 executor 0 0 "$CT_TRACKER" "$prelaunch_cause"
+    }
     : > "$C1/gate"
-    controller_probe executor || fail 'once probe gate failed'
+    check_probe || fail 'once probe gate failed'
     [ ! -s "$C1/gate" ] || fail 'once auto-probed'
     CT_UNATTENDED=true; rc=0
-    controller_probe executor || rc=$?
+    check_probe || rc=$?
     [ "$rc" = 10 ] || fail 'failed unattended probe did not exit 10'
     [ "$(tr '\n' / < "$C1/gate")" = 'needed/probe/150 station-infrastructure/' ] || fail 'failed probe launched station or missed hold'
     : > "$C1/gate"; probe_needed() { return 1; }
-    controller_probe executor || fail 'cached unattended gate failed'
+    check_probe || fail 'cached unattended gate failed'
     [ "$(cat "$C1/gate")" = preflight ] || fail 'cached unattended gate probed again'
     : > "$C1/gate"
     launch_preflight() { printf 'cached launcher refused\n' >&2; return 6; }
-    rc=0; controller_probe executor || rc=$?
+    rc=0; check_probe || rc=$?
     [ "$rc" = 10 ] && [ "$(cat "$C1/gate")" = '150 station-infrastructure' ] || fail 'cached preflight did not hold'
     CT_UNATTENDED=false; : > "$C1/gate"
-    controller_probe executor || fail 'once mode ran unattended preflight'
+    check_probe || fail 'once mode ran unattended preflight'
     [ ! -s "$C1/gate" ] || fail 'once mode raised a preflight hold'
   )
 
@@ -2807,7 +3083,7 @@ identity_load() {
 identity_token() { if [ "${3:-}" = --check ] && [ -f "$C4_STATE/no-token" ]; then return 5; fi; printf 'fixture-%s\n' "$2"; }
 IDENTITIES
   ln "$ROOT/scripts/agentic-flow" "$project/scripts/agentic-flow"
-  ln "$ROOT/config/workflow.tsv" "$project/config/workflow.tsv"
+  ln "$ROOT/config/workflow.tsv" "$ROOT/config/config-keys.tsv" "$project/config/"
   printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=plan owner=owner > "$project/.agentic-flow-review-policy"
   printf 'ignored\n' > "$project/.gitignore"
   printf 'a\n' > "$project/a"; printf 'b\n' > "$project/b"
@@ -2990,11 +3266,13 @@ NOTIFY
   jq -e '.pending[0].pending=="fix"' "$c4/out" >/dev/null || fail 'red verify did not remain pending'
   # A green recorded verification produces a submit without invoking a verifier.
   c4_reset; c4_intent executor 0 1 initial
-  local original_head=$head committed
+  local original_head=$head committed pre_ack
   committed=$(printf 'Implement alpha\n\nFixes #1\n' | git -C "$project" commit-tree "$head^{tree}" -p "$head")
   git -C "$project" update-ref refs/heads/topic "$committed"
   head=$committed; c4_station submitted ''; head=$original_head
-  jq -n --arg run "$run" --arg head "$committed" --arg file "$c4/verify" '{v:1,kind:"verify",run:$run,head:$head,record:$file,status:"green",at:(now|floor)}' | c4_send verify
+  pre_ack=$(printf pre-ack | shasum -a 256); pre_ack=${pre_ack%% *}
+  jq -n --arg run "$run" --arg head "$committed" --arg file "$c4/verify" --arg budget "$pre_ack" \
+    '{v:1,kind:"verify",run:$run,head:$head,record:$file,status:"green",budget_policy:$budget,at:(now|floor)}' | c4_send verify
   c4_run 0
   [ "$(c4_count 1)" = 1 ] || fail 'green verification did not submit exactly once'
   c4_run 0
@@ -3449,6 +3727,101 @@ MODEL
     test_timing_end
   }
   . "$ROOT/scripts/lib/brief.sh"
+  # A crash leaves the submit decision pending. Reconciliation must leave an
+  # out-of-date budget decision for dispatch, even if the ledger still says green.
+  local before_budget_fixture=$head budget_operator="$c4/operator/agentic-flow/config/owner/repo.conf"
+  local budget_run_id verify_calls status_rc
+  mkdir -p "${budget_operator%/*}" "$project/scripts/tests"
+  ln "$ROOT/scripts/self-test.sh" "$project/scripts/self-test.sh"
+  ln "$ROOT/config/test-budgets.tsv" "$project/config/test-budgets.tsv"
+  awk -F '\t' 'BEGIN {OFS="\t"} $1=="hooks" {$2=5} {print}' "$ROOT/config/test-wall-ceilings.tsv" \
+    > "$project/config/test-wall-ceilings.tsv"
+  cat > "$project/scripts/tests/helpers.sh" <<'HELPERS'
+fail() { echo "self-test failed: $*" >&2; exit 1; }
+self_test_now() { printf '%s\n' "${FIXTURE_CLOCK:-0}"; }
+HELPERS
+  printf 'FIXTURE_CLOCK=${RECOVERY_BUDGET_CLOCK:-6}\n' > "$project/scripts/tests/hooks.sh"
+  printf 'check:\n\t@scripts/self-test.sh --only hooks\n' > "$project/Makefile"
+  sed '2a\
+if [ "${1:-}" = verify-step ]; then printf "verify\\n" >> "$C4_STATE/verifiers"; fi
+' "$project/scripts/agentic-flow" > "$c4/log-verifier"
+  rm "$project/scripts/agentic-flow"
+  cat "$c4/log-verifier" > "$project/scripts/agentic-flow"
+  chmod +x "$project/scripts/agentic-flow"
+  git -C "$project" add Makefile scripts/agentic-flow scripts/self-test.sh scripts/tests \
+    config/test-budgets.tsv config/test-wall-ceilings.tsv
+  git -C "$project" commit -qm 'Fixture with an acknowledgment-capable wall gate'
+  head=$(git -C "$project" rev-parse HEAD)
+  (
+    export CI=false
+    unset AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL AGENTIC_FLOW_BUDGET_WALL_SCALE
+    for budget_case in red green changing; do
+      c5_reset
+      rm -f "$state/verifiers"
+      printf 'budget.wall.mode.local=warn\n' > "$budget_operator"
+      AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-verify c5_run 5 --once
+      budget_run_id=$(ledger_read recovery | jq -er '[.[]|select(.kind=="verify" and .status=="green" and .budget_policy!=null)]|last|.run')
+      verify_calls=$(cat "$state/verifiers")
+      ledger_read recovery | jq '[.[]|select(.kind=="verify")]|last' > "$c4/duplicate"
+      if ledger_append verify recovery "$c4/duplicate" > "$c4/duplicate.out" 2>&1; then
+        fail 'budget recovery accepted a plain duplicate verify record'
+      fi
+      grep -Fq 'duplicate verify record' "$c4/duplicate.out" || fail 'budget recovery rejected the duplicate for a different reason'
+      printf 'budget.wall.mode.local=stop\n' > "$budget_operator"
+      c5_run 0 --reconcile-only
+      jq -e --arg run "$budget_run_id" '.pending[]|.head==$run and .pending=="verify" and
+        .issue==1 and .reverify=={reason:"budget-policy",attempt:1}' "$c4/out" >/dev/null \
+        || fail 'budget recovery omitted queued reverify from reconcile-only'
+      grep -Fxq '#1 pending verification (budget policy changed)' "$c4/err" \
+        || fail 'budget recovery omitted the pending verification notice'
+      [ "$verify_calls" = "$(cat "$state/verifiers")" ] || fail 'budget recovery reconcile-only launched a verifier'
+      ledger_read recovery | jq -e 'all(.[];.kind!="decision")' >/dev/null || fail 'budget recovery reconciled into a stale decision'
+      if [ "$budget_case" = red ]; then
+        status_rc=0
+        (cd "$project" && PATH="$bin:$PATH" scripts/agentic-flow status docs/inprogress/plan.md --json) > "$c4/budget-status" || status_rc=$?
+        [ "$status_rc" = 10 ] || fail 'budget recovery status did not report a stopped controller'
+        jq -e '.next.command=="agentic-flow run docs/inprogress/plan.md"' "$c4/budget-status" >/dev/null \
+          || fail 'budget recovery status did not recommend restarting the controller'
+      fi
+      case "$budget_case" in
+        red)
+          c5_run 10
+          ledger_read recovery | jq -e --arg run "$budget_run_id" '
+            [.[]|select(.kind=="verify" and .run==$run)] as $v |
+            [.[]|select(.kind=="intent")] as $i |
+            ($v|length)==2 and $v[1].reverify.attempt==1 and $v[1].status=="red" and
+            ($i|length)==2 and $i[0].chain==$i[1].chain and $i[1].replaces==$run and
+            all(.[]; .kind!="decision" or .action!="submit")' >/dev/null \
+            || fail 'budget recovery did not route the red reverify to one replacement fix'
+          ;;
+        green)
+          RECOVERY_BUDGET_CLOCK=0 c5_run 0 --once
+          ledger_read recovery | jq -e --arg run "$budget_run_id" '
+            [.[]|select(.kind=="verify" and .run==$run)] as $v |
+            ($v|length)==2 and $v[1].reverify.attempt==1 and $v[1].status=="green" and
+            $v[0].budget_policy!=$v[1].budget_policy and
+            any(.[];.kind=="decision" and .run==$run and .action=="submit")' >/dev/null \
+            || fail 'budget recovery did not submit from the refreshed green verification'
+          ;;
+        changing)
+          RECOVERY_BUDGET_CLOCK=0 AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-verify c5_run 5 --once
+          printf 'budget.wall.mode.local=warn\n' > "$budget_operator"
+          AGENTIC_CONTROLLER_TESTING=1 AGENTIC_CONTROLLER_FAULT=after-verify c5_run 5 --once
+          printf 'budget.wall.mode.local=stop\n' > "$budget_operator"
+          c5_run 10 --once
+          ledger_read recovery | jq -e --arg run "$budget_run_id" '
+            [.[]|select(.kind=="verify" and .run==$run)|.reverify.attempt]==[null,1,2] and
+            any(.[];.kind=="decision" and .run==$run and .action=="ask")' >/dev/null \
+            || fail 'budget recovery did not cap reverification attempts'
+          jq -e 'any(.comments.nodes[]; .body|contains("budget policy kept changing during verification"))' \
+            "$state/issue-1.json" >/dev/null || fail 'budget recovery did not explain the reverification cap'
+          ;;
+      esac
+    done
+  )
+  rm -f "$budget_operator"
+  head=$before_budget_fixture
+  git -C "$project" reset --hard -q "$head"
   # A dead launcher holds without an ask, including a crash after its station
   # record. Clearing the hold advances the generation with no journal resume.
   for fault in none after-station; do
@@ -3965,7 +4338,7 @@ controller_check() {
       esac ;;
   esac
   case "$WAIT_FIXTURE" in
-    dispatch|missing|cap) [ -f "$wait_dir/done" ] || state=executing ;;
+    dispatch|missing|cap|configured-cap) [ -f "$wait_dir/done" ] || state=executing ;;
     escalation)
       if [ -f "$wait_dir/resumed" ]; then
         seq=5; [ -f "$wait_dir/done" ] || state=executing
@@ -4006,7 +4379,7 @@ controller_dispatch() {
         return 10
       fi ;;
   esac
-  : > "$wait_dir/done"
+  [ "$WAIT_FIXTURE" = configured-cap ] || : > "$wait_dir/done"
 }
 wait_effect() {
   case "$CT_TMP" in
@@ -4041,7 +4414,7 @@ WAIT
     case "$1" in
       integrity) printf '[{"id":"heartbeat/hold/1","issue":1,"reason":"ledger-invalid"}]\n' > "$waiting/holds" ;;
       reconcile) printf '[{"id":"heartbeat/hold/1","issue":1,"reason":"plan-effect-pending"},{"id":"heartbeat/hold/2","issue":1,"reason":"findings-incomplete"}]\n' > "$waiting/holds" ;;
-      dispatch|missing|escalation|cap|ledger) ;;
+      dispatch|missing|escalation|cap|configured-cap|ledger) ;;
       *) printf '[{"id":"heartbeat/hold/1","issue":1,"reason":"findings-incomplete"}]\n' > "$waiting/holds" ;;
     esac
   }
@@ -4096,6 +4469,15 @@ WAIT
     status_run 10 --wait-human 60 --json
     [ ! -s "$waiting/sleeps" ] || fail "controller slept on a non-resumable stop ($mode)"
   done
+
+  wait_reset configured-cap
+  local config_home="$fixture/config-home"
+  mkdir -p "$config_home/agentic-flow/config/owner"
+  printf 'controller.turn_cap=12\n' > "$config_home/agentic-flow/config/owner/repo.conf"
+  XDG_CONFIG_HOME="$config_home" status_run 10 --json
+  wait_assert 'last | .turn==12 and .turn_cap==12 and .exit==10'
+  [ "$(wc -l < "$waiting/dispatch")" -eq 12 ] &&
+    grep -Fxq turn-cap "$waiting/raised" || fail 'controller did not stop after 12 configured turns'
 
   wait_reset failed
   status_run 5 --wait-human 60 --json
@@ -4174,7 +4556,7 @@ status_tests() (
   lock="$repo/.git/agentic-flow/locks/controller-heartbeat"
   heartbeat="$state/heartbeat.controller.json"
   mkdir -p "$repo/docs/inprogress" "$repo/scripts" "$repo/config" "$fixture/bin"
-  ln "$ROOT/config/workflow.tsv" "$repo/config/workflow.tsv"
+  ln "$ROOT/config/workflow.tsv" "$ROOT/config/config-keys.tsv" "$repo/config/"
   printf '%s\n' version=1 workflow=.github/workflows/ci.yml identity-mode=distinct-account executor=exec reviewer=review approver=plan owner=owner > "$repo/.agentic-flow-review-policy"
   cat > "$repo/$doc" <<'PLAN'
 # Feature — Heartbeat
@@ -4185,6 +4567,7 @@ profile: strict
 tracking: Heartbeat
 branch: topic
 steps: alpha
+policy: review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold
 ```
 ## alpha — First
 **DoD:** done
@@ -4202,7 +4585,7 @@ PLAN
   git -C "$repo" config user.email fixture@example.invalid
   git -C "$repo" config commit.gpgsign false
   git -C "$repo" remote add origin https://github.com/owner/repo.git
-  git -C "$repo" add "$doc" scripts/agentic-flow config/workflow.tsv .agentic-flow-review-policy
+  git -C "$repo" add "$doc" scripts/agentic-flow config/workflow.tsv config/config-keys.tsv .agentic-flow-review-policy
   git -C "$repo" commit -qm 'Heartbeat plan'
   base=$(git -C "$repo" rev-parse HEAD)
   sed "s/Approval:\*\* pending/Approval:** status=approved; by=owner; at=2026-01-01; rev=$base/" "$repo/$doc" > "$fixture/approved"
@@ -4250,15 +4633,33 @@ case "$fixture_mode" in
     } ;;
   no-ack) workflow_load() { printf '\033[31mfixture error\033[0m\r\n' >&2; exit 0; } ;;
 esac
+if [ "${PIN_FIXTURE:-false}" = true ]; then
+  handoff_gh() {
+    case "$1 $2" in
+      'issue list')
+        jq -s 'map({number,body,author:{login:"plan"}})' "$fixture"/pin-issue-*.json ;;
+      'api graphql')
+        local arg
+        for arg in "$@"; do
+          case "$arg" in number=1|number=2) break ;; esac
+        done
+        jq '{data:{repository:{issue:.}}}' "$fixture/pin-issue-${arg#number=}.json" ;;
+      *)
+        printf '%s\n' "$*" >> "$fixture/pin-forge-mutations"
+        return 79 ;;
+    esac
+  }
+else
 controller_check() {
   case "$fixture_mode" in
     race-*) fixture_release "$fixture/$fixture_mode.finish" || return 5 ;;
     error) return 10 ;;
   esac
-  CT_REPORT='{"issues":[{"number":1,"step":"alpha","topology":"step-strict","state":"executing","replay":{"seq":0}}]}'
+  CT_REPORT='{"issues":[{"number":1,"step":"alpha","topology":"step-strict","state":"executing","max_bounces":3,"replay":{"seq":0}}]}'
   CT_TRACKER=2
   printf '%s\n' "$CT_REPORT" > "$CT_TMP/report"
 }
+fi
 controller_holds() { :; }
 controller_worktree() { :; }
 controller_labels() { :; }
@@ -4323,6 +4724,29 @@ RUNNER
     bash "$fixture/run" run "$doc" "$@" > "$fixture/out" 2> "$fixture/err" || rc=$?
     [ "$rc" = "$expected" ] || fail "heartbeat controller returned $rc, expected $expected (${WAIT_FIXTURE:-$*}): $(cat "$fixture/err" "$fixture/out")"
   }
+  mkdir -p "$repo/.agentic-flow"
+  printf 'invalid.key=true\n' > "$repo/.agentic-flow/config"
+  status_run 2 --reconcile-only
+  grep -Fq '.agentic-flow/config:1: unknown key' "$fixture/err" &&
+    [ ! -e "$lock" ] && [ ! -e "$heartbeat" ] || fail 'invalid config reached controller lock acquisition'
+  rm "$repo/.agentic-flow/config"
+  for number in 1 2; do
+    local stamp_identity=tracker
+    if [ "$number" = 1 ]; then stamp_identity=step:alpha; fi
+    jq -n --argjson n "$number" --arg id "$stamp_identity" --arg rev "$base" '
+      {number:$n,state:"OPEN",labels:{nodes:[],pageInfo:{hasNextPage:false}},
+       comments:{nodes:[],pageInfo:{hasNextPage:false}},
+       body:("<!-- agentic-flow:plan:heartbeat "+$id+" spec:"+$rev+" journal=v2 -->\n"+
+             "<!-- agentic-flow:plan:heartbeat policy:v1 review.max_bounces=3 review.block_at=medium andon.station-infrastructure=hold -->\n"+
+             "<!-- agentic-flow:topology:strict -->")}' > "$fixture/pin-issue-$number.json"
+  done
+  PIN_FIXTURE=true status_run 0 --reconcile-only
+  sed 's/review.block_at=medium/review.block_at=high/' "$fixture/pin-issue-1.json" > "$fixture/edited-pin"
+  mv "$fixture/edited-pin" "$fixture/pin-issue-1.json"
+  PIN_FIXTURE=true status_run 3 --reconcile-only
+  grep -Fq 'stamped issues differ from the approved plan' "$fixture/err" &&
+    [ ! -e "$fixture/pin-forge-mutations" ] || fail 'hand-edited pin lacked a read-only stamp drift refusal'
+  : > "$fixture/trace"
   status_run 0 --once --json
   jq -se --slurpfile intent "$fixture/intent" '
     map(.phase)==["reconciling","reconciling","station","reconciling","reconciling","stopped"] and
@@ -4427,9 +4851,11 @@ GH
   printf '[]\n' > "$state/heartbeat.holds.json"
   status_query 10 "$doc" --json
   status_assert '.plan=="heartbeat" and .snapshot.complete and .controller.state=="stopped"
-    and .controller.exit==130 and .steps[1].bounces==null and .steps[1].bounce_limit==2
+    and .controller.exit==130 and .steps[1].bounces==null and .steps[1].bounce_limit==3
     and .snapshot.ledger=="absent" and .steps[1].interrupted==null and .usage.cost_usd==null
     and .next=={owner:"human",action:"Run the controller",command:"agentic-flow run docs/inprogress/plan.md"}'
+  status_query 10 "$doc"
+  grep -Fq 'bounces ?/3' "$fixture/query" || fail 'status text omitted the pinned bounce limit'
 
   # Keep the lock/heartbeat identity alive through all controller-reader scenarios.
   sleep 45 & live_pid=$!

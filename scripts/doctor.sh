@@ -146,6 +146,7 @@ if [ "$SCOPE" = env ] || [ "$SCOPE" = all ]; then
   require_tool make
   require_tool git
   require_tool jq
+  require_tool perl
   require_tool gh
   require_tool shellcheck
   require_tool gitleaks
@@ -166,6 +167,16 @@ fi
 if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
   [ "$SCOPE" = repo ] || echo
   require_file METHODOLOGY.md
+  if [ -f "$ROOT/config/config-keys.tsv" ]; then
+    # shellcheck source=scripts/lib/config.sh
+    . "$ROOT/scripts/lib/config.sh"
+    config_diagnose "$ROOT" || fail 'invalid project config'
+  fi
+  if [ -f "$ROOT/config/test-budgets.tsv" ]; then
+    # shellcheck source=scripts/lib/budget.sh
+    . "$ROOT/scripts/lib/budget.sh"
+    budget_doctor "$ROOT" || fail 'could not report test budgets'
+  fi
   require_file ADOPTION.md
   if payload_has_word claude "$PAYLOAD_ACTIVE_SCOPES"; then require_file CLAUDE.md; fi
   require_file AGENTS.md
@@ -213,6 +224,13 @@ if [ "$SCOPE" = repo ] || [ "$SCOPE" = all ]; then
       if [ -n "$REVIEW_OWNER" ]; then ok "andon owner: $REVIEW_OWNER"; else warn "andon owner missing; set owner= before running the controller"; fi
     else
       fail "review policy valid"
+    fi
+  fi
+  if [ -f "$ROOT/scripts/lib/workflow.sh" ]; then
+    # shellcheck source=scripts/lib/workflow.sh
+    . "$ROOT/scripts/lib/workflow.sh"
+    if workflow_load "$ROOT" 2>/dev/null && [ "$WORKFLOW_DEPRECATED_BOUNCES" = true ]; then
+      warn 'workflow.tsv predates policy pins; take the upgrade candidate'
     fi
   fi
 

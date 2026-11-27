@@ -112,6 +112,7 @@ TRIAGE header. Don't edit between the markers by hand.
 | feature-adopt-issues | Feature | ✅ Done | done |
 | feature-ask-answer-packet | Feature | ✅ Done | done |
 | feature-ci-as-authority | Feature | ✅ Done | done |
+| feature-config-surface | Feature | ✅ Done | done |
 | feature-deterministic-stations | Feature | ✅ Done | done |
 | feature-distinct-identities | Feature | ✅ Done | done |
 | feature-export-banner-leak | Feature | ✅ Done | done |

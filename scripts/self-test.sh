@@ -6,6 +6,7 @@
 # changes against the integration base (or when Git cannot compute that changed set).
 # --full --all-groups forces every group. --jobs or AGENTIC_TEST_JOBS sets the
 # full-run worker limit, capped at the available CPUs. --fast runs the smoke gate.
+# agentic-flow-capability: budget-ack v1
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -217,8 +218,22 @@ test_timing_report() {
     }
   ' "$TEST_TIMING_EVENTS" >&2
 }
-trap 'test_timing_report; rm -rf "$TMP"' EXIT
 # TIMING END
+
+finish_self_test() {
+  local status=$?
+  test_timing_report
+  if [ -z "$SHARD_DIR" ] && [ -s "$TMP/budget-overruns" ]; then
+    if budget_publish_overruns "$ROOT" "$TMP/budget-overruns"; then
+      printf '%s budget overruns recorded as warnings\n' "$(awk 'END {print NR}' "$TMP/budget-overruns")"
+    else
+      echo 'self-test warning: could not record budget overruns in the Git common directory' >&2
+    fi
+  fi
+  rm -rf "$TMP"
+  return "$status"
+}
+trap finish_self_test EXIT
 
 if [ -n "$SHARD_DIR" ]; then
   export HOME="$TMP/home" XDG_CONFIG_HOME="$TMP/config-home"
@@ -282,14 +297,32 @@ if [ ! -f "$ROOT/scripts/tests/helpers.sh" ]; then
 fi
 # shellcheck source=scripts/tests/helpers.sh
 . "$ROOT/scripts/tests/helpers.sh"
+# shellcheck source=scripts/lib/budget.sh
+. "$ROOT/scripts/lib/budget.sh"
 
-# Validate against the dispatcher inventory in every mode, including make check.
-load_wall_ceilings() {
-  local key keys="$SELF_TEST_GROUPS upgrade:upstream" file="$ROOT/config/test-wall-ceilings.tsv"
-  for key in $CONTROLLER_SCENARIOS; do keys="$keys controller:$key"; done
-  for key in $STATIONS_SCENARIOS; do keys="$keys stations:$key"; done
-  [ -r "$file" ] || fail 'missing wall-time ceiling file: config/test-wall-ceilings.tsv'
-  awk -F '\t' -v keys="$keys" '
+run_budget=$(budget_resolve "$ROOT" ${SHARD_DIR:+--shard}) || fail 'could not resolve test budget policy'
+BUDGET_CONTEXT=$(jq -r .effective.context <<< "$run_budget")
+BUDGET_WALL_MODE=$(jq -r .effective.wall_mode <<< "$run_budget")
+BUDGET_WALL_SCALE=$(jq -r .effective.wall_scale <<< "$run_budget")
+BUDGET_FIXTURE_MODE=$(jq -r .effective.fixtures_mode <<< "$run_budget")
+BUDGET_OVERRIDES=$(jq -c .overrides <<< "$run_budget")
+BUDGET_ROWS="${SHARD_DIR:-$TMP}/budget-overruns"
+printf 'budget-policy: %s\n' "$(jq -r .digest <<< "$run_budget")"
+if [ -z "$SHARD_DIR" ] && [ "$BUDGET_CONTEXT" = ci ] && [ "$BUDGET_WALL_MODE" = warn ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  printf 'wall time not enforced\n' >> "$GITHUB_STEP_SUMMARY" ||
+    echo 'self-test warning: could not write wall budget mode to the step summary' >&2
+fi
+
+budget_warn() { # name, measured, limit
+  printf 'self-test warning: %s measured %s, limit %s (warn)\n' "$@" >&2
+  printf '%s\t%s\t%s\t%s\twarn\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$@" "$BUDGET_CONTEXT" >> "$BUDGET_ROWS" ||
+    echo 'self-test warning: could not collect budget overrun' >&2
+}
+
+load_test_limits() { # TSV path relative to ROOT, label, expected keys, unknown-key label
+  local file=$1 label=$2 keys=$3 unknown=$4
+  [ -r "$ROOT/$file" ] || fail "missing $label file: $file"
+  awk -F '\t' -v keys="$keys" -v file="$file" -v label="$label" -v unknown="$unknown" '
     function reject(message) {
       print "self-test failed: " message > "/dev/stderr"
       invalid=1
@@ -301,29 +334,49 @@ load_wall_ceilings() {
     }
     /^#/ || /^$/ { next }
     NF != 2 || $2 !~ /^(0|[1-9][0-9]*)$/ || length($2)>9 {
-      reject("invalid wall-time ceiling at config/test-wall-ceilings.tsv line " FNR)
+      reject("invalid " label " at " file " line " FNR)
     }
-    !($1 in expected) { reject("wall-time ceiling for unknown group or tag: " $1) }
-    $1 in seen { reject("duplicate wall-time ceiling: " $1) }
+    !($1 in expected) { reject(label " for unknown " unknown ": " $1) }
+    $1 in seen { reject("duplicate " label ": " $1) }
     { seen[$1]=$2 }
     END {
       if (invalid) exit 1
       for (i=1; i<=count; i++) {
         key=order[i]
-        if (!(key in seen)) reject("missing wall-time ceiling: " key)
+        if (!(key in seen)) reject("missing " label ": " key)
         printf " %s=%s", key, seen[key]
       }
       print " "
     }
-  ' "$file"
+  ' "$ROOT/$file"
+}
+
+# Validate against the dispatcher inventory in every mode, including make check.
+load_wall_ceilings() {
+  local key keys="$SELF_TEST_GROUPS upgrade:upstream"
+  for key in $CONTROLLER_SCENARIOS; do keys="$keys controller:$key"; done
+  for key in $STATIONS_SCENARIOS; do keys="$keys stations:$key"; done
+  load_test_limits config/test-wall-ceilings.tsv 'wall-time ceiling' "$keys" 'group or tag'
 }
 WALL_CEILINGS=$(load_wall_ceilings) || exit 1
+FIXTURE_BUDGETS=$(load_test_limits config/test-budgets.tsv 'fixture copy budget' 'fixtures.fast fixtures.full fixtures.exported' budget) || exit 1
+case "$BUDGET_WALL_SCALE" in
+  1|1.0) ;;
+  *) WALL_CEILINGS=$(perl -MMath::BigRat -pe '
+    BEGIN { $scale = Math::BigRat->new(shift @ARGV) }
+    s/=(\d+)/"=" . Math::BigRat->new($1)->bmul($scale)->bceil()->as_int()/ge
+  ' "$BUDGET_WALL_SCALE" <<< "$WALL_CEILINGS") || exit 1 ;;
+esac
 
 check_wall_ceiling() { # <group[:tag]> <elapsed seconds>
   local key="$1" elapsed="$2" ceiling
   ceiling=${WALL_CEILINGS#*" $key="}
   ceiling=${ceiling%% *}
   if [ "$elapsed" -gt "$ceiling" ]; then
+    if [ "$BUDGET_WALL_MODE" = warn ]; then
+      budget_warn "$key" "$elapsed" "$ceiling"
+      return 0
+    fi
     printf 'self-test failed: %s took %s seconds (ceiling: %s seconds)\n' "$key" "$elapsed" "$ceiling" >&2
     return 1
   fi
@@ -333,26 +386,37 @@ cost_count() { # <event-file> <event>
   awk -v event="$2" '$0 == event { n++ } END { print n+0 }' "$1"
 }
 
+fixture_budget_limit() { # fast|full|exported
+  local limit=${FIXTURE_BUDGETS#*" fixtures.$1="}
+  printf '%s\n' "${limit%% *}"
+}
+
+check_fixture_budget() { # fast|full|exported, measured file copies
+  local key=$1 measured=$2 limit label=$1
+  limit=$(fixture_budget_limit "$key")
+  measure_event "fixture_budget:$key:$measured"
+  [ "$measured" -gt "$limit" ] || return 0
+  if [ "$BUDGET_FIXTURE_MODE" = warn ]; then
+    budget_warn "fixtures.$key" "$measured" "$limit"
+  else
+    [ "$key" != exported ] || label='exported full'
+    fail "$label mode made $measured fixture file copies; limit $limit"
+  fi
+}
+
 assert_cost_budget() { # <event-file> <fast|full>
   local events="$1" mode="$2" file_copies
   file_copies=$(cost_count "$events" fixture_file_copy)
   if [ "$mode" = fast ]; then
     [ "$(cost_count "$events" source_snapshot_copy)" -eq 0 ] || fail 'fast mode built a source snapshot'
     [ "$(cost_count "$events" fixture_tree_copy)" -eq 0 ] || fail 'fast mode copied a fixture tree'
-    [ "$file_copies" -le 33 ] || fail "fast mode made $file_copies fixture file copies; limit 33"
+    check_fixture_budget fast "$file_copies"
   elif [ -f "$ROOT/scripts/export.sh" ]; then
     # Exported projects omit the source-only exporter and never build this
     # snapshot. The approved full-copy limits describe scaffold verification.
     [ "$(cost_count "$events" source_snapshot_copy)" -eq 1 ] || fail 'full mode did not reuse one source snapshot'
     [ "$(cost_count "$events" fixture_tree_copy)" -le 1 ] || fail 'full mode exceeded one fixture tree copy'
-    # Approved 2026-11-18: the first full run with the snapshot uncounted
-    # (989e849) measured 190 test copies; the derived 188 was two short.
-    # The snapshot is counted once above; retain the one-tree and fast limits.
-    # Raised to 194 on 2026-11-21 (owner-approved): the first source-layout run of flow-ergonomics
-    # measured 194 copies in CI (run 44872894369).
-    # Raised to 198 on 2026-11-25: process-status ships five new scripts/lib files, each copied
-    # once into the fixtures that copy the checkout (the exported budget moved 117 to 121).
-    [ "$file_copies" -le 199 ] || fail "full mode made $file_copies fixture file copies; limit 199"
+    check_fixture_budget full "$file_copies"
   fi
   [ "$(cost_count "$events" path_directory_scan)" -eq 0 ] || fail "$mode mode scanned PATH directories"
 }
@@ -576,6 +640,7 @@ if [ "$SHIP_GATE" = 1 ]; then
     || { echo 'error: --ship-gate cannot select groups or scenarios' >&2; exit 2; }
   [ -x "$ROOT/scripts/export.sh" ] || fail 'ship-gate requires the scaffold source checkout'
   fresh_export "$ROOT" "$TMP/ship-export" || fail 'ship-gate export failed'
+  git -C "$TMP/ship-export" init -q --template= || fail 'ship-gate could not initialize the exported fixture'
   gate_events="$TMP/ship-gate.events"
   : > "$gate_events"
   if ! (cd "$TMP/ship-export" && AGENTIC_MEASURE_EVENTS="$gate_events" scripts/self-test.sh --full --all-groups); then
@@ -589,10 +654,7 @@ if [ "$SHIP_GATE" = 1 ]; then
     ' "$gate_events")
     fail "exported full suite failed (group: $gate_group)"
   fi
-  exported_copy_limit=122
-  exported_copies=$(cost_count "$gate_events" fixture_file_copy)
-  [ "$exported_copies" -le "$exported_copy_limit" ] \
-    || fail "exported full mode made $exported_copies fixture file copies; limit $exported_copy_limit"
+  check_fixture_budget exported "$(cost_count "$gate_events" fixture_file_copy)"
   echo 'ship-gate passed (exported full suite).'
   exit 0
 fi
@@ -655,7 +717,7 @@ run_full_shards() {
     if [ -n "$REPORT_EVENTS" ]; then report="$dir/report-events"; fi
     args=(--only "${shard%%/*}")
     case "$shard" in */*) args+=(--scenario "${shard#*/}") ;; esac
-    AGENTIC_SELF_TEST_SHARD_DIR="$dir" AGENTIC_MEASURE_EVENTS="$report" \
+    AGENTIC_FLOW_BUDGET_POLICY="$BUDGET_OVERRIDES" AGENTIC_SELF_TEST_SHARD_DIR="$dir" AGENTIC_MEASURE_EVENTS="$report" \
       bash "$ROOT/scripts/self-test.sh" "${args[@]}" > "$dir/log" 2>&1 &
     pids[next]=$!
     running=$((running+1))
@@ -671,6 +733,7 @@ run_full_shards() {
     if [ "$pid" != 0 ]; then wait "$pid" || status=$?; fi
     printf '%s\n' "--- self-test shard: $shard ---"
     cat "$dir/log"
+    if [ -f "$dir/budget-overruns" ]; then cat "$dir/budget-overruns" >> "$BUDGET_ROWS"; fi
     seen=""
     if [ -f "$dir/local-events" ]; then
       cat "$dir/local-events" >> "$LOCAL_EVENTS"
