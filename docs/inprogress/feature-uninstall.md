@@ -2,7 +2,7 @@
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (deletes adopter files, changes the install records, the controller lock and the hook setup, and adds a command-policy floor row; project baseline is Standard)
 > Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness has recorded evidence of creating, runs behind a fence that excludes controllers and plan operations, and can resume after an interruption. Kept files are listed on stdout.
-> Draft 4 (2026-11-27), written against `0.21.0` (`3757627`). It answers the second review: writers register for their whole mutation window, fence setup has a recoverable preparation state, resume is bound to the original checkout and `HEAD`, legacy candidates are kept, candidates are discovered from ownership rows, and every persisted removal carries a precondition. See *Revision history*. The owner settled *Uninstall acceptance* and *Legacy ownership* (keep f-5) on 2026-11-27. Next: the reviewer's second round on draft 3, then owner approval. The project-state and commit defaults are settled at approval.
+> Draft 5 (2026-11-27), written against `0.21.0` (`3757627`). It answers the third review: a kernel mutex serializes fence changes, recovery stays available until the fence is released, direct `export.sh`/`init.sh` runs are fenced, the commit holds only verified deletions, and uncommitted harness writes refuse instead of failing in `git rm`. See *Revision history*. The owner settled *Uninstall acceptance* and *Legacy ownership* (keep f-5) on 2026-11-27. Next: the reviewer's second round on draft 3, then owner approval. The project-state and commit defaults are settled at approval.
 
 # Feature — Uninstall: remove only what the harness owns
 
@@ -90,6 +90,22 @@ everything kept, as a checklist instead of touching it.
     dispatcher.
 
   A check made once at dispatch does not cover their writes.
+- **Direct install writers.** `scripts/export.sh` and `scripts/init.sh` are source-only.
+  They run from a scaffold checkout and target the adopter's repository from outside it.
+  - They write the target's tree, its install records and its stamps.
+  - `init.sh` also writes `core.hooksPath` (`init.sh:244`).
+  - Neither goes through the target's dispatcher.
+
+  `agentic-flow upgrade` goes through the dispatcher, but it `exec`s the fetched CLI
+  (`payload-apply.sh:11-15`), which replaces the process image and its EXIT trap.
+- **`git rm` refuses a path whose bytes differ from the index.** A successful upgrade that
+  is not yet committed leaves a tracked file whose bytes match `accepted=`. Its index
+  entry and `HEAD` still hold the previous release. `git rm` then fails with "has local
+  modifications". This was checked in scratch on 2026-11-27.
+- **`flock` on an inherited descriptor outlives the locking process.** When Bash opens a
+  file on a descriptor and a child Perl process `flock`s it, the lock stays held after
+  Perl exits. The kernel releases it when that descriptor closes or the Bash process dies.
+  This was checked in scratch on 2026-11-27, and the harness already requires Perl.
 - **Plan cleanup.** `clean` refuses a dirty worktree, a detached or mismatched branch, the
   base branch, and a branch that is not an ancestor of `origin/<base>`. It also refuses to
   run from inside the worktree it removes. It deletes the plan's salvage refs and records
@@ -146,7 +162,15 @@ the adopter deleted, which makes it `created`. Rows for other paths are dropped.
 **A payload file is removed only when all of these hold:**
 - it has a `created` row;
 - it has an `accepted=` hash with no pending `offered=`;
-- its current bytes match that `accepted=` hash.
+- its current bytes match that `accepted=` hash;
+- if it is tracked, its index entry and its `HEAD` blob both have those same bytes. The
+  commit therefore deletes exactly the verified bytes, and `git rm` cannot refuse.
+
+A created, pristine, tracked path whose index or `HEAD` differs is a harness write that
+has not been committed yet, for example after an upgrade. It is reported as
+`uncommitted-change`, and **apply refuses with `uncommitted-install`** until the adopter
+commits or discards that change. Keeping such files would orphan harness bytes once the
+records are gone.
 
 `preexisting`, `inherited` and missing rows are kept. f-5 lets the owner claim `inherited`
 and legacy paths explicitly.
@@ -181,11 +205,21 @@ it.
   2. Check for the fence. If it exists, remove the registration and refuse.
   3. Do its work, then remove the registration on exit.
 
-  The dispatcher registers every subcommand except `uninstall`, `--help` and `--version`,
-  before dispatch and until the process exits. The detached controller child registers
-  itself before it acknowledges. Writers outside the dispatcher register through the same
-  helper: `budget.sh`, and any hook that writes. f-3 inventories them with a `make check`
-  assertion.
+  Who registers:
+  - **The dispatcher,** for every subcommand except `uninstall`, `--help` and
+    `--version`, before dispatch and until the process exits.
+  - **The detached controller child,** before it acknowledges.
+  - **Writers outside the dispatcher,** through the same helper: `budget.sh`, and any hook
+    that writes.
+  - **The direct install writers.** `export.sh` and `init.sh` resolve the *target's* Git
+    common dir and register there for their whole run, before their first write to the
+    target. A non-Git target has nothing to fence.
+  - **A process that `exec`s another harness entry point,** such as upgrade's bridge or
+    `init` calling export. It hands its registration over through
+    `AGENTIC_FLOW_WRITER_REGISTRATION`, and the new image adopts it and re-arms the EXIT
+    trap instead of registering again.
+
+  f-3 enforces this inventory with a `make check` assertion.
 - **Uninstall fences first.**
   1. Publish the fence.
   2. Scan the registrations, the three lock roots and the linked worktrees.
@@ -204,11 +238,33 @@ gone or start time changed) or `unresolved` (no owner yet, another host, or unre
 Uninstall also refuses when a linked worktree exists that is not a plan worktree it will
 clean. After `clean`, only the main checkout's fence-aware scripts remain.
 
+**One uninstall at a time: a kernel mutex serializes every fence change** (f-3).
+- Every uninstall process that may change the fence holds
+  `<common>/agentic-flow/uninstall.lock`, non-blocking, for its whole lifetime. That
+  covers a fresh apply, a resume, and a dry run that clears a stale preparation.
+- The lock is taken with Perl `flock` on a descriptor the Bash process keeps open, so
+  re-exec into `bin/` keeps it.
+- After acquiring it, the process checks that the path still names the locked inode. If
+  it does not, it retries once, then refuses with `uninstall-busy`.
+- Failing to get the lock means another uninstall is alive: refuse with `uninstall-busy`.
+- Holding the lock *proves* that the fence's previous owner is dead. The kernel releases
+  the lock at process death, so a lock can never be stale. The fence's `pid` and `start`
+  serve only as diagnostics.
+- `flock` is not trusted across hosts. A fence whose `host` differs from this host is
+  `unresolved` and refused with `fence-owner-unresolved`.
+- Every fence change happens under the lock, after re-reading the fence and checking that
+  its generation, `{nonce, gen}`, is still the one observed. These changes are: publish,
+  clear a stale preparation, take over for resume, and release. A changed generation
+  restarts resolution from the beginning.
+- Clearing uses `unlink`. Take-over writes a new fence with `gen+1` and renames it over the
+  path, so the fence never disappears while an apply is incomplete.
+
 **The fence is never ownerless, and setup has a recoverable preparation state** (f-3,
 f-4).
 - The fence is a regular file, `<common>/agentic-flow/uninstall.fence`, holding `nonce`,
-  `pid`, `start` and `host`. It is published by `link(2)` from a fully written temp file,
-  the same pattern `controller_acknowledge` uses. It exists either complete or not at all.
+  `gen`, `pid`, `start` and `host`. It is published by `link(2)` from a fully written temp
+  file, the same pattern `controller_acknowledge` uses. It exists either complete or not
+  at all.
 - Artifacts go in `<common>/agentic-flow/uninstall-<nonce>/`:
   1. `plan.json`;
   2. `bin/`, staged as `bin.tmp/` and renamed into place;
@@ -218,11 +274,11 @@ f-4).
   **No destructive action happens before `ready` exists.** That is the boundary.
 - A fence without a valid `ready` is in *preparation*. Any `uninstall` invocation,
   including from the original `scripts/agentic-flow`, which is still intact by
-  construction, resolves it:
-  - owner live → refuse;
-  - owner `stale-local` → delete the artifacts directory, then the fence, report
-    "abandoned preparation cleared", and continue;
-  - owner `unresolved` → refuse with the manual removal commands.
+  construction, resolves it under the mutex:
+  - mutex busy → refuse with `uninstall-busy`;
+  - another host → refuse with the manual removal commands;
+  - otherwise, after the generation check, delete the artifacts directory, then unlink
+    the fence, report "abandoned preparation cleared", and continue.
 
   Every other command keeps refusing while the fence exists, and names it.
 
@@ -255,8 +311,9 @@ action: `<common>/agentic-flow/uninstall-<nonce>/bin/agentic-flow uninstall --re
 While the fence exists, `scripts/agentic-flow uninstall --resume` execs the same copy.
 
 A resume:
+- takes the mutex, refusing with `uninstall-busy` if another uninstall is alive, then takes
+  over the fence (`gen+1`) after the generation check;
 - validates `ready` against the hashes of `plan.json` and the `bin/` manifest;
-- claims the fence only when its owner is `stale-local`, and refuses otherwise;
 - **checks the binding**: same top level and Git dir, same symbolic ref, and `HEAD`
   equal to the planned commit. A `HEAD` whose first parent is the planned commit and
   whose message carries this nonce's trailer is also accepted, because the commit already
@@ -268,9 +325,40 @@ A resume:
   - precondition holds → executed;
   - precondition fails → kept and reported `changed-during-uninstall`.
 
-The binding is checked again immediately before the commit. The commit carries an
-`Agentic-Flow-Uninstall: <nonce>` trailer. The artifacts and then the fence are removed
-last, after the commit or after staging.
+A resume of a run that already reached `done` skips all of this and only finishes the
+cleanup below. Cleanup touches nothing in the tree or the index, so it needs no binding
+check.
+
+**The commit contains exactly the verified deletions** (f-4). It is built in a private
+index, never from the adopter's index:
+1. Check the binding again.
+2. Point `GIT_INDEX_FILE` at the artifacts' `index` and run `git read-tree <bound HEAD>`.
+3. Remove exactly the planned tracked paths from that index.
+4. Run `git write-tree`, then `git commit-tree -p <bound HEAD>` with the trailer, the
+   adopter's identity, and `-S` when `commit.gpgSign` is set.
+5. Verify that `git diff-tree --no-renames --name-status <bound HEAD> <new>` lists only
+   `D` rows and equals the planned tracked set.
+6. Run `git update-ref refs/heads/<bound ref> <new> <bound HEAD>`. That
+   compare-and-swap fails if the branch moved.
+
+The adopter's real index already holds the same deletions from `git rm`. Anything else the
+adopter staged during apply stays staged and is never committed; the report lists it. Hooks
+do not run for this deletion-only commit. The report says so, and lists any custom hook
+that still chains the removed scanner, because the adopter's next commit will hit it.
+`--stage-only` skips steps 2–6 and leaves the deletions staged.
+
+**Completion is persisted, and recovery stays available until the fence is released**
+(f-4). After the commit, or after staging, the run publishes `done` in the artifacts. It
+holds the outcome: the commit SHA, or `stage-only` with the staged set. Then:
+1. Print the kept and reference sections.
+2. Empty `trash/`.
+3. Under the mutex, after the generation check, unlink the fence.
+4. Remove the artifacts directory, including `bin/`.
+5. Remove `uninstall.lock`.
+
+Until step 3, `ready`, `done`, `plan.json` and `bin/` all exist, so the resume command
+works. An interruption after step 3 leaves an inert directory, not a blocking fence. The
+run prints its path before step 3.
 
 ### Option B — infer ownership from Git history
 
@@ -302,15 +390,19 @@ which lines to edit.
 git config --local agentic-flow.hooksPathSetBy init|migration      (f-1)
 
 <common>/agentic-flow/writers/<nonce>          (f-3; directory: owner = {pid,start,host})
-<common>/agentic-flow/uninstall.fence          (f-3; file published by link(2): {v,nonce,pid,start,host})
-<common>/agentic-flow/uninstall-<nonce>/       (f-4; plan.json, bin/, ready, progress, trash/)
+<common>/agentic-flow/uninstall.lock           (f-3; flock mutex, held for an uninstall's lifetime)
+<common>/agentic-flow/uninstall.fence          (f-3; file published by link(2): {v,nonce,gen,pid,start,host})
+<common>/agentic-flow/uninstall-<nonce>/       (f-4; plan.json, bin/, ready, progress, index, trash/, done)
 
 writer_register <common> <label>    # mkdir registration, then fence check; trap removes it
+writer_adopt                        # take over AGENTIC_FLOW_WRITER_REGISTRATION after exec
 writer_release                      # explicit early release (rarely needed)
-uninstall_fence_acquire <common>    # publish fence, resolve preparation, scan; refuse or proceed
+uninstall_mutex <common>            # non-blocking flock on a kept descriptor, inode-checked
+uninstall_fence_acquire <common>    # under the mutex: resolve, publish, scan; refuse or proceed
+uninstall_fence_change <common> <observed nonce:gen> clear|takeover|release
 
 agentic-flow uninstall [--yes] [--json] [--keep-docs] [--remove-project-state]
-                       [--purge-ledger] [--no-fetch] [--claim-adoption]
+                       [--purge-ledger] [--no-fetch] [--claim-adoption] [--stage-only]
 agentic-flow uninstall --resume [--yes] [--json]
 
   default            dry run: classify, print, write nothing (no fence).
@@ -322,6 +414,7 @@ agentic-flow uninstall --resume [--yes] [--json]
   --purge-ledger     also remove ledger, decisions, findings and plan records
   --no-fetch         no network: plan guards use local origin/<base>; f-5's fetch is skipped
   --claim-adoption   f-5: treat legacy paths the adoption commit added as harness-created
+  --stage-only       leave the verified deletions staged instead of committing them
   --resume           continue an interrupted apply from <common>/agentic-flow/uninstall-<nonce>/
 
   Every run ends with two stdout sections:
@@ -332,7 +425,7 @@ agentic-flow uninstall --resume [--yes] [--json]
   When a kept Makefile or workflow references removed files, the report says first that
   `make check` or CI will fail after removal.
 
-exit 0  dry run printed, or apply finished (committed, or staged with a stated reason)
+exit 0  dry run printed, or apply finished (committed, or staged with --stage-only)
 exit 2  usage
 exit 3  refused before any write (names every reason)
 exit 4  apply stopped part-way; the fence and plan remain; the resume command is printed
@@ -346,8 +439,9 @@ Plan JSON (`plan.json` and `--json`; the text report renders the same object):
   "adoption_commit": "<sha|null>",
   "refusals":  [ { "reason": "<reason>", "subject": "<plan|lock|path>", "detail": "<text>" } ],
   "payload":   [ { "path": "<rel>", "action": "remove|keep", "tracked": bool, "sha256": "<hex>",
+                   "index_blob": "<oid|null>", "head_blob": "<oid|null>",
                    "why": "pristine|edited|preexisting|inherited|no-ownership-record|
-                           pending-offer|keep-docs|tracked-dirty|claimed",
+                           pending-offer|keep-docs|uncommitted-change|claimed",
                    "provenance": "upstream|installed-revision|none" } ],
   "candidates":[ { "path": "<rel>", "action": "remove|keep", "tracked": bool, "sha256": "<hex>",
                    "why": "recorded|legacy|edited|unrecognized" } ],
@@ -366,13 +460,17 @@ Plan JSON (`plan.json` and `--json`; the text report renders the same object):
   "dangling_references": [ { "file": "<rel>", "line": n, "ref": "<removed path|agentic-flow>" } ],
   "dangling_truncated": n,
   "outside":   [ "<checklist line>" ],
-  "commit":    { "action": "commit|stage-only", "reason": "<text>" } }
+  "commit":    { "action": "commit|stage-only", "tracked_deletions": [ "<rel>" ],
+                 "hooks_skipped": true, "unrelated_staged": [ "<rel>" ] } }
+
+done (f-4, written once): { "nonce": "<hex>", "outcome": "commit|stage-only",
+                            "commit": "<sha|null>", "staged": [ "<rel>" ] }
 ```
 
 Refusal reasons: `not-git-toplevel`, `linked-worktree`, `detached-head`, `staged-changes`,
-`lock-present`, `writer-active`, `uninstall-in-progress`, `fence-owner-unresolved`,
-`checkout-changed`, `plan-invalid`, `plan-refused`, `purge-with-open-plan`,
-`no-installation`, `tracked-dirty`.
+`lock-present`, `writer-active`, `uninstall-busy`, `uninstall-in-progress`,
+`fence-owner-unresolved`, `checkout-changed`, `plan-invalid`, `plan-refused`,
+`purge-with-open-plan`, `no-installation`, `uncommitted-install`.
 
 ## Threat model (one paragraph)
 
@@ -388,7 +486,14 @@ path goes through `payload_safe_path`. Symlinks are never followed or deleted th
 
 The fence and its artifacts are in the Git common dir, outside the tree. Resume validates
 `ready`'s hashes, `plan.json`'s shape and paths, and the checkout binding before acting.
-A plan moved to another branch or checkout cannot commit there.
+A plan moved to another branch or checkout cannot commit there. The commit is built from
+`HEAD` plus the planned deletions only, so nothing staged by anyone else can enter it.
+
+**Residual risk.** An exporter or CLI from a source checkout older than f-3 does not
+register, so the fence cannot exclude it. If such a process changes a planned file, the
+item's precondition no longer holds and the item is kept. Files it creates are never in
+the commit. `ADOPTION.md` says not to run an older exporter against a repository during
+uninstall.
 
 f-5 runs the installed revision's own `export.sh` into scratch. That is the same trust that
 `upgrade` already places in its source, and only the resulting hashes are used.
@@ -401,10 +506,12 @@ f-5 runs the installed revision's own `export.sh` into scratch. That is the same
 | Clone of `.agentic-flow-source` origin (f-5) | `AGENTIC_FLOW_FETCH_TIMEOUT` (120 s) → claimed paths kept | Short SHA missing or ambiguous → kept | n/a (scratch only) |
 | Installed revision's `export.sh` (f-5) | 120 s → kept | Missing `file=` row or export failure → kept | n/a |
 | `clean` per plan during apply | — | — | Exit 4; resume skips closed plans |
-| Fence publication / artifact writes | — | — | Before `ready`: the next `uninstall` clears a `stale-local` preparation; nothing destructive happened |
+| Fence publication / artifact writes | — | — | Before `ready`: the next `uninstall` takes the mutex and clears the preparation; nothing destructive happened |
+| Concurrent uninstall processes | — | — | The second fails the mutex: `uninstall-busy`, no fence change |
 | File removal / `git rm` | — | — | Exit 4; resume treats absent planned files as done and stages them |
 | Stamp, record, config or state removal | — | — | Exit 4; resume checks each item's persisted precondition, not the records |
-| `git commit` | — | Hook rejects → staged, `stage-only`, fence removed, exit 0 | Commit landed but fence removal failed → resume sees the trailer and removes the fence |
+| Constrained commit (`commit-tree` + compare-and-swap `update-ref`) | — | Diff check fails, or the compare-and-swap loses → exit 4, no ref change; resume rechecks the binding | `update-ref` landed but `done` was not written → resume sees the trailer at the bound ref, writes `done`, cleans up |
+| Final cleanup | — | — | Before the fence unlink: resume, in the `done` state, finishes cleanup. After: an inert artifacts directory, whose path was printed |
 
 Bounds: the existing record limits (2,000 paths, 4,100-byte lines) apply to the ownership
 record and to `plan.json`'s path lists. `plan.json` is capped at 2 MiB. Directory
@@ -443,8 +550,67 @@ lines per file and 200 in total, counting the overflow. One clone per run.
   - *Rejected alternative:* drop f-5 and keep every legacy file.
 - **Project-owned state default.** Keep it unless `--remove-project-state` is given?
   *Recommended: yes.*
-- **Commit.** Commit by default with the adopter's own identity, and stage only when a
-  custom hook still chains the removed scanner? *Recommended: yes.*
+- **Commit.** Commit by default with the adopter's own identity, through the constrained,
+  deletion-only commit, which runs no hooks. Offer `--stage-only` for adopters who want to
+  commit it themselves. *Recommended: yes.*
+
+## Revision history
+
+Kept in Part A so that it does not count against Part B's word cap.
+
+- **Draft 5 (2026-11-27)** answers the third review:
+  1. A kernel `flock` mutex, held for each uninstall's lifetime, serializes every fence
+     change. Changes are made only after a `{nonce, gen}` recheck. Take-over renames over
+     the fence and never unlinks it (scenario 7d).
+  2. `done` is persisted after the commit or staging. The fence is released before the
+     artifacts are deleted, so `bin/` stays usable until then (scenario 7e, committed and
+     stage-only).
+  3. `export.sh` and `init.sh` register in the target's common dir for their whole run.
+     `exec` hand-over keeps one registration across upgrade's bridge. The residual risk
+     from pre-f-3 exporters is stated (scenario 6).
+  4. The commit is built in a private index from the bound `HEAD` plus the planned
+     deletions, checked by a diff, and landed by a compare-and-swap `update-ref`.
+     Unrelated staged changes stay out (scenario 7f). `--stage-only` replaces the
+     hook-based fallback.
+  5. A tracked path is removable only when the worktree, the index and `HEAD` all hold the
+     pristine bytes. An uncommitted upgrade refuses with `uncommitted-install`
+     (scenario 13).
+- **Draft 4 (2026-11-27)** answers the second review:
+  1. Writers register for their whole mutation window. Dispatcher subcommands, the
+     detached controller child, `budget.sh` and writing hooks all register, and a
+     `make check` inventory enforces it. `verify-step` paused before its write is in
+     scenario 6.
+  2. The fence is a `link(2)`-published file and is never ownerless. Artifacts become
+     valid only with `ready`, and nothing destructive happens before it. The original CLI
+     clears a stale preparation (scenario 7a).
+  3. `plan.json` binds the top level, Git dir, ref and `HEAD`. These are checked at
+     resume and again before the commit (scenario 7b).
+  4. Legacy and reused candidates are kept. `candidate` rows are written only for files
+     the harness actually wrote (scenario 3).
+  5. Candidates and created paths are discovered from ownership rows as well, which
+     covers pending upgrades (scenario 3).
+  6. Every persisted removal carries a precondition: file hash and type, config value and
+     origin, or directory manifest. Directories are removed by an atomic move into
+     `trash/` (scenario 7c).
+- **Draft 3 (2026-11-27)** answers the first review:
+  1. Ownership comes from an install-time record (`created` / `preexisting` /
+     `inherited`), not adoption history. Both untracked-adopter histories are scenarios
+     1 and 2. f-1 is added.
+  2. Apply runs from a persisted plan in the fence, with a `bin/` copy of the CLI, and
+     `--resume` accepts only its own staged deletions. The three interruptions are
+     scenario 7.
+  3. A fence with write-then-read ordering against the controller, handoff and worktree
+     locks. Unresolved locks are reported and preserved. f-3 is added.
+  4. Candidates need a matching `candidate` row, or `offered=` for legacy candidates.
+     Edited and unrecognized candidates are kept.
+  5. `core.hooksPath` is unset only with one local value and the harness's marker. Global
+     and pre-existing local values are reported.
+
+  Draft 2's rule is now Option B (rejected). Legacy installs move behind the explicit
+  `--claim-adoption` (f-5, a blocking decision).
+- **Draft 2 (2026-11-27):** keeps paths that existed before the adoption commit; adds the
+  stdout kept list and the reference scan. Option C stays deferred.
+- **Draft 1 (2026-11-27):** first draft.
 
 ---
 
@@ -485,6 +651,12 @@ lines per file and 200 in total, counting the overflow. One clone per run.
      nothing.
    - A lock with no `owner.json`, or with another host's owner, is `unresolved` and left
      in place. A `stale-local` registration is cleared.
+   - `scripts/export.sh` (and `init.sh`) is run from a separate scaffold checkout,
+     targeting the repository, after uninstall holds the fence. It refuses before its
+     first write, and the target's tree, records and Git config are unchanged.
+   - An export paused after registering and before its first write blocks uninstall with
+     `writer-active`.
+   - An upgrade's bridged `exec` keeps exactly one registration.
 7. **Interrupted apply.** Interrupt the apply at each of these points:
    - after the first tracked deletion;
    - after `scripts/agentic-flow` is removed;
@@ -509,6 +681,25 @@ lines per file and 200 in total, counting the overflow. One clone per run.
     state, then edit `.agentic-flow/config`. `--resume` keeps the file, reports it as
     `changed-during-uninstall`, and finishes everything else. A cache directory that a
     test writes into after the interruption is likewise kept.
+7d. **Concurrent recovery.**
+    - Two processes clear the same stale preparation at once.
+    - Two processes resume the same interrupted apply at once.
+
+    In each case exactly one proceeds and the other refuses with `uninstall-busy`. The
+    fence's generation advances once, and no fence is unlinked while an apply is
+    incomplete. A fence whose `host` differs is refused as `fence-owner-unresolved`.
+7e. **Interrupted cleanup.** For a committed run and a `--stage-only` run, interrupt:
+    - after `done`;
+    - after emptying `trash/`;
+    - after the fence unlink.
+
+    Before the unlink, `--resume` from `bin/` (the original CLI is gone) finishes cleanup
+    and leaves the commit or the staged set unchanged. After the unlink, no command
+    refuses because of uninstall, and the printed artifacts path is the only leftover.
+7f. **Unrelated staged change.** Between a resume's index check and its commit, a test
+    hook runs `git add` on an unrelated file. The uninstall commit contains only the
+    planned deletions. The unrelated file is still staged afterwards and is listed in
+    `unrelated_staged`.
 8. **Pristine created file.** Given a `created` file byte-identical to `accepted=`, then
    it is removed. An edited `created` file, and a hand-merged `CLAUDE.md`, stay.
 9. **Install → uninstall.** Given an export into an empty Git repository, committed, when
@@ -524,6 +715,10 @@ lines per file and 200 in total, counting the overflow. One clone per run.
     then stdout lists both with their line numbers and warns that `make check` and CI
     will fail. Neither file changes.
 12. **Policy.** `agentic-flow uninstall` is blocked for agents in all three runtimes.
+13. **Uncommitted upgrade.** Given an upgrade that rewrote tracked, created, pristine
+    files and was not committed, the dry run lists those files as `uncommitted-change`.
+    `--yes` refuses with `uncommitted-install` and writes nothing. After the adopter
+    commits the upgrade, `uninstall --yes` removes them, and `git rm` never fails.
 
 ## Invariants
 
@@ -531,6 +726,13 @@ lines per file and 200 in total, counting the overflow. One clone per run.
   preparation.
 - The fence never exists without its owner. No destructive write happens before `ready`
   is valid. Before `ready`, the original CLI can always clear the preparation.
+- At most one uninstall process lives per common dir, enforced by the kernel mutex. Every
+  fence change happens under it, after a generation check.
+- Until the fence is released, `ready`, `plan.json` and `bin/` exist, so the resume
+  command always works.
+- The uninstall commit's diff against the bound `HEAD` is exactly the planned tracked
+  deletions. Every one of them was verified identical in the worktree, the index and
+  `HEAD`.
 - Every covered writer is registered from before its first write until after its last.
 - A file is removed only when there is ownership evidence (a `created` row, its own
   `candidate` row, or an owner claim) and its current bytes match the hash the plan
@@ -561,8 +763,8 @@ Base: `main`. One branch and one PR for the whole brief: `configurability-phase-
 step lands as its own commit on that branch and closes its issue with `Fixes #N`.
 
 ## Definition of done (whole brief)
-Every step's DoD is met, and `make check` and `make test` are green. Scenarios 1–12 are
-covered by named tests. `ADOPTION.md` has a *Removing the harness* section, and
+Every step's DoD is met, and `make check` and `make test` are green. Scenarios 1–13, with
+7a–7f, are covered by named tests. `ADOPTION.md` has a *Removing the harness* section, and
 `CHANGELOG.md` has an entry naming the new record and the fence. A manual run in a scratch
 export shows the dry-run report, then `--yes`, then a clean `git status`.
 
@@ -633,7 +835,9 @@ so adopters can see what would happen before anything can delete.
   main worktree.
 - Classify payload paths, candidates, stamps and the hook path by the Part A rules.
   - Payload paths are the union of installation rows and ownership rows.
-  - A tracked path whose index differs from `HEAD` is refused as `tracked-dirty`.
+  - For a tracked path, compare the worktree hash, the index blob and the `HEAD` blob. A
+    created, pristine path where they disagree is `uncommitted-change`, and apply refuses
+    with `uncommitted-install`.
   - Candidates come from `candidate` rows and from the three library names next to every
     installed or owned path. Anything else matching `.agentic-new*` is `unrecognized`.
   - Record the precondition data the plan needs: hashes, tracked flags, config origins and
@@ -650,8 +854,8 @@ so adopters can see what would happen before anything can delete.
   and update `docs/reference/command-policy-coverage.md`.
 - Add `upgrade:uninstall` to the wall-ceiling keys.
 
-**Test:** scenarios 1–4, 8 and 11 as classifications, 5 (refusal, tree digest unchanged)
-and 12. Also: `linked-worktree`, `no-installation`, a symlinked payload path, the
+**Test:** scenarios 1–4, 8, 11 and 13 (dry-run half) as classifications, 5 (refusal,
+tree digest unchanged) and 12. Also: `linked-worktree`, `no-installation`, a symlinked payload path, the
 reference-scan truncation, and `--json` validating against the shape.
 
 **DoD:** `agentic-flow uninstall` prints a correct plan and never writes. Agents cannot run
@@ -670,8 +874,20 @@ it.
 either sees the fence or is seen by uninstall, for the writer's whole mutation window.
 
 **Approach:**
-- Add `scripts/lib/fence.sh` with `writer_register`, `writer_release` and
-  `uninstall_fence_acquire`. It sources its own dependencies.
+- Add `scripts/lib/fence.sh` with the functions named in *Interface*. It sources its own
+  dependencies. Ship it in the payload, and have `export.sh` and `init.sh` source the
+  scaffold's copy.
+- `uninstall_mutex`:
+  1. Open `uninstall.lock` on a fixed descriptor that the process keeps.
+  2. Take `flock(LOCK_EX|LOCK_NB)` through a short Perl call.
+  3. Compare the path's inode with the descriptor's; on a mismatch, retry once.
+  4. If the lock is busy, refuse with `uninstall-busy`.
+
+  The descriptor survives the re-exec into `bin/`.
+- `uninstall_fence_change` re-reads the fence under the mutex, compares
+  `{nonce, gen}` with the observed value, and only then clears it (`unlink`), takes it over
+  (write `gen+1`, then rename over the path) or releases it. A mismatch restarts
+  resolution.
 - `writer_register`:
   1. `mkdir writers/<nonce>`.
   2. Write `owner` atomically.
@@ -685,6 +901,12 @@ either sees the fence or is seen by uninstall, for the writer's whole mutation w
   - **The detached controller child,** before it acknowledges.
   - **Writers outside the dispatcher:** `budget.sh`, and any hook script that writes under
     the common dir.
+  - **`export.sh` and `init.sh`:** after resolving the target, and before their first
+    write to it. They register in the target's common dir. `init` hands its registration
+    to the export it runs.
+  - **`exec` hand-over:** upgrade's bridge, and every other harness `exec` into another
+    entry point, pass `AGENTIC_FLOW_WRITER_REGISTRATION`, and the new image calls
+    `writer_adopt`.
   - Add a `make check` assertion that every file writing under `agentic-flow/` in the
     common dir is either dispatcher-reached or registers itself. Use an explicit allowlist
     file and no new list in the scripts.
@@ -692,17 +914,19 @@ either sees the fence or is seen by uninstall, for the writer's whole mutation w
   `plan_worktree_lock`, as defense in depth. `clean` runs under uninstall without
   registering: the fence owner passes the nonce through an internal function argument
   that the CLI cannot reach.
-- `uninstall_fence_acquire`:
+- `uninstall_fence_acquire`, holding the mutex:
   1. Resolve any existing fence: preparation, in progress, or unresolved.
-  2. Publish the fence with `link(2)` from a complete temp file.
+  2. Publish the fence with `link(2)` from a complete temp file (`gen=1`).
   3. Scan `writers/`, `locks/`, `worktree-locks/` and the linked worktrees. Clear
      `stale-local` registrations only.
   4. If anything is live or unresolved, remove the fence and refuse with `writer-active`
      or `lock-present`, listing each entry and its state.
 
-**Test:** scenario 6, made deterministic with test-only pause points
-(`AGENTIC_UNINSTALL_TESTING=1` plus a named pause). The paused-writer case pauses
-`verify-step` after dispatch and before its record write. Also:
+**Test:** scenarios 6 and 7d, made deterministic with test-only pause points
+(`AGENTIC_UNINSTALL_TESTING=1` plus a named pause). The paused-writer cases pause
+`verify-step` and `export.sh` after registering and before their first write. Also:
+- the mutex survives a re-exec, and is free after `kill -9` of its holder;
+- a recycled lock-file inode is detected;
 - `start`, `handoff` and `verify-step` refuse while the fence exists, and write nothing;
 - a controller lock with no owner, and one owned by another host, are `unresolved` and
   preserved;
@@ -710,9 +934,10 @@ either sees the fence or is seen by uninstall, for the writer's whole mutation w
 - a refused acquisition leaves the tree digest unchanged;
 - the inventory assertion fails on a planted unregistered writer.
 
-**DoD:** while a covered writer is in its mutation window, uninstall cannot pass its scan.
-While the fence exists, no covered writer can start.
-**Verify:** `make test-one F=controller S=launch && make test-one F=stations S=handoff && make test-one F=upgrade`
+**DoD:** while a covered writer, including a direct export or init, is in its mutation
+window, uninstall cannot pass its scan. While the fence exists, no covered writer can
+start. Two uninstall processes never change the fence concurrently.
+**Verify:** `make test-one F=controller S=launch && make test-one F=stations S=handoff && make test-one F=export && make test-one F=upgrade`
 **Risks:**
 - A long controller run keeps its registration and makes uninstall refuse. That is
   intended.
@@ -720,6 +945,8 @@ While the fence exists, no covered writer can start.
   against the stations and controller ceilings.
 - EXIT-trap chaining must not replace the existing traps in `handoff.sh`, `start.sh` and
   `controller.sh`.
+- Bash must not open the mutex descriptor close-on-exec. Use a low fixed descriptor, and
+  test the re-exec.
 **Red-first:** none
 **Commit:** `Fence uninstall against every shared-state writer`
 
@@ -729,8 +956,10 @@ While the fence exists, no covered writer can start.
 **Why fourth:** it needs f-2's plan and f-3's fence.
 
 **Approach:**
-- `--yes`, or a `y` at the terminal prompt, acquires the fence (f-3), then recomputes the
-  plan. If anything differs from what was shown, it releases the fence and refuses.
+- `--yes`, or a `y` at the terminal prompt, takes the mutex and acquires the fence (f-3),
+  then recomputes the plan. If anything differs from what was shown, it releases the fence
+  and refuses. Any `uncommitted-change` refuses with `uncommitted-install` before
+  preparation.
 - **Preparation:**
   1. Write `plan.json` with the binding and every precondition.
   2. Stage `bin.tmp/` (the CLI plus the libraries it sources) and rename it to `bin/`.
@@ -741,24 +970,29 @@ While the fence exists, no covered writer can start.
 - **Apply order.** Check the binding first. Append each completed action to `progress`,
   and check each action's precondition before it runs:
   1. Run `clean` for each plan.
-  2. Remove planned payload files and candidates. Use `git rm -q --` for tracked paths and
-     `rm` for untracked ones.
+  2. Remove planned payload files and candidates. A tracked path's precondition covers
+     the worktree hash, the index blob and the `HEAD` blob, so `git rm -q --` cannot
+     refuse. Use `rm` for untracked paths.
   3. Prune directories left empty.
   4. Remove project state if asked.
   5. Unset `core.hooksPath`, then its marker, when the plan says so.
   6. Rename cache directories into `trash/`, and the `--purge-ledger` set if asked.
   7. Remove stamps and records.
-  8. Check the binding again, then commit with the trailer or stage only.
-  9. Print the kept and reference sections against the resulting tree.
-  10. Empty `trash/`, remove the artifacts, then remove the fence.
+  8. Build the constrained commit (Part A), or stage only.
+  9. Publish `done`.
+  10. Run the cleanup sequence (Part A): print the reports, empty `trash/`, release the
+      fence, remove the artifacts, remove the lock file.
 - `--resume` follows the Part A rules. While the fence exists, `scripts/agentic-flow
   uninstall` prints the resume command, or with `--resume` execs `bin/`.
 - On any failure, stop with exit 4 and print the resume command.
 
-**Test:** scenarios 3, 4 (unset), 5 (apply half), 7, 7a, 7b, 7c, 8 and 9. Also:
+**Test:** scenarios 3, 4 (unset), 5 (apply half), 7, 7a, 7b, 7c, 7e, 7f, 8, 9 and 13.
+Also:
 - a resume finds a staged change outside the plan → refused;
 - a planned file changes between runs → kept as `changed-during-uninstall`;
-- a commit landed but the fence remained → the resume only removes the fence;
+- `update-ref` landed but `done` is missing → the resume writes `done` and cleans up;
+- the bound branch moved before `update-ref` → the compare-and-swap fails, and the ref
+  is unchanged;
 - an interactive "no" writes nothing.
 
 Use a test-only fault point, `AGENTIC_UNINSTALL_TESTING=1` plus a named action.
@@ -769,7 +1003,10 @@ outside the bound checkout and `HEAD` never commits. Every refusal leaves the tr
 unchanged.
 **Verify:** `make test-one F=upgrade`
 **Risks:**
-- Unset the hook path before committing, or the commit runs a missing hook.
+- `git commit-tree` runs no hooks. The report must say so, and list chained custom hooks
+  that will fail on the adopter's next commit.
+- The private index must start from the bound `HEAD`, never from a copy of the adopter's
+  index.
 - `git rm` on a path that has gone missing must not abort the batch. Use
   `--ignore-unmatch` per path.
 **Red-first:** `upgrade:uninstall` — scripts/tests/upgrade.sh scripts/self-test.sh
@@ -808,47 +1045,6 @@ proven revision, and the report names that revision.
 - Use `file://` origins in tests.
 **Red-first:** none
 **Commit:** `Let the owner claim legacy paths proven by the installed revision`
-
----
-
-## Revision history
-
-- **Draft 4 (2026-11-27)** answers the second review:
-  1. Writers register for their whole mutation window. Dispatcher subcommands, the
-     detached controller child, `budget.sh` and writing hooks all register, and a
-     `make check` inventory enforces it. `verify-step` paused before its write is in
-     scenario 6.
-  2. The fence is a `link(2)`-published file and is never ownerless. Artifacts become
-     valid only with `ready`, and nothing destructive happens before it. The original CLI
-     clears a stale preparation (scenario 7a).
-  3. `plan.json` binds the top level, Git dir, ref and `HEAD`. These are checked at
-     resume and again before the commit (scenario 7b).
-  4. Legacy and reused candidates are kept. `candidate` rows are written only for files
-     the harness actually wrote (scenario 3).
-  5. Candidates and created paths are discovered from ownership rows as well, which
-     covers pending upgrades (scenario 3).
-  6. Every persisted removal carries a precondition: file hash and type, config value and
-     origin, or directory manifest. Directories are removed by an atomic move into
-     `trash/` (scenario 7c).
-- **Draft 3 (2026-11-27)** answers the first review:
-  1. Ownership comes from an install-time record (`created` / `preexisting` /
-     `inherited`), not adoption history. Both untracked-adopter histories are scenarios
-     1 and 2. f-1 is added.
-  2. Apply runs from a persisted plan in the fence, with a `bin/` copy of the CLI, and
-     `--resume` accepts only its own staged deletions. The three interruptions are
-     scenario 7.
-  3. A fence with write-then-read ordering against the controller, handoff and worktree
-     locks. Unresolved locks are reported and preserved. f-3 is added.
-  4. Candidates need a matching `candidate` row, or `offered=` for legacy candidates.
-     Edited and unrecognized candidates are kept.
-  5. `core.hooksPath` is unset only with one local value and the harness's marker. Global
-     and pre-existing local values are reported.
-
-  Draft 2's rule is now Option B (rejected). Legacy installs move behind the explicit
-  `--claim-adoption` (f-5, a blocking decision).
-- **Draft 2 (2026-11-27):** keeps paths that existed before the adoption commit; adds the
-  stdout kept list and the reference scan. Option C stays deferred.
-- **Draft 1 (2026-11-27):** first draft.
 
 ---
 
