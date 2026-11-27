@@ -3,7 +3,8 @@ export	560
 contracts	175
 upgrade	120
 upgrade:upstream	60
-upgrade:uninstall	30
+# On 2026-11-27 uninstall apply, undo and export took 68s alone and 167s with the full suites running.
+upgrade:uninstall	180
 hooks	125
 plan-to-issues	65
 lifecycle	135
