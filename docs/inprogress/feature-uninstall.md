@@ -1017,13 +1017,11 @@ including the point after a completed deletion. Also:
 - a resume that finds a staged change outside the plan refuses;
 - an interactive "no" writes nothing.
 
-**DoD:**
-- Every interruption resumes to the same final tree and index as an uninterrupted run.
-- Abandoned preparations clear automatically; damaged recovery data never does.
-- The index only ever gains the completed deletions.
-- The final report is reconciled against the index and worktree only while the binding
-  holds. Otherwise it gives no Git command hints. Uninstall never prints a commit
-  command.
+**DoD:** every interruption resumes to the same final tree and index as an uninterrupted
+run. Abandoned preparations clear automatically; damaged recovery data never does. The
+index only ever gains the completed deletions. The final report is reconciled against the
+index and worktree only while the binding holds; otherwise it gives no Git command hints.
+Uninstall never prints a commit command.
 **Verify:** `make test-one F=upgrade`
 **Risks:**
 - Never use `git rm --ignore-unmatch` as a shortcut. Every tracked path goes through the
@@ -1073,7 +1071,7 @@ revision, and the report names that revision.
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
 - **Tracking issue:** pending
-- **Approval:** status=approved; by=wabkebab; at=2026-11-27; rev=ff3fb41c520c74c3718f430552bbcc5695955562
+- **Approval:** pending
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
