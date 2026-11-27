@@ -2,7 +2,7 @@
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (deletes adopter files, changes the install records, the controller lock and the hook setup, and adds a command-policy floor row; project baseline is Standard)
 > Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness has recorded evidence of creating, behind a fence that excludes every writer. A resumable apply leaves the verified deletions staged for the adopter to commit. Kept files and shared Git state are reported for manual follow-up.
-> Draft 7 (2026-11-27), written against `0.21.0` (`3757627`). It answers the fifth review: every writer process registers itself, so borrowing is gone; there is explicit recovery for a tracked file whose removal and staging diverged; and the adopter runs `clean` before uninstall, so apply and resume make no network calls. See *Revision history*. Owner decisions: *Uninstall acceptance* yes, *Legacy ownership* keep f-5, *Commit* stage-only, *Shared Git state* report-only, *Plan cleanup* adopter runs `clean` first. Next: the reviewer's sixth round, then owner approval.
+> Draft 8 (2026-11-27), written against `0.21.0` (`3757627`). It answers the sixth review: a file that reappears after a staged deletion is kept, removal eligibility includes the Git mode, and the staged-edit test now expects the resume gate's refusal. See *Revision history*. Owner decisions: *Uninstall acceptance* yes, *Legacy ownership* keep f-5, *Commit* stage-only, *Shared Git state* report-only, *Plan cleanup* adopter runs `clean` first. Next: the reviewer's seventh round, then owner approval.
 
 # Feature — Uninstall: remove only what the harness owns
 
@@ -161,8 +161,14 @@ deleted, which makes it `created`.
 - it has a `created` row, or an owner claim (f-5);
 - it has an `accepted=` hash with no pending `offered=`;
 - its current bytes match that hash;
-- if tracked, its index entry and `HEAD` blob hold the same bytes, so `git rm` cannot
-  refuse and the staged deletion removes exactly verified bytes.
+- if tracked, its index entry and `HEAD` entry hold the same bytes *and the same Git
+  mode*. The worktree's executable bit must also match that mode whenever
+  `core.fileMode` is true. Otherwise `git rm` refuses even with equal blobs, as a scratch
+  repository confirmed during review. With all of this, `git rm` cannot refuse, and the
+  staged deletion removes exactly the verified bytes.
+
+A tracked path whose bytes are pristine but whose mode disagrees anywhere is kept as
+`mode-changed` and listed. A mode change is an adopter edit.
 
 A created, pristine, tracked path whose index or `HEAD` differs is a harness write that
 has not been committed yet. It is reported as `uncommitted-change`, and apply refuses with
@@ -282,18 +288,21 @@ writer that passed dispatch before the fence existed is still registered at its 
     carry a SHA-256 and the regular-file type. An absent file counts as done.
   - Git config values (`core.hooksPath` and the marker) carry the exact value, scope and
     origin file. An absent value counts as done.
-  - **Tracked files** carry the planned bytes `B`, which must also be the index blob and
-    the `HEAD` blob. Each of the four states `git rm` can leave behind has its own rule:
+  - **Tracked files** carry the planned bytes and mode, `B/M`. These must also be the
+    index entry and the `HEAD` entry, and the worktree's executable bit must match `M`
+    when `core.fileMode` is true. Each state has one rule:
 
     | Worktree | Index entry | Action |
     |---|---|---|
-    | present, bytes `B` | `B` | `git rm -q --` (normal case) |
-    | absent | `B` | **removed but not staged:** stage it with `git rm -q --`, which accepts an absent tracked file |
-    | present, bytes `B` | none | **staged but not removed:** `rm` the file |
+    | present, `B/M` | `B/M` | `git rm -q --` (normal case) |
+    | absent | `B/M` | **removed but not staged:** stage it with `git rm -q --`, which accepts an absent tracked file |
     | absent | none | done |
+    | present (any bytes) | none | **keep the file**: `reappeared-after-staged-deletion`. It may have been recreated after the deletion was staged; an empty `.gitkeep` is the obvious case. Uninstall never `rm`s it. The staged deletion remains, and the report lists both fixes: `git restore --staged -- <path>` to keep it, or `rm -- <path>` to finish |
     | anything else | anything else | keep, `changed-during-uninstall` |
 
-    Every row also requires the `HEAD` blob to be `B`; the binding already fixes `HEAD`.
+    Every row also requires the `HEAD` entry to be `B/M`; the binding already fixes
+    `HEAD`. A different index entry never reaches this table, because the resume gate
+    refuses any staged change that is not a planned deletion (`staged-changes`).
 - **No network after preparation.** Nothing in apply or resume fetches: there is no
   `clean` call, and f-5's fetch happens only during classification. A resume therefore
   keeps `--no-fetch`'s promise without persisting the flag. The plan records `no_fetch`
@@ -409,9 +418,10 @@ Plan JSON (`plan.json` and `--json`; the text report renders the same object):
   "adoption_commit": "<sha|null>",
   "refusals":  [ { "reason": "<reason>", "subject": "<plan|lock|path>", "detail": "<text>" } ],
   "payload":   [ { "path": "<rel>", "action": "remove|keep", "tracked": bool, "sha256": "<hex>",
-                   "index_blob": "<oid|null>", "head_blob": "<oid|null>",
-                   "why": "pristine|edited|preexisting|inherited|no-ownership-record|
-                           pending-offer|keep-docs|uncommitted-change|claimed",
+                   "mode": "100644|100755|null", "index_blob": "<oid|null>", "head_blob": "<oid|null>",
+                   "why": "pristine|edited|mode-changed|preexisting|inherited|no-ownership-record|
+                           pending-offer|keep-docs|uncommitted-change|claimed|
+                           changed-during-uninstall|reappeared-after-staged-deletion",
                    "provenance": "upstream|installed-revision|none" } ],
   "candidates":[ { "path": "<rel>", "action": "remove|keep", "tracked": bool, "sha256": "<hex>",
                    "why": "recorded|legacy|edited|unrecognized" } ],
@@ -473,7 +483,7 @@ already places in its source, and uses only the resulting hashes.
 | Installed revision's `export.sh` (f-5) | 120 s → kept | Missing `file=` row or export failure → kept | n/a |
 | Fence publication / preparation | — | — | Phase `preparing`: the next `uninstall` clears it under the mutex |
 | Concurrent uninstall processes | — | — | The second fails the mutex: `uninstall-busy` |
-| File removal, `git rm`, config unset | — | — | Exit 4; resume applies the precondition rules, including both half-done tracked states |
+| File removal, `git rm`, config unset | — | — | Exit 4; resume applies the tracked-file state table. A file present after its staged deletion is kept and reported, never `rm`'d |
 | Artifact damaged after `applying` | — | `recovery-damaged`; fence and artifacts preserved | — |
 | Final cleanup | — | — | Before the fence unlink: resume in `done` finishes. After: an inert artifacts directory, whose path was printed |
 
@@ -524,6 +534,15 @@ total, counting the overflow. One clone per run.
 
 Kept in Part A so that it does not count against Part B's word cap.
 
+- **Draft 8 (2026-11-27)** answers the sixth review:
+  1. A file present after its deletion was staged is kept as
+     `reappeared-after-staged-deletion`, and the report gives both fixes. Uninstall never
+     `rm`s it (scenario 7h).
+  2. Removal eligibility includes the Git mode of the worktree, the index and `HEAD`. A
+     mode-only edit is kept as `mode-changed` before apply, and as
+     `changed-during-uninstall` on resume (scenario 7j).
+  3. Scenario 7h's staged-edit case now expects the resume gate to refuse with
+     `staged-changes` and leave the index and worktree unchanged.
 - **Draft 7 (2026-11-27)** answers the fifth review:
   1. Borrowing is removed. Every writing process registers itself, so `init` and its
      `export` child each hold their own. Only `exec` adopts (scenario 6).
@@ -633,13 +652,23 @@ Kept in Part A so that it does not count against Part B's word cap.
 7h. **Half-done tracked removal.** Three cases:
     - **Removed but not staged:** after a completed deletion, a test deletes the next
       planned tracked file with plain `rm`, leaving its index entry. `--resume` verifies
-      the index and `HEAD` entries and stages the deletion.
-    - Same, but the index entry was changed to other bytes first. The path is kept as
-      `changed-during-uninstall` and the index is untouched.
-    - **Staged but not removed:** the index entry is gone and the file is still present
-      with the planned bytes. `--resume` removes the file.
+      the index and `HEAD` entries, including the mode, and stages the deletion.
+    - **Staged edit:** same, but the test first stages other bytes for that path.
+      `--resume` refuses with `staged-changes` before any per-file check, and the index
+      and worktree are byte-identical before and after.
+    - **Recreated after a staged deletion:** interrupt after a planned `.gitkeep`'s
+      deletion is staged, then recreate it with identical (empty) bytes. `--resume` keeps
+      the file as `reappeared-after-staged-deletion`, leaves the staged deletion, and
+      prints both fixes. The file still exists afterwards.
 
     In every case `git diff --cached --name-status` lists only `D` rows for planned paths.
+7j. **Mode-only edit**, with `core.fileMode=true`:
+    - before the dry run, `chmod +x` a pristine, created, tracked, non-executable payload
+      file: it is kept as `mode-changed`, and apply never runs `git rm` on it;
+    - after an interruption, `chmod +x` a planned file that has not been removed yet:
+      `--resume` keeps it as `changed-during-uninstall`.
+
+    In both cases no `git rm` fails, and the run exits 0.
 7i. **No network on resume.** Interrupt a `--no-fetch` apply, then put a `git` shim on
     `PATH` that fails the test on any `fetch`, `clone` or `ls-remote`. `--resume`
     completes without invoking it.
@@ -702,7 +731,7 @@ step lands as its own commit on that branch and closes its issue with `Fixes #N`
 
 ## Definition of done (whole brief)
 - Every step's DoD is met, and `make check` and `make test` are green.
-- Scenarios 1–13, with 7a–7i, are covered by named tests.
+- Scenarios 1–13, with 7a–7j, are covered by named tests.
 - `ADOPTION.md` has a *Removing the harness* section, covering `clean` first, the
   review-and-commit step, the shared-state commands and the residual risk.
 - `CHANGELOG.md` has an entry.
@@ -770,7 +799,9 @@ adopters can see the result before anything can delete.
   `HEAD` on a branch.
 - Classify payload paths (the union of installation and ownership rows), candidates,
   stamps and the hook path by the Part A rules.
-  - For tracked paths, compare the worktree hash, the index blob and the `HEAD` blob.
+  - For tracked paths, compare the worktree hash, the index blob and the `HEAD` blob, and
+    the Git mode of all three. The worktree's executable bit counts only when
+    `core.fileMode` is true.
   - Record every precondition `plan.json` needs.
   - Anything else matching `.agentic-new*` is `unrecognized`.
 - Plans: list every plan record under `<common>/agentic-flow/plans/` that is not
@@ -786,7 +817,8 @@ adopters can see the result before anything can delete.
   and update `docs/reference/command-policy-coverage.md`.
 - Add `upgrade:uninstall` to the wall-ceiling keys.
 
-**Test:** scenarios 1–4, 8, 11 and 13 (dry-run half) as classifications, 5, and 12. Also:
+**Test:** scenarios 1–4, 8, 11, 13 (dry-run half) and 7j (first case) as classifications,
+5, and 12. Also:
 `linked-worktree`, `detached-head`, `no-installation`, a symlinked payload path,
 reference-scan truncation, and `--json` validating against the shape.
 
@@ -885,8 +917,8 @@ scan. Under the fence, no covered writer can start. Two uninstalls never run tog
   `bin/`.
 - On any failure, stop with exit 4 and print the resume command.
 
-**Test:** scenarios 3, 4 (unset), 5 (apply half), 7, 7a, 7b, 7c, 7e, 7f, 7g, 7h, 7i, 8, 9
-and 13. Use a test-only fault point (`AGENTIC_UNINSTALL_TESTING=1` plus a named action),
+**Test:** scenarios 3, 4 (unset), 5 (apply half), 7, 7a, 7b, 7c, 7e, 7f, 7g, 7h, 7i, 7j,
+8, 9 and 13. Use a test-only fault point (`AGENTIC_UNINSTALL_TESTING=1` plus a named action),
 including the point after a completed deletion. Also:
 - a resume that finds a staged change outside the plan refuses;
 - an interactive "no" writes nothing.
@@ -898,7 +930,9 @@ including the point after a completed deletion. Also:
 **Verify:** `make test-one F=upgrade`
 **Risks:**
 - Never use `git rm --ignore-unmatch` as a shortcut. Every tracked path goes through the
-  four-state table, so a missing index entry is a decision, not a silent skip.
+  state table, so a missing index entry is a decision, not a silent skip.
+- Never `rm` a tracked path whose index entry is already gone. A present file there is the
+  adopter's to decide.
 - The `done` cleanup must not need the binding: the adopter may commit before a resume.
 **Red-first:** `upgrade:uninstall` — scripts/tests/upgrade.sh scripts/self-test.sh
 **Commit:** `Stage uninstall from a persisted plan that a retry can resume`
