@@ -2,7 +2,7 @@
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (deletes adopter files, changes the install records, the controller lock and the hook setup, and adds a command-policy floor row; project baseline is Standard)
 > Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness has recorded evidence of creating, behind a fence that excludes every writer. A resumable apply leaves the verified deletions staged for the adopter to commit. Kept files and shared Git state are reported for manual follow-up.
-> Draft 8 (2026-11-27), written against `0.21.0` (`3757627`). It answers the sixth review: a file that reappears after a staged deletion is kept, removal eligibility includes the Git mode, and the staged-edit test now expects the resume gate's refusal. See *Revision history*. Owner decisions: *Uninstall acceptance* yes, *Legacy ownership* keep f-5, *Commit* stage-only, *Shared Git state* report-only, *Plan cleanup* adopter runs `clean` first, *Project-owned state* kept unless `--remove-project-state`. Every open question is settled. Next: the reviewer's seventh round, then owner approval.
+> Draft 9 (2026-11-27), written against `0.21.0` (`3757627`). It answers the seventh review: the final report is reconciled against the index and worktree before it suggests a commit, every file removal shares one precondition shape, and scenario 7h's assertions match each case. See *Revision history*. Owner decisions: *Uninstall acceptance* yes, *Legacy ownership* keep f-5, *Commit* stage-only, *Shared Git state* report-only, *Plan cleanup* adopter runs `clean` first, *Project-owned state* kept unless `--remove-project-state`. Every open question is settled. Next: the reviewer's eighth round, then owner approval.
 
 # Feature — Uninstall: remove only what the harness owns
 
@@ -284,8 +284,12 @@ writer that passed dispatch before the fence existed is still registered at its 
   `HEAD`'s symbolic ref (a detached `HEAD` is refused) and `HEAD`'s commit.
 - **Preconditions.** Every planned action carries one. Files and config values are each
   rechecked immediately before the action.
-  - Untracked files (candidates, stamps, records, project state, `.agentic-flow/config`)
-    carry a SHA-256 and the regular-file type. An absent file counts as done.
+  - **Every file removal uses one shared precondition shape, `pre`**, whatever its kind:
+    payload file, candidate, stamp, record, project state or `.agentic-flow/config`.
+    Whether a path is tracked is a property of the path, not of its kind, so a tracked
+    stamp or candidate gets exactly the tracked rules below.
+  - Untracked files carry a SHA-256 and the regular-file type. An absent file counts as
+    done.
   - Git config values (`core.hooksPath` and the marker) carry the exact value, scope and
     origin file. An absent value counts as done.
   - **Tracked files** carry the planned bytes and mode, `B/M`. These must also be the
@@ -316,7 +320,24 @@ writer that passed dispatch before the fence existed is still registered at its 
   4. Unset `core.hooksPath`, then the marker.
   5. Remove stamps and records.
   6. Set the fence phase to `done`.
-  7. Cleanup: print the reports, unlink the fence, then remove the artifacts directory.
+  7. **Reconcile** every tracked removal that `progress` records as completed against the
+     current index and worktree.
+  8. Cleanup: print the reports, unlink the fence, then remove the artifacts directory.
+
+  **Reconciliation decides the final report, not `progress`.** For each completed
+  tracked deletion:
+
+  | Worktree | Index entry | Report |
+  |---|---|---|
+  | absent | none | staged deletion (expected) |
+  | present | none | **unresolved:** `reappeared-after-staged-deletion`, with both fixes |
+  | any | present | **unresolved:** `deletion-no-longer-staged` (someone restored it); nothing to commit for this path |
+
+  When anything is unresolved, the summary lists every unresolved path and its fixes
+  *before* any commit suggestion, and says "resolve these, then commit". The plain
+  `git commit` hint is printed only when nothing is unresolved. Reconciliation runs in
+  every path that prints the final report: a straight apply, a resume in `applying`, and
+  a resume in `done`.
 
   Until the unlink, `bin/` and the resume command work. An interruption after the unlink
   leaves an inert directory, whose path is printed before the unlink.
@@ -331,8 +352,8 @@ writer that passed dispatch before the fence existed is still registered at its 
   - then, for each remaining action: if it is already done, it is recorded as done; if
     its precondition holds, it runs; if the precondition fails, the item is kept and
     reported as `changed-during-uninstall`;
-  - in `done`, it only finishes cleanup and skips the binding check, because cleanup
-    touches neither the tree nor the index.
+  - in `done`, it only reconciles and finishes cleanup. It skips the binding check,
+    because neither step changes the tree or the index.
 
   The resume command, printed before the first destructive action, is
   `<common>/agentic-flow/uninstall-<nonce>/bin/agentic-flow uninstall --resume`. While the
@@ -398,9 +419,14 @@ agentic-flow uninstall --resume [--json]
     Still referencing removed files:  <file>:<line>: <removed path or command>
     Shared Git state (not removed):   <dir>  <entries>  <size>  cache|record
                                       rm -rf -- '<abs dir>'
-  An apply then prints:
+  An apply then prints, after reconciling completed deletions:
+    Unresolved (resolve before committing):          (only when any)
+      <path>  reappeared-after-staged-deletion
+              keep:   git restore --staged -- <path>
+              finish: rm -- <path>
+      <path>  deletion-no-longer-staged
     Staged for your review: <n> deletions.  Inspect: git status
-                                            Commit:  git commit
+                                            Commit:  git commit    (only when nothing is unresolved)
   When a kept Makefile or workflow references removed files, the report says first that
   `make check` or CI will fail after removal.
 
@@ -417,16 +443,23 @@ Plan JSON (`plan.json` and `--json`; the text report renders the same object):
   "binding": { "toplevel": "<abs>", "git_dir": "<abs>", "ref": "refs/heads/<name>", "head": "<sha>" },
   "adoption_commit": "<sha|null>",
   "refusals":  [ { "reason": "<reason>", "subject": "<plan|lock|path>", "detail": "<text>" } ],
-  "payload":   [ { "path": "<rel>", "action": "remove|keep", "tracked": bool, "sha256": "<hex>",
-                   "mode": "100644|100755|null", "index_blob": "<oid|null>", "head_blob": "<oid|null>",
-                   "why": "pristine|edited|mode-changed|preexisting|inherited|no-ownership-record|
-                           pending-offer|keep-docs|uncommitted-change|claimed|
-                           changed-during-uninstall|reappeared-after-staged-deletion",
+  "payload":   [ { "path": "<rel>", "action": "remove|keep", "pre": <pre>,
+                   "why": "pristine|edited|preexisting|inherited|no-ownership-record|
+                           pending-offer|keep-docs|uncommitted-change|claimed|<common why>",
                    "provenance": "upstream|installed-revision|none" } ],
-  "candidates":[ { "path": "<rel>", "action": "remove|keep", "tracked": bool, "sha256": "<hex>",
-                   "why": "recorded|legacy|edited|unrecognized" } ],
+  "candidates":[ { "path": "<rel>", "action": "remove|keep", "pre": <pre>,
+                   "why": "recorded|legacy|edited|unrecognized|<common why>" } ],
   "stamps":    [ { "path": "<rel>", "owner": "harness|project", "action": "remove|keep",
-                   "tracked": bool, "sha256": "<hex>" } ],     (.agentic-flow/config included)
+                   "pre": <pre>, "why": "remove|project-state-kept|<common why>" } ],
+                                                               (.agentic-flow/config included)
+
+  <pre> (one shape for every file removal):
+    { "tracked": bool, "type": "file", "sha256": "<hex>",
+      "worktree_mode": "100644|100755",            (exec bit; compared only when core.fileMode)
+      "index": { "blob": "<oid>", "mode": "100644|100755" } | null,   (null when untracked)
+      "head":  { "blob": "<oid>", "mode": "100644|100755" } | null }
+  <common why>: mode-changed | changed-during-uninstall | reappeared-after-staged-deletion |
+                deletion-no-longer-staged
   "plans":     [ { "id": "<id>", "status": "open|pending", "worktree": "<abs|null>",
                    "command": "agentic-flow clean <id>" } ],        (blocking plans only)
   "no_fetch":  bool,
@@ -442,7 +475,9 @@ Plan JSON (`plan.json` and `--json`; the text report renders the same object):
   "dangling_references": [ { "file": "<rel>", "line": n, "ref": "<removed path|agentic-flow>" } ],
   "dangling_truncated": n,
   "outside":   [ "<checklist line>" ],
-  "staged":    [ "<rel>" ] }                                 (apply result only)
+  "staged":    [ "<rel>" ],                                  (apply result only, after reconciliation)
+  "unresolved":[ { "path": "<rel>", "why": "reappeared-after-staged-deletion|deletion-no-longer-staged",
+                   "fixes": [ "<command>" ] } ] }            (apply result only)
 ```
 
 Refusal reasons: `not-git-toplevel`, `linked-worktree`, `detached-head`, `staged-changes`,
@@ -534,6 +569,15 @@ total, counting the overflow. One clone per run.
 
 Kept in Part A so that it does not count against Part B's word cap.
 
+- **Draft 9 (2026-11-27)** answers the seventh review:
+  1. Before the final report, completed tracked deletions are reconciled against the
+     index and worktree. A reappeared or restored path is listed under *Unresolved*, with
+     its fixes, and the commit hint is withheld (scenario 7h, after a recorded
+     completion).
+  2. Every file removal uses one shared `pre` shape, so tracked stamps and candidates
+     carry a blob and a mode too (scenario 7j).
+  3. Scenario 7h asserts `D` rows only for the successful cases, and the exact staged
+     diff for the refusal case.
 - **Draft 8 (2026-11-27)** answers the sixth review:
   1. A file present after its deletion was staged is kept as
      `reappeared-after-staged-deletion`, and the report gives both fixes. Uninstall never
@@ -660,13 +704,24 @@ Kept in Part A so that it does not count against Part B's word cap.
       deletion is staged, then recreate it with identical (empty) bytes. `--resume` keeps
       the file as `reappeared-after-staged-deletion`, leaves the staged deletion, and
       prints both fixes. The file still exists afterwards.
+    - **Recreated after completion was recorded:** the fault point fires after a
+      deletion's `progress` entry is written. The test recreates that file, then resumes.
+      The final report lists it under *Unresolved* with both fixes, before any commit
+      hint. `unresolved` names it in `--json`, and the plain `git commit` hint is absent.
 
-    In every case `git diff --cached --name-status` lists only `D` rows for planned paths.
+    Assertions:
+    - In the three successful cases, `git diff --cached --name-status` lists only `D`
+      rows, and only for planned paths.
+    - In the staged-edit case, the staged diff is exactly the test's `M` row for that
+      path, plus the `D` rows staged before the interruption, unchanged from before the
+      refused resume.
 7j. **Mode-only edit**, with `core.fileMode=true`:
     - before the dry run, `chmod +x` a pristine, created, tracked, non-executable payload
       file: it is kept as `mode-changed`, and apply never runs `git rm` on it;
     - after an interruption, `chmod +x` a planned file that has not been removed yet:
-      `--resume` keeps it as `changed-during-uninstall`.
+      `--resume` keeps it as `changed-during-uninstall`;
+    - the same two cases on a **tracked stamp** (`.agentic-flow-version`, committed) and on
+      a **tracked candidate**. Each uses the shared `pre` shape and is kept the same way.
 
     In both cases no `git rm` fails, and the run exits 0.
 7i. **No network on resume.** Interrupt a `--no-fetch` apply, then put a `git` shim on
@@ -799,10 +854,11 @@ adopters can see the result before anything can delete.
   `HEAD` on a branch.
 - Classify payload paths (the union of installation and ownership rows), candidates,
   stamps and the hook path by the Part A rules.
-  - For tracked paths, compare the worktree hash, the index blob and the `HEAD` blob, and
-    the Git mode of all three. The worktree's executable bit counts only when
+  - Build one `pre` for every file the plan may remove, through a single helper, whatever
+    its kind.
+  - For any tracked path, compare the worktree hash, the index blob and the `HEAD` blob,
+    and the Git mode of all three. The worktree's executable bit counts only when
     `core.fileMode` is true.
-  - Record every precondition `plan.json` needs.
   - Anything else matching `.agentic-new*` is `unrecognized`.
 - Plans: list every plan record under `<common>/agentic-flow/plans/` that is not
   `closed`, and every linked worktree, each with its `agentic-flow clean <id>` command.
@@ -910,8 +966,9 @@ scan. Under the fence, no covered writer can start. Two uninstalls never run tog
   4. Set the phase to `applying`, print the resume command, and re-exec from `bin/`.
 - **Apply** in the Part A order. Check each action's precondition immediately before it,
   and append each completed action to `progress`.
-- Set the phase to `done`, then clean up: print the reports and the staged summary,
-  unlink the fence, and remove the artifacts directory.
+- Set the phase to `done`, reconcile the completed tracked deletions (Part A), then clean
+  up: print the reports, the unresolved list and the staged summary, unlink the fence,
+  and remove the artifacts directory.
 - **`--resume`** follows the Part A phase table. While the fence exists,
   `scripts/agentic-flow uninstall` prints the resume command, or with `--resume` execs
   `bin/`.
@@ -927,6 +984,8 @@ including the point after a completed deletion. Also:
 - Every interruption resumes to the same final tree and index as an uninterrupted run.
 - Abandoned preparations clear automatically; damaged recovery data never does.
 - The index only ever gains the completed deletions.
+- The final report is reconciled against the index and worktree. It never suggests a
+  commit while any completed deletion is unresolved.
 **Verify:** `make test-one F=upgrade`
 **Risks:**
 - Never use `git rm --ignore-unmatch` as a shortcut. Every tracked path goes through the
