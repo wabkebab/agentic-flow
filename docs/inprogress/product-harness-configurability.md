@@ -453,6 +453,11 @@ Config changes what replay and gates mean, so it waits for its tier contract.
       plus pristine bytes, behind a fence and the no-override plan guards. Legacy paths
       are removable only through an explicit owner claim (`feature-uninstall.md` f-5).
       Managed-region markers stay deferred.*
+      *Narrowed 2026-11-27 for v1, after the fourth review of `feature-uninstall.md`:
+      uninstall stages the verified deletions and the adopter commits them, replacing
+      J's "one removal commit". Shared Git state under the common dir, including the
+      ledger, is reported with exact commands instead of removed, so `--purge-ledger`
+      is dropped. Automatic commit and purge are follow-ups.*
 
 Settled by this revision:
 - Phase 1 uses the feature brief's `status` interface. Service units are deferred.
@@ -461,7 +466,8 @@ Settled by this revision:
 
 - [ ] `docs/inprogress/feature-process-status.md` — areas E, G (Phase 1; drafted 2026-11-25 on `configurability-phase-1`, revision 2)
 - [ ] `docs/inprogress/feature-config-surface.md` — areas A, C, K (Phase 2; drafted 2026-11-26 on `configurability-phase-2`, draft 1)
-- [ ] `docs/inprogress/feature-uninstall.md` — area J (Phase 3; drafted 2026-11-27 on `configurability-phase-3`, draft 5)
+- [ ] `docs/inprogress/feature-uninstall.md` — area J (Phase 3; drafted 2026-11-27 on `configurability-phase-3`, draft 6, stage-only v1)
+- [ ] `docs/backlog/feature-uninstall-purge.md` — area J follow-up: automatic commit and shared Git state purge, only if adopters ask
 - [ ] `docs/inprogress/feature-setup-upgrade-wizard.md` — area D
 - [ ] `docs/inprogress/feature-visibility-modes.md` — area I (part 1; part 2 on demand)
 - [ ] Area B folded into the 1.0 brief alongside R-14b and R-22
