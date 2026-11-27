@@ -2,7 +2,7 @@
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (deletes adopter files, changes the install records, the controller lock and the hook setup, and adds a command-policy floor row; project baseline is Standard)
 > Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness has recorded evidence of creating, behind a fence that excludes every writer. A resumable apply leaves the verified deletions staged for the adopter to commit. Kept files and shared Git state are reported for manual follow-up.
-> Draft 9 (2026-11-27), written against `0.21.0` (`3757627`). It answers the seventh review: the final report is reconciled against the index and worktree before it suggests a commit, every file removal shares one precondition shape, and scenario 7h's assertions match each case. See *Revision history*. Owner decisions: *Uninstall acceptance* yes, *Legacy ownership* keep f-5, *Commit* stage-only, *Shared Git state* report-only, *Plan cleanup* adopter runs `clean` first, *Project-owned state* kept unless `--remove-project-state`. Every open question is settled. Next: the reviewer's eighth round, then owner approval.
+> Draft 10 (2026-11-27), written against `0.21.0` (`3757627`). It answers the eighth review: reconciliation and Git hints only while the original checkout binding holds, and no generated commit command. See *Revision history*. Owner decisions: *Uninstall acceptance* yes, *Legacy ownership* keep f-5, *Commit* stage-only, *Shared Git state* report-only, *Plan cleanup* adopter runs `clean` first, *Project-owned state* kept unless `--remove-project-state`. Every open question is settled. Next: the reviewer's ninth round, then owner approval.
 
 # Feature — Uninstall: remove only what the harness owns
 
@@ -333,11 +333,21 @@ writer that passed dispatch before the fence existed is still registered at its 
   | present | none | **unresolved:** `reappeared-after-staged-deletion`, with both fixes |
   | any | present | **unresolved:** `deletion-no-longer-staged` (someone restored it); nothing to commit for this path |
 
-  When anything is unresolved, the summary lists every unresolved path and its fixes
-  *before* any commit suggestion, and says "resolve these, then commit". The plain
-  `git commit` hint is printed only when nothing is unresolved. Reconciliation runs in
-  every path that prints the final report: a straight apply, a resume in `applying`, and
-  a resume in `done`.
+  **Reconciliation runs only while the binding holds:** the same top level and Git dir,
+  the same symbolic ref, and `HEAD` equal to the bound commit. That is always true on a
+  straight apply and on a resume in `applying`, which refuses otherwise.
+
+  A resume in `done` may find the binding changed, because the adopter committed the
+  removal or switched branches. Cleanup still proceeds, but uninstall skips live
+  reconciliation and prints *no* Git command hints, since they could target the wrong
+  checkout. Instead it prints "the checkout changed since apply (now `<ref>` at
+  `<sha>`); review it yourself", followed by the completed paths from `progress` as
+  plain information.
+
+  The summary lists every unresolved path, with its fixes, first. Then it shows how to
+  review: `git status` and `git diff --cached`. **Uninstall never prints a commit
+  command.** The index may also hold changes uninstall did not make, so the adopter
+  decides what to commit.
 
   Until the unlink, `bin/` and the resume command work. An interruption after the unlink
   leaves an inert directory, whose path is printed before the unlink.
@@ -352,8 +362,10 @@ writer that passed dispatch before the fence existed is still registered at its 
   - then, for each remaining action: if it is already done, it is recorded as done; if
     its precondition holds, it runs; if the precondition fails, the item is kept and
     reported as `changed-during-uninstall`;
-  - in `done`, it only reconciles and finishes cleanup. It skips the binding check,
-    because neither step changes the tree or the index.
+  - in `done`, it only reports and finishes cleanup, and never refuses on the binding.
+    It reconciles only if the binding still holds; otherwise it prints the
+    changed-checkout report with no Git command hints. Neither branch changes the tree or
+    the index.
 
   The resume command, printed before the first destructive action, is
   `<common>/agentic-flow/uninstall-<nonce>/bin/agentic-flow uninstall --resume`. While the
@@ -419,14 +431,18 @@ agentic-flow uninstall --resume [--json]
     Still referencing removed files:  <file>:<line>: <removed path or command>
     Shared Git state (not removed):   <dir>  <entries>  <size>  cache|record
                                       rm -rf -- '<abs dir>'
-  An apply then prints, after reconciling completed deletions:
+  An apply then prints, after reconciling completed deletions (binding intact):
     Unresolved (resolve before committing):          (only when any)
       <path>  reappeared-after-staged-deletion
               keep:   git restore --staged -- <path>
               finish: rm -- <path>
       <path>  deletion-no-longer-staged
-    Staged for your review: <n> deletions.  Inspect: git status
-                                            Commit:  git commit    (only when nothing is unresolved)
+    Uninstall staged <n> deletions. It does not commit.
+    Review the whole index before you commit:  git status
+                                               git diff --cached
+  A `done` resume whose binding changed prints instead:
+    The checkout changed since apply (now <ref> at <sha>); review it yourself.
+    Completed removals: <path> ...                   (no Git commands)
   When a kept Makefile or workflow references removed files, the report says first that
   `make check` or CI will fail after removal.
 
@@ -475,9 +491,12 @@ Plan JSON (`plan.json` and `--json`; the text report renders the same object):
   "dangling_references": [ { "file": "<rel>", "line": n, "ref": "<removed path|agentic-flow>" } ],
   "dangling_truncated": n,
   "outside":   [ "<checklist line>" ],
-  "staged":    [ "<rel>" ],                                  (apply result only, after reconciliation)
+  "reconciled": bool,                                        (false when a done resume found the binding changed)
+  "checkout_now": { "ref": "<ref>", "head": "<sha>" } | null, (set only when not reconciled)
+  "completed": [ "<rel>" ],                                  (from progress; always present after apply)
+  "staged":    [ "<rel>" ],                                  (only when reconciled)
   "unresolved":[ { "path": "<rel>", "why": "reappeared-after-staged-deletion|deletion-no-longer-staged",
-                   "fixes": [ "<command>" ] } ] }            (apply result only)
+                   "fixes": [ "<command>" ] } ] }            (only when reconciled)
 ```
 
 Refusal reasons: `not-git-toplevel`, `linked-worktree`, `detached-head`, `staged-changes`,
@@ -569,6 +588,13 @@ total, counting the overflow. One clone per run.
 
 Kept in Part A so that it does not count against Part B's word cap.
 
+- **Draft 10 (2026-11-27)** answers the eighth review:
+  1. Reconciliation runs only while the binding holds. A `done` resume after a commit or
+     a branch switch still cleans up, but prints a changed-checkout report with no Git
+     command hints (scenario 7e).
+  2. The generated `git commit` hint is gone. The summary points to `git status` and
+     `git diff --cached` and leaves the commit to the adopter (scenario 7h, with an
+     unrelated staged change).
 - **Draft 9 (2026-11-27)** answers the seventh review:
   1. Before the final report, completed tracked deletions are reconciled against the
      index and worktree. A reappeared or restored path is listed under *Unresolved*, with
@@ -681,10 +707,17 @@ Kept in Part A so that it does not count against Part B's word cap.
 7d. **Concurrency.** Two clears of one abandoned preparation, and two resumes of one
     interrupted apply. Exactly one proceeds each time; the other gets `uninstall-busy`. A
     fence from another host is `fence-owner-unresolved`.
-7e. **Interrupted cleanup.** Interrupt after `done` and before the fence unlink:
-    `--resume` from `bin/` finishes, and the staged set is unchanged, even if the adopter
-    committed in between. Interrupt after the unlink: no command refuses, and the printed
-    artifacts path is the only leftover.
+7e. **Interrupted cleanup.** Interrupt after `done` and before the fence unlink, then:
+    - **no change:** `--resume` from `bin/` reconciles, prints the staged report, and
+      leaves the staged set unchanged;
+    - **the adopter committed** the staged deletions: `--resume` finishes cleanup and
+      reports `reconciled: false` with the new `HEAD`. It does not call the committed
+      paths "staged", and it prints no Git command;
+    - **the adopter switched** to another branch: same, with the other ref named. It
+      offers no fix commands, and that branch's index and worktree are unchanged.
+
+    Interrupt after the unlink: no command refuses, and the printed artifacts path is the
+    only leftover.
 7f. **File changes between runs.** Interrupt after the first tracked deletion, then edit a
     planned tracked file that has not been removed yet. After `--resume`, that file is
     still tracked, unstaged and edited. `git diff --cached --name-status` lists only `D`
@@ -706,8 +739,12 @@ Kept in Part A so that it does not count against Part B's word cap.
       prints both fixes. The file still exists afterwards.
     - **Recreated after completion was recorded:** the fault point fires after a
       deletion's `progress` entry is written. The test recreates that file, then resumes.
-      The final report lists it under *Unresolved* with both fixes, before any commit
-      hint. `unresolved` names it in `--json`, and the plain `git commit` hint is absent.
+      The final report lists it under *Unresolved* with both fixes, before the review
+      hints, and `unresolved` names it in `--json`.
+    - **Unrelated staged change before the report:** a test pause, just before the final
+      report, runs `git add` on an unrelated file. `unresolved` is empty, the output
+      contains no `git commit` text, and it shows `git status` and `git diff --cached`.
+      The unrelated file is still staged afterwards.
 
     Assertions:
     - In the three successful cases, `git diff --cached --name-status` lists only `D`
@@ -984,15 +1021,17 @@ including the point after a completed deletion. Also:
 - Every interruption resumes to the same final tree and index as an uninterrupted run.
 - Abandoned preparations clear automatically; damaged recovery data never does.
 - The index only ever gains the completed deletions.
-- The final report is reconciled against the index and worktree. It never suggests a
-  commit while any completed deletion is unresolved.
+- The final report is reconciled against the index and worktree only while the binding
+  holds. Otherwise it gives no Git command hints. Uninstall never prints a commit
+  command.
 **Verify:** `make test-one F=upgrade`
 **Risks:**
 - Never use `git rm --ignore-unmatch` as a shortcut. Every tracked path goes through the
   state table, so a missing index entry is a decision, not a silent skip.
 - Never `rm` a tracked path whose index entry is already gone. A present file there is the
   adopter's to decide.
-- The `done` cleanup must not need the binding: the adopter may commit before a resume.
+- The `done` cleanup must never refuse on the binding, because the adopter may commit or
+  switch branches before a resume. It may only *downgrade* the report.
 **Red-first:** `upgrade:uninstall` — scripts/tests/upgrade.sh scripts/self-test.sh
 **Commit:** `Stage uninstall from a persisted plan that a retry can resume`
 
