@@ -2,7 +2,7 @@
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (deletes adopter files, changes the install records, the controller lock and the hook setup, and adds a command-policy floor row; project baseline is Standard)
 > Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness has recorded evidence of creating, runs behind a fence that excludes controllers and plan operations, and can resume after an interruption. Kept files are listed on stdout.
-> Draft 3 (2026-11-27), written against `0.21.0` (`3757627`). It answers the first review: ownership comes from install-time evidence, not history; resumable apply; a shared fence; candidate evidence; and hook-path ownership. See *Revision history*. Next: owner review. The *Uninstall* and *Legacy ownership* decisions gate approval.
+> Draft 3 (2026-11-27), written against `0.21.0` (`3757627`). It answers the first review: ownership comes from install-time evidence, not history; resumable apply; a shared fence; candidate evidence; and hook-path ownership. See *Revision history*. The owner settled *Uninstall acceptance* and *Legacy ownership* (keep f-5) on 2026-11-27. Next: the reviewer's second round on draft 3, then owner approval. The project-state and commit defaults are settled at approval.
 
 # Feature — Uninstall: remove only what the harness owns
 
@@ -327,18 +327,19 @@ lines per file and 200 in total, counting the overflow. One clone per run.
 
 ## Open questions
 
-- [BLOCKING] **Uninstall acceptance** (product analysis): remove only paths with install-time
+- [x] **Uninstall acceptance** (product analysis): remove only paths with install-time
   ownership evidence and pristine provenance, with the no-override plan guards and the
-  fence. *Recommended: yes.*
-- [BLOCKING] **Legacy ownership.** Every install made before f-1 has no ownership record,
+  fence. *Decided 2026-11-27 by the owner: yes.*
+- [x] **Legacy ownership.** *Decided 2026-11-27 by the owner: keep f-5.* Every install
+  made before f-1 has no ownership record,
   so its existing files become `inherited`. Without f-5, uninstall removes none of them,
   only stamps and state.
-  - *Recommended:* keep f-5. `--claim-adoption` is an explicit owner assertion. It applies
+  - *Chosen:* keep f-5. `--claim-adoption` is an explicit owner assertion. It applies
     only to `inherited` or unrecorded paths that the adoption commit added, still requires
     pristine bytes, and is listed path by path before the prompt.
   - It never applies to `preexisting` rows. It does not apply to paths first shipped
     after adoption, because the adoption commit did not add them.
-  - *Alternative:* drop f-5 and keep every legacy file.
+  - *Rejected alternative:* drop f-5 and keep every legacy file.
 - **Project-owned state default.** Keep it unless `--remove-project-state` is given?
   *Recommended: yes.*
 - **Commit.** Commit by default with the adopter's own identity, and stage only when a
@@ -606,7 +607,7 @@ uninterrupted run. Every refusal leaves the tree digest unchanged.
 
 ## F-5 — Let the owner claim legacy paths, proven against the installed revision
 **Why last:** it only turns some legacy keeps into removals, behind an explicit owner
-assertion. Drop it if the owner chooses to keep every legacy file.
+assertion. The owner chose to keep it on 2026-11-27.
 
 **Approach:**
 - `--claim-adoption` covers paths that are `inherited` or have no ownership row, never

@@ -445,10 +445,14 @@ Config changes what replay and gates mean, so it waits for its tier contract.
       *Partly decided 2026-11-26: CI wall time defaults to `warn`
       (`feature-config-surface.md` C-1). The other defaults are settled at that brief's
       approval.*
-- [ ] **Uninstall.** Accept removal only on pristine provenance (the `accepted=` upstream
+- [x] **Uninstall.** Accept removal only on pristine provenance (the `accepted=` upstream
       hash, or bytes re-exported from the installed revision for older installs) and the
       no-override plan guards?
       Invest in managed-region markers for hand-merged contracts later?
+      *Decided 2026-11-27: yes, tightened by review to install-time ownership evidence
+      plus pristine bytes, behind a fence and the no-override plan guards. Legacy paths
+      are removable only through an explicit owner claim (`feature-uninstall.md` f-5).
+      Managed-region markers stay deferred.*
 
 Settled by this revision:
 - Phase 1 uses the feature brief's `status` interface. Service units are deferred.
