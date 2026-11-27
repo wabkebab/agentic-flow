@@ -7,9 +7,9 @@
 # Feature — Uninstall: remove only what the harness owns
 
 ## Tracker
-- [ ] f-1 — Record which paths the harness created — #226
-- [ ] f-2 — Classify ownership and report the removal as a dry run — #227
-- [ ] f-3 — Stage the verified removal in one checked, reversible `git rm` — #228
+- [ ] f-1 — Record which paths the harness created — #232
+- [ ] f-2 — Classify ownership and report the removal as a dry run — #233
+- [ ] f-3 — Stage the verified removal in one checked, reversible `git rm` — #234
 
 ---
 
@@ -729,7 +729,7 @@ though the CLI's own files are among the deletions.
 ## Status / Implementation status
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
-- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/225
+- **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/231
 - **Approval:** status=approved; by=wabkebab; at=2026-11-27; rev=57b6138ccc07b2c87462284f7690c157976a5d3d
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
