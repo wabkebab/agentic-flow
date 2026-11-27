@@ -605,12 +605,10 @@ writes nothing. Agents cannot run it.
 **Test:** scenarios 4 and 5 (apply half), 6 and 7. Also: an interactive "no" writes
 nothing; a `remove` list that is empty exits 0, writes no files and runs no `git rm`.
 
-**DoD:**
-- Apply stages exactly the `remove` list in one Git operation, and reports success only
-  after verifying it.
-- Incomplete or refused batches exit 4 with what happened.
-- The undo is bound to its checkout, never overwrites, and names the paths to review.
-- The run completes even though the CLI's own files are among the deletions.
+**DoD:** apply stages exactly the `remove` list in one Git operation and reports success
+only after verifying it. Incomplete or refused batches exit 4 with what happened. The undo
+is bound to its checkout, never overwrites, and names the paths to review. The run
+completes even though the CLI's own files are among the deletions.
 **Verify:** `make test-one F=upgrade`
 **Risks:**
 - After `git rm`, nothing may source or read a tree file. Load every library and render
