@@ -730,7 +730,7 @@ though the CLI's own files are among the deletions.
 <!-- Finalized by the closer before the last repository commit. -->
 - **Evidence schema:** v2
 - **Tracking issue:** url=https://github.com/wabkebab/agentic-flow/issues/225
-- **Approval:** pending
+- **Approval:** status=approved; by=wabkebab; at=2026-11-27; rev=57b6138ccc07b2c87462284f7690c157976a5d3d
 - **Implementation head:** source=pr-head
 - **Implementation PR:** pending
 - **Verification evidence:** source=final-approval-run
