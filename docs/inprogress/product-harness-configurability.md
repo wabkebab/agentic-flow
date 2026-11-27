@@ -457,7 +457,7 @@ Settled by this revision:
 
 - [ ] `docs/inprogress/feature-process-status.md` — areas E, G (Phase 1; drafted 2026-11-25 on `configurability-phase-1`, revision 2)
 - [ ] `docs/inprogress/feature-config-surface.md` — areas A, C, K (Phase 2; drafted 2026-11-26 on `configurability-phase-2`, draft 1)
-- [ ] `docs/inprogress/feature-uninstall.md` — area J (Phase 3; drafted 2026-11-27 on `configurability-phase-3`, draft 1)
+- [ ] `docs/inprogress/feature-uninstall.md` — area J (Phase 3; drafted 2026-11-27 on `configurability-phase-3`, draft 2)
 - [ ] `docs/inprogress/feature-setup-upgrade-wizard.md` — area D
 - [ ] `docs/inprogress/feature-visibility-modes.md` — area I (part 1; part 2 on demand)
 - [ ] Area B folded into the 1.0 brief alongside R-14b and R-22

@@ -2,7 +2,7 @@
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (deletes adopter files, removes the secret-scan hook path and adds a command-policy floor row; project baseline is Standard)
 > Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness can prove it owns. It defaults to a dry run, refuses while any plan would be refused by `clean`, and makes one removal commit.
-> Draft 1 (2026-11-27), written against `0.21.0` (`3757627`). Next: owner review. The *Uninstall* decision in the product analysis gates approval.
+> Draft 2 (2026-11-27), written against `0.21.0` (`3757627`). Draft 2 keeps every path that existed before the adoption commit and lists every kept file on stdout, with the lines that still reference removed files. Next: owner review. The *Uninstall* decision in the product analysis gates approval.
 
 # Feature — Uninstall: remove only what the harness owns
 
@@ -42,6 +42,11 @@ outside the repository as a checklist instead of touching it.
   - **Checked 2026-11-27:** a fresh export of `3757627` into an empty directory wrote 149
     `file=` rows and 149 `accepted=` rows. 148 matched. `docs/README.md` differs because
     export seeds the docs index after the apply (`export.sh:166-172`).
+  - **`same` does not prove the harness created the file.** When a path already exists
+    with identical bytes, export classifies it `same` and records `accepted=` anyway. The
+    five `docs/*/.gitkeep` payload files are empty, so any adopter `.gitkeep` at those
+    paths hashes identically. An `export --force` also records `accepted=` over the file it
+    replaced. Neither record says whether the path existed before adoption.
 - **Older installs.** Installs made before 0.20.0 have no `.agentic-flow-upstream` until
   their next upgrade. `.agentic-flow-version` stamps `<semver>+<short-sha>`
   (`payload_compute_version`, `payload-apply.sh:605-611`). `.agentic-flow-source` records
@@ -54,9 +59,19 @@ outside the repository as a checklist instead of touching it.
 - **Hooks.** `git_guard_enable` sets `core.hooksPath=scripts/git-hooks` only when it is unset
   and the project root is the Git top level. A custom path is kept and told to chain
   `scripts/git-hooks/pre-commit` (`git-guards.sh:11-26`).
-- **Agent hooks.** `.claude/settings.json` and `.codex/hooks.json` run `scripts/hooks/*.sh`.
-  Both are payload files, but the command-policy renderer may rewrite them, so they are
-  often not pristine.
+- **Kept files reference harness files.** `init` fills in `CLAUDE.md`, `AGENTS.md`, the
+  `Makefile` and `.agentic-flow-review-policy`, so these are almost never pristine and are
+  kept. They still reference files uninstall removes:
+  - the `Makefile` template's `check`, `test` and `test-one` recipes call
+    `scripts/self-test.sh`, `shell-inventory.sh` and the `check-*.sh` scripts
+    (`templates/harness/Makefile:19-39`);
+  - the CI template runs `make check` and calls `scripts/doctor.sh`, `docs-index.sh` and
+    `check-memory-index.sh` (`templates/ci/ci.yml:159-198`);
+  - the contracts reference `METHODOLOGY.md`, `scripts/` and `agentic-flow` commands;
+  - `.claude/settings.json` and `.codex/hooks.json` run `scripts/hooks/*.sh`, and the
+    command-policy renderer may rewrite them, so they are often not pristine either.
+
+  After a removal, `make check` and the adopter's CI fail until a human edits these files.
 - **Shared Git state** under `$(git rev-parse --git-common-dir)/agentic-flow/`:
   - caches: `state`, `verify`, `gate`, `launches`, `probe`, `locks`, `worktree-locks`,
     `codex-home`;
@@ -80,9 +95,18 @@ outside the repository as a checklist instead of touching it.
 Remove a payload file only when all of the following hold:
 - it is listed in `.agentic-flow-installation`;
 - it has an `accepted=` hash with no pending `offered=` and no `.agentic-new*` candidate;
-- its current bytes hash to that `accepted=` value.
+- its current bytes hash to that `accepted=` value;
+- the path did not exist before adoption. The *adoption commit* is the oldest commit that
+  adds `.agentic-flow-version`
+  (`git log --diff-filter=A --format=%H -- .agentic-flow-version`, last line). If that
+  commit's first parent already has the path, the file is the adopter's. A root adoption
+  commit has no parent, so nothing predates it. If the stamp was never committed, there is
+  no adoption commit and this check does not apply.
 
-Report every other file and keep it. For installs older than 0.20.0, the `accepted=` hash
+Keep every other file. After classifying, scan every kept file and
+`.github/workflows/*` for references to removed paths and to the `agentic-flow` CLI. Print
+both lists on stdout, so the adopter sees what to finish by hand. Uninstall never edits a
+kept file. For installs older than 0.20.0, the `accepted=` hash
 comes from re-exporting the *installed revision* (f-3). Plans go through `clean`'s own
 guards with no override. Refusals happen before any write. Harness records are removed
 last, so a failed run can be rerun.
@@ -96,7 +120,8 @@ delete adopter work. Rejected by the product analysis.
 
 These would let uninstall strip only the harness's section from a hand-merged `CLAUDE.md`.
 That is useful later, but it needs a template format change and an upgrade migration.
-Deferred (see the product analysis's open question).
+Deferred (owner, 2026-11-27; see the product analysis's open question). Until then, the
+kept list and the reference report tell the adopter exactly which lines to edit.
 
 **Recommendation:** Option A. A false "keep" costs the adopter one manual `rm`. A false
 "remove" destroys their work. Every ambiguous case keeps the file.
@@ -109,6 +134,13 @@ agentic-flow uninstall [--yes] [--json] [--keep-docs] [--remove-project-state]
 
   default            dry run: print the classified plan, write nothing.
                      On a terminal, offer to apply after the report.
+                     Both a dry run and an apply end with two stdout sections:
+                       Kept — finish by hand:
+                         <path>  (<why>)
+                       Still referencing removed files:
+                         <file>:<line>: <removed path or command>
+                     When a kept file references removed files, the dry run says first
+                     that `make check` or CI will fail after removal.
   --yes              apply without prompting (required off a terminal)
   --json             emit the plan (or the applied result) as one JSON object
   --keep-docs        keep payload files under docs/ and the root METHODOLOGY.md / ADOPTION.md
@@ -128,17 +160,20 @@ Plan JSON (also what the dry-run text renders):
 
 ```
 { "root": "<abs>", "version": "0.21.0+3757627", "apply": false,
+  "adoption_commit": "<sha|null>",
   "refusals":  [ { "reason": "plan-refused", "plan": "<id>", "detail": "<clean's error>" } ],
   "payload":   [ { "path": "<rel>", "action": "remove|keep",
-                   "why": "pristine|edited|pending-offer|candidate|no-provenance|
-                           unlisted|keep-docs|tracked-dirty" ,
+                   "why": "pristine|edited|preexisting|pending-offer|candidate|
+                           no-provenance|unlisted|keep-docs|tracked-dirty" ,
                    "provenance": "upstream|installed-revision|none" } ],
   "candidates":[ "<rel>.agentic-new…" ],
   "stamps":    [ { "path": "<rel>", "owner": "harness|project", "action": "remove|keep" } ],
   "plans":     [ { "id": "<id>", "worktree": "<abs|null>", "branch": "<name|null>" } ],
   "hooks":     { "core_hooks_path": "<value|null>", "action": "unset|keep",
                  "chained_scanner": [ "<hook file>" ] },
-  "agent_hooks_dangling": [ "<kept settings file that runs a removed script>" ],
+  "kept":      [ { "path": "<rel>", "why": "<reason>" } ],   (payload and stamps, sorted)
+  "dangling_references": [ { "file": "<rel>", "line": n, "ref": "<removed path|agentic-flow>" } ],
+  "dangling_truncated": n,
   "git_state": { "remove": [ "<dir>" ], "keep": [ "<dir>" ], "salvage_refs_kept": n },
   "outside":   [ "<checklist line>" ],
   "commit":    { "action": "commit|stage-only", "reason": "<text>" } }
@@ -175,7 +210,11 @@ tree.
 | File removal / `git rm` | — | — | Exit 4 with records intact; rerun reclassifies the remaining files |
 | `git commit` | — | Hook rejects → removal stays staged, exit 0 with `stage-only` and the hook's output | — |
 
-Bounds: the existing record limits (2,000 paths, 4,100-byte lines) apply. Plan records are
+Bounds: the existing record limits (2,000 paths, 4,100-byte lines) apply. The
+adoption-commit lookup is one path-limited `git log`, and each pre-existence test is one
+`git cat-file -e`. The reference scan reads only kept payload files and
+`.github/workflows/*`, skips files over 1 MiB and binary files, and reports at most 20
+lines per file and 200 in total. The overflow is counted in `dangling_truncated`. Plan records are
 scanned up to the existing `plan_find_branch` bound. Empty-directory pruning walks only the
 parents of removed files and stops at the root. The JSON lists at most one entry per
 installed path. One clone per run.
@@ -184,7 +223,10 @@ installed path. One clone per run.
 
 - Removing anything outside the repository: operator files, keychain entries, labels,
   issues, rulesets, Apps, or the adopter's CI workflow. These are printed only.
-- Editing a custom hook to unchain the scanner, or editing kept settings files.
+- Editing any kept file: a custom hook that chains the scanner, settings files, contracts,
+  the `Makefile`, or CI workflows. They are listed with the lines to fix.
+- Recording pre-existence at export time. The adoption-commit check covers every install
+  without a record-format change.
 - Managed-region markers (Option C).
 - Monorepo installs whose harness root is not the Git top level. They are refused in v1.
 - Pushing, and any override flag for plan guards.
@@ -233,11 +275,23 @@ installed path. One clone per run.
    unreachable or stampless version, every such file is kept.
 8. Given `--purge-ledger` with an open plan record, then exit 3 `purge-with-open-plan`.
 9. Given an agent hook command `agentic-flow uninstall`, then the native policy blocks it.
+10. Given a repository that committed its own empty `docs/done/.gitkeep` before the
+    adoption commit, when uninstall runs, then the file stays with `why=preexisting`,
+    although its bytes match `accepted=`. The other `.gitkeep` files, added by the
+    adoption, are removed.
+11. Given an initialized fixture whose kept `Makefile` calls `scripts/self-test.sh`, and
+    whose `.github/workflows/ci.yml` calls `scripts/doctor.sh`, when uninstall runs, then
+    stdout lists both files under *Kept* or *Still referencing removed files* with their
+    line numbers. The dry run warns that `make check` and CI will fail. Neither file
+    changes.
 
 ## Invariants
 
 - No write happens before every refusal check has passed (scenario 1's tree digest).
-- A file that is not proven pristine is never removed. Symlinks are never followed.
+- A file that is not proven pristine, or that existed before the adoption commit, is never
+  removed. Symlinks are never followed.
+- Every path that stays is printed on stdout with its reason, in both a dry run and an
+  apply. No kept file is ever modified.
 - No flag overrides a `clean` refusal.
 - `.agentic-flow-version`, `-installation` and `-upstream` are removed last, so a failed
   apply can be rerun and converges.
@@ -261,7 +315,7 @@ Base: `main`. One branch and one PR for the whole brief: `configurability-phase-
 step lands as its own commit on that branch and closes its issue with `Fixes #N`.
 
 ## Definition of done (whole brief)
-Every step's DoD is met, and `make check` and `make test` are green. Scenarios 1–9 are
+Every step's DoD is met, and `make check` and `make test` are green. Scenarios 1–11 are
 covered by named tests. `ADOPTION.md` has a *Removing the harness* section, and
 `CHANGELOG.md` has an entry. A manual run in a scratch export shows the dry-run report,
 then `--yes`, then a clean `git status`.
@@ -292,14 +346,24 @@ adopters see what uninstall *would* do before anything can delete.
   files.
   - A tracked path whose index entry differs from `HEAD` is `tracked-dirty`. Refuse it.
   - Candidates are `.agentic-new*` files next to listed paths.
+  - Resolve the adoption commit once. A would-be removal whose path exists in the
+    commit's first parent becomes `keep` with `why=preexisting`.
 - Stamps: one list per owner, defined once in the library (Part A).
 - Plans: for every record under `<common>/agentic-flow/plans/` that is not `closed`, and
   every worktree under `worktrees/`, run `clean`'s checks in dry-run mode. Pass
   `--no-fetch` through. Collect every refusal, not just the first.
 - Hooks: read `core.hooksPath`. If it equals `scripts/git-hooks`, it will be unset.
   Otherwise list hook files under it that mention `scripts/git-hooks/pre-commit`.
-- Kept settings files under `.claude/`, `.codex/` and `.opencode/` that reference a
-  `scripts/hooks/` file due for removal → `agent_hooks_dangling`.
+- Kept list: every payload path and stamp classified `keep`, with its reason, sorted.
+- Reference scan:
+  - scan the kept files and `.github/workflows/*`;
+  - match the literal path of each file due for removal, each removed directory as a
+    `<dir>/` prefix, and the word `agentic-flow` used as a command;
+  - record `file:line:ref` within the stated bounds.
+
+  The scan covers what the draft-1 `agent_hooks_dangling` check covered, so drop that
+  check. A hit in the `Makefile` or a workflow adds the "`make check` / CI will fail"
+  warning to the top of the report.
 - Live controller: a held lock under `locks/` whose owner is alive → `live-controller`.
 - Git state: split caches from records as Part A lists them; count salvage refs.
 - Outside: the fixed checklist. Warn first when a ruleset may require the **CI gate**
@@ -310,8 +374,13 @@ adopters see what uninstall *would* do before anything can delete.
 - Add `upgrade:uninstall` to the wall-ceiling keys.
 
 **Test:** scenarios 1 (dry-run half: refusal with an unchanged tree digest), 3, 4, 5 (as
-classifications), 8 and 9. Also: `linked-worktree`, `no-installation`, a symlinked payload
-path (kept, not followed), and `--json` validating against the interface shape.
+classifications), 8, 9, 10 and 11. Also:
+- an adoption that was never committed skips the pre-existence check;
+- an adoption made as a root commit treats every path as harness-added;
+- the reference-scan bound truncates and counts the overflow;
+- `linked-worktree` and `no-installation` refusals;
+- a symlinked payload path is kept, not followed;
+- `--json` validates against the interface shape.
 
 **DoD:** `agentic-flow uninstall` prints a correct plan and never writes. The command
 policy blocks it for agents in all three runtimes.
@@ -346,9 +415,12 @@ policy blocks it for agents in all three runtimes.
   7. Remove harness stamps; the three records come last.
 - Commit with the fixed subject and a body listing kept files. Use `stage-only` when a
   chaining hook exists or the commit fails.
+- After the commit or staging, print the f-1 *Kept* and *Still referencing removed files*
+  sections again, recomputed against the tree that now exists.
 - On any failure, stop. Leave the records in place and exit 4 with the step that failed.
 
-**Test:** scenarios 1 (apply half), 2, 5, 6 and 8. Also:
+**Test:** scenarios 1 (apply half), 2, 5, 6, 8 and 10 (the `.gitkeep` survives the
+commit), plus 11's stdout after apply. Also:
 - the rerun after an injected failure between steps 2 and 7 converges;
 - the running CLI survives deleting its own files (the pattern at `upgrade.sh:402-421`);
 - pre-existing staged changes cause a refusal;
