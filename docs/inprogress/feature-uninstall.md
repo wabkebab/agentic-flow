@@ -2,7 +2,7 @@
 > **Type:** Feature · **Status:** 🟦 Proposal
 > **Assurance:** Strict (deletes adopter files, changes the install records, the controller lock and the hook setup, and adds a command-policy floor row; project baseline is Standard)
 > Phase 3 of [harness configurability](product-harness-configurability.md) (area J): `agentic-flow uninstall`, which removes only what the harness has recorded evidence of creating, behind a fence that excludes every writer. A resumable apply leaves the verified deletions staged for the adopter to commit. Kept files and shared Git state are reported for manual follow-up.
-> Draft 8 (2026-11-27), written against `0.21.0` (`3757627`). It answers the sixth review: a file that reappears after a staged deletion is kept, removal eligibility includes the Git mode, and the staged-edit test now expects the resume gate's refusal. See *Revision history*. Owner decisions: *Uninstall acceptance* yes, *Legacy ownership* keep f-5, *Commit* stage-only, *Shared Git state* report-only, *Plan cleanup* adopter runs `clean` first. Next: the reviewer's seventh round, then owner approval.
+> Draft 8 (2026-11-27), written against `0.21.0` (`3757627`). It answers the sixth review: a file that reappears after a staged deletion is kept, removal eligibility includes the Git mode, and the staged-edit test now expects the resume gate's refusal. See *Revision history*. Owner decisions: *Uninstall acceptance* yes, *Legacy ownership* keep f-5, *Commit* stage-only, *Shared Git state* report-only, *Plan cleanup* adopter runs `clean` first, *Project-owned state* kept unless `--remove-project-state`. Every open question is settled. Next: the reviewer's seventh round, then owner approval.
 
 # Feature — Uninstall: remove only what the harness owns
 
@@ -527,8 +527,8 @@ total, counting the overflow. One clone per run.
 - [x] **Shared Git state.** *Decided 2026-11-27 by the owner: report only in v1.*
 - [x] **Plan cleanup.** *Decided 2026-11-27 by the owner: the adopter runs `clean` first.
   Apply refuses with `plan-open`.*
-- **Project-owned state default.** Keep it unless `--remove-project-state` is given?
-  *Recommended: yes.*
+- [x] **Project-owned state default.** Keep it unless `--remove-project-state` is given?
+  *Decided 2026-11-27 by the owner: yes.*
 
 ## Revision history
 
