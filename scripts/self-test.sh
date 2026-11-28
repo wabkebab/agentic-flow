@@ -156,7 +156,7 @@ if [ "$SCENARIO_SET" = 1 ]; then
   done
 fi
 # SCENARIO DISPATCH END
-TMPDIR_ROOT=${TMPDIR:-/tmp}
+TMPDIR_ROOT=$(cd "${TMPDIR:-/tmp}" && pwd -P) # Physical path: fixtures compare against git toplevel.
 TMP=$(mktemp -d "$TMPDIR_ROOT/agentic-flow-test.XXXXXX")
 SHARD_DIR=${AGENTIC_SELF_TEST_SHARD_DIR:-}
 unset AGENTIC_SELF_TEST_SHARD_DIR
