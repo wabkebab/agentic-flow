@@ -83,6 +83,18 @@ if [ -f "$ROOT/scripts/export.sh" ]; then
   cp "$TMP/payload.tsv.orig" "$SOURCE_FIXTURE/config/payload.tsv"
   rm -rf "$SOURCE_FIXTURE/scripts/private_probe" "$SOURCE_ONLY_DIR_TARGET"
 
+  for ownership_dest in .agentic-flow-ownership .agentic-flow-ownership/record; do
+    printf 'docs/done/.gitkeep\t%s\tcore\tpreserve\texport\n' "$ownership_dest" \
+      >> "$SOURCE_FIXTURE/config/payload.tsv"
+    mkdir -p "$TMP/reserved-ownership-target"
+    "$SOURCE_FIXTURE/scripts/export.sh" "$TMP/reserved-ownership-target" \
+      > "$TMP/reserved-ownership.out" 2>&1 && fail 'export accepted an ownership payload destination'
+    grep -q 'ownership state cannot be a payload destination' "$TMP/reserved-ownership.out" &&
+      [ -z "$(ls -A "$TMP/reserved-ownership-target")" ] \
+      || fail 'export did not reject the reserved ownership destination before apply'
+    cat "$TMP/payload.tsv.orig" > "$SOURCE_FIXTURE/config/payload.tsv"
+  done
+
   awk -F "$(printf '\t')" 'BEGIN { OFS="\t" } $3=="codex" && $5=="export" { $3="unknown-scope" } { print }' \
     "$TMP/payload.tsv.orig" > "$SOURCE_FIXTURE/config/payload.tsv"
   "$SOURCE_FIXTURE/scripts/export.sh" "$TMP/unknown-scope-target" \
@@ -146,8 +158,14 @@ DOCTOR_SESSION
   # to it and its OPT-OUT banner is the documented Claude-only behaviour.
   SCOPED_TARGET="$TMP/scoped-export"
   mkdir -p "$SCOPED_TARGET"
-  "$SOURCE_FIXTURE/scripts/export.sh" --exclude-scope=codex --exclude-scope=opencode \
+  printf '# adopter contract\n' > "$SCOPED_TARGET/CLAUDE.md"
+  "$SOURCE_FIXTURE/scripts/export.sh" --force --exclude-scope=codex --exclude-scope=opencode \
     "$SCOPED_TARGET" >/dev/null
+  if ! cmp -s "$SOURCE_FIXTURE/templates/harness/CLAUDE.md" "$SCOPED_TARGET/CLAUDE.md" ||
+    ! grep -Fxq 'origin=export' "$SCOPED_TARGET/.agentic-flow-ownership" ||
+    grep -Eq '^created=.*  CLAUDE\.md$' "$SCOPED_TARGET/.agentic-flow-ownership"; then
+    fail 'forced export did not overwrite without claiming an adopter file'
+  fi
   assert_no_file "$SCOPED_TARGET/.codex/hooks.json"
   assert_no_file "$SCOPED_TARGET/.agents/skills/plan-to-issues/SKILL.md"
   assert_no_file "$SCOPED_TARGET/templates/shared"
@@ -329,6 +347,9 @@ DOCTOR_SESSION
   TARGET="$TMP/target"
   printf '%s\n' "# self-test export leak sentinel" > "$DOC_LEAK_SENTINEL"
   printf '%s\n' "# self-test root sentinel" >> "$SOURCE_FIXTURE/CLAUDE.md"
+  # Scenario 1. The adopter already has an identical untracked keep file.
+  mkdir -p "$TARGET/docs/done"
+  cp "$SOURCE_FIXTURE/docs/done/.gitkeep" "$TARGET/docs/done/.gitkeep"
   fresh_export "$SOURCE_FIXTURE" "$TARGET"
   # Mirrors export.sh's own semver+SHA computation exactly — see the comment there.
   expected_semver=$(sed -n '1p' "$ROOT/VERSION" 2>/dev/null || true)
@@ -390,6 +411,12 @@ DOCTOR_SESSION
   exported_claude=$(shasum -a 256 "$SOURCE_FIXTURE/templates/harness/CLAUDE.md" | cut -d ' ' -f 1)
   grep -Fxq "accepted=$exported_claude  CLAUDE.md" "$TARGET/.agentic-flow-upstream" \
     || fail 'export did not record the installed upstream hash'
+  ownership="$TARGET/.agentic-flow-ownership"
+  if ! grep -Fxq 'version=1' "$ownership" || ! grep -Fxq 'origin=export' "$ownership" ||
+    ! grep -Fxq "created=$exported_claude  CLAUDE.md" "$ownership" ||
+    grep -Eq '^created=.*  docs/done/\.gitkeep$' "$ownership"; then
+    fail 'fresh export did not distinguish created paths from identical adopter files'
+  fi
   if [ -n "$expected_origin" ]; then
     assert_file "$TARGET/.agentic-flow-source"
     grep -qx "origin $expected_origin" "$TARGET/.agentic-flow-source" \
@@ -467,6 +494,11 @@ SH
   assert_file "$TARGET/CLAUDE.md.agentic-new"
   grep -Fxq "offered=$exported_claude  CLAUDE.md" "$TARGET/.agentic-flow-upstream" \
     || fail 'export did not record the candidate upstream hash'
+  if ! grep -Fxq 'origin=export' "$ownership" ||
+    ! grep -Fxq "created=$exported_claude  CLAUDE.md" "$ownership" ||
+    ! grep -Fxq "candidate=$exported_claude  CLAUDE.md.agentic-new" "$ownership"; then
+    fail 'pending export did not retain ownership and record its new candidate'
+  fi
   grep -q "# local edits" "$TARGET/CLAUDE.md" || fail "export clobbered an existing file"
   grep -qx older-source "$TARGET/.agentic-flow-version" \
     || fail "export advanced installed version while merge conflicts remained"
@@ -486,6 +518,29 @@ SH
   assert_file "$second_candidate"
   grep -q "# second candidate content" "$second_candidate" \
     || fail "versioned merge candidate does not contain the new source content"
+
+  BAD_OWNERSHIP_TARGET="$TMP/malformed-ownership"
+  mkdir -p "$BAD_OWNERSHIP_TARGET"
+  printf 'adopter file\n' > "$BAD_OWNERSHIP_TARGET/CLAUDE.md"
+  for malformed in key duplicate missing nul utf8 traversal overlong; do
+    bad_record="$BAD_OWNERSHIP_TARGET/.agentic-flow-ownership"
+    printf 'version=1\norigin=export\n' > "$bad_record"
+    case "$malformed" in
+      key) printf 'unknown=1\n' >> "$bad_record" ;;
+      duplicate) printf 'origin=upgrade\n' >> "$bad_record" ;;
+      missing) printf 'version=1\n' > "$bad_record" ;;
+      nul) printf '\000' >> "$bad_record" ;;
+      utf8) printf '\377' >> "$bad_record" ;;
+      traversal) printf 'created=%s  ../outside\n' "$exported_claude" >> "$bad_record" ;;
+      overlong) printf 'created=%s  %4100s\n' "$exported_claude" x >> "$bad_record" ;;
+    esac
+    before=$(tree_digest "$BAD_OWNERSHIP_TARGET")
+    "$SOURCE_FIXTURE/scripts/export.sh" --force "$BAD_OWNERSHIP_TARGET" \
+      > "$TMP/malformed-ownership.out" 2>&1 && fail "export accepted malformed ownership ($malformed)"
+    grep -q '^error: .*\.agentic-flow-ownership' "$TMP/malformed-ownership.out" &&
+      [ "$before" = "$(tree_digest "$BAD_OWNERSHIP_TARGET")" ] \
+      || fail "export wrote before refusing malformed ownership ($malformed)"
+  done
 
   rm "$DOC_LEAK_SENTINEL"
   (cd "$SOURCE_FIXTURE" && AGENTIC_SELFTEST=1 scripts/doctor.sh --check --scope repo) >"$TMP/doctor.log" 2>&1 \

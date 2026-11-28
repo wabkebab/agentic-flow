@@ -263,6 +263,25 @@ plan_read_record() {
     plan_branch_valid "$recorded_branch" && plan_branch_valid "$recorded_base"
 }
 
+plan_uninstall_records() { # <absolute git-common-dir>; read-only inventory for uninstall
+  local directory="$1/agentic-flow/plans" record id status recorded_branch recorded_base count=0 failed=false
+  [ ! -L "$1/agentic-flow" ] && [ ! -L "$directory" ] || return 3
+  [ -e "$directory" ] || return 0
+  [ -d "$directory" ] && [ -r "$directory" ] && [ -x "$directory" ] || return 3
+  for record in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+    plan_path_exists "$record" || continue
+    count=$((count + 1))
+    [ "$count" -le 2000 ] || return 3
+    id=${record##*/}
+    if plan_id_valid "$id" && plan_read_record; then
+      printf '%s\t%s\t%s\n' "$id" "$status" "$recorded_branch"
+    else
+      failed=true
+    fi
+  done
+  [ "$failed" = false ] || return 3
+}
+
 plan_salvage_refs() { # git ref output format
   local refs
   refs=$(git for-each-ref --count=1001 --format="$1" "$salvage") || return 3

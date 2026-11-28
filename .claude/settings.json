@@ -129,7 +129,13 @@
       "Bash(agentic-flow config set:*)",
       "Bash(agentic-flow config unset:*)",
       "Bash(rtk proxy scripts/agentic-flow config set:*)",
-      "Bash(rtk proxy scripts/agentic-flow config unset:*)"
+      "Bash(rtk proxy scripts/agentic-flow config unset:*)",
+      "Bash(scripts/agentic-flow uninstall:*)",
+      "Bash(./scripts/agentic-flow uninstall:*)",
+      "Bash(agentic-flow uninstall:*)",
+      "Bash(rtk proxy scripts/agentic-flow uninstall:*)",
+      "Bash(rtk proxy ./scripts/agentic-flow uninstall:*)",
+      "Bash(rtk proxy agentic-flow uninstall:*)"
     ]
   }
 }

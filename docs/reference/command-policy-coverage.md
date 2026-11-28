@@ -63,7 +63,8 @@ Run `scripts/agentic-flow doctor --stations` for station rules or add
 canary without observed CLI refusal. The canary set is in
 [command-policy-probes.txt](../../config/stations/command-policy-probes.txt).
 The installed Codex checker matched all 69 canary argv forms. The station
-and interactive launches remain unprobed on this host.
+and interactive launches remain unprobed on this host. The checker also
+matched and denied the six uninstall forms added for issue #233.
 
 ## Push and merge
 
@@ -156,9 +157,9 @@ and interactive launches remain unprobed on this host.
 | `gh api repos/owner/repo/issues/1 -X PATCH -f state=closed` | [733](../../scripts/tests/hooks.sh#L733) | P | P | M | M | P | P |
 | `gh api graphql -f query=mutation` | [742](../../scripts/tests/hooks.sh#L742) | P | P | M | M | P | P |
 | `gh api graphql --input request.json` | [743](../../scripts/tests/hooks.sh#L743) | P | P | M | M | P | P |
-| `gh issue close 1 (workflow issue)` | [747](../../scripts/tests/hooks.sh#L747) | P | P | M | M | P | P |
-| `gh issue reopen 1 (workflow issue)` | [748](../../scripts/tests/hooks.sh#L748) | P | P | M | M | P | P |
-| `gh issue close 1 (issue lookup failed)` | [749](../../scripts/tests/hooks.sh#L749) | P | P | M | M | P | P |
+| `gh issue close 1 (workflow issue)` | [755](../../scripts/tests/hooks.sh#L755) | P | P | M | M | P | P |
+| `gh issue reopen 1 (workflow issue)` | [756](../../scripts/tests/hooks.sh#L756) | P | P | M | M | P | P |
+| `gh issue close 1 (issue lookup failed)` | [757](../../scripts/tests/hooks.sh#L757) | P | P | M | M | P | P |
 | `scripts/agentic-flow ship docs/inprogress/plan.md` | [734](../../scripts/tests/hooks.sh#L734) | P | P | M | M | P | P |
 | `rtk proxy scripts/agentic-flow ship docs/inprogress/plan.md --wait-review` | [735](../../scripts/tests/hooks.sh#L735) | P | P | M | M | P | P |
 | `bash -lc "scripts/agentic-flow ship docs/inprogress/plan.md"` | [736](../../scripts/tests/hooks.sh#L736) | P | P | M | M | P | P |
@@ -168,6 +169,18 @@ and interactive launches remain unprobed on this host.
 | `rtk proxy scripts/agentic-flow token executor` | [740](../../scripts/tests/hooks.sh#L740) | P | P | M | M | P | P |
 | `bash -lc "scripts/agentic-flow token reviewer"` | [741](../../scripts/tests/hooks.sh#L741) | P | P | M | M | P | P |
 | `bash -c "echo ok"; gh issue edit 1 --add-label needs-review` | [744](../../scripts/tests/hooks.sh#L744) | P | P | P | P | P | P |
+
+## Uninstall
+
+| Command form | Hook test lines | Claude interactive | Claude station | Codex interactive | Codex station | OpenCode interactive | OpenCode station |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `scripts/agentic-flow uninstall` | [749–753](../../scripts/tests/hooks.sh#L749) | P | P | M | M | P | P |
+| `./scripts/agentic-flow uninstall --json` | [749–753](../../scripts/tests/hooks.sh#L749) | P | P | M | M | P | P |
+| `agentic-flow uninstall` | [749–753](../../scripts/tests/hooks.sh#L749) | P | P | M | M | P | P |
+| `rtk proxy scripts/agentic-flow uninstall --json` | [749–753](../../scripts/tests/hooks.sh#L749) | P | P | M | M | P | P |
+| `rtk proxy ./scripts/agentic-flow uninstall` | [749–753](../../scripts/tests/hooks.sh#L749) | P | P | M | M | P | P |
+| `rtk proxy agentic-flow uninstall` | [749–753](../../scripts/tests/hooks.sh#L749) | P | P | M | M | P | P |
+| `bash -lc "/checkout/scripts/agentic-flow uninstall"` | [754](../../scripts/tests/hooks.sh#L754) | P | P | M | M | P | P |
 
 ## Commit and staged content
 

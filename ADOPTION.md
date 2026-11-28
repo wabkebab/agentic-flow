@@ -273,6 +273,31 @@ candidates are reused.
 origin in `.agentic-flow-source` later changes, upgrade stops until you inspect the change
 and rerun with `--force`.
 
+## Removing the harness
+
+Run `agentic-flow clean <plan-id>` for any remaining plans and review `git diff --cached`
+until the index is clean. From the main checkout, preview the removal with
+`scripts/agentic-flow uninstall` and answer `n` at the prompt. Run
+`scripts/agentic-flow uninstall --yes` to stage the listed deletions. Add `--keep-docs`
+to keep the harness documentation, or `--remove-project-state` to include tracked project
+settings. Older installs can use `--claim-adoption` to include pristine files added by
+their adoption commit. Use the same options in the preview and apply.
+
+Review `git status` and `git diff --cached` before committing. To roll back before
+changing branches or committing, run the printed `bash <receipt>.undo` command. It
+fills in missing index entries and files. If it reports a partial undo, fix the listed
+cause and run the same command again. Keep the receipt until the staged result is settled.
+
+Review the printed commands for untracked harness files, Git config and refs, and shared
+Git state before running any of them. The ledger holds the only copy of the plan journal.
+Use the reference report and outside checklist to review kept files, CI, and GitHub setup.
+If apply reports a file still present with different content or mode, inspect it before
+deciding how to proceed.
+
+Run no other harness or Git-writing commands during apply or undo. Concurrent writes
+can occur after preflight, and apply verifies only the listed paths against the recorded
+commit. Review the entire index before committing.
+
 ## CI
 
 `templates/ci/ci.yml` is exported **inert** — adoption never activates a workflow on its

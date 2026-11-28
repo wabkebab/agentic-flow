@@ -58,6 +58,12 @@ scripts/agentic-flow hold clear	deny	the human clears holds
 scripts/agentic-flow token	deny	the controller owns workflow credentials
 rtk proxy scripts/agentic-flow ship	deny	the human ships
 rtk proxy scripts/agentic-flow token	deny	the controller owns workflow credentials
+scripts/agentic-flow uninstall	deny	the human uninstalls
+./scripts/agentic-flow uninstall	deny	the human uninstalls
+agentic-flow uninstall	deny	the human uninstalls
+rtk proxy scripts/agentic-flow uninstall	deny	the human uninstalls
+rtk proxy ./scripts/agentic-flow uninstall	deny	the human uninstalls
+rtk proxy agentic-flow uninstall	deny	the human uninstalls
 git-claude push	deny	the human pushes
 git-claude add -A	deny	stage files by name
 git-claude add .	deny	stage files by name

@@ -69,3 +69,9 @@ scripts/agentic-flow hold clear docs/inprogress/plan.md fixture/hold/1
 scripts/agentic-flow token reviewer
 rtk proxy scripts/agentic-flow token executor
 bash -lc "scripts/agentic-flow token reviewer"
+scripts/agentic-flow uninstall
+./scripts/agentic-flow uninstall --json
+agentic-flow uninstall
+rtk proxy scripts/agentic-flow uninstall --json
+rtk proxy ./scripts/agentic-flow uninstall
+rtk proxy agentic-flow uninstall

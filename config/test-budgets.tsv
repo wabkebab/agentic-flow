@@ -5,6 +5,9 @@
 # On 2026-11-25 process-status and the frozen journal parser grew both layouts.
 # Config surface's registry and pinned policy fixtures brought full/exported to 200/123.
 # Budget modes and their regression fixtures measured 211 in source and 127 in export.
+# Ownership tests copy one existing candidate in both layouts and one adopter file in source.
+# On 2026-11-27 the full suites with uninstall apply and undo tests measured 216 source and
+# 138 exported fixture copies.
 fixtures.fast	33
-fixtures.full	211
-fixtures.exported	127
+fixtures.full	216
+fixtures.exported	138

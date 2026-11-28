@@ -445,10 +445,26 @@ Config changes what replay and gates mean, so it waits for its tier contract.
       *Partly decided 2026-11-26: CI wall time defaults to `warn`
       (`feature-config-surface.md` C-1). The other defaults are settled at that brief's
       approval.*
-- [ ] **Uninstall.** Accept removal only on pristine provenance (the `accepted=` upstream
+- [x] **Uninstall.** Accept removal only on pristine provenance (the `accepted=` upstream
       hash, or bytes re-exported from the installed revision for older installs) and the
       no-override plan guards?
       Invest in managed-region markers for hand-merged contracts later?
+      *Decided 2026-11-27: yes, tightened by review to install-time ownership evidence
+      plus pristine bytes, behind a fence and the no-override plan guards. Legacy paths
+      are removable only through an explicit owner claim (`feature-uninstall.md` f-5).
+      Managed-region markers stay deferred.*
+      *Narrowed 2026-11-27 for v1, after the fourth review of `feature-uninstall.md`:
+      uninstall stages the verified deletions and the adopter commits them, replacing
+      J's "one removal commit". Shared Git state under the common dir, including the
+      ledger, is reported with exact commands instead of removed, so `--purge-ledger`
+      is dropped. Automatic commit and purge are follow-ups. After the fifth review, the
+      adopter also runs `clean` for each plan before uninstall, which refuses while any
+      plan is open, replacing J's in-uninstall plan cleanup.*
+      *Reshaped 2026-11-27 (draft 11), after an owner-requested over-engineering
+      analysis. Removal is limited to tracked, owned, pristine files in one batched
+      `git rm`, which a printed `git restore` undoes. Git config, refs and untracked
+      files are reported with commands. The fence, resume and the fetch of older
+      revisions are dropped, and the legacy claim compares only against `accepted=`.*
 
 Settled by this revision:
 - Phase 1 uses the feature brief's `status` interface. Service units are deferred.
@@ -457,7 +473,8 @@ Settled by this revision:
 
 - [ ] `docs/inprogress/feature-process-status.md` — areas E, G (Phase 1; drafted 2026-11-25 on `configurability-phase-1`, revision 2)
 - [ ] `docs/inprogress/feature-config-surface.md` — areas A, C, K (Phase 2; drafted 2026-11-26 on `configurability-phase-2`, draft 1)
-- [ ] `docs/inprogress/feature-uninstall.md` — area J
+- [ ] `docs/inprogress/feature-uninstall.md` — area J (Phase 3; drafted 2026-11-27 on `configurability-phase-3`, draft 15, three steps, one checked `git rm` with a rerunnable receipt undo)
+- [ ] `docs/backlog/feature-uninstall-purge.md` — area J follow-up: automatic commit and shared Git state purge, only if adopters ask
 - [ ] `docs/inprogress/feature-setup-upgrade-wizard.md` — area D
 - [ ] `docs/inprogress/feature-visibility-modes.md` — area I (part 1; part 2 on demand)
 - [ ] Area B folded into the 1.0 brief alongside R-14b and R-22

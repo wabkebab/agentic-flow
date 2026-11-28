@@ -32,6 +32,7 @@ usage:
   agentic-flow diff [--ref <ref>] [--json]
   agentic-flow upgrade [--ref <ref>] [--force] [--yes]
   agentic-flow upgrade --merged <path>
+  agentic-flow uninstall [--yes] [--json] [--keep-docs] [--remove-project-state] [--claim-adoption]
   agentic-flow --help | --version
 
   run --detach starts a background controller and reports its pid after it takes the lock.
@@ -58,7 +59,7 @@ load_local_upstream_lib() { # <adopted-root>; for a PATH alias or an older fetch
   if [ -f "$1/scripts/lib/payload-apply.sh" ]; then
     load_payload_lib "$1"
   fi
-  if ! declare -F payload_upstream_load >/dev/null; then
+  if ! declare -F payload_ownership_load >/dev/null; then
     load_payload_lib "$(dirname "${BASH_SOURCE[0]}")/.."
   fi
 }
@@ -358,8 +359,8 @@ upgrade_cmd() {
   fi
   source="$FETCHED_SOURCE"
   load_payload_lib "$source"
-  # An explicit ref can point to a release from before upstream tracking.
-  if ! declare -F payload_upstream_load >/dev/null; then
+  # An older ref still needs to preserve ownership evidence for this apply.
+  if ! declare -F payload_ownership_load >/dev/null; then
     load_local_upstream_lib "$root"
   fi
   [ ! -f "$source/scripts/lib/guard-migration.sh" ] || migrate=true
@@ -671,6 +672,16 @@ subcommand="${1:-}"
     status) shift; status_cmd "$@" ;;
     diff) shift; diff_cmd "$@" ;;
     upgrade) shift; upgrade_cmd "$@" ;;
+    uninstall)
+      shift
+      uninstall_entry=$0
+      if [ -L "$uninstall_entry" ]; then
+        uninstall_entry=$(perl -MCwd=abs_path -e 'print abs_path($ARGV[0]) // ""' "$uninstall_entry")
+        [ -n "$uninstall_entry" ] || die 'cannot resolve the uninstall command path'
+      fi
+      # shellcheck disable=SC1091 # Installed alongside the CLI.
+      . "$(dirname "$uninstall_entry")/lib/uninstall.sh"
+      uninstall_cmd "$@" ;;
     *) usage; die "unknown subcommand: $subcommand" ;;
   esac
   exit

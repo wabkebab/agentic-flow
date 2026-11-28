@@ -180,7 +180,7 @@ verify_fixture_run() {
 }
 
 budget_verify_tests() (
-  local TMP="$TMP/budget-verify" key tag old_base capable_base green candidate operator pre_ack pid i
+  local TMP="$TMP/budget-verify" key old_base capable_base green candidate operator pre_ack pid i
   mkdir -p "$TMP"
   export CI=false XDG_CONFIG_HOME="$TMP/operator"
   unset AGENTIC_FLOW_BUDGET_POLICY AGENTIC_FLOW_BUDGET_WALL_MODE_LOCAL AGENTIC_FLOW_BUDGET_WALL_SCALE
@@ -199,11 +199,7 @@ budget_verify_tests() (
   mkdir -p "$VERIFY_FIX/scripts/tests" "$VERIFY_FIX/.agentic-flow"
   ln "$ROOT/scripts/self-test.sh" "$VERIFY_FIX/scripts/self-test.sh"
   ln "$ROOT/config/test-budgets.tsv" "$VERIFY_FIX/config/test-budgets.tsv"
-  {
-    for key in $SELF_TEST_GROUPS upgrade:upstream; do printf '%s\t5\n' "$key"; done
-    for tag in $CONTROLLER_SCENARIOS; do printf 'controller:%s\t5\n' "$tag"; done
-    for tag in $STATIONS_SCENARIOS; do printf 'stations:%s\t5\n' "$tag"; done
-  } > "$VERIFY_FIX/config/test-wall-ceilings.tsv"
+  for key in $(wall_ceiling_keys); do printf '%s\t5\n' "$key"; done > "$VERIFY_FIX/config/test-wall-ceilings.tsv"
   cat > "$VERIFY_FIX/scripts/tests/helpers.sh" <<'HELPERS'
 fail() { echo "self-test failed: $*" >&2; exit 1; }
 self_test_now() { printf '%s\n' "${FIXTURE_CLOCK:-0}"; }

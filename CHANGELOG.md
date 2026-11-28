@@ -2,6 +2,9 @@
 
 ## 0.21.0
 
+- `agentic-flow uninstall` previews tracked, unchanged harness files and stages their
+  removal with `--yes`. Each apply prints a receipt command that restores missing
+  index entries and files before the removal is committed.
 - `plan-to-issues --doc` accepts repeatable `--adopt <step-id>=<number>` mappings
   for existing open issues, including `tracker` on Strict plans. It checks all mappings
   before applying and retains adopted titles, handwritten text, and live labels across
