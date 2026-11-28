@@ -63,8 +63,27 @@ These go in the Feature/Security doc (Part A), not in the implementer's head:
   the simpler options alongside "add handling". Revise the design rather than stacking
   patches on it. When scope is cut, also remove the mechanisms that the cut scope
   justified.
+- **Show the owner the alternatives in the draft.** When a design adds structure, put the
+  simplest workable option beside the recommended one, each with pros and cons, and make a
+  recommendation. The owner chooses before approval, not after review rounds.
+- **Check existing libraries and tools before building.** Compare "build it" with each
+  serious candidate: what it covers, maintenance and license, size and transitive
+  dependencies, and how well it fits the stack. List pros and cons and recommend one. A
+  dependency that replaces a few lines of code is bloat.
+- **Propose versions in a table.** For each runtime or dependency the plan adds or
+  upgrades, list the candidate versions (latest stable, LTS where one exists, the current
+  pin), with pros, cons and a recommendation. Look current releases up rather than recall
+  them ([stack assessment](stack-assessment.md)), and respect the project's support floor.
+- **No option without a current user.** Do not add a config key, flag, parameter or
+  extension point unless something in this plan uses it.
 
 ### 11.3 Coding stage
+
+- **Build it where it belongs, or stop.** Each change lands in the module that owns the
+  concern, with clear separation from its neighbours. If it can only be bolted on, stop
+  before writing it and recommend the refactor that would make it fit: the planner proposes
+  it to the owner, and the executor raises an andon `ask`. Modular does not mean abstract:
+  do not add a layer or interface that has one caller.
 
 - **Validate at the boundary, once.** All external input — HTTP, files, env, DB rows — is
   parsed into a validated type at the edge. Interior code then trusts its inputs. Defensive
@@ -102,6 +121,10 @@ These go in the Feature/Security doc (Part A), not in the implementer's head:
 - **Explain the change in writing before submitting.** Half the problems surface while
   writing the explanation. Use the *why*-first [commit body](../../METHODOLOGY.md#7-commit-contract)
   to describe the problem, approach and scope before review.
+- **State each finding's likelihood and cheapest fix.** Say how likely the triggering
+  condition is, and name the cheapest remedy that resolves it: refuse, report, roll back,
+  accept the risk, or add handling. The planner can then weigh structural cost against the
+  case without redoing the analysis.
 - **Use a checklist, not vibes.** Minimum viable version, applied to every change:
   1. Is all external input validated at the boundary?
   2. Are the failure paths handled — timeout, malformed, partial?
