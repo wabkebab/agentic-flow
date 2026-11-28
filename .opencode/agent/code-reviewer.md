@@ -284,6 +284,8 @@ For each finding give:
 - **Location:** `file_path:line` (use the diff hunk, not the patched file, when
   citing added lines).
 - **Problem → why it matters → suggested direction** (not finished code).
+- **Likelihood and cheapest fix:** how likely the trigger is, and the cheapest remedy
+  that resolves it: refuse, report, roll back, accept the risk, or add handling.
 
 End with a one-line verdict: `approved` / `changes requested` / `pending`.
 

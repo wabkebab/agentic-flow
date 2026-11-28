@@ -50,7 +50,9 @@ Work in the plan worktree throughout execution.
    --doc <doc> --step <id>`, then `handoff <N> submit --as executor --head <sha40>
    --body-file <evidence-file>`; retry partial failures. Never move labels by hand.
 6. **Don't** refactor adjacent code, bundle steps, or expand scope. If the brief is wrong or
-   underspecified, stop and flag it rather than guessing.
+   underspecified, stop and flag it rather than guessing. If the step cannot be built
+   cleanly in the module that owns it, stop before bolting it on and raise an andon `ask`
+   that recommends the refactor.
 
 **Adding a dependency?** Check its current stable version from the registry / release notes
 before you add it. Match the project's existing major versions and let the lockfile record

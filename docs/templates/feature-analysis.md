@@ -33,13 +33,33 @@
 
 ## Proposed approach
 <!-- The design. If there are real alternatives, lay them out with trade-offs and make a
-     recommendation — don't just present a menu. -->
+     recommendation — don't just present a menu. Start from the simplest design: refactor
+     or reuse an existing tool before adding a mechanism, and when a review finding
+     arrives, consider refuse / report / roll back / accept-the-risk first
+     (docs/reference/engineering-standards.md §11.2). Keep the simplest workable option in
+     the list, and add no config key, flag or extension point without a user in this plan. -->
 
 ### Option A — <name> (recommended)
-<Trade-offs.>
+<Pros and cons.>
 
 ### Option B — <name>
-<Trade-offs, and why not.>
+<Pros and cons, and why not.>
+
+### Existing libraries and tools
+<!-- Compare building it with each serious candidate. Write "none needed" when the plan
+     adds nothing. -->
+
+| Candidate | Covers | Maintenance / license | Size / transitive deps | Pros | Cons |
+|-----------|--------|-----------------------|------------------------|------|------|
+| Build it  | <…>    | <…>                   | <…>                    | <…>  | <…>  |
+
+### Versions
+<!-- One row per runtime or dependency added or upgraded, from current release notes, not
+     memory (docs/reference/stack-assessment.md). Write "no change" when nothing moves. -->
+
+| Component | Candidate versions | Pros | Cons | Recommended |
+|-----------|--------------------|------|------|-------------|
+| <…>       | <latest stable / LTS / current pin> | <…> | <…> | <…> |
 
 **Recommendation:** <Which, and why. The safest first version is usually the smallest one
 that delivers the user-visible value.>

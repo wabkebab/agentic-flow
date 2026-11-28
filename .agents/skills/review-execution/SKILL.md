@@ -97,11 +97,12 @@ For every finding include:
 
 1. a short imperative title with severity;
 2. the tightest changed `file:line` location that demonstrates the problem;
-3. the triggering inputs or state;
+3. the triggering inputs or state and their likelihood;
 4. the mechanism and user/security impact;
-5. the minimal required change and regression evidence.
+5. the cheapest sufficient remedy (refuse, report, roll back, accept risk, or add
+   handling) and regression evidence.
 
-Do not dilute the report with compliments or non-actionable observations. State explicitly when there are no findings.
+Omit compliments and non-actionable observations. State explicitly when there are no findings.
 
 After findings, include:
 

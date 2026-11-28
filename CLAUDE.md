@@ -147,6 +147,9 @@ and `scripts/self-test.sh` covers offline regressions.
   Merge updates from `main` into the plan branch. Never rebase it.
 - Security/Feature docs carry an **inlined implementation brief** (approach + ordered steps
   + DoD + verification commands from the Stack profile — **not code**).
+- **Draft for simplicity.** Prefer a refactor or an existing tool to a new mechanism, and
+  answer review findings by subtraction first: refuse, report, roll back, or accept the
+  risk (`docs/reference/engineering-standards.md` §11.2).
 - Use the **`plan-to-issues`** skill from the plan worktree after approval.
 - Use close-out to move an implemented plan to `docs/done/`. Record accepted risks in
   `docs/accepted_risks.md` and move the doc to the applicable done stage.
